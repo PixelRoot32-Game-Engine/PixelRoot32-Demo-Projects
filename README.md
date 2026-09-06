@@ -1,5 +1,7 @@
 # PixelRoot32 Demo Projects
 
+[![build](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Demo-Projects/actions/workflows/build.yml/badge.svg)](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Demo-Projects/actions/workflows/build.yml)
+
 Demonstration and template projects for the
 [PixelRoot32 Game Engine](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine)
 — a lightweight, modular 2D game engine written in C++17 for ESP32

@@ -1,0 +1,181 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch cancels the previous run: the matrix is wide
+# and there is no value in finishing a build nobody will look at.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Discover every demo. A demo is any <category>/<demo>/platformio.ini at depth
+  # 3; lib/platformio.ini sits one level deeper and is a template, not a project.
+  # Discovering instead of hardcoding means a new demo is built the day it lands.
+  # ---------------------------------------------------------------------------
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      demos: ${{ steps.list.outputs.demos }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: list
+        run: |
+          demos=$(find . -mindepth 3 -maxdepth 3 -name platformio.ini \
+            | sed 's|^\./||; s|/platformio\.ini$||' \
+            | sort \
+            | jq -R . | jq -sc .)
+          echo "demos=$demos" >> "$GITHUB_OUTPUT"
+          echo "Discovered demos: $demos"
+
+  # ---------------------------------------------------------------------------
+  # Structure check — the rules CONTRIBUTING.md states, enforced. Cheap, and it
+  # fails in seconds instead of after a 20-minute matrix.
+  # ---------------------------------------------------------------------------
+  structure:
+    runs-on: ubuntu-latest
+    needs: discover
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every demo has the required files and environments
+        run: |
+          status=0
+          for demo in $(echo '${{ needs.discover.outputs.demos }}' | jq -r '.[]'); do
+            for file in README.md lib/platformio.ini src/main.cpp; do
+              if [ ! -f "$demo/$file" ]; then
+                echo "::error file=$demo::missing required file $file"
+                status=1
+              fi
+            done
+
+            envs=$(sed -n 's/^\[env:\(.*\)\]/\1/p' "$demo/platformio.ini")
+
+            if ! echo "$envs" | grep -qx 'native'; then
+              echo "::error file=$demo/platformio.ini::no [env:native] — every demo must build the SDL2 simulator"
+              status=1
+            fi
+
+            # At least one hardware environment. "native" is the simulator and
+            # anything matching *test* is a host suite, so neither counts.
+            if [ -z "$(echo "$envs" | grep -v -e '^native$' -e 'test')" ]; then
+              echo "::error file=$demo/platformio.ini::no hardware environment — a demo with only [env:native] does not land"
+              status=1
+            fi
+
+            if grep -q 'symlink://' "$demo/platformio.ini" "$demo/lib/platformio.ini"; then
+              echo "::error file=$demo/platformio.ini::symlink:// dependency committed — it points at a path only its author has"
+              status=1
+            fi
+          done
+          exit $status
+
+  # ---------------------------------------------------------------------------
+  # Build every environment of every demo. One job per demo rather than one per
+  # (demo, environment) pair: the ESP32 toolchain is downloaded once per job, so
+  # splitting further would multiply the download, not the parallelism that pays.
+  # ---------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    needs: [discover, structure]
+    strategy:
+      fail-fast: false
+      matrix:
+        demo: ${{ fromJson(needs.discover.outputs.demos) }}
+    name: build ${{ matrix.demo }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      # Toolchains and platform packages, not library dependencies: lib_deps
+      # uses a caret range, so caching .pio/libdeps would pin the demos to
+      # whatever engine release was current when the cache was written.
+      - name: Cache PlatformIO toolchains
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('**/platformio.ini') }}
+          restore-keys: ${{ runner.os }}-platformio-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      # The native environment links against SDL2; the ESP32 ones do not.
+      - name: Install SDL2
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libsdl2-dev
+
+      # The committed [env:native] build_flags target Windows/MSYS2. Strip the
+      # MSYS2 include/library paths and -mconsole so the same file builds with
+      # the distribution SDL2 headers. The macOS Homebrew lines stay commented.
+      - name: Apply the Linux variant of the native build flags
+        run: sed -i -e '/msys64/d' -e '/-mconsole/d' "${{ matrix.demo }}/platformio.ini"
+
+      # Environments whose name contains "test" are host suites and belong to
+      # the test job, which runs them with `pio test` rather than `pio run`.
+      - name: Build every non-test environment
+        working-directory: ${{ matrix.demo }}
+        run: |
+          status=0
+          for env in $(sed -n 's/^\[env:\(.*\)\]/\1/p' platformio.ini | grep -v test); do
+            echo "::group::${{ matrix.demo }} — $env"
+            pio run -e "$env" || status=1
+            echo "::endgroup::"
+          done
+          exit $status
+
+  # ---------------------------------------------------------------------------
+  # Host-side unit tests. This matrix is hand-maintained on purpose, per
+  # CONTRIBUTING.md: adding a *_test environment to a demo is not enough, the
+  # suite has to be listed here or CI never runs it.
+  # ---------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - demo: games/chess
+            env: host_test
+          - demo: games/top_down_city
+            env: host_test
+    name: test ${{ matrix.demo }} (${{ matrix.env }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Cache PlatformIO toolchains
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('**/platformio.ini') }}
+          restore-keys: ${{ runner.os }}-platformio-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      # These environments build a host-only rules layer with no engine and no
+      # display, so SDL2 is deliberately not installed here: if a test suite
+      # starts needing it, the layer under test has grown a dependency it was
+      # designed not to have.
+      - name: Run the suite
+        working-directory: ${{ matrix.demo }}
+        run: pio test -e ${{ matrix.env }}
