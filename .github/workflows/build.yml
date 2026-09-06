@@ -152,6 +152,8 @@ jobs:
             env: host_test
           - demo: games/top_down_city
             env: host_test
+          - demo: input/digital_buttons
+            env: host_test
     name: test ${{ matrix.demo }} (${{ matrix.env }})
     steps:
       - uses: actions/checkout@v7
