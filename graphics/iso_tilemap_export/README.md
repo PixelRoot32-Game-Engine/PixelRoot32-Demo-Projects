@@ -10,7 +10,9 @@
 > not in the published `1.9.0` package yet. Until it merges and ships,
 > `platformio.ini` pins `lib_deps` to the engine repository's
 > `feature/isometric-support` branch. Switch it to
-> `gperez88/PixelRoot32-Game-Engine@^1.10.0` when that release exists.
+> `gperez88/PixelRoot32-Game-Engine@^1.10.0` when that release exists —
+> together with [`iso_dungeon`](../iso_dungeon), which carries the same pin
+> for the same reason.
 
 A minimal PixelRoot32 game whose entire scene comes out of the Tilemap Editor's
 exporter: **isometric projection, 36x29 cells, a 32x16 cell stride, one ground
@@ -19,6 +21,13 @@ nothing in `src/` corrects it.
 
 The project exists to answer one question — *does the engine paint what the
 editor showed?* — and it is also the check that keeps the answer true.
+
+> **Two isometric demos, two questions.** This is the **pipeline** demo — an
+> editor export reaching the screen unaltered. For what happens *after* the
+> tiles are drawn — actors moving tile by tile, projection-aware depth
+> sorting, rooms connected by a `RoomGraph` — see
+> [`iso_dungeon`](../iso_dungeon). It carries the same temporary branch pin as
+> this demo, and the two should be switched to `@^1.10.0` together.
 
 Language: C++17  
 Engine: `PixelRoot32-Game-Engine#feature/isometric-support` (temporary branch pin)  
