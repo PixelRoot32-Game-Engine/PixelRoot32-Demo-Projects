@@ -134,6 +134,43 @@ the sequencer is handed a new track.
   drift from the sound over a long run. It shows the shape of the loop, not a
   sample-accurate cursor.
 
+## Song library
+
+The two patterns this demo plays are hand-written in
+[`src/assets/SequencerTracks.h`](src/assets/SequencerTracks.h) — small enough
+to read, which is the point of the demo.
+
+Alongside them, [`src/assets/songs/`](src/assets/songs/) carries four complete
+pieces exported from the PixelRoot32 Tool Suite. **The demo does not include
+them**; they are here as a library to swap in, and as worked examples of what
+a full export looks like next to a hand-written pattern.
+
+| Song | BPM | Exported header |
+|------|-----|-----------------|
+| Blaster Ridge | 168 | [`blaster_ridge.h`](src/assets/songs/blaster_ridge.h) |
+| Coinleaf Grove | 152 | [`coinleaf_grove.h`](src/assets/songs/coinleaf_grove.h) |
+| Lightworld March | 128 | [`lightworld_march.h`](src/assets/songs/lightworld_march.h) |
+| Moonwell Hymn | 104 | [`moonwell_hymn.h`](src/assets/songs/moonwell_hymn.h) |
+
+Each song ships as a pair:
+
+- **`<name>.h`** — the generated header. It declares its own
+  `InstrumentPreset`s and tracks as `inline constexpr`, so it costs flash only
+  while it is included, and nothing at all while it is not.
+- **`<name>.h.pr32music`** — the editable project the header was generated
+  from. Keep it. Without it the music is a wall of float literals nobody can
+  revise; with it, the Tool Suite can reopen and re-export the piece.
+
+To play one, include its header and hand its track to `MusicPlayer` the way
+`MusicSequencerScene` does with `SequencerTracks.h`. Two things to know first:
+
+- The generated namespace is `musicdemo::<song_name>`, which names the project
+  these were authored in rather than this demo. Renaming it by hand would
+  desynchronise the header from its `.pr32music` source, so it stays.
+- A full song is considerably larger than the demo's own patterns —
+  `blaster_ridge.h` alone is 528 lines. That size is the reason the demo keeps
+  its own patterns for teaching and these for listening.
+
 ## Build
 
 From **`audio/music_sequencer`**:
