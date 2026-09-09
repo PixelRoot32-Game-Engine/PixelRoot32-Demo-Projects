@@ -1,8 +1,15 @@
 name: build
 
+# Pull requests only. Everything reaches main through a pull request, so a
+# push-triggered run on main would rebuild the tree the PR just proved green
+# — roughly seven minutes of runner time for no new information.
+#
+# The trade-off, stated so it is a choice and not an accident: nothing builds
+# main after a merge. GitHub tests a PR against main as it was when the run
+# started, so two PRs that are green apart can still merge into a broken main.
+# Re-run this workflow from the Actions tab (workflow_dispatch) if a merge
+# looks risky.
 on:
-  push:
-    branches: [main, master]
   pull_request:
   workflow_dispatch:
 
