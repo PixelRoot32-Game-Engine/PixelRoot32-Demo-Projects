@@ -12,6 +12,8 @@ Category: Games
 
 
 
+![Legend of Clone](screenshots/screenshot.png)
+
 An 8-bit-style overworld and the dungeon under it. Two scenes, four rooms each,
 and one player who walks between them.
 

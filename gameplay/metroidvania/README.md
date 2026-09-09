@@ -9,6 +9,8 @@ Engine: `gperez88/PixelRoot32-Game-Engine@^1.9.0`
 Environments: `native`, `esp32dev`  
 Category: Gameplay
 
+![Metroidvania](screenshots/screenshot.png)
+
 > **Why `gameplay/` and not `games/`.** The platformer is the vehicle, not the
 > subject. What this demo is here to show is the path from a sensor overlap to
 > game logic: `InteractionTracker` turns the per-frame contact set into

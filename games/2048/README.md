@@ -10,6 +10,8 @@ Environments: `native`, `esp32cyd`
 Category: Games  
 
 
+![2048](screenshots/screenshot.png)
+
 A **2048** puzzle game where you slide tiles to combine them and reach **2048**. The game features **grid rendering**, **tile values**, **score tracking**, and **game over / win states**.
 
 On **`esp32cyd`**, swipes are detected via **`onUnconsumedTouchEvent`** to slide tiles in the swipe direction. On **`native`**, use D-pad controls per `Game2048Constants.h` button IDs.

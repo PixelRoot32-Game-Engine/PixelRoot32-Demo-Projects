@@ -10,6 +10,8 @@ Environments: `native`, `esp32c3`
 Category: Games  
 
 
+![Flappy Bird](screenshots/screenshot.png)
+
 A **Flappy Bird**–style game: bird is a **`RigidActor`** (gravity + flap impulse), pipes are **`KinematicActor`** pairs that scroll and **recycle** when off-screen. Score and game states (**waiting / playing / game over**) are handled in [`FlappyBirdScene`](src/FlappyBirdScene.h), which drives them through the engine's **`gameplay::StateMachine`**.
 
 ## Requirements (build flags)

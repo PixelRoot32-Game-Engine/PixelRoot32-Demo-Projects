@@ -12,6 +12,8 @@ Category: Games
 
 
 
+![Midway Clone](screenshots/screenshot.png)
+
 A vertically scrolling shooter over the Pacific. One stage, one aircraft, a sea
 that never stops moving.
 
