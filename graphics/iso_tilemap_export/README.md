@@ -4,15 +4,10 @@
 > Game Engine can do. It is not a product: parts may be incomplete,
 > experimental, or deliberately simplified to keep one idea in focus.
 
-> **Temporary dependency pin.** This demo depends on the projection API
+> **Requires engine 1.10.0 or newer.** This demo uses the projection API
 > (`ProjectionSpec`, the projected `drawTileMap` overload,
-> `expandProjectedMapBounds`, `cameraRangeFor`, `computeSpanTable`), which is
-> not in the published `1.9.0` package yet. Until it merges and ships,
-> `platformio.ini` pins `lib_deps` to the engine repository's
-> `feature/isometric-support` branch. Switch it to
-> `gperez88/PixelRoot32-Game-Engine@^1.10.0` when that release exists —
-> together with [`iso_dungeon`](../iso_dungeon), which carries the same pin
-> for the same reason.
+> `expandProjectedMapBounds`, `cameraRangeFor`, `computeSpanTable`), which
+> first ships in `1.10.0`.
 
 A minimal PixelRoot32 game whose entire scene comes out of the Tilemap Editor's
 exporter: **isometric projection, 36x29 cells, a 32x16 cell stride, one ground
@@ -30,7 +25,7 @@ editor showed?* — and it is also the check that keeps the answer true.
 > this demo, and the two should be switched to `@^1.10.0` together.
 
 Language: C++17  
-Engine: `PixelRoot32-Game-Engine#feature/isometric-support` (temporary branch pin)  
+Engine: `gperez88/PixelRoot32-Game-Engine@^1.10.0`  
 Environments: `native`, `esp32dev`  
 Category: Graphics
 
@@ -165,7 +160,7 @@ Three separate gaps in the Tool Suite's `cpp_code_generator.cpp`, since fixed:
 A fourth is latent rather than fixed: both sprite emitters hardcode
 `ctx.tileSize` for width *and* height, so a 32x40 wall sheet would export as
 32x32. This project's art is 32x32, so it does not bite — but the reference
-contract at [`iso_dungeon`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/tree/feature/isometric-support/examples/iso_dungeon) mixes 32x16 floors with 32x40 walls, which
+contract at [`iso_dungeon`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/tree/main/examples/iso_dungeon) mixes 32x16 floors with 32x40 walls, which
 is the normal isometric case.
 
 ## Performance optimisations

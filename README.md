@@ -101,10 +101,10 @@ Each demo pulls the engine from the PlatformIO Registry:
 lib_deps = gperez88/PixelRoot32-Game-Engine@^1.9.0
 ```
 
-One demo, [`iso_tilemap_export`](graphics/iso_tilemap_export), is pinned to the
-engine's `feature/isometric-support` branch instead: it needs
-`graphics/ProjectedMapBounds.h` and `math/Projection.h`, which `1.9.0` does not
-ship. That pin is temporary and its README says so.
+Two demos, [`iso_dungeon`](graphics/iso_dungeon) and
+[`iso_tilemap_export`](graphics/iso_tilemap_export), raise that floor to
+`@^1.10.0`: they need `graphics/ProjectedMapBounds.h` and `math/Projection.h`,
+which first ship in that release.
 
 To develop a demo against a local engine checkout instead, swap that line for
 a symlink dependency:
