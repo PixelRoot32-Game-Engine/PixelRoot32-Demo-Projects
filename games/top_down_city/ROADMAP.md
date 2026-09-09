@@ -213,14 +213,3 @@ Two more things the run settled:
   that. Either TFT_eSPI is not clocking at the `SPI_FREQUENCY` define or the
   profiler's `dmaWait` covers only part of the transfer. Until that is
   resolved, there is no headroom on that bus to claim.
-
-## Still open
-
-The profiling build was the one that ran, so `PIXELROOT32_ENABLE_PROFILING` and
-`PIXELROOT32_DEBUG_MODE` were both on and their serial traffic is inside the
-numbers above. A control run with both off has not been done.
-
-Nothing in the capture speaks to how the city *sounds*: no underrun or audio
-fault appears in the log, but a profiling dump is not where four radio stations
-sharing a core would show themselves. Someone still has to sit in front of it
-and listen.
