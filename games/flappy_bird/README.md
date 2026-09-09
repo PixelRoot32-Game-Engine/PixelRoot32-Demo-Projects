@@ -1,0 +1,70 @@
+# Flappy Bird Example
+
+> **Demonstration project** — provided as an example of what the PixelRoot32
+> Game Engine can do. It is not a product: parts may be incomplete,
+> experimental, or deliberately simplified to keep one idea in focus.
+
+Language: C++17  
+Engine: `gperez88/PixelRoot32-Game-Engine@^1.9.0`  
+Environments: `native`, `esp32c3`  
+Category: Games  
+
+
+A **Flappy Bird**–style game: bird is a **`RigidActor`** (gravity + flap impulse), pipes are **`KinematicActor`** pairs that scroll and **recycle** when off-screen. Score and game states (**waiting / playing / game over**) are handled in [`FlappyBirdScene`](src/FlappyBirdScene.h), which drives them through the engine's **`gameplay::StateMachine`**.
+
+## Requirements (build flags)
+
+- **`PIXELROOT32_ENABLE_PHYSICS=1`** — required on **`esp32c3`** in `platformio.ini`.
+- **`PIXELROOT32_ENABLE_GAMEPLAY_STATE_MACHINE=1`** — required on **every** environment. The scene's `WAITING` / `RUNNING` / `GAME_OVER` machine is a `gameplay::StateMachine` member, and the whole class lives behind this flag (default `0`), so the scene does not compile without it.
+- **`PIXELROOT32_ENABLE_PROFILING`** — enabled on the **`esp32c3`** environment in this project (optional for learning builds).
+- **U8g2 path (hardware)**: **`PIXELROOT32_USE_U8G2`**, **`PIXELROOT32_NO_TFT_ESPI`** on **`esp32c3`**.
+
+The **logical framebuffer** is **72×40** pixels, centered in a **128×64** physical OLED via **`X_OFF_SET`**, **`Y_OFF_SET`**, **`LOGICAL_WIDTH`**, **`LOGICAL_HEIGHT`** in `platformio.ini`.
+
+## Platforms
+
+| Environment | Target |
+|-------------|--------|
+| **`native`** | SDL2 window sized for the same logical resolution (offsets in `platformio.ini`) |
+| **`esp32c3`** | **DFRobot Beetle ESP32-C3** (`board = dfrobot_beetle_esp32c3`) with **U8g2** display (no TFT_eSPI on this preset) |
+
+This example does **not** ship an `esp32dev` TFT environment — only **`native`** + **`esp32c3`**.
+
+## Controls
+
+- **Action / Jump** — button **0** (`FlappyBirdConstants` / scene input) to flap when running.
+- Avoid pipes and the top/bottom bounds; pass gaps to increase score.
+
+## Features
+
+- **Physics** actors for bird and pipes
+- **Object pool–style** pipe reuse
+- **Small-resolution** rendering path suited for **128×64 OLED** via U8g2
+- **`gameplay::StateMachine`** for the `WAITING` → `RUNNING` → `GAME_OVER` cycle, with the per-state entry work in `onEnter` callbacks: entering `WAITING` resets bird, pipes and score; entering `RUNNING` fires the first flap and reveals the pipes. `GAME_OVER` has no entry side effect — its text is drawn per frame from the current state.
+
+  Transitions are requested directly from `update()` rather than from an `onUpdate` callback. This is deliberate: the frame that leaves `WAITING` must still run the pipe-scroll and scoring block, and `StateMachine::update()` does not cascade `onUpdate` into a newly entered state within the same call. See the comment at the call site in [`FlappyBirdScene.cpp`](src/FlappyBirdScene.cpp).
+
+## Documentation links
+
+- [Physics API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/physics.md)
+- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
+- [Platform / drivers](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/platform.md)
+- [Memory system — gameplay flags and byte budgets](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/architecture/memory-system.md) — RAM cost of `PIXELROOT32_ENABLE_GAMEPLAY_STATE_MACHINE`
+- [`gameplay/StateMachine.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/gameplay/StateMachine.h) — the full contract, including the time-in-state ordering warning on `update()`
+
+## Build
+
+From **`examples/flappy_bird`**:
+
+```bash
+pio run -e native
+pio run -e esp32c3
+```
+
+## Upload (ESP32-C3)
+
+```bash
+pio run -e esp32c3 --target upload
+```
+
+Wire your OLED according to the U8g2 configuration used in this project’s platform header / driver setup.
