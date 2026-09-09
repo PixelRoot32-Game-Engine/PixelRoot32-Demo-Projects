@@ -4,17 +4,12 @@
 > Game Engine can do. It is not a product: parts may be incomplete,
 > experimental, or deliberately simplified to keep one idea in focus.
 
-> **Temporary dependency pin.** This demo depends on the projection API
+> **Requires engine 1.10.0 or newer.** This demo uses the projection API
 > (`gameplay/Projection.h`, `math/Projection.h`, `graphics/SpanTable.h`,
-> `graphics/StaticLayerSnapshot.h`), which the published `1.9.0` package does
-> not ship. Until it merges and releases, `platformio.ini` pins `lib_deps` to
-> the engine repository's `feature/isometric-support` branch. Switch it to
-> `gperez88/PixelRoot32-Game-Engine@^1.10.0` when that release exists —
-> together with [`iso_tilemap_export`](../iso_tilemap_export), which carries
-> the same pin for the same reason.
+> `graphics/StaticLayerSnapshot.h`), which first ships in `1.10.0`.
 
 Language: C++17  
-Engine: `PixelRoot32-Game-Engine#feature/isometric-support` (temporary branch pin)  
+Engine: `gperez88/PixelRoot32-Game-Engine@^1.10.0`  
 Environments: `native`, `esp32dev`  
 Category: Graphics
 
