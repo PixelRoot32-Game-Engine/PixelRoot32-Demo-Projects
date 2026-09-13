@@ -246,8 +246,8 @@ touches bitmap data.
 Worth knowing on *this* map: `PerPixel` and `WholeTile` behave identically,
 because these terrain tiles are fully opaque — a bush is drawn over its own
 background, not on transparency. Sweeping the overworld one pixel at a time,
-both allow **70,299** of 156,705 body positions. Only `PerPixelEroded` differs,
-at **75,187** — about 7% more room, which is the fringe of tree crowns and bush
+both allow **69,803** of 156,705 body positions. Only `PerPixelEroded` differs,
+at **74,723** — about 7% more room, which is the fringe of tree crowns and bush
 edges no longer catching the player. Per-pixel collision pays off against art
 with real transparency; erosion pays off against art with ragged edges.
 
@@ -287,13 +287,17 @@ exported to a `TERRAIN_INDICES` array. The legend:
 
 ```
 OVERWORLD                        DUNGEON
-'.'  sand         walkable       '.'  floor    walkable
-','  grass patch  walkable       '#'  wall     blocking
-'B'  bush         blocking       'S'  stairs   walkable, leaves the dungeon
-'T'  forest       blocking
-'#'  mountain     blocking
+'.'  sand         walkable       '.'  floor       walkable
+','  grass patch  walkable       '#'  wall        blocking
+'B'  bush         blocking       'S'  stairs      walkable, leaves the dungeon
+'T'  forest       blocking       'O'  old man     blocking
+'#'  mountain     blocking       'X'  chest       blocking
+'P'  signpost     blocking       'K'  shopkeeper  blocking
 'C'  cave mouth   walkable, enters the dungeon
 ```
+
+The dungeon tileset also carries `TILE_CHEST_OPEN`, which has no map character:
+it is never placed by the map, only swapped in for the closed chest.
 
 Alongside the indices, each tileset exports a `TILE_SOLID` table. Collision is a
 property of the **tile**, not of a second layer — a bush blocks wherever it is —
@@ -303,7 +307,7 @@ pairs them at runtime: three pointers, no data of its own.
 > This is where this example diverges from metroidvania, which derives collision
 > from a separate `platforms` layer. That is the right answer *there*, because a
 > platform tile and a background tile can share art. Here tile type **is**
-> collision, so a 7-byte table beats a 660-byte layer.
+> collision, so an 8-byte table beats a 660-byte layer.
 
 The cave mouth and the stairs are **walkable**. They have to be — you enter a
 cave in a game like this by walking into it, not by bumping into it — which is why both are
@@ -502,16 +506,16 @@ it costs flash rather than RAM:
 
 | Item | Bytes | Where |
 | --- | ---: | --- |
-| Tileset pixel data | 1,408 | flash — 11 tiles x 128 B across both maps |
+| Tileset pixel data | 2,048 | flash — 16 tiles x 128 B across both maps |
 | Player pixel data | 640 | flash — 5 sprites x 128 B |
 | Map indices | 1,320 | flash — 660 per map |
-| Collision tables | 11 | flash — one `bool` per tile, not per cell |
+| Collision tables | 16 | flash — one `bool` per tile, not per cell |
 | `TileWorld` x2 | ~40 | RAM — three pointers each, no data |
 | `RoomGraph<4>` x2 | ~240 | RAM — fixed capacity, no allocation |
 | Framebuffer snapshot | 57,600 | heap, `allocateForRenderer()` at init, ESP32 only |
 
-Measured on `esp32dev`, whole example: **24,800 B RAM (7.6%)** and 351,073 B
-flash (26.8%).
+Measured on `esp32dev`, whole example: **24,824 B RAM (7.6%)** and 352,737 B
+flash (26.9%).
 
 The previous version of this example expanded character maps into `.bss` at
 startup and packed art into RAM buffers. Moving to the exported format took RAM
@@ -525,8 +529,9 @@ writes through it.
 
 ## Not in this iteration
 
-- The dungeon has no keys, no locked doors, no enemies and nothing to find. Four
-  rooms and a way out.
+- The dungeon has no keys, no locked doors and no enemies. The old man, the
+  chest and the shopkeeper are solid tiles that nothing reacts to, and the
+  overworld signpost cannot be read.
 - The status bar is a placeholder. `UISpriteRow` is what the heart row is for,
   once the player has something to lose.
 - No enemies, items, sword or combat anywhere.

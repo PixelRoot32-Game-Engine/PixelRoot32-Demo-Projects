@@ -36,13 +36,13 @@ namespace legend_of_clone {
         0xFFFF, //  1 White - text and error messages
         0x0000, //  2 Navy - unused
         0x0000, //  3 Blue - unused
-        0xFCC7, //  4 Cyan  's'  #FC9838  Link's skin
+        0xFCC7, //  4 Cyan  's'  #FC9838  skin - Link and the dungeon NPCs
         0x0000, //  5 DarkGreen - unused
         0x0000, //  6 Green - unused
-        0x8682, //  7 LightGreen  'l'  #80D010  Link's tunic
+        0x8682, //  7 LightGreen  'l'  #80D010  Link's tunic, shopkeeper tunic
         0x0000, //  8 Yellow - unused
         0x0000, //  9 Orange - unused
-        0xCA61, // 10 LightRed  'h'  #C84C0C  Link's brown - outline, hair, boots, belt
+        0xCA61, // 10 LightRed  'h'  #C84C0C  Link's brown - outline, hair, boots, belt; old man robe
         0xF9C0, // 11 Red - error text - must never resolve to black
         0x0000, // 12 DarkRed - unused
         0x6A3F, // 13 Purple - unused
