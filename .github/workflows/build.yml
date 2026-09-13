@@ -157,6 +157,8 @@ jobs:
         include:
           - demo: games/chess
             env: host_test
+          - demo: games/chess
+            env: dialog_test
           - demo: games/top_down_city
             env: host_test
           - demo: games/top_down_city

@@ -12,6 +12,7 @@
 #include <input/TouchEvent.h>
 
 #include "chess/ChessGame.h"
+#include "dialog/PromotionPicker.h"
 #include "effects/ChessEffects.h"
 
 namespace chessdemo {
@@ -53,11 +54,13 @@ private:
     /**
      * @enum Interaction
      * @brief What the scene is currently in the middle of.
+     *
+     * A pending promotion is not one of these: it is `promotion_` being open,
+     * and while it is, only the picker accepts taps.
      */
     enum class Interaction : uint8_t {
         Idle,              ///< Nothing held; a press can pick a piece up.
-        DraggingPiece,     ///< A piece is in hand and follows the finger.
-        ChoosingPromotion  ///< The picker is open; only it accepts taps.
+        DraggingPiece      ///< A piece is in hand and follows the finger.
     };
 
     /** @brief Largest number of legal destinations any single piece can have. */
@@ -222,6 +225,8 @@ private:
     int16_t       dragY_         = 0;                ///< Finger Y while dragging.
     chess::Square hoveredSquare_ = chess::kNoSquare; ///< Square under the finger.
 
+    /** The promotion choice. Open exactly while a promotion is pending. */
+    PromotionPicker promotion_;
     chess::Square promotionFrom_ = chess::kNoSquare; ///< Move waiting on a choice.
     chess::Square promotionTo_   = chess::kNoSquare;
 };
