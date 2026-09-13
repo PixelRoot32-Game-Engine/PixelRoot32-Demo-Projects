@@ -7,6 +7,7 @@
 #include <graphics/Renderer.h>
 
 #include "game/CityConstants.h"
+#include "game/dialog/CityBanner.h"
 #include "game/entities/PedestrianActor.h"   // PersonHit
 #include "game/rules/Wanted.h"
 #include "game/scenes/CityWorld.h"
@@ -227,7 +228,7 @@ protected:
     void countRampageBody();
 
     /// Put "N LEFT" up for a third of a banner. Writes into `frenzyLabel_`
-    /// and not a local, because `showBanner` keeps the POINTER: a stack
+    /// and not a local, because the banner borrows the POINTER: a stack
     /// buffer would be drawn from after it stopped existing.
     void showBodiesLeft(std::uint8_t left);
 
@@ -262,6 +263,7 @@ protected:
     bool policeCanSee();
 
     /// Put a word across the top strip for a while, instead of the district.
+    /// @param label Borrowed, not copied -- see CityBanner.
     void showBanner(const char* label, int ms = kZoneBannerMs);
 
     /// Before anybody moves, so the answer is about the frame the player just
@@ -324,22 +326,17 @@ protected:
 
     pixelroot32::graphics::Camera2D camera_;
     unsigned long                   accumulatorMs_;
-    int                             zoneBannerMs_;
-    /// What the top banner says instead of the district, or nullptr. The pad
-    /// has no button left for a prompt and the panel no room for a second
-    /// readout, so the district strip carries every one-line notice.
-    const char*                     bannerOverride_;
+    /// The top strip: the district for a while on arrival, or a one-line
+    /// notice in its place. The pad has no button left for a prompt and the
+    /// panel no room for a second readout, so the district strip carries
+    /// every one-line notice. Its `revision()` is what tells the frame skip
+    /// a notice changed -- including two identical ones in a row, and the
+    /// rampage counter rewritten in place.
+    CityBanner                      banner_;
     /// Where `showBodiesLeft` builds the rampage counter: every other banner in
-    /// the demo is a string literal, and `bannerOverride_` above only borrows
-    /// the pointer. Eight bytes holds "99 LEFT".
+    /// the demo is a string literal or a static table entry, and the banner
+    /// only borrows the pointer. Eight bytes holds "99 LEFT".
     char                            frenzyLabel_[8];
-    /// Which CALL put the current banner up, rather than what it says or
-    /// where the text lives. The dirty check needs to know a banner changed,
-    /// and neither of the other two answers can tell it: two notices in a row
-    /// leave `zoneBannerMs_ > 0` true across the swap, and the rampage
-    /// counter rewrites `frenzyLabel_` in place, so its address never moves
-    /// either. A serial is the one thing that is different every time.
-    std::uint16_t                   bannerSerial_;
     bool                            hintVisible_;
 
 private:
@@ -388,8 +385,7 @@ private:
     std::uint8_t  drawnTintStep_;
     bool          drawnCooling_;
     bool          drawnBusted_;
-    bool          drawnBannerVisible_;
-    std::uint16_t drawnBannerSerial_;
+    std::uint16_t drawnBannerRevision_;
     bool          drawnHintVisible_;
     /// False after any entry, so the first frame of a space is never skipped:
     /// the framebuffer still holds the other one.

@@ -157,8 +157,12 @@ jobs:
         include:
           - demo: games/chess
             env: host_test
+          - demo: games/chess
+            env: dialog_test
           - demo: games/top_down_city
             env: host_test
+          - demo: games/top_down_city
+            env: dialog_test
           - demo: input/digital_buttons
             env: host_test
     name: test ${{ matrix.demo }} (${{ matrix.env }})
@@ -182,7 +186,8 @@ jobs:
       # These environments build a host-only rules layer with no engine and no
       # display, so SDL2 is deliberately not installed here: if a test suite
       # starts needing it, the layer under test has grown a dependency it was
-      # designed not to have.
+      # designed not to have. The dialog_test suites are the one exception to
+      # "no engine": they compile DialogRunner.cpp alone, which needs no SDL2.
       - name: Run the suite
         working-directory: ${{ matrix.demo }}
         run: pio test -e ${{ matrix.env }}

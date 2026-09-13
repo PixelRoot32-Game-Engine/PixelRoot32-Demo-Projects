@@ -14,12 +14,10 @@ namespace top_down_city {
 namespace gfx = pr32::graphics;
 
 CornerShopScene::CornerShopScene()
-    : pickerOpen_(false),
-      line_(shop::first()),
+    : picker_(),
       heldUp_(false),
       heldDown_(false),
-      drawnPickerOpen_(false),
-      drawnLine_(shop::first()) {
+      drawnPickerRevision_(0) {
 }
 
 void CornerShopScene::onEnterSpace(bool firstEntry) {
@@ -29,8 +27,7 @@ void CornerShopScene::onEnterSpace(bool firstEntry) {
 
     // Nobody arrives mid-purchase. A panel that survived a doorway would be
     // drawn over a room the player has not seen yet.
-    pickerOpen_ = false;
-    line_ = shop::first();
+    picker_.close();
 
     collision::setSpace(collision::Space::CornerShop);
 
@@ -76,9 +73,9 @@ bool CornerShopScene::atCounter() const {
         && player.tileY() == shop_room::COUNTER_TILE_Y;
 }
 
-bool CornerShopScene::serveAtCounter() {
+bool CornerShopScene::serveAtCounter(shop::Line picked) {
     CityWorld& world = CityWorld::instance();
-    const shop::Offer& line = shop::offer(line_);
+    const shop::Offer& line = shop::offer(picked);
 
     // Everything that can refuse is asked BEFORE the money is looked at.
     // Charging for something the player cannot take is the one outcome a shop
@@ -132,23 +129,23 @@ bool CornerShopScene::onFirePressed() {
     // trigger anywhere in this room, the till included: the shelves can be
     // shot at, it costs ammunition and it raises the level -- the shop is
     // cover, not an alibi.
-    if (!pickerOpen_) {
+    shop::Line picked = shop::first();
+    if (!picker_.confirm(picked)) {
         return false;
     }
-    return serveAtCounter();
+    return serveAtCounter(picked);
 }
 
 bool CornerShopScene::onActionPressed() {
-    if (pickerOpen_) {
+    if (picker_.isOpen()) {
         // The same button both ways round, which is what makes it safe to
         // press: whatever RUN did to get here, RUN undoes.
-        pickerOpen_ = false;
+        picker_.close();
         return true;
     }
     if (atCounter()) {
-        pickerOpen_ = true;
         // Cheapest line first, every time the panel opens. See the header.
-        line_ = shop::first();
+        picker_.open();
         // Nothing to do about a direction still held from walking to the
         // till: `stepPicker` takes both edges on every logic step whether the
         // panel is open or not, so the latches already hold what the pad
@@ -165,7 +162,7 @@ bool CornerShopScene::onActionPressed() {
 }
 
 const char* CornerShopScene::hintLabel() {
-    if (pickerOpen_) {
+    if (picker_.isOpen()) {
         // The panel has its own footer naming both buttons, and two prompt
         // lines saying different things is one more than a player will read.
         return nullptr;
@@ -177,12 +174,11 @@ const char* CornerShopScene::hintLabel() {
 }
 
 bool CornerShopScene::spaceNeedsRedraw() const {
-    return pickerOpen_ != drawnPickerOpen_ || line_ != drawnLine_;
+    return picker_.revision() != drawnPickerRevision_;
 }
 
 void CornerShopScene::recordSpaceDrawn() {
-    drawnPickerOpen_ = pickerOpen_;
-    drawnLine_ = line_;
+    drawnPickerRevision_ = picker_.revision();
 }
 
 void CornerShopScene::stepPicker(const StepInput& in) {
@@ -193,20 +189,14 @@ void CornerShopScene::stepPicker(const StepInput& in) {
     heldUp_   = in.up;
     heldDown_ = in.down;
 
-    if (!pickerOpen_) {
-        return;
-    }
-    // Down before up rather than either order, because both held at once is
-    // reachable on a real D-pad and one of them has to win deterministically.
-    if (downPressed) {
-        line_ = shop::next(line_);
-    } else if (upPressed) {
-        line_ = shop::prev(line_);
-    }
+    // A no-op while the panel is closed. Down wins over up, because both held
+    // at once is reachable on a real D-pad, and both ends wrap: see
+    // ShopPicker::navigate.
+    picker_.navigate(upPressed, downPressed);
 }
 
 void CornerShopScene::drawModal(gfx::Renderer& renderer) {
-    if (!pickerOpen_) {
+    if (!picker_.isOpen()) {
         return;
     }
 
@@ -222,10 +212,11 @@ void CornerShopScene::drawModal(gfx::Renderer& renderer) {
 
     const economy::Purse& purse = CityWorld::instance().purse;
 
-    for (std::uint8_t i = 0; i < shop::kLineCount; ++i) {
-        const shop::Offer& line = shop::offer(static_cast<shop::Line>(i));
+    for (std::uint8_t i = 0; i < picker_.rowCount(); ++i) {
+        const shop::Line lineId = picker_.lineAt(i);
+        const shop::Offer& line = shop::offer(lineId);
         const int rowY = kShopRowsY + i * kShopRowH;
-        const bool selected = static_cast<std::uint8_t>(line_) == i;
+        const bool selected = picker_.selected() == lineId;
 
         // Unaffordable in red, both the label and the price. It is the one
         // piece of information the player came in with -- how much they have
@@ -264,7 +255,7 @@ void CornerShopScene::drawModal(gfx::Renderer& renderer) {
         renderer.drawText(price, kShopPriceX, rowY + 2, ink, 1);
     }
 
-    renderer.drawTextCentered("FIRE BUY  RUN CLOSE",
+    renderer.drawTextCentered(kShopFooterText,
                               kShopPickerY + kShopPickerH - kShopFooterH + 1,
                               hud::kInkMuted, 1);
 }
@@ -331,7 +322,7 @@ bool CornerShopScene::stepSpace(const StepInput& in) {
     // Before the walk, because it decides whether there is one: the picker
     // owns the pad while it is up.
     stepPicker(in);
-    if (!pickerOpen_) {
+    if (!picker_.isOpen()) {
         movePlayerOnFoot(in);
     }
 
