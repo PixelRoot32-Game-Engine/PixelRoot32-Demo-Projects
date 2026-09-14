@@ -63,6 +63,7 @@ SLOTS = {
 RESERVED_SLOTS = {
     'White': (0xFFFF, 'text and error messages'),
     'Red':   (0xF9C0, 'error text - must never resolve to black'),
+    'Yellow': (0xFDC0, 'selected dialog text - must never resolve to black'),
     'Gray':  (0xBDF7, 'dimmed text'),
     'Purple': (0x6A3F, 'unused'),
     'Magenta': (0xBDDF, 'unused'),

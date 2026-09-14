@@ -40,7 +40,7 @@ namespace legend_of_clone {
         0x0000, //  5 DarkGreen - unused
         0x0000, //  6 Green - unused
         0x8682, //  7 LightGreen  'l'  #80D010  Link's tunic, shopkeeper tunic
-        0x0000, //  8 Yellow - unused
+        0xFDC0, //  8 Yellow - selected dialog text - must never resolve to black
         0x0000, //  9 Orange - unused
         0xCA61, // 10 LightRed  'h'  #C84C0C  Link's brown - outline, hair, boots, belt; old man robe
         0xF9C0, // 11 Red - error text - must never resolve to black
