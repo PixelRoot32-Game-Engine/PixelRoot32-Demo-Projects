@@ -5,6 +5,7 @@
 #include "core/Engine.h"
 #include "graphics/Color.h"
 
+#include "GameSession.h"
 #include "Scenes.h"
 #include "assets/DungeonTileMap.h"
 #include "assets/DungeonRooms.h"
@@ -27,6 +28,7 @@ static_assert(dungeon::TILE_SIZE == kTileSize, "exported tiles are not kTileSize
 TopDownScene::Setup DungeonScene::setup() {
     dungeon::init();
     world_.attach(&dungeon::terrain, dungeon::TILE_SOLID, dungeon::TILE_COUNT);
+    locateChest();
 
     Setup config;
     config.backgroundPalette = TILEMAP_PALETTE_DATA;
@@ -39,6 +41,46 @@ TopDownScene::Setup DungeonScene::setup() {
     // Arriving from below, looking into the dungeon.
     config.startFacing       = Facing::Up;
     return config;
+}
+
+void DungeonScene::locateChest() {
+    chestCol_ = -1;
+    chestRow_ = -1;
+    // 660 cells, once per init. Finding the chest in the export keeps its
+    // position in one place -- the map -- instead of a second copy here.
+    for (int row = 0; row < kWorldRows && chestCol_ < 0; ++row) {
+        for (int col = 0; col < kWorldCols; ++col) {
+            if (world_.tileAt(col, row) == dungeon::TILE_CHEST_CLOSED) {
+                chestCol_ = col;
+                chestRow_ = row;
+                break;
+            }
+        }
+    }
+
+    openChestIndex_         = dungeon::TILE_CHEST_OPEN;
+    openChest_.indices      = &openChestIndex_;
+    openChest_.width        = 1;
+    openChest_.height       = 1;
+    openChest_.tiles        = dungeon::terrain.tiles;
+    openChest_.tileWidth    = dungeon::TILE_SIZE;
+    openChest_.tileHeight   = dungeon::TILE_SIZE;
+    openChest_.tileCount    = dungeon::TILE_COUNT;
+    openChest_.runtimeMask  = nullptr;
+}
+
+gfx::TileMap4bppDrawSpec DungeonScene::overlayLayer() const {
+    if (!gameState.chestOpened || chestCol_ < 0) return { nullptr, 0, 0 };
+    return { &openChest_, chestCol_ * kTileSize, chestRow_ * kTileSize };
+}
+
+Interactable DungeonScene::interactableAt(int col, int row) const {
+    switch (world().tileAt(col, row)) {
+        case dungeon::TILE_OLD_MAN:      return Interactable::OldMan;
+        case dungeon::TILE_CHEST_CLOSED: return Interactable::Chest;
+        case dungeon::TILE_SHOPKEEPER:   return Interactable::Shopkeeper;
+        default:                         return Interactable::None;
+    }
 }
 
 void DungeonScene::onPlayerSettled() {
@@ -66,9 +108,11 @@ void DungeonScene::drawStatusBar(gfx::Renderer& renderer) {
     std::snprintf(buffer, sizeof(buffer), "LEVEL 1  ROOM %u",
                   static_cast<unsigned>(currentRoom()));
     renderer.drawText(buffer, 8, kStatusBarY + 12, gfx::Color::White, 1);
-    renderer.drawText("STAIRS TO LEAVE", 8, kStatusBarY + 30, gfx::Color::Gray, 1);
+    renderer.drawText("STAIRS TO LEAVE", 8, kStatusBarY + 46, gfx::Color::Gray, 1);
 
     renderer.setOffsetBypass(oldBypass);
+
+    drawRupees(renderer, kStatusBarY + 30);
 }
 
 } // namespace legend_of_clone

@@ -75,25 +75,27 @@ void OverworldScene::onPlayerSettled() {
                              kDoorwayFadeMs);
 }
 
+Interactable OverworldScene::interactableAt(int col, int row) const {
+    return world().tileAt(col, row) == overworld::TILE_SIGN ? Interactable::Sign
+                                                           : Interactable::None;
+}
+
 void OverworldScene::drawStatusBar(gfx::Renderer& renderer) {
     TopDownScene::drawStatusBar(renderer);
 
     const bool oldBypass = renderer.isOffsetBypassEnabled();
     renderer.setOffsetBypass(true);
 
-    // Placeholder readout. The heart row and item slots belong here, and this is
-    // where UISpriteRow lands once the player has something to lose.
+    // The heart row and item slots belong here, and this is where UISpriteRow
+    // lands once the player has something to lose.
     char buffer[32];
     std::snprintf(buffer, sizeof(buffer), "OVERWORLD %u",
                   static_cast<unsigned>(currentRoom()));
     renderer.drawText(buffer, 8, kStatusBarY + 12, gfx::Color::White, 1);
 
-    if (lastFromRoom() >= 0) {
-        std::snprintf(buffer, sizeof(buffer), "FROM %d", lastFromRoom());
-        renderer.drawText(buffer, 8, kStatusBarY + 30, gfx::Color::Gray, 1);
-    }
-
     renderer.setOffsetBypass(oldBypass);
+
+    drawRupees(renderer, kStatusBarY + 30);
 }
 
 } // namespace legend_of_clone

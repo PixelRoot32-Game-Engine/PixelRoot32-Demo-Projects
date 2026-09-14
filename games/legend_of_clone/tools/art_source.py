@@ -35,16 +35,16 @@ pays nothing for the readability.
 
 COLORS = {
     'k': (0x0000, 'Black',      '#000000  outlines, cave mouth, dungeon floor'),
-    'w': (0xFFFF, 'White',      '#FCFCFC  text'),
+    'w': (0xFFFF, 'White',      '#FCFCFC  text, old man hair and beard, shopkeeper apron'),
     'n': (0x0015, 'Navy',       '#0000A8  drop shadow, dungeon wall mortar'),
     'b': (0x3DFF, 'Blue',       '#3CBCFC  dungeon wall block'),
-    's': (0xFCC7, 'Cyan',       "#FC9838  Link's skin"),
+    's': (0xFCC7, 'Cyan',       "#FC9838  skin - Link and the dungeon NPCs"),
     'd': (0x03C0, 'DarkGreen',  '#007800  foliage shading'),
     'g': (0x0540, 'Green',      '#00A800  foliage body'),
-    'l': (0x8682, 'LightGreen', "#80D010  Link's tunic"),
+    'l': (0x8682, 'LightGreen', "#80D010  Link's tunic, shopkeeper tunic"),
     '.': (0xEE94, 'Yellow',     '#E8D0A0  sand - the ground everything sits on'),
     'o': (0xAAA0, 'Orange',     '#A85400  mountain rock, lit face'),
-    'h': (0xCA61, 'LightRed',   "#C84C0C  Link's brown - outline, hair, boots, belt"),
+    'h': (0xCA61, 'LightRed',   "#C84C0C  Link's brown - outline, hair, boots, belt; old man robe"),
     'r': (0x71C0, 'DarkRed',    '#703800  mountain rock, shaded face'),
     'y': (0xBDF7, 'Gray',       '#BCBCBC  dungeon stairs, dimmed text'),
 }
@@ -63,6 +63,7 @@ SLOTS = {
 RESERVED_SLOTS = {
     'White': (0xFFFF, 'text and error messages'),
     'Red':   (0xF9C0, 'error text - must never resolve to black'),
+    'Yellow': (0xFDC0, 'selected dialog text - must never resolve to black'),
     'Gray':  (0xBDF7, 'dimmed text'),
     'Purple': (0x6A3F, 'unused'),
     'Magenta': (0xBDDF, 'unused'),
@@ -192,6 +193,29 @@ OVERWORLD_TILES = [
         "kkkkkkdggdkkkkkk",
         "kkkkkkddddkkkkkk",
      ]),
+
+    ('TILE_SIGN', True,
+     'Wooden signpost on sand. Blocking - it is read from the cell beside it.\n'
+     'Two browns for the board and post, black lettering, and the same navy\n'
+     'drop shadow the bush casts.',
+     [
+        "................",
+        ".kkkkkkkkkkkkkk.",
+        ".kooooooooooork.",
+        ".kookkkkkkkkork.",
+        ".kooooooooooork.",
+        ".kookkkkkkooork.",
+        ".kooooooooooork.",
+        ".krrrrrrrrrrrrk.",
+        ".kkkkkkkkkkkkkk.",
+        "......kork......",
+        "......kork......",
+        "......kork......",
+        "......kork......",
+        ".....nnnnnn.....",
+        "................",
+        "................",
+     ]),
 ]
 
 # ---------------------------------------------------------------------------
@@ -253,6 +277,102 @@ DUNGEON_TILES = [
         "kkyyyyyyyyyyyykk",
         "kkyyyyyyyyyyyykk",
         "kkkkkkkkkkkkkkkk",
+     ]),
+
+    ('TILE_OLD_MAN', True,
+     'Robed old man, facing the viewer. Blocking.\n'
+     '\n'
+     'Drawn on the black floor like every dungeon tile, so the room shows\n'
+     'through around him without a transparent pixel. White hair and beard,\n'
+     'brown robe with dark folds.',
+     [
+        "kkkkkkkkkkkkkkkk",
+        "kkkkkksssskkkkkk",
+        "kkkkksssssskkkkk",
+        "kkkkwsksskswkkkk",
+        "kkkkwsssssswkkkk",
+        "kkkkwwsssswwkkkk",
+        "kkkhwwwwwwwwhkkk",
+        "kkhhhwwwwwwhhhkk",
+        "khhhhhwwwwhhhhhk",
+        "khhhhhhwwhhhhhhk",
+        "khsshhhhhhhhsshk",
+        "kkrhhhhhhhhhhrkk",
+        "kkrhhhhrrhhhhrkk",
+        "kkrhhhhrrhhhhrkk",
+        "krrhhhhrrhhhhrrk",
+        "kkrrrrrkkrrrrrkk",
+     ]),
+
+    ('TILE_CHEST_CLOSED', True,
+     'Closed treasure chest. Blocking.\n'
+     '\n'
+     'Two browns for the wood, grey iron bands, and a sand-colored latch. The\n'
+     'navy bar beneath it is the same drop shadow the overworld objects cast.',
+     [
+        "kkkkkkkkkkkkkkkk",
+        "kkkkkkkkkkkkkkkk",
+        "kkrrrrrrrrrrrrkk",
+        "kroooooooooooork",
+        "kroyooooooooyork",
+        "kroyooooooooyork",
+        "kryyyyyyyyyyyyrk",
+        "krrrrrryyrrrrrrk",
+        "kroyooy..yooyork",
+        "kroyooy..yooyork",
+        "kroyoooyyoooyork",
+        "kroyooooooooyork",
+        "kroyooooooooyork",
+        "krrrrrrrrrrrrrrk",
+        "kknnnnnnnnnnnnkk",
+        "kkkkkkkkkkkkkkkk",
+     ]),
+
+    ('TILE_CHEST_OPEN', True,
+     'The same chest with its lid raised and its navy interior showing.\n'
+     'Blocking. Not placed on the map: it replaces TILE_CHEST_CLOSED at runtime.\n'
+     'The body rows match the closed chest so the swap does not shift it.',
+     [
+        "kkkkkkkkkkkkkkkk",
+        "kkrrrrrrrrrrrrkk",
+        "kroooooooooooork",
+        "kryyyyyyyyyyyyrk",
+        "krrrrrrrrrrrrrrk",
+        "krnnnnnnnnnnnnrk",
+        "krnnnnnnnnnnnnrk",
+        "kryyyyyyyyyyyyrk",
+        "kroyooo..oooyork",
+        "kroyooooooooyork",
+        "kroyooooooooyork",
+        "kroyooooooooyork",
+        "kroyooooooooyork",
+        "krrrrrrrrrrrrrrk",
+        "kknnnnnnnnnnnnkk",
+        "kkkkkkkkkkkkkkkk",
+     ]),
+
+    ('TILE_SHOPKEEPER', True,
+     'Shopkeeper, facing the viewer. Blocking.\n'
+     '\n'
+     'Dark brown hair, a green tunic with a white apron and a brown belt, so\n'
+     'he never reads as a recolored old man.',
+     [
+        "kkkkkkkkkkkkkkkk",
+        "kkkkkrrrrrrkkkkk",
+        "kkkkrrrrrrrrkkkk",
+        "kkkkrssssssrkkkk",
+        "kkkksksssskskkkk",
+        "kkkksssssssskkkk",
+        "kkkkkssrrsskkkkk",
+        "kkkkkksssskkkkkk",
+        "kkkddllllllddkkk",
+        "kkdlllwwwwllldkk",
+        "kdllslwwwwlslldk",
+        "kdlsslwwwwlssldk",
+        "kkdoooooooooodkk",
+        "kkdllwwwwwwlldkk",
+        "kkdllwwwwwwlldkk",
+        "kkkddddkkddddkkk",
      ]),
 ]
 
@@ -386,6 +506,7 @@ ROOM_COLS, ROOM_ROWS = 15, 11
 MAP_COLS, MAP_ROWS = ROOM_COLS * 2, ROOM_ROWS * 2
 
 # Overworld: '.' sand  ',' grass  'B' bush  'T' forest  '#' mountain  'C' cave
+#            'P' signpost
 #
 # Hand-authored to read like the start area of the NES first quest - mountains
 # closing off the north, forest walling in the south, the cave set into a rock
@@ -397,6 +518,7 @@ OVERWORLD_MAP_LEGEND = {
     'B': 'TILE_BUSH',
     'T': 'TILE_TREE',
     '#': 'TILE_ROCK',
+    'P': 'TILE_SIGN',
 }
 
 OVERWORLD_MAP = [
@@ -416,7 +538,7 @@ OVERWORLD_MAP = [
     "T..#####..T...T" "T......###....T",  # 13
     "T..##CC#......T" "T.....#####...T",  # 14  <- cave mouth
     "T..##CC#......." "......#####...T",  # 15  <- cave mouth, seam 2<->3
-    "T..##..#......." ".......###....T",  # 16  <- seam 2<->3
+    "T..##..#P......" ".......###....T",  # 16  <- seam 2<->3, signpost
     "T..,..........T" "T....,........T",  # 17
     "T....B....,...T" "T..B.......B..T",  # 18
     "T...BBB.......T" "T.BBB.....BBB.T",  # 19
@@ -424,7 +546,10 @@ OVERWORLD_MAP = [
     "TTTTTTTTTTTTTTT" "TTTTTTTTTTTTTTT",  # 21
 ]
 
-# Dungeon: '.' floor  '#' wall  'S' stairs
+# Dungeon: '.' floor  '#' wall  'S' stairs  'O' old man  'X' chest  'K' shopkeeper
+#
+# TILE_CHEST_OPEN has no character on purpose: it is never authored into the
+# map, only swapped in for TILE_CHEST_CLOSED at runtime.
 #
 # Every room is a 2-tile-thick wall around an 11x7 interior, which is the NES
 # dungeon room proportioned to a 15-wide screen. Doorways are two tiles wide so
@@ -440,6 +565,9 @@ DUNGEON_MAP_LEGEND = {
     '.': 'TILE_FLOOR',
     'S': 'TILE_STAIRS',
     '#': 'TILE_WALL',
+    'O': 'TILE_OLD_MAN',
+    'X': 'TILE_CHEST_CLOSED',
+    'K': 'TILE_SHOPKEEPER',
 }
 
 DUNGEON_MAP = [
@@ -447,7 +575,7 @@ DUNGEON_MAP = [
     "###############" "###############",  #  1
     "##...........##" "##...........##",  #  2
     "##...........##" "##...........##",  #  3
-    "##...........##" "##...........##",  #  4
+    "##.....X.....##" "##...........##",  #  4  <- chest
     "##............." ".............##",  #  5  <- doorway 0<->1
     "##............." ".............##",  #  6  <- doorway 0<->1
     "##...........##" "##...........##",  #  7
@@ -457,7 +585,7 @@ DUNGEON_MAP = [
     "#######..######" "#######..######",  # 11  <- doorways 0<->2 and 1<->3
     "#######..######" "#######..######",  # 12  <- doorways 0<->2 and 1<->3
     "##...........##" "##...........##",  # 13
-    "##...........##" "##...........##",  # 14
+    "##..O........##" "##........K..##",  # 14  <- old man, shopkeeper
     "##...........##" "##...........##",  # 15
     "##............." ".............##",  # 16  <- doorway 2<->3
     "##............." ".............##",  # 17  <- doorway 2<->3

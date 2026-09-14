@@ -29,7 +29,7 @@ namespace overworld {
     static const uint8_t  TILE_SIZE  = 16;
     static const uint8_t  MAP_WIDTH  = 30;
     static const uint8_t  MAP_HEIGHT = 22;
-    static const uint16_t TILE_COUNT = 7;
+    static const uint16_t TILE_COUNT = 8;
 
     // --- Tile ids ---
     // 1-based: drawTileMap skips index 0, so slot 0 is reserved and never drawn.
@@ -77,6 +77,13 @@ namespace overworld {
      * forest actually has it, in the wedges between neighbouring crowns.
      */
     static const uint8_t TILE_TREE = 6;
+
+    /**
+     * Wooden signpost on sand. Blocking - it is read from the cell beside it.
+     * Two browns for the board and post, black lettering, and the same navy
+     * drop shadow the bush casts.
+     */
+    static const uint8_t TILE_SIGN = 7;
 
     /**
      * @brief Per-tile collision, indexed by tile id.

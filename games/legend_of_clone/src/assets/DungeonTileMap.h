@@ -29,7 +29,7 @@ namespace dungeon {
     static const uint8_t  TILE_SIZE  = 16;
     static const uint8_t  MAP_WIDTH  = 30;
     static const uint8_t  MAP_HEIGHT = 22;
-    static const uint16_t TILE_COUNT = 4;
+    static const uint16_t TILE_COUNT = 8;
 
     // --- Tile ids ---
     // 1-based: drawTileMap skips index 0, so slot 0 is reserved and never drawn.
@@ -57,6 +57,38 @@ namespace dungeon {
      * stepping onto them leaves the dungeon.
      */
     static const uint8_t TILE_STAIRS = 3;
+
+    /**
+     * Robed old man, facing the viewer. Blocking.
+     *
+     * Drawn on the black floor like every dungeon tile, so the room shows
+     * through around him without a transparent pixel. White hair and beard,
+     * brown robe with dark folds.
+     */
+    static const uint8_t TILE_OLD_MAN = 4;
+
+    /**
+     * Closed treasure chest. Blocking.
+     *
+     * Two browns for the wood, grey iron bands, and a sand-colored latch. The
+     * navy bar beneath it is the same drop shadow the overworld objects cast.
+     */
+    static const uint8_t TILE_CHEST_CLOSED = 5;
+
+    /**
+     * The same chest with its lid raised and its navy interior showing.
+     * Blocking. Not placed on the map: it replaces TILE_CHEST_CLOSED at runtime.
+     * The body rows match the closed chest so the swap does not shift it.
+     */
+    static const uint8_t TILE_CHEST_OPEN = 6;
+
+    /**
+     * Shopkeeper, facing the viewer. Blocking.
+     *
+     * Dark brown hair, a green tunic with a white apron and a brown belt, so
+     * he never reads as a recolored old man.
+     */
+    static const uint8_t TILE_SHOPKEEPER = 7;
 
     /**
      * @brief Per-tile collision, indexed by tile id.
