@@ -11,6 +11,7 @@
 #include <cstdint>
 
 #include "pool/Geometry.h"
+#include "pool/Table.h"
 #include "pool/TableDef.h"
 
 using namespace pool;
@@ -42,6 +43,20 @@ void test_geometry_segment_contact_beyond_endpoint(void) {
     TEST_ASSERT_FALSE(segmentContact(seg, 150 * 256, 512, 1024));
 }
 
+void test_geometry_segment_contact_behind_cushion(void) {
+    const Segment seg{0, 0, 100, 0, 10000};
+    // 2px on the far side of the segment from its normal (-ey, ex) = (0,
+    // 100): the early return for sdNum < 0, not the radius test.
+    TEST_ASSERT_FALSE(segmentContact(seg, 50 * 256, -512, 1024));
+}
+
+void test_geometry_segment_contact_at_exact_radius(void) {
+    const Segment seg{0, 0, 100, 0, 10000};
+    // Exactly 4px from the segment: the comparison is strict '<', so a
+    // distance equal to the radius is NOT a contact.
+    TEST_ASSERT_FALSE(segmentContact(seg, 50 * 256, 1024, 1024));
+}
+
 // --- vertexContact ---------------------------------------------------------------
 
 void test_geometry_vertex_contact_within_radius(void) {
@@ -53,6 +68,12 @@ void test_geometry_vertex_contact_within_radius(void) {
 void test_geometry_vertex_contact_outside_radius(void) {
     const Segment seg{0, 0, 100, 0, 10000};
     TEST_ASSERT_FALSE(vertexContact(seg, 2048, 0, 1024));
+}
+
+void test_geometry_vertex_contact_at_exact_radius(void) {
+    const Segment seg{0, 0, 100, 0, 10000};
+    // Exactly 4px from the vertex (0,0): strict '<' means no contact.
+    TEST_ASSERT_FALSE(vertexContact(seg, 1024, 0, 1024));
 }
 
 // --- pointInPolygon --------------------------------------------------------------
@@ -108,6 +129,105 @@ void test_geometry_rowspans_cut_corner(void) {
     TEST_ASSERT_EQUAL_INT16(100, xs[1]);
 }
 
+// --- Table load-time validation ---------------------------------------------
+
+namespace {
+
+// A safe rectangle far from every cushion, pocket and other ball used below;
+// every TableError case that does not itself mutate the border reuses it.
+constexpr PointPx kBorder[4] = {{0, 0}, {200, 0}, {200, 200}, {0, 200}};
+constexpr Polyline kBorderLine{kBorder, 4};
+constexpr PocketDef kPocket{{10, 10}, 0, 1};  // top-edge mouth, 200px wide
+constexpr TargetDef kOneTarget{1, {100, 130}};  // 30px from the cue
+TableDef baseTableDef() {
+    TableDef def{};
+    def.border = kBorderLine;
+    def.pockets = &kPocket;
+    def.pocketCount = 1;
+    def.cue = {100, 100};
+    def.targets = &kOneTarget;
+    def.targetCount = 1;
+    return def;
+}
+
+void expectTableError(TableError expected, const TableDef& def) {
+    Table table;
+    const TableError actual = loadTable(def, table);
+    TEST_ASSERT_EQUAL(static_cast<int>(expected), static_cast<int>(actual));
+}
+
+}  // namespace
+
+void test_table_valid_table_loads(void) {
+    Table table;
+    const TableError err = loadTable(baseTableDef(), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_UINT8(4, table.segmentCount);
+    TEST_ASSERT_EQUAL_UINT8(1, table.pocketCount);
+    TEST_ASSERT_EQUAL_UINT8(2, table.ballCount);
+    TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
+}
+
+void test_table_ball_overlaps_ball(void) {
+    TableDef def = baseTableDef();
+    static const TargetDef kOverlapping{1, {102, 100}};  // 2px from the cue
+    def.targets = &kOverlapping;
+    expectTableError(TableError::BallOverlapsBall, def);
+}
+
+void test_table_ball_overlaps_cushion(void) {
+    TableDef def = baseTableDef();
+    def.cue = {2, 100};  // 2px from the left cushion
+    expectTableError(TableError::BallOverlapsCushion, def);
+}
+
+void test_table_ball_in_pocket(void) {
+    TableDef def = baseTableDef();
+    def.cue = {10, 10};  // exactly the pocket center
+    expectTableError(TableError::BallInPocket, def);
+}
+
+void test_table_zero_length_segment(void) {
+    static const PointPx kPoints[5] = {{0, 0}, {0, 0}, {200, 0}, {200, 200}, {0, 200}};
+    static const Polyline kLine{kPoints, 5};
+    TableDef def = baseTableDef();
+    def.border = kLine;
+    expectTableError(TableError::ZeroLengthSegment, def);
+}
+
+void test_table_narrow_pocket_mouth(void) {
+    static const PointPx kPoints[5] = {{0, 0}, {5, 0}, {200, 0}, {200, 200}, {0, 200}};
+    static const Polyline kLine{kPoints, 5};
+    static const PocketDef kNarrow{{2, 10}, 0, 1};  // 5px gap, under 12px
+    TableDef def = baseTableDef();
+    def.border = kLine;
+    def.pockets = &kNarrow;
+    expectTableError(TableError::NarrowPocketMouth, def);
+}
+
+void test_table_bad_winding(void) {
+    static const PointPx kPoints[4] = {{0, 0}, {0, 200}, {200, 200}, {200, 0}};
+    static const Polyline kLine{kPoints, 4};
+    TableDef def = baseTableDef();
+    def.border = kLine;
+    expectTableError(TableError::BadWinding, def);
+}
+
+void test_table_too_many_pockets(void) {
+    // kMaxPockets + 1 identical, otherwise-valid pockets must be rejected before any pocket is written.
+    static const PocketDef kPockets[kMaxPockets + 1] = {
+        {{10, 10}, 0, 1}, {{10, 10}, 0, 1}, {{10, 10}, 0, 1}, {{10, 10}, 0, 1}, {{10, 10}, 0, 1},
+        {{10, 10}, 0, 1}, {{10, 10}, 0, 1}, {{10, 10}, 0, 1}, {{10, 10}, 0, 1},
+    };
+    TableDef def = baseTableDef();
+    def.pockets = kPockets;
+    def.pocketCount = kMaxPockets + 1;
+    Table table;
+    const TableError err = loadTable(def, table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::TooManyPockets), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_UINT8(0, table.pocketCount);
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -115,11 +235,22 @@ int main(int argc, char** argv) {
     RUN_TEST(test_geometry_segment_contact_within_radius);
     RUN_TEST(test_geometry_segment_contact_outside_radius);
     RUN_TEST(test_geometry_segment_contact_beyond_endpoint);
+    RUN_TEST(test_geometry_segment_contact_behind_cushion);
+    RUN_TEST(test_geometry_segment_contact_at_exact_radius);
     RUN_TEST(test_geometry_vertex_contact_within_radius);
     RUN_TEST(test_geometry_vertex_contact_outside_radius);
+    RUN_TEST(test_geometry_vertex_contact_at_exact_radius);
     RUN_TEST(test_geometry_point_in_polygon_inside);
     RUN_TEST(test_geometry_point_in_polygon_outside);
     RUN_TEST(test_geometry_rowspans_rectangle);
     RUN_TEST(test_geometry_rowspans_cut_corner);
+    RUN_TEST(test_table_valid_table_loads);
+    RUN_TEST(test_table_ball_overlaps_ball);
+    RUN_TEST(test_table_ball_overlaps_cushion);
+    RUN_TEST(test_table_ball_in_pocket);
+    RUN_TEST(test_table_zero_length_segment);
+    RUN_TEST(test_table_narrow_pocket_mouth);
+    RUN_TEST(test_table_bad_winding);
+    RUN_TEST(test_table_too_many_pockets);
     return UNITY_END();
 }
