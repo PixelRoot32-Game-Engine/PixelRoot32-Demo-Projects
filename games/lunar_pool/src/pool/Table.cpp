@@ -53,6 +53,22 @@ bool ballOverlapsCushions(const Table& table, int32_t x, int32_t y) {
     return false;
 }
 
+/**
+ * True if (x, y) lies inside any obstacle polygon. segmentContact()/
+ * vertexContact() only reach kBallRadiusRaw from an edge or vertex, so a
+ * ball resting deep inside an obstacle -- farther than the radius from
+ * every edge and vertex -- needs this containment check instead, or
+ * loadTable() would accept an impossible starting position.
+ */
+bool ballInsideObstacle(const TableDef& def, int32_t x, int32_t y) {
+    for (uint8_t o = 0; o < def.obstacleCount; ++o) {
+        if (pointInPolygon(def.obstacles[o], x, y)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 TableError loadTable(const TableDef& def, Table& table) {
@@ -151,9 +167,12 @@ TableError loadTable(const TableDef& def, Table& table) {
             }
         }
     }
-    // 11. BallOverlapsCushion -- the same predicates physics uses at runtime.
+    // 11. BallOverlapsCushion -- the same edge/vertex predicates physics uses
+    // at runtime, plus obstacle containment for a ball resting inside an
+    // obstacle's interior, away from any edge or vertex.
     for (uint8_t b = 0; b < table.ballCount; ++b) {
-        if (ballOverlapsCushions(table, table.balls[b].x, table.balls[b].y)) {
+        if (ballOverlapsCushions(table, table.balls[b].x, table.balls[b].y) ||
+            ballInsideObstacle(def, table.balls[b].x, table.balls[b].y)) {
             return TableError::BallOverlapsCushion;
         }
     }

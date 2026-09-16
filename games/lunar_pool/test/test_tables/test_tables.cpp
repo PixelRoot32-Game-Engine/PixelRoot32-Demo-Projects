@@ -90,6 +90,22 @@ void test_geometry_point_in_polygon_outside(void) {
     TEST_ASSERT_FALSE(pointInPolygon(square, 150 * 256, 50 * 256));
 }
 
+void test_geometry_point_in_polygon_on_edge(void) {
+    // The half-open rule assigns the top edge (y=0) to the polygon: a point
+    // sitting exactly on it, away from any vertex, is inside.
+    static const PointPx kSquare[4] = {{0, 0}, {100, 0}, {100, 100}, {0, 100}};
+    const Polyline square{kSquare, 4};
+    TEST_ASSERT_TRUE(pointInPolygon(square, 50 * 256, 0));
+}
+
+void test_geometry_point_in_polygon_on_vertex(void) {
+    // The same half-open rule excludes the bottom edge (y=100): a vertex on
+    // it is outside, the mirror case of the on-edge test above.
+    static const PointPx kSquare[4] = {{0, 0}, {100, 0}, {100, 100}, {0, 100}};
+    const Polyline square{kSquare, 4};
+    TEST_ASSERT_FALSE(pointInPolygon(square, 0, 100 * 256));
+}
+
 // --- rowSpans ----------------------------------------------------------------
 
 void test_geometry_rowspans_rectangle(void) {
@@ -168,6 +184,91 @@ void test_table_valid_table_loads(void) {
     TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
 }
 
+void test_table_too_many_balls(void) {
+    // 10 targets + the cue = 11 balls, over kMaxBalls (10). Numbers don't
+    // need to be valid: TooManyBalls is the first check and returns before
+    // any target is inspected.
+    static const TargetDef kTenTargets[10] = {
+        {1, {101, 100}}, {2, {102, 100}}, {3, {103, 100}}, {4, {104, 100}}, {5, {105, 100}},
+        {6, {106, 100}}, {7, {107, 100}}, {8, {108, 100}}, {9, {109, 100}}, {10, {110, 100}},
+    };
+    TableDef def = baseTableDef();
+    def.targets = kTenTargets;
+    def.targetCount = 10;
+    expectTableError(TableError::TooManyBalls, def);
+}
+
+void test_table_bad_ball_number(void) {
+    // A single target numbered 2 instead of 1 stays under kMaxBalls, so this
+    // isolates BadBallNumber from TooManyBalls.
+    TableDef def = baseTableDef();
+    static const TargetDef kBadNumber{2, {100, 130}};
+    def.targets = &kBadNumber;
+    expectTableError(TableError::BadBallNumber, def);
+}
+
+void test_table_too_many_segments(void) {
+    // border (4) + one 45-point obstacle = 49, over kMaxSegments (48). Point
+    // values are irrelevant: TooManySegments only sums counts and returns
+    // before any point is read.
+    static const PointPx kManyPoints[45] = {};
+    static const Polyline kManyObstacle{kManyPoints, 45};
+    TableDef def = baseTableDef();
+    def.obstacles = &kManyObstacle;
+    def.obstacleCount = 1;
+    expectTableError(TableError::TooManySegments, def);
+}
+
+void test_table_bad_mouth_index(void) {
+    // kBorderLine has 4 points (valid indices 0..3); mouthA=4 is out of range.
+    static const PocketDef kBadMouth{{10, 10}, 4, 0};
+    TableDef def = baseTableDef();
+    def.pockets = &kBadMouth;
+    expectTableError(TableError::BadMouthIndex, def);
+}
+
+void test_table_ball_outside_table(void) {
+    TableDef def = baseTableDef();
+    def.cue = {300, 300};  // outside the 0..200 border
+    expectTableError(TableError::BallOutsideTable, def);
+}
+
+void test_table_obstacle_valid_loads(void) {
+    // A 20x20 obstacle well inside the border, wound counter-clockwise (the
+    // reverse of the border's own valid order) so shoelaceTwiceArea is
+    // negative, as loadTable()'s BadWinding check requires for obstacles.
+    static const PointPx kObstaclePoints[4] = {{150, 50}, {150, 70}, {170, 70}, {170, 50}};
+    static const Polyline kObstacle{kObstaclePoints, 4};
+    TableDef def = baseTableDef();
+    def.obstacles = &kObstacle;
+    def.obstacleCount = 1;
+    Table table;
+    const TableError err = loadTable(def, table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_UINT8(8, table.segmentCount);  // 4 border + 4 obstacle
+}
+
+void test_table_obstacle_zero_length_segment(void) {
+    static const PointPx kBadObstacle[4] = {{150, 50}, {150, 50}, {170, 70}, {170, 50}};
+    static const Polyline kObstacle{kBadObstacle, 4};
+    TableDef def = baseTableDef();
+    def.obstacles = &kObstacle;
+    def.obstacleCount = 1;
+    expectTableError(TableError::ZeroLengthSegment, def);
+}
+
+void test_table_obstacle_bad_winding(void) {
+    // Same shape as the valid obstacle above, but wound clockwise (the
+    // border's own valid order) -- a positive shoelace, invalid for an
+    // obstacle.
+    static const PointPx kCwObstacle[4] = {{150, 50}, {170, 50}, {170, 70}, {150, 70}};
+    static const Polyline kObstacle{kCwObstacle, 4};
+    TableDef def = baseTableDef();
+    def.obstacles = &kObstacle;
+    def.obstacleCount = 1;
+    expectTableError(TableError::BadWinding, def);
+}
+
 void test_table_ball_overlaps_ball(void) {
     TableDef def = baseTableDef();
     static const TargetDef kOverlapping{1, {102, 100}};  // 2px from the cue
@@ -213,6 +314,19 @@ void test_table_bad_winding(void) {
     expectTableError(TableError::BadWinding, def);
 }
 
+void test_table_ball_inside_obstacle_interior(void) {
+    // A 40x40 obstacle; the cue sits at its center, 20px from every edge and
+    // vertex -- past segmentContact()/vertexContact()'s 4px reach, so only a
+    // containment check catches it.
+    static const PointPx kObstaclePoints[4] = {{150, 50}, {150, 90}, {190, 90}, {190, 50}};
+    static const Polyline kObstacle{kObstaclePoints, 4};
+    TableDef def = baseTableDef();
+    def.obstacles = &kObstacle;
+    def.obstacleCount = 1;
+    def.cue = {170, 70};
+    expectTableError(TableError::BallOverlapsCushion, def);
+}
+
 void test_table_too_many_pockets(void) {
     // kMaxPockets + 1 identical, otherwise-valid pockets must be rejected before any pocket is written.
     static const PocketDef kPockets[kMaxPockets + 1] = {
@@ -242,15 +356,26 @@ int main(int argc, char** argv) {
     RUN_TEST(test_geometry_vertex_contact_at_exact_radius);
     RUN_TEST(test_geometry_point_in_polygon_inside);
     RUN_TEST(test_geometry_point_in_polygon_outside);
+    RUN_TEST(test_geometry_point_in_polygon_on_edge);
+    RUN_TEST(test_geometry_point_in_polygon_on_vertex);
     RUN_TEST(test_geometry_rowspans_rectangle);
     RUN_TEST(test_geometry_rowspans_cut_corner);
     RUN_TEST(test_table_valid_table_loads);
+    RUN_TEST(test_table_too_many_balls);
+    RUN_TEST(test_table_bad_ball_number);
+    RUN_TEST(test_table_too_many_segments);
+    RUN_TEST(test_table_bad_mouth_index);
+    RUN_TEST(test_table_ball_outside_table);
+    RUN_TEST(test_table_obstacle_valid_loads);
+    RUN_TEST(test_table_obstacle_zero_length_segment);
+    RUN_TEST(test_table_obstacle_bad_winding);
     RUN_TEST(test_table_ball_overlaps_ball);
     RUN_TEST(test_table_ball_overlaps_cushion);
     RUN_TEST(test_table_ball_in_pocket);
     RUN_TEST(test_table_zero_length_segment);
     RUN_TEST(test_table_narrow_pocket_mouth);
     RUN_TEST(test_table_bad_winding);
+    RUN_TEST(test_table_ball_inside_obstacle_interior);
     RUN_TEST(test_table_too_many_pockets);
     return UNITY_END();
 }
