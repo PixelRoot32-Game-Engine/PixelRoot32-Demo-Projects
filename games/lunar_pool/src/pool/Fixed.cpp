@@ -3,11 +3,16 @@
  */
 #include "pool/Fixed.h"
 
+#include <cassert>
+
 namespace pool {
 
 int64_t divRound(int64_t num, int64_t den) {
     // den is required to be strictly positive (see Fixed.h); every call site
-    // in this codebase passes a compile-time-known positive divisor.
+    // in this codebase passes a compile-time-known positive divisor. The
+    // assert catches a future misuse in host debug builds at zero cost in
+    // release (NDEBUG strips it) and never fires for any call in this file.
+    assert(den > 0);
     const uint64_t absDen = static_cast<uint64_t>(den);
     if (num >= 0) {
         const uint64_t absNum = static_cast<uint64_t>(num);
