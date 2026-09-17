@@ -13,6 +13,7 @@
 #include "pool/Geometry.h"
 #include "pool/Table.h"
 #include "pool/TableDef.h"
+#include "pool/Tables.h"
 
 using namespace pool;
 
@@ -342,6 +343,32 @@ void test_table_too_many_pockets(void) {
     TEST_ASSERT_EQUAL_UINT8(0, table.pocketCount);
 }
 
+// --- Table 1 (shipped data) --------------------------------------------------
+
+void test_tables_stage1_loads_with_expected_counts(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(1), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_UINT8(24, table.segmentCount);
+    TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
+    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
+}
+
+void test_tables_stage1_matches_shipped_positions(void) {
+    // Triangulates the count-only test above: proves tableForStage(1) hands
+    // back the real table 1 data (cue, first target, first pocket hole), not
+    // a placeholder with the right shape but wrong content.
+    Table table;
+    const TableError err = loadTable(tableForStage(1), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_INT32(70 * 256, table.balls[0].x);
+    TEST_ASSERT_EQUAL_INT32(140 * 256, table.balls[0].y);
+    TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
+    TEST_ASSERT_EQUAL_INT32(150 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(17 * 256, table.pockets[0].x);
+    TEST_ASSERT_EQUAL_INT32(57 * 256, table.pockets[0].y);
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -377,5 +404,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_table_bad_winding);
     RUN_TEST(test_table_ball_inside_obstacle_interior);
     RUN_TEST(test_table_too_many_pockets);
+    RUN_TEST(test_tables_stage1_loads_with_expected_counts);
+    RUN_TEST(test_tables_stage1_matches_shipped_positions);
     return UNITY_END();
 }
