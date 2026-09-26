@@ -15,14 +15,14 @@
 namespace pool {
 
 /** Number of stages currently shipped. Grows as more tables are added. */
-constexpr uint8_t kStageCount = 1;
+constexpr uint8_t kStageCount = 3;
 
 /**
  * @brief Returns the TableDef for a 1-based stage number.
  *
- * Only table 1 ships so far, so every stage returns it; stage becomes
- * meaningful once table 2 and 3 exist. Safe to call with any value in the
- * meantime -- there is only one table to hand back.
+ * Out-of-range stages clamp to the shipped range (below 1 gives table 1,
+ * above kStageCount gives the last table), so game flow and the scene never
+ * read past the shipped data.
  * @param stage 1-based stage number.
  */
 const TableDef& tableForStage(uint8_t stage);

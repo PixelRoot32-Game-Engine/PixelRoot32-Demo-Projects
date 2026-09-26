@@ -10,6 +10,7 @@
 
 #include "pool/Fixed.h"
 #include "pool/Game.h"
+#include "pool/Tables.h"
 #include "pool/Trig.h"
 
 using namespace pool;
@@ -194,8 +195,11 @@ void test_game_wrong_order_fouls_without_points(void) {
 }
 
 void test_game_clearing_table_wins(void) {
+    // Clearing the LAST stage wins the run; non-final clears advance (see
+    // the next test), so this stages the final table explicitly.
     Game game;
-    startStage1(game);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(game.newGame(kStageCount)));
+    game.startGame();
     for (uint8_t b = 1; b <= 6; ++b) {
         const Pocket& pocket = game.table().pockets[b - 1];
         game.world().placeBall(b, pocket.x, pocket.y, 0, 0);
@@ -207,6 +211,32 @@ void test_game_clearing_table_wins(void) {
     TEST_ASSERT_TRUE(game.won());
     TEST_ASSERT_EQUAL_INT32(6 * kPointsPerBall, game.score());
     TEST_ASSERT_EQUAL_UINT8(0, game.nextExpected());
+}
+
+void test_game_clearing_nonfinal_stage_advances(void) {
+    // Clearing stage 1 with stages left carries the score into a fresh
+    // stage 2 instead of ending the game.
+    Game game;
+    startStage1(game);
+    for (uint8_t b = 1; b <= 6; ++b) {
+        const Pocket& pocket = game.table().pockets[b - 1];
+        game.world().placeBall(b, pocket.x, pocket.y, 0, 0);
+    }
+    TEST_ASSERT_TRUE(game.shoot());
+    runUntil(game, State::Aiming, 500);
+
+    TEST_ASSERT_EQUAL(static_cast<int>(State::Aiming), static_cast<int>(game.state()));
+    TEST_ASSERT_EQUAL_UINT8(2, game.stage());
+    TEST_ASSERT_EQUAL_INT32(6 * kPointsPerBall, game.score());
+    // Fresh stage: full shot budget, turn 1, ball 1 expected, stage-2 rack.
+    TEST_ASSERT_EQUAL_UINT8(12, game.shotsLeft());
+    TEST_ASSERT_EQUAL_UINT8(1, game.turn());
+    TEST_ASSERT_EQUAL_UINT8(1, game.nextExpected());
+    TEST_ASSERT_EQUAL_UINT8(7, game.world().ballCount());
+    TEST_ASSERT_EQUAL_INT32(60 * kPxScale, game.world().ball(0).x);
+    TEST_ASSERT_EQUAL_INT32(140 * kPxScale, game.world().ball(0).y);
+    TEST_ASSERT_EQUAL_INT32(150 * kPxScale, game.world().ball(1).x);
+    TEST_ASSERT_EQUAL_INT32(120 * kPxScale, game.world().ball(1).y);
 }
 
 void test_game_burning_shots_loses(void) {
@@ -258,6 +288,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_game_cue_scratch_fouls_and_respots);
     RUN_TEST(test_game_wrong_order_fouls_without_points);
     RUN_TEST(test_game_clearing_table_wins);
+    RUN_TEST(test_game_clearing_nonfinal_stage_advances);
     RUN_TEST(test_game_burning_shots_loses);
     RUN_TEST(test_game_menu_and_gameover_frames_are_noops);
     return UNITY_END();

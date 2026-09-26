@@ -139,10 +139,12 @@ void LunarPoolScene::handleInput() {
             }
             break;
         case pool::State::GameOver:
-            // Replay the same stage (today there is only stage 1); a broken
-            // reload surfaces the red screen instead of a partial table.
+            // Won means the last stage fell: restart the run from stage 1. A
+            // loss retries the same stage instead; a broken reload surfaces
+            // the red screen instead of a partial table.
             if (input.isButtonPressed(kBtnA)) {
-                const pool::TableError err = game_.newGame(game_.stage());
+                const uint8_t stage = game_.won() ? 1 : game_.stage();
+                const pool::TableError err = game_.newGame(stage);
                 if (err == pool::TableError::None) {
                     game_.startGame();
                 } else {
@@ -202,6 +204,18 @@ void LunarPoolScene::drawTable(pr32::graphics::Renderer& renderer) const {
         const uint8_t count = pool::rowSpans(border, y, xs, kMaxRowSpans);
         for (uint8_t i = 0; static_cast<uint8_t>(i + 1) < count; i = static_cast<uint8_t>(i + 2)) {
             renderer.drawFilledRectangle(xs[i], y, xs[i + 1] - xs[i], 1, pr32::graphics::Color::Navy);
+        }
+    }
+
+    // Stage 2+ obstacle blocks read as solid rail so they never pass for felt.
+    const pool::TableDef& def = pool::tableForStage(game_.stage());
+    for (uint8_t o = 0; o < def.obstacleCount; ++o) {
+        for (int16_t y = kHudHeight; y < renderer.getLogicalHeight(); ++y) {
+            const uint8_t count = pool::rowSpans(def.obstacles[o], y, xs, kMaxRowSpans);
+            for (uint8_t i = 0; static_cast<uint8_t>(i + 1) < count; i = static_cast<uint8_t>(i + 2)) {
+                renderer.drawFilledRectangle(xs[i], y, xs[i + 1] - xs[i], 1,
+                                             pr32::graphics::Color::DarkRed);
+            }
         }
     }
 

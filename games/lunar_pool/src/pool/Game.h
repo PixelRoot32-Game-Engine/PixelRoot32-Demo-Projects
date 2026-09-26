@@ -67,7 +67,6 @@ public:
      *   lands in GameOver (lost) and the table must not be used.
      */
     TableError newGame(uint8_t stage);
-
     /**
      * @brief Leaves the menu and opens aiming for turn 1.
      *
@@ -154,8 +153,25 @@ private:
     /** Scores the pocket log and respots a scratched cue ball. */
     void evaluateShot();
 
-    /** Charges the shot and routes to Aiming or GameOver. */
+    /**
+     * @brief Charges the shot and routes to Aiming, the next stage, or GameOver.
+     *
+     * Clearing the table loads stage + 1 (score carried forward) while stages
+     * remain; only clearing the last stage wins the game.
+     */
     void advanceTurn();
+
+    /**
+     * @brief Loads a stage's table, balls, shot budget, aim and search box.
+     *
+     * Shared by newGame() and the stage-clear path of advanceTurn(): scoring
+     * (score_ kept or reset), turn_ and the resulting state stay with the
+     * caller, so this never touches them, nor won_.
+     * @param stage 1-based stage number, forwarded to tableForStage().
+     * @return TableError::None when the table loaded; otherwise table_ must
+     *   not be used.
+     */
+    TableError loadStage(uint8_t stage);
 
     /**
      * @brief Returns the cue ball to play after a scratch.

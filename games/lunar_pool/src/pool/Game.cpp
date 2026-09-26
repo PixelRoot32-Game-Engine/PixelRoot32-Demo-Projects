@@ -10,10 +10,7 @@
 namespace pool {
 
 TableError Game::newGame(uint8_t stage) {
-    def_ = &tableForStage(stage);
-    stage_ = stage;
-    table_ = Table{};
-    const TableError err = loadTable(*def_, table_);
+    const TableError err = loadStage(stage);
     if (err != TableError::None) {
         // Broken table data must end the game before a frame runs, never
         // mid-shot; the scene surfaces this same failure in red.
@@ -21,28 +18,9 @@ TableError Game::newGame(uint8_t stage) {
         won_ = false;
         return err;
     }
-    // Border bounding box for the respot scan: whole pixels, read once here
-    // so a foul never pays the scan setup cost mid-game.
-    minX_ = maxX_ = def_->border.points[0].x;
-    minY_ = maxY_ = def_->border.points[0].y;
-    for (uint8_t i = 1; i < def_->border.count; ++i) {
-        const PointPx& p = def_->border.points[i];
-        if (p.x < minX_) minX_ = p.x;
-        if (p.x > maxX_) maxX_ = p.x;
-        if (p.y < minY_) minY_ = p.y;
-        if (p.y > maxY_) maxY_ = p.y;
-    }
-    world_.placeFromTable(table_);
     score_ = 0;
-    shotsLeft_ = table_.ballCount > 0
-                     ? static_cast<uint8_t>((table_.ballCount - 1) * kShotsPerTarget)
-                     : 0;
-    angle_ = 0;
-    power_ = kDefaultPower;
     turn_ = 0;
-    shotExpected_ = 0;
     won_ = false;
-    respotFailed_ = false;
     state_ = State::Menu;
     return TableError::None;
 }
@@ -182,9 +160,21 @@ void Game::advanceTurn() {
     if (shotsLeft_ > 0) {
         --shotsLeft_;
     }
-    // Clearing the table wins even on the last shot or a fouled one; a table
-    // that cannot hold the cue is lost instead.
+    // Clearing the table advances while stages remain (score carried
+    // forward) and wins on the last stage, even on the last shot or a fouled
+    // one; pocketed balls stay down. A table that cannot load is lost
+    // instead, the same failure newGame() reports.
     if (!anyTargetActive()) {
+        if (stage_ < kStageCount) {
+            if (loadStage(static_cast<uint8_t>(stage_ + 1)) != TableError::None) {
+                won_ = false;
+                state_ = State::GameOver;
+                return;
+            }
+            turn_ = 1;
+            state_ = State::Aiming;
+            return;
+        }
         won_ = true;
         state_ = State::GameOver;
         return;
@@ -197,6 +187,37 @@ void Game::advanceTurn() {
     ++turn_;
     world_.clearLog();
     state_ = State::Aiming;
+}
+
+TableError Game::loadStage(uint8_t stage) {
+    def_ = &tableForStage(stage);
+    stage_ = stage;
+    table_ = Table{};
+    const TableError err = loadTable(*def_, table_);
+    if (err != TableError::None) {
+        return err;
+    }
+    // Border bounding box for the respot scan: whole pixels, read once here
+    // so a foul never pays the scan setup cost mid-game.
+    minX_ = maxX_ = def_->border.points[0].x;
+    minY_ = maxY_ = def_->border.points[0].y;
+    for (uint8_t i = 1; i < def_->border.count; ++i) {
+        const PointPx& p = def_->border.points[i];
+        if (p.x < minX_) minX_ = p.x;
+        if (p.x > maxX_) maxX_ = p.x;
+        if (p.y < minY_) minY_ = p.y;
+        if (p.y > maxY_) maxY_ = p.y;
+    }
+    world_.placeFromTable(table_);
+    shotsLeft_ = table_.ballCount > 0
+                     ? static_cast<uint8_t>((table_.ballCount - 1) * kShotsPerTarget)
+                     : 0;
+    angle_ = 0;
+    power_ = kDefaultPower;
+    shotExpected_ = 0;
+    respotFailed_ = false;
+    world_.clearLog();
+    return TableError::None;
 }
 
 bool Game::respotCue() {
@@ -225,6 +246,14 @@ bool Game::respotCue() {
 bool Game::isFree(int32_t x, int32_t y) const {
     if (!pointInPolygon(def_->border, x, y)) {
         return false;
+    }
+    // Stage 2+ obstacles are solid: the edge/vertex predicates below only
+    // reach kBallRadiusRaw from an edge, so a cell deep inside a block needs
+    // this containment check, mirroring loadTable()'s BallOverlapsCushion.
+    for (uint8_t o = 0; o < def_->obstacleCount; ++o) {
+        if (pointInPolygon(def_->obstacles[o], x, y)) {
+            return false;
+        }
     }
     for (uint8_t p = 0; p < table_.pocketCount; ++p) {
         const int64_t dx = static_cast<int64_t>(x) - table_.pockets[p].x;
