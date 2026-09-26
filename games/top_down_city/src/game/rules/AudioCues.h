@@ -56,6 +56,7 @@ enum class Cue : std::uint8_t {
     BrakeScreech,
     CarHorn,
     CrowdPanic,
+    MissionAccepted, ///< answering ACCEPT on a payphone briefing
     Count
 };
 

@@ -20,7 +20,7 @@ more: no asset, name, note or line of code comes from them.
 | **Money** | Courier runs pay a fee plus a streak bonus; the shop sells guns, ammo and the vest |
 | **Jobs** | Three payphones: boost a named car, hit a marked officer, then a rampage in the Park |
 | **Time** | Day/night cycle with lit windows and street lamps after 18:30 |
-| **Sound** | Four car-radio stations picked by the car's paint, sirens, 22 sound effects |
+| **Sound** | Four car-radio stations picked by the car's paint, sirens, 23 sound effects |
 
 A typical run: take a delivery, steal a car out of moving traffic, beat the
 clock, bank the streak. Or shoot up the police station, climb to five stars,
@@ -55,10 +55,15 @@ new interior, no new sprite palette, no dialogue, no save.
 
 **How you start one.** A cyan payphone ring in the street, one per chapter,
 shown on the radar the way the green drop already is. Stand on it and RUN
-takes the job — the same contextual button that opens a car and a door, tested
-after both. Taking a job suspends the courier leg: there is one objective at a
-time, because there is one timer plate in the HUD column and no room for a
-second.
+answers the phone -- the same contextual button that opens a car and a door,
+tested after both. Answering opens a short briefing on the engine's
+DialogRunner (two lines plus ACCEPT / HANG UP, drawn through DialogBox):
+what to steal, hit or break, where, and what it pays. ACCEPT starts the
+clock; HANG UP leaves the phone ringing. Taking a job suspends the courier
+leg: there is one objective at a time, because there is one timer plate in
+the HUD column and no room for a second. While the call is up the street is
+frozen -- the mission clock has not started yet, so there is nothing to
+lose by reading.
 
 **Chapter 1 — Boost — done.** The phone rings downtown, eleven tiles from the
 spawn. It sends you to a parked car in the Marina, fifty-one tiles away, and
@@ -100,8 +105,9 @@ not work out unarmed. Failing one drops you back into the courier loop with
 the phone still there — no game over, and no menu to send anybody to. After
 the third there is no fourth phone, and the story simply stops.
 
-**What it deliberately leaves out.** No cutscenes or dialogue: the banner
-strip is one line and that is the whole vocabulary. No new interior — a room
+**What it deliberately leaves out.** No cutscenes: the banner
+strip is one line and the briefing is two lines plus a choice, and that is
+the whole vocabulary. No new interior — a room
 costs about 1 KB of RAM, 7.5 KB of flash and a scene file, and none of the
 three needs one. No mission built around one named pedestrian, because the
 crowd is a pool with no way to address one of its twelve. And no saving: the
