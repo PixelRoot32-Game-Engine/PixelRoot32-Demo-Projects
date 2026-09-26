@@ -25,6 +25,8 @@ namespace pool {
  */
 class PoolMenuScene : public pixelroot32::core::Scene {
 public:
+    PoolMenuScene();
+
     /// Pointer to the game scene. Set by the platform entry point before
     /// engine.run() begins (mirrors bomberbot's setNextScene).
     static void setNextScene(PoolScene* next);
