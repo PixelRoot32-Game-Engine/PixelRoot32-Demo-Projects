@@ -64,36 +64,36 @@ static const a::MusicTrack GROOVE_B = {
     true, a::WaveType::NOISE, 0.0f,
 };
 
-// --- Stage 1: Classic (C F G C, bright bounce) ------------------------------
+// --- Stage 1: Classic (C F G C, airy 16-beat loop) ---------------------------
+// Nods to the original's 9-second ambient stage loop: a slower harmonic
+// rhythm (half-note bass), a sparse lead with breathing room, and an
+// unhurried 16-beat span instead of the 8-beat bounce of the other stages.
 
 static const a::MusicNote S1_LEAD[] = {
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 5, E),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeRest(Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeRest(Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, H),
+    a::makeRest(H),
 };
 
 static const a::MusicNote S1_BASS[] = {
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
 };
 
 // --- Stage 2: Bites (C C F G, jaunty) ---------------------------------------

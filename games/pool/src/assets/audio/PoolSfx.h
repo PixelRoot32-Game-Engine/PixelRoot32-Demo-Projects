@@ -28,6 +28,7 @@ enum class PoolSfx : uint8_t {
     Scratch,     ///< Cue pocketed: wah down into a buzz.
     Foul,        ///< Order foul without a scratch: short dissonant buzz.
     StageClear,  ///< Rising 6-note arpeggio, sequenced.
+    AimTick,     ///< Aim-step tick, in the spirit of the original cursor chirp.
     UiConfirm,   ///< Menu / retry confirm blip.
     PauseToggle, ///< Pause on/off blip.
     Count
@@ -48,6 +49,8 @@ struct PoolSfxBank {
             case PoolSfx::Scratch:
             case PoolSfx::Foul:
                 return 250;
+            case PoolSfx::AimTick:
+                return 120;
             case PoolSfx::UiConfirm:
                 return 80;
             case PoolSfx::PauseToggle:
@@ -66,6 +69,7 @@ struct PoolSfxBank {
                 return 2;
             case PoolSfx::BallClick:
             case PoolSfx::CushionThud:
+            case PoolSfx::AimTick:
             case PoolSfx::UiConfirm:
             case PoolSfx::PauseToggle:
                 return 1;
@@ -143,6 +147,11 @@ struct PoolSfxBank {
             case PoolSfx::UiConfirm:
                 if (layerIndex == 0) {
                     return {WaveType::PULSE, 880.0f, 0.06f, 0.40f, 0.25f};
+                }
+                break;
+            case PoolSfx::AimTick:
+                if (layerIndex == 0) {
+                    return {WaveType::PULSE, 1500.0f, 0.03f, 0.25f, 0.5f};
                 }
                 break;
             case PoolSfx::PauseToggle:

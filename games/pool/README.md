@@ -104,16 +104,20 @@ full island, two islands, fewer pockets, no banking angles.
 
 ## Audio
 
-One looping track per stage, all original chiptune compositions in the
-spirit of the 8-bit era (not transcriptions): a square-wave lead over a
-triangle bass walking the chord roots, a shared noise groove, a pulse
-harmony entering from stage 6, and a tempo that climbs the difficulty
-curve (×1.00 → ×1.34). Clearing stage 10 plays a major fanfare, losing a
-descending line; both are one-shot jingles, then silence until retry.
+One looping track per stage, all original chiptune compositions informed by
+the 1985 original's stage loop — a soft, airy, non-invasive backdrop rather
+than a dense bouncer — but with their own melodies throughout (no
+transcriptions): a square-wave lead over a triangle bass walking the chord
+roots, a shared noise groove, a pulse harmony entering from stage 6, and a
+tempo that climbs the difficulty curve (×1.00 → ×1.34). Stage 1 mirrors the
+reference most closely with a 16-beat ambient loop (~6 s at the sequencer's
+150 BPM) while the rest run tighter 8-beat loops. Clearing stage 10 plays
+a major fanfare, losing a descending line; both are one-shot jingles, then
+silence until retry.
 
 | Stage | Feel | Tempo |
 |-------|------|-------|
-| 1 | C major bounce | ×1.00 |
+| 1 | C major, airy 16-beat ambient loop | ×1.00 |
 | 2 | Jaunty | ×1.04 |
 | 3 | Wide leaps | ×1.08 |
 | 4 | March | ×1.10 |
@@ -126,7 +130,8 @@ descending line; both are one-shot jingles, then silence until retry.
 
 Effects (same NES vocabulary — pulse blips, noise ticks, sweeps): cue
 strike, ball click, cushion thud, pocket drop, scratch wah, order-foul
-buzz, a 6-note stage-clear arpeggio, confirm and pause blips. Clicks and
+buzz, a 6-note stage-clear arpeggio, an aim-step tick in the spirit of the
+original's cursor chirp, confirm and pause blips. Clicks and
 thuds come from deterministic contact flags in `World` (set only on a real
 reflection/impulse, so resting contact never machine-guns); pockets and
 fouls are read off the active-ball mask and the score each tick — the

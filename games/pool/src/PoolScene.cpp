@@ -86,7 +86,7 @@ void PoolScene::init() {
     // stage-1 game instead of stacking state on the previous one.
     accUnits_ = 0;
     paused_ = false;
-    tableError_ = game_.newGame(1);
+    tableError_ = game_.newGame(2);
     audio_.reset();
     audio_.stopMusic();
     audioKey_ = 0;
@@ -139,18 +139,23 @@ void PoolScene::handleInput() {
             break;
         case pool::State::Aiming:
             // Aim tracks the held level for smooth sweeps; power steps on the
-            // press edge so one tap is exactly one meter level.
+            // press edge so one tap is exactly one meter level. Both tick
+            // softly, like the original's cursor chirp (cooldown-gated).
             if (input.isButtonDown(kBtnLeft)) {
                 game_.aimLeft();
+                audio_.playSfx(PoolSfx::AimTick);
             }
             if (input.isButtonDown(kBtnRight)) {
                 game_.aimRight();
+                audio_.playSfx(PoolSfx::AimTick);
             }
             if (input.isButtonPressed(kBtnUp)) {
                 game_.powerUp();
+                audio_.playSfx(PoolSfx::UiConfirm);
             }
             if (input.isButtonPressed(kBtnDown)) {
                 game_.powerDown();
+                audio_.playSfx(PoolSfx::UiConfirm);
             }
             if (input.isButtonPressed(kBtnA)) {
                 if (game_.shoot()) {
