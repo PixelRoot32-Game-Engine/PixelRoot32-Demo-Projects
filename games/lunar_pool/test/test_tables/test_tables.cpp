@@ -415,9 +415,9 @@ void test_tables_stage4_loads_with_expected_counts(void) {
     Table table;
     const TableError err = loadTable(tableForStage(4), table);
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
-    TEST_ASSERT_EQUAL_UINT8(32, table.segmentCount);  // 24 border + 8 island
+    TEST_ASSERT_EQUAL_UINT8(28, table.segmentCount);  // 24 border + 4 bar
     TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
-    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);  // cue + 6 targets
+    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
 }
 
 void test_tables_stage4_matches_shipped_positions(void) {
@@ -425,17 +425,17 @@ void test_tables_stage4_matches_shipped_positions(void) {
     const TableError err = loadTable(tableForStage(4), table);
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
     TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[0].x);
-    TEST_ASSERT_EQUAL_INT32(100 * 256, table.balls[0].y);
+    TEST_ASSERT_EQUAL_INT32(140 * 256, table.balls[0].y);
     TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
-    TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[1].x);
-    TEST_ASSERT_EQUAL_INT32(170 * 256, table.balls[1].y);
+    TEST_ASSERT_EQUAL_INT32(150 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(120 * 256, table.balls[1].y);
 }
 
 void test_tables_stage5_loads_with_expected_counts(void) {
     Table table;
     const TableError err = loadTable(tableForStage(5), table);
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
-    TEST_ASSERT_EQUAL_UINT8(28, table.segmentCount);  // 24 border + 4 bar
+    TEST_ASSERT_EQUAL_UINT8(27, table.segmentCount);  // 24 + 3 chevron edges
     TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
     TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
 }
@@ -447,15 +447,15 @@ void test_tables_stage5_matches_shipped_positions(void) {
     TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[0].x);
     TEST_ASSERT_EQUAL_INT32(140 * 256, table.balls[0].y);
     TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
-    TEST_ASSERT_EQUAL_INT32(150 * 256, table.balls[1].x);
-    TEST_ASSERT_EQUAL_INT32(120 * 256, table.balls[1].y);
+    TEST_ASSERT_EQUAL_INT32(120 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(110 * 256, table.balls[1].y);
 }
 
 void test_tables_stage6_loads_with_expected_counts(void) {
     Table table;
     const TableError err = loadTable(tableForStage(6), table);
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
-    TEST_ASSERT_EQUAL_UINT8(27, table.segmentCount);  // 24 + 3 chevron edges
+    TEST_ASSERT_EQUAL_UINT8(40, table.segmentCount);  // 24 + 4x4 bite edges
     TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
     TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
 }
@@ -467,15 +467,15 @@ void test_tables_stage6_matches_shipped_positions(void) {
     TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[0].x);
     TEST_ASSERT_EQUAL_INT32(140 * 256, table.balls[0].y);
     TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
-    TEST_ASSERT_EQUAL_INT32(120 * 256, table.balls[1].x);
-    TEST_ASSERT_EQUAL_INT32(110 * 256, table.balls[1].y);
+    TEST_ASSERT_EQUAL_INT32(110 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(130 * 256, table.balls[1].y);
 }
 
 void test_tables_stage7_loads_with_expected_counts(void) {
     Table table;
     const TableError err = loadTable(tableForStage(7), table);
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
-    TEST_ASSERT_EQUAL_UINT8(40, table.segmentCount);  // 24 + 4x4 bite edges
+    TEST_ASSERT_EQUAL_UINT8(32, table.segmentCount);  // 24 border + 8 island
     TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
     TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
 }
@@ -485,10 +485,10 @@ void test_tables_stage7_matches_shipped_positions(void) {
     const TableError err = loadTable(tableForStage(7), table);
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
     TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[0].x);
-    TEST_ASSERT_EQUAL_INT32(140 * 256, table.balls[0].y);
+    TEST_ASSERT_EQUAL_INT32(100 * 256, table.balls[0].y);
     TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
-    TEST_ASSERT_EQUAL_INT32(110 * 256, table.balls[1].x);
-    TEST_ASSERT_EQUAL_INT32(130 * 256, table.balls[1].y);
+    TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(170 * 256, table.balls[1].y);
 }
 
 void test_tables_stage8_loads_with_expected_counts(void) {

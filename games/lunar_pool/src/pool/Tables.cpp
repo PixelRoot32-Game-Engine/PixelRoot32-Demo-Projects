@@ -10,22 +10,25 @@
  *   side cushions.
  * - Stage 3 ("Zigzag", NES STAGE04-like): angled teeth on both side
  *   cushions.
- * - Stage 4 ("Donut", NES STAGE09-like): rectangle with a central octagon
- *   island; the rack splits around it.
- * - Stage 5 ("Gate", NES STAGE15-like): rectangle with a center bar between
+ * - Stage 4 ("Gate", NES STAGE15-like): rectangle with a center bar between
  *   cue and rack.
- * - Stage 6 ("Chevron", NES STAGE13-like): right cushion folded into an
+ * - Stage 5 ("Chevron", NES STAGE13-like): right cushion folded into an
  *   inward V.
- * - Stage 7 ("Fortress", NES STAGE03-like): bites on all four top/bottom
+ * - Stage 6 ("Fortress", NES STAGE03-like): bites on all four top/bottom
  *   runs.
+ * - Stage 7 ("Donut", NES STAGE09-like): rectangle with a central octagon
+ *   island; the rack splits around it.
  * - Stage 8 ("Twins", NES STAGE25-like): rectangle with two square islands.
  * - Stage 9 ("Octagon", NES STAGE06-like): chamfered corners, only 4
  *   pockets (top/bottom sides plus mid-left/mid-right).
  * - Stage 10 ("Corridor", NES STAGE20-like): narrow rectangle, a single
  *   ball column with almost no banking angles.
  *
- * Stages 2, 3, 6 and 7 reuse the stage-1 pocket notches verbatim and only
- * reshape the straight runs between them; stages 4, 5 and 8 reuse the whole
+ * Each step adds one harder element without taking any away: open table,
+ * side dents, angled teeth, a first obstacle, an angled wall, bites
+ * everywhere, a full island, two islands, fewer pockets, no banking angles.
+ * Stages 2, 3, 5 and 6 reuse the stage-1 pocket notches verbatim and only
+ * reshape the straight runs between them; stages 4, 7 and 8 reuse the whole
  * stage-1 border. Every border below is wound clockwise on screen (positive
  * shoelace) and every obstacle counter-clockwise (negative), the windings
  * loadTable() requires.
@@ -46,7 +49,7 @@ constexpr PocketDef kSharedPockets[6] = {
     {{17, 223}, 20, 23},   // bottom-left
 };
 
-// --- Stage 1 & 4 border: plain rectangle with bag notches --------------------
+// --- Shared rectangle border: plain with bag notches (stages 1, 4, 7, 8) ----
 
 constexpr PointPx kRectBorder[24] = {
     // Top-left corner: enters from the left edge, exits to the top edge.
@@ -141,49 +144,30 @@ constexpr TableDef kTable3{
     kTable3BorderLine, nullptr, 0, kTable2Pockets, 6, {70, 110}, kTable3Targets, 6,
 };
 
-// --- Stage 4: central island -------------------------------------------------
-//
-// Plain rectangle plus one octagon block mid-table. The rack splits around
-// it: two targets left, four right.
-
-constexpr PointPx kTable4IslandPoints[8] = {
-    {95, 130}, {95, 150}, {105, 160}, {135, 160}, {145, 150}, {145, 130}, {135, 120}, {105, 120},
-};
-constexpr Polyline kTable4Obstacles[1] = {Polyline{kTable4IslandPoints, 8}};
-
-constexpr TargetDef kTable4Targets[6] = {
-    {1, {60, 170}}, {2, {80, 120}}, {3, {160, 110}},
-    {4, {170, 140}}, {5, {160, 170}}, {6, {185, 150}},
-};
-
-constexpr TableDef kTable4{
-    kRectBorderLine, kTable4Obstacles, 1, kSharedPockets, 6, {60, 100}, kTable4Targets, 6,
-};
-
-// --- Stage 5: center bar -----------------------------------------------------
+// --- Stage 4: center bar -----------------------------------------------------
 //
 // Plain rectangle with a 40x8 bar mid-table between the cue (left) and the
 // rack (right). Same counter-clockwise winding as every other obstacle.
 
-constexpr PointPx kTable5BarPoints[4] = {{100, 136}, {100, 144}, {140, 144}, {140, 136}};
-constexpr Polyline kTable5Obstacles[1] = {Polyline{kTable5BarPoints, 4}};
+constexpr PointPx kTable4BarPoints[4] = {{100, 136}, {100, 144}, {140, 144}, {140, 136}};
+constexpr Polyline kTable4Obstacles[1] = {Polyline{kTable4BarPoints, 4}};
 
-constexpr TargetDef kTable5Targets[6] = {
+constexpr TargetDef kTable4Targets[6] = {
     {1, {150, 120}}, {2, {150, 155}}, {3, {158, 130}},
     {4, {166, 115}}, {5, {166, 135}}, {6, {166, 155}},
 };
 
-constexpr TableDef kTable5{
-    kRectBorderLine, kTable5Obstacles, 1, kSharedPockets, 6, {60, 140}, kTable5Targets, 6,
+constexpr TableDef kTable4{
+    kRectBorderLine, kTable4Obstacles, 1, kSharedPockets, 6, {60, 140}, kTable4Targets, 6,
 };
 
-// --- Stage 6: chevron --------------------------------------------------------
+// --- Stage 5: chevron --------------------------------------------------------
 //
 // The right run folds into an inward V tipped at (188, 140); every other
 // notch is untouched, so only the bottom-right/bottom-side/bottom-left mouth
 // indices shift.
 
-constexpr PointPx kTable6Border[27] = {
+constexpr PointPx kTable5Border[27] = {
     {16, 66}, {10, 60}, {20, 50}, {26, 56},
     {113, 56}, {113, 48}, {127, 48}, {127, 56},
     {214, 56}, {220, 50}, {230, 60}, {224, 66},
@@ -193,9 +177,9 @@ constexpr PointPx kTable6Border[27] = {
     {127, 224}, {127, 232}, {113, 232}, {113, 224},
     {26, 224}, {20, 230}, {10, 220}, {16, 214},
 };
-constexpr Polyline kTable6BorderLine{kTable6Border, 27};
+constexpr Polyline kTable5BorderLine{kTable5Border, 27};
 
-constexpr PocketDef kTable6Pockets[6] = {
+constexpr PocketDef kTable5Pockets[6] = {
     {{17, 57}, 0, 3},      // top-left
     {{120, 52}, 4, 7},     // top-side
     {{223, 57}, 8, 11},    // top-right
@@ -204,21 +188,21 @@ constexpr PocketDef kTable6Pockets[6] = {
     {{17, 223}, 23, 26},   // bottom-left
 };
 
-constexpr TargetDef kTable6Targets[6] = {
+constexpr TargetDef kTable5Targets[6] = {
     {1, {120, 110}}, {2, {130, 125}}, {3, {130, 155}},
     {4, {140, 140}}, {5, {150, 115}}, {6, {150, 165}},
 };
 
-constexpr TableDef kTable6{
-    kTable6BorderLine, nullptr, 0, kTable6Pockets, 6, {60, 140}, kTable6Targets, 6,
+constexpr TableDef kTable5{
+    kTable5BorderLine, nullptr, 0, kTable5Pockets, 6, {60, 140}, kTable5Targets, 6,
 };
 
-// --- Stage 7: fortress -------------------------------------------------------
+// --- Stage 6: fortress -------------------------------------------------------
 //
 // Downward bites on both top runs and upward bites on both bottom runs; the
 // side runs stay straight. 40 segments, the most cushions of any stage.
 
-constexpr PointPx kTable7Border[40] = {
+constexpr PointPx kTable6Border[40] = {
     {16, 66}, {10, 60}, {20, 50}, {26, 56},
     // Top-left bite: right, down, right, up.
     {50, 56}, {50, 72}, {89, 72}, {89, 56},
@@ -234,9 +218,9 @@ constexpr PointPx kTable7Border[40] = {
     {89, 224}, {89, 208}, {50, 208}, {50, 224},
     {26, 224}, {20, 230}, {10, 220}, {16, 214},
 };
-constexpr Polyline kTable7BorderLine{kTable7Border, 40};
+constexpr Polyline kTable6BorderLine{kTable6Border, 40};
 
-constexpr PocketDef kTable7Pockets[6] = {
+constexpr PocketDef kTable6Pockets[6] = {
     {{17, 57}, 0, 3},      // top-left
     {{120, 52}, 8, 11},    // top-side
     {{223, 57}, 16, 19},   // top-right
@@ -245,13 +229,33 @@ constexpr PocketDef kTable7Pockets[6] = {
     {{17, 223}, 36, 39},   // bottom-left
 };
 
-constexpr TargetDef kTable7Targets[6] = {
+constexpr TargetDef kTable6Targets[6] = {
     {1, {110, 130}}, {2, {120, 145}}, {3, {120, 165}},
     {4, {135, 135}}, {5, {135, 160}}, {6, {150, 145}},
 };
 
+constexpr TableDef kTable6{
+    kTable6BorderLine, nullptr, 0, kTable6Pockets, 6, {60, 140}, kTable6Targets, 6,
+};
+
+// --- Stage 7: central island -------------------------------------------------
+//
+// Plain rectangle plus one octagon block mid-table. The rack splits around
+// it: two targets left, four right. Harder than the bar (stage 4) because
+// the island blocks every straight line, not just the middle.
+
+constexpr PointPx kTable7IslandPoints[8] = {
+    {95, 130}, {95, 150}, {105, 160}, {135, 160}, {145, 150}, {145, 130}, {135, 120}, {105, 120},
+};
+constexpr Polyline kTable7Obstacles[1] = {Polyline{kTable7IslandPoints, 8}};
+
+constexpr TargetDef kTable7Targets[6] = {
+    {1, {60, 170}}, {2, {80, 120}}, {3, {160, 110}},
+    {4, {170, 140}}, {5, {160, 170}}, {6, {185, 150}},
+};
+
 constexpr TableDef kTable7{
-    kTable7BorderLine, nullptr, 0, kTable7Pockets, 6, {60, 140}, kTable7Targets, 6,
+    kRectBorderLine, kTable7Obstacles, 1, kSharedPockets, 6, {60, 100}, kTable7Targets, 6,
 };
 
 // --- Stage 8: twin islands ---------------------------------------------------
