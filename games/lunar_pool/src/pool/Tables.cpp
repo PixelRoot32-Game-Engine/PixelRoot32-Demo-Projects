@@ -1,16 +1,18 @@
 /*
  * Tables.cpp - see Tables.h.
  *
- * The four shipped stages share the six pocket centers but differ in cushion
- * geometry, obstacles and rack size, in increasing difficulty:
+ * The four shipped stages share the six pocket centers and a full 6-ball
+ * rack but differ in cushion geometry and obstacles, in increasing
+ * difficulty (like the NES original, where every level plays 6 balls and
+ * only the table changes):
  *
- * - Stage 1 ("Classic", NES STAGE01-like): plain rectangle, 3 targets.
+ * - Stage 1 ("Classic", NES STAGE01-like): plain rectangle.
  * - Stage 2 ("Bites", NES STAGE08/10-like): rectangular bites cut into both
- *   side cushions, 4 targets.
+ *   side cushions.
  * - Stage 3 ("Zigzag", NES STAGE04-like): angled teeth on both side
- *   cushions, 5 targets.
+ *   cushions.
  * - Stage 4 ("Donut", NES STAGE09-like): rectangle with a central octagon
- *   island, 6 targets.
+ *   island; the rack splits around it.
  *
  * Stages 2 and 3 reuse the stage-1 pocket notches verbatim and only reshape
  * the straight side runs between them, so their mouth indices match; stage 4
@@ -53,12 +55,13 @@ constexpr PointPx kRectBorder[24] = {
 };
 constexpr Polyline kRectBorderLine{kRectBorder, 24};
 
-constexpr TargetDef kTable1Targets[3] = {
-    {1, {150, 140}}, {2, {160, 132}}, {3, {160, 148}},
+constexpr TargetDef kTable1Targets[6] = {
+    {1, {150, 140}}, {2, {158, 135}}, {3, {158, 145}},
+    {4, {166, 130}}, {5, {166, 140}}, {6, {166, 150}},
 };
 
 constexpr TableDef kTable1{
-    kRectBorderLine, nullptr, 0, kSharedPockets, 6, {70, 140}, kTable1Targets, 3,
+    kRectBorderLine, nullptr, 0, kSharedPockets, 6, {70, 140}, kTable1Targets, 6,
 };
 
 // --- Stage 2 border: side bites ----------------------------------------------
@@ -91,12 +94,13 @@ constexpr PocketDef kTable2Pockets[6] = {
     {{17, 223}, 24, 27},   // bottom-left
 };
 
-constexpr TargetDef kTable2Targets[4] = {
-    {1, {150, 120}}, {2, {158, 130}}, {3, {166, 112}}, {4, {166, 138}},
+constexpr TargetDef kTable2Targets[6] = {
+    {1, {150, 120}}, {2, {150, 140}}, {3, {158, 130}},
+    {4, {158, 150}}, {5, {166, 112}}, {6, {166, 138}},
 };
 
 constexpr TableDef kTable2{
-    kTable2BorderLine, nullptr, 0, kTable2Pockets, 6, {60, 140}, kTable2Targets, 4,
+    kTable2BorderLine, nullptr, 0, kTable2Pockets, 6, {60, 140}, kTable2Targets, 6,
 };
 
 // --- Stage 3 border: angled teeth --------------------------------------------
@@ -118,12 +122,13 @@ constexpr PointPx kTable3Border[32] = {
 };
 constexpr Polyline kTable3BorderLine{kTable3Border, 32};
 
-constexpr TargetDef kTable3Targets[5] = {
-    {1, {140, 140}}, {2, {148, 132}}, {3, {148, 148}}, {4, {156, 124}}, {5, {156, 156}},
+constexpr TargetDef kTable3Targets[6] = {
+    {1, {140, 140}}, {2, {148, 132}}, {3, {148, 148}},
+    {4, {156, 124}}, {5, {156, 156}}, {6, {164, 140}},
 };
 
 constexpr TableDef kTable3{
-    kTable3BorderLine, nullptr, 0, kTable2Pockets, 6, {70, 110}, kTable3Targets, 5,
+    kTable3BorderLine, nullptr, 0, kTable2Pockets, 6, {70, 110}, kTable3Targets, 6,
 };
 
 // --- Stage 4: central island -------------------------------------------------

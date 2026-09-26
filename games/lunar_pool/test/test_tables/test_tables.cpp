@@ -351,7 +351,7 @@ void test_tables_stage1_loads_with_expected_counts(void) {
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
     TEST_ASSERT_EQUAL_UINT8(24, table.segmentCount);
     TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
-    TEST_ASSERT_EQUAL_UINT8(4, table.ballCount);  // cue + 3 targets
+    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);  // cue + 6 targets
 }
 
 void test_tables_stage1_matches_shipped_positions(void) {
@@ -375,7 +375,7 @@ void test_tables_stage2_loads_with_expected_counts(void) {
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
     TEST_ASSERT_EQUAL_UINT8(32, table.segmentCount);  // 24 notches + 8 bite edges
     TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
-    TEST_ASSERT_EQUAL_UINT8(5, table.ballCount);  // cue + 4 targets
+    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);  // cue + 6 targets
 }
 
 void test_tables_stage2_matches_shipped_positions(void) {
@@ -397,7 +397,7 @@ void test_tables_stage3_loads_with_expected_counts(void) {
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
     TEST_ASSERT_EQUAL_UINT8(32, table.segmentCount);  // 24 notches + 8 teeth edges
     TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
-    TEST_ASSERT_EQUAL_UINT8(6, table.ballCount);  // cue + 5 targets
+    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);  // cue + 6 targets
 }
 
 void test_tables_stage3_matches_shipped_positions(void) {
