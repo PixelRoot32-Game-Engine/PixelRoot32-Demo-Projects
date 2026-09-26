@@ -60,6 +60,7 @@ void PoolMenuScene::update(unsigned long deltaTime) {
     if (nextScene_ == nullptr) {
         return;
     }
+    nextScene_->updateMenuAudio(deltaTime);
     auto& input = engine.getInputManager();
 #if PIXELROOT32_ENABLE_UI_SYSTEM
     // D-pad menu: Up/Down moves the cursor with wrap, A activates the row.

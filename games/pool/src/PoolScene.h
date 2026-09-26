@@ -42,6 +42,15 @@ public:
      * @brief Soft tick for menu cursor moves.
      */
     void playMenuTick();
+
+    /**
+     * @brief Ticks SFX cooldowns and delayed steps from the menu scene.
+     *
+     * PoolScene::update() never runs while the menu is up, so without this
+     * the first menu blip would arm its cooldown forever and the rest of
+     * the menu would go silent.
+     */
+    void updateMenuAudio(unsigned long dtMs);
     /**
      * @brief Initializes the scene. Always calls `Scene::init()` first.
      */

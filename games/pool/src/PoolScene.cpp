@@ -100,6 +100,10 @@ void PoolScene::playMenuTick() {
     audio_.playSfx(PoolSfx::AimTick);
 }
 
+void PoolScene::updateMenuAudio(unsigned long dtMs) {
+    audio_.update(dtMs);
+}
+
 void PoolScene::init() {
     Scene::init();  // resetState() + physicsScheduler.init() — always call base first
     // init() is idempotent by Scene contract: re-running it deals a fresh
