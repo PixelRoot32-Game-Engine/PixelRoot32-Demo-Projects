@@ -2,12 +2,6 @@
 #include <core/Scene.h>
 #include <graphics/Renderer.h>
 
-#if PIXELROOT32_ENABLE_UI_SYSTEM
-#include <graphics/ui/UIButton.h>
-#include <graphics/ui/UICheckbox.h>
-#include <graphics/ui/UILabel.h>
-#endif
-
 #include "audio/PoolAudio.h"
 #include "pool/Game.h"
 
@@ -24,10 +18,11 @@ namespace pool {
  */
 class PoolScene : public pixelroot32::core::Scene {
 public:
-    PoolScene();
-
     /**
-     * @brief Starts the run from the menu's START GAME row.
+     * @brief Deals a fresh run and leaves the menu: Menu -> Aiming.
+     *
+     * Called by the menu scene right after engine.setScene() re-inits this
+     * scene (setScene always runs init, so the run starts from stage 1).
      */
     void startGameFromMenu();
 
@@ -42,6 +37,11 @@ public:
      * @param enabled False mutes every sound effect.
      */
     void setSfxEnabled(bool enabled);
+
+    /**
+     * @brief Soft tick for menu cursor moves.
+     */
+    void playMenuTick();
     /**
      * @brief Initializes the scene. Always calls `Scene::init()` first.
      */
@@ -98,14 +98,6 @@ private:
     void snapshotAudioBaseline();
 
     /**
-     * @brief Pushes the menu cursor onto the START/MUSIC/SFX widgets.
-     *
-     * The scene owns D-pad navigation; the widgets own checked state, style
-     * and drawing. No-op without the UI flag.
-     */
-    void applyMenuSelection();
-
-    /**
      * @brief Draws every active ball, ringing the next expected target.
      * @param renderer The renderer to draw into.
      */
@@ -142,18 +134,6 @@ private:
     uint8_t prevActiveMask_ = 0;
     /// Score at the previous tick; a drop is a foul.
     int32_t prevScore_ = 0;
-#if PIXELROOT32_ENABLE_UI_SYSTEM
-    /// Menu widgets (Menu state only): title, START GAME, MUSIC and SFX
-    /// checks, and the nav hint. Scene-owned, drawn by hand each frame.
-    /// Mutable: drawHud() is const but the engine's draw() is not.
-    mutable pixelroot32::graphics::ui::UILabel titleLabel_;
-    mutable pixelroot32::graphics::ui::UIButton startBtn_;
-    mutable pixelroot32::graphics::ui::UICheckBox musicBox_;
-    mutable pixelroot32::graphics::ui::UICheckBox sfxBox_;
-    mutable pixelroot32::graphics::ui::UILabel hintLabel_;
-    /// Menu cursor: 0 = START GAME, 1 = MUSIC, 2 = SFX.
-    uint8_t menuSel_ = 0;
-#endif
 };
 
 }  // namespace pool

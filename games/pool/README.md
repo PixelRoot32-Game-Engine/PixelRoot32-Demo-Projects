@@ -34,9 +34,9 @@ physics core:
   effects through `AudioEngine` (`src/audio/PoolAudio.*`). ~17 KB, nearly
   all of it the scheduler's own buffers. The scene still compiles silent
   with the flag at 0 — every engine call in the director is fenced.
-- **`PIXELROOT32_ENABLE_UI_SYSTEM=1`** — the start menu is engine widgets:
+- **`PIXELROOT32_ENABLE_UI_SYSTEM=1`** — the title scene is engine widgets:
   a `UIButton` START GAME row plus two `UICheckBox` rows (MUSIC, SFX) and
-  `UILabel` title/hint, all drawn by the scene. The HUD itself stays
+  `UILabel` title/hint, all drawn by the menu scene. The HUD itself stays
   hand-drawn `drawText`. ~9 KB.
 - **`PIXELROOT32_ENABLE_PARTICLES=0`** — no particle effects in v1. ~2 KB.
 - **`PIXELROOT32_ENABLE_SCENE_TRANSITIONS=0`** — a single scene for the whole
@@ -69,10 +69,12 @@ Pin choices (ST7789 SPI, D-pad + two buttons) are in
 | Shoot / confirm | Space | Button A (13) |
 | Pause (gameplay + music) | Return | Button B (12) |
 
-The menu offers START GAME plus two independent checks — MUSIC and SFX,
-both on by default. Muting music stops the sequencer (unmuting replays the
-current stage track); muting SFX silences every effect. Choices persist for
-the whole session.
+The menu is its own black-background scene (`PoolMenuScene`, bomberbot
+title-screen pattern): START GAME plus two independent checks — MUSIC and
+SFX, both on by default. Muting music stops the sequencer (unmuting
+replays the current stage track); muting SFX silences every effect.
+Choices persist for the whole session. START deals a fresh run from
+stage 1; there is no trip back once the run begins.
 
 Aim tracks the held level for smooth sweeps; power steps on the press edge so
 one tap is exactly one meter level. Input is only read in `Aiming` (plus
@@ -190,6 +192,7 @@ pins) on ESP32.
 ```
 src/
 ├── PoolScene.h/.cpp   input map, 60 Hz pacing, table/balls/aim/HUD draw, audio triggers
+├── PoolMenuScene.h/.cpp   black-bg title: START GAME + MUSIC/SFX checks (engine UI widgets)
 ├── main.cpp                platform selector
 ├── platforms/              native.h, esp32_dev.h — backend wiring per target
 ├── assets/audio/           PoolMusic.h (10 stage loops + jingles), PoolSfx.h (effect bank)

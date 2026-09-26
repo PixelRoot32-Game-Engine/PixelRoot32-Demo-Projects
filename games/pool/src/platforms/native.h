@@ -7,6 +7,7 @@
 #include <drivers/native/SDL2_AudioBackend.h>
 #include <platforms/EngineConfig.h>
 
+#include "PoolMenuScene.h"
 #include "PoolScene.h"
 
 namespace pr32 = pixelroot32;
@@ -26,13 +27,15 @@ pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate()
 pr32::core::Engine engine(config, inputConfig, audioConfig);
 
 pool::PoolScene scene;
+pool::PoolMenuScene menuScene;
 
 int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
 
     engine.init();
-    engine.setScene(&scene);
+    pool::PoolMenuScene::setNextScene(&scene);
+    engine.setScene(&menuScene);
     engine.run();
 
     return 0;

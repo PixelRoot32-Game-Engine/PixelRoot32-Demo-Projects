@@ -80,27 +80,6 @@ constexpr pr32::graphics::Font kDigitFont = {kDigitGlyphs, '0', '9', 3, 5, 4, 6,
 
 }  // namespace
 
-#if PIXELROOT32_ENABLE_UI_SYSTEM
-namespace ui = pr32::graphics::ui;
-#endif
-
-PoolScene::PoolScene()
-#if PIXELROOT32_ENABLE_UI_SYSTEM
-    : titleLabel_("POOL", pr32::math::Vector2(0, 6), pr32::graphics::Color::Magenta, 4),
-      startBtn_("START GAME", kBtnA, pr32::math::Vector2(30, 100), pr32::math::Vector2(180, 24)),
-      musicBox_("MUSIC", kBtnA, pr32::math::Vector2(79, 132), pr32::math::Vector2(100, 24), true),
-      sfxBox_("SFX", kBtnA, pr32::math::Vector2(91, 162), pr32::math::Vector2(76, 24), true),
-      hintLabel_("UP DOWN SELECT A OK", pr32::math::Vector2(0, 220), pr32::graphics::Color::Gray, 1)
-#endif
-{
-#if PIXELROOT32_ENABLE_UI_SYSTEM
-    // Transparent rows over the table: selection reads as ">" + yellow.
-    startBtn_.setStyle(pr32::graphics::Color::White, pr32::graphics::Color::Black, false);
-    musicBox_.setStyle(pr32::graphics::Color::White, pr32::graphics::Color::Black, false);
-    sfxBox_.setStyle(pr32::graphics::Color::White, pr32::graphics::Color::Black, false);
-#endif
-}
-
 void PoolScene::startGameFromMenu() {
     game_.startGame();
     audio_.playSfx(PoolSfx::UiConfirm);
@@ -117,12 +96,8 @@ void PoolScene::setSfxEnabled(bool enabled) {
     audio_.playSfx(PoolSfx::UiConfirm);
 }
 
-void PoolScene::applyMenuSelection() {
-#if PIXELROOT32_ENABLE_UI_SYSTEM
-    startBtn_.setSelected(menuSel_ == 0);
-    musicBox_.setSelected(menuSel_ == 1);
-    sfxBox_.setSelected(menuSel_ == 2);
-#endif
+void PoolScene::playMenuTick() {
+    audio_.playSfx(PoolSfx::AimTick);
 }
 
 void PoolScene::init() {
@@ -131,16 +106,12 @@ void PoolScene::init() {
     // stage-1 game instead of stacking state on the previous one.
     accUnits_ = 0;
     paused_ = false;
-    tableError_ = game_.newGame(2);
+    // Every entry into this scene (boot or START GAME) deals a fresh run
+    // from stage 1: engine.setScene() always runs init() first.
+    tableError_ = game_.newGame(1);
     audio_.reset();
     audio_.stopMusic();
     audioKey_ = 0;
-#if PIXELROOT32_ENABLE_UI_SYSTEM
-    menuSel_ = 0;
-    titleLabel_.centerX(240);
-    hintLabel_.centerX(240);
-    applyMenuSelection();
-#endif
     snapshotAudioBaseline();
 }
 
@@ -183,36 +154,11 @@ void PoolScene::handleInput() {
     }
     switch (state) {
         case pool::State::Menu:
-#if PIXELROOT32_ENABLE_UI_SYSTEM
-            // D-pad menu: Up/Down moves the cursor, A activates the row.
-            // START GAME deals in; MUSIC/SFX toggle their engine checkboxes.
-            if (input.isButtonPressed(kBtnUp)) {
-                menuSel_ = static_cast<uint8_t>((menuSel_ + 2) % 3);
-                applyMenuSelection();
-                audio_.playSfx(PoolSfx::AimTick);
-            }
-            if (input.isButtonPressed(kBtnDown)) {
-                menuSel_ = static_cast<uint8_t>((menuSel_ + 1) % 3);
-                applyMenuSelection();
-                audio_.playSfx(PoolSfx::AimTick);
-            }
+            // The menu lives in PoolMenuScene; reaching Menu here only
+            // happens on a direct boot into this scene, so A just starts.
             if (input.isButtonPressed(kBtnA)) {
-                if (menuSel_ == 0) {
-                    startGameFromMenu();
-                } else if (menuSel_ == 1) {
-                    musicBox_.toggle();
-                    setMusicEnabled(musicBox_.isChecked());
-                } else {
-                    sfxBox_.toggle();
-                    setSfxEnabled(sfxBox_.isChecked());
-                }
+                startGameFromMenu();
             }
-#else
-            if (input.isButtonPressed(kBtnA)) {
-                game_.startGame();
-                audio_.playSfx(PoolSfx::UiConfirm);
-            }
-#endif
             break;
         case pool::State::Aiming:
             // Aim tracks the held level for smooth sweeps; power steps on the
@@ -504,16 +450,8 @@ void PoolScene::drawHud(pr32::graphics::Renderer& renderer) const {
         return;
     }
     if (game_.state() == pool::State::Menu) {
-#if PIXELROOT32_ENABLE_UI_SYSTEM
-        titleLabel_.draw(renderer);
-        startBtn_.draw(renderer);
-        musicBox_.draw(renderer);
-        sfxBox_.draw(renderer);
-        hintLabel_.draw(renderer);
-#else
         renderer.drawTextCentered("POOL", 100, Color::White, 2);
         renderer.drawTextCentered("PRESS A TO START", 130, Color::Gray, 1);
-#endif
     } else if (game_.state() == pool::State::GameOver) {
         if (game_.won()) {
             renderer.drawTextCentered("YOU WIN!", 100, Color::Yellow, 2);

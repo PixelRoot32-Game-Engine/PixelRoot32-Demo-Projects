@@ -6,6 +6,7 @@
 #include <drivers/esp32/ESP32_I2S_AudioBackend.h>
 #include <platforms/EngineConfig.h>
 
+#include "PoolMenuScene.h"
 #include "PoolScene.h"
 
 namespace pr32 = pixelroot32;
@@ -38,10 +39,12 @@ pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate()
 pr32::core::Engine engine(config, inputConfig, audioConfig);
 
 pool::PoolScene scene;
+pool::PoolMenuScene menuScene;
 
 void setup() {
     engine.init();
-    engine.setScene(&scene);
+    pool::PoolMenuScene::setNextScene(&scene);
+    engine.setScene(&menuScene);
 }
 
 void loop() {
