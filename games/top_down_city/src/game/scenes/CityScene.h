@@ -2,7 +2,10 @@
 
 #include <cstdint>
 
+#include <graphics/DialogBox.h>
+
 #include "game/CityConstants.h"
+#include "game/dialog/ContractDialog.h"
 #include "game/entities/VehicleActor.h"
 #include "game/scenes/BaseCityScene.h"
 #include "game/systems/PedestrianPool.h"
@@ -47,9 +50,11 @@ public:
 protected:
     void onEnterSpace(bool firstEntry) override;
     bool onActionPressed() override;
+    bool onFirePressed() override;
     bool stepSpace(const StepInput& in) override;
     void drawSpace(pixelroot32::graphics::Renderer& renderer) override;
     void drawSpaceOverlay(pixelroot32::graphics::Renderer& renderer) override;
+    void drawModal(pixelroot32::graphics::Renderer& renderer) override;
 
     PersonHit hitPersonBox(int left, int top, int width, int height,
                            std::uint8_t damage) override;
@@ -216,6 +221,18 @@ private:
     /// from the phase.
     bool atContractDrop() const;
 
+    /**
+     * @brief One step of the payphone briefing, if it is up.
+     * @return true when the briefing owned the step: the street is frozen
+     *         while the player is on the phone -- no walk, no traffic, no
+     *         clocks -- and the verdict, if one arrived, has been served.
+     */
+    bool stepBriefing(const StepInput& in);
+
+    /// The panel behind the briefing dialog. Sized on entry (see
+    /// briefingBoxSized_), off the tallest line of every chapter's script.
+    void setupBriefingBox();
+
     void drawMinimap(pixelroot32::graphics::Renderer& renderer);
 
     VehicleActor   vehicles_[city_scene::NUM_VEHICLES];
@@ -234,6 +251,32 @@ private:
     /// them. BaseCityScene owns the rest of the frame-skip comparison.
     std::uint32_t  drawnTrafficKey_;
     std::uint32_t  drawnPickupKey_;
+
+    /// The payphone briefing. While it is up the player does not move, the
+    /// trigger does not fire, and the street is frozen -- a phone call is a
+    /// pause, and the mission clock has not started yet. Opened by RUN on
+    /// the ringing phone; the chapter itself starts only on ACCEPT.
+    ContractDialog briefing_;
+    pixelroot32::graphics::DialogBox briefingBox_;
+
+    /// setupBriefingBox() ran with a usable font. The box cannot be sized
+    /// in the constructor: DialogBox::measureHeightPx falls back to
+    /// FontManager's default font, and scenes are globals constructed
+    /// before Engine::init() sets it -- measuring there returns 0 and the
+    /// panel draws zero pixels high, forever. So the first entry sizes it
+    /// instead, like examples/dialog does in its Scene::init(), retrying
+    /// on later entries until it sticks.
+    bool briefingBoxSized_;
+
+    /// Edge detection for the two directions the briefing reads on its
+    /// choice line. Local, like the shop's: the briefing is the only thing
+    /// outdoors that reads the D-pad as a press instead of a direction.
+    bool heldUp_;
+    bool heldDown_;
+
+    /// The briefing's revision on the last drawn frame. It moves on open,
+    /// every advance, every highlight move and close.
+    std::uint16_t drawnBriefingRevision_;
 };
 
 }  // namespace top_down_city

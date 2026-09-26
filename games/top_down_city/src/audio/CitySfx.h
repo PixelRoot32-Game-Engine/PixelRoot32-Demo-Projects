@@ -130,6 +130,20 @@ constexpr AudioEvent kMissionFailed{
     WaveType::PULSE, 440.0f, 0.35f, 0.40f, 0.25f, 0, nullptr,
     165.0f, 0.35f, false, SweepCurve::Exponential};
 
+// --- Mission accepted. The confirm the briefing ends on: a TWO-point
+//     stepped rise, a fifth (E5->B5). Two steps is what keeps it out of
+//     every other rise in this file -- kWeaponPickup climbs three points,
+//     kMissionDelivered four, playWantedUp sweeps an octave instead of
+//     stepping, kCarHorn goes down-then-up, and kDistrictChange is a
+//     single blip. Higher than the horn's band, shorter than either
+//     payout figure (0.15 s), one voice: a job confirmed, not a job paid.
+constexpr SfxBreakpoint kMissionAcceptedPitch[] = {
+    {0.00f, 659.0f}, {0.07f, 988.0f}};
+constexpr AudioEvent kMissionAccepted{
+    WaveType::PULSE, 659.0f, 0.15f, 0.45f, 0.5f, 0, nullptr,
+    0.0f, 0.0f, false, SweepCurve::Linear, nullptr, 0,
+    kMissionAcceptedPitch, 2};
+
 // --- Roadkill (ADR-16). Deeper and shorter than kVehicleCrash -- 500->90 Hz
 //     over 180 ms against its 900->120 over 220 -- and the only event here
 //     with a direct LFSR period, which makes it a granular wet thud against

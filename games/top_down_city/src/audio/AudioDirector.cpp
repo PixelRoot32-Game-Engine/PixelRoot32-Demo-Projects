@@ -117,6 +117,9 @@ void AudioDirector::playCue(audio_cues::Cue cue) {
         case Cue::MissionFailed:
             play(city_sfx::kMissionFailed);
             break;
+        case Cue::MissionAccepted:
+            play(city_sfx::kMissionAccepted);
+            break;
         case Cue::Roadkill:
             play(city_sfx::kRoadkill);
             break;

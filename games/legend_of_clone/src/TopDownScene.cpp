@@ -6,6 +6,11 @@
 #include "graphics/Color.h"
 #include "math/Scalar.h"
 
+#include "GameSession.h"
+#include "game/DialogLayout.h"
+
+#include <cstdio>
+
 namespace pr32 = pixelroot32;
 
 extern pr32::core::Engine engine;
@@ -78,6 +83,12 @@ void TopDownScene::init() {
     tilemapLayerCache_.invalidate();
     (void)tilemapLayerCache_.allocateForRenderer(engine.getRenderer());
 
+    // A scene swap never happens mid-dialog -- the player is frozen and cannot
+    // reach a doorway -- but a dialog carried into a fresh scene would freeze
+    // the player with nothing on screen, so drop whatever is left.
+    dialogController.reset();
+    dialogBox_.setStyle(dialogBoxStyle());
+
     world_ = config.world;
     if (world_ == nullptr || !world_->isAttached() || config.roomLayer == nullptr) {
         worldReady_ = false;
@@ -148,8 +159,9 @@ void TopDownScene::onRoomEnterCallback(int fromIdx, int toIdx, void* userData) {
 }
 
 void TopDownScene::playerCell(int& outCol, int& outRow) const {
-    outCol = (player_.pixelX() + kPlayerSize / 2) / kTileSize;
-    outRow = (player_.pixelY() + kPlayerSize / 2) / kTileSize;
+    const GridCell cell = playerCellAt(player_.pixelX(), player_.pixelY());
+    outCol = cell.col;
+    outRow = cell.row;
 }
 
 void TopDownScene::update(unsigned long deltaTime) {
@@ -163,6 +175,10 @@ void TopDownScene::update(unsigned long deltaTime) {
         return;
     }
 
+    // Before Scene::update, so the frame that opens a dialog is already a
+    // frame the player does not walk on.
+    updateDialog(deltaTime);
+
     Scene::update(deltaTime);
     checkRoomExit();
 
@@ -173,6 +189,24 @@ void TopDownScene::update(unsigned long deltaTime) {
     if (!transitionActive_) {
         onPlayerSettled();
     }
+}
+
+void TopDownScene::updateDialog(unsigned long deltaTime) {
+    auto& input = engine.getInputManager();
+
+    // Press edges only: a held A must not reopen a sign the frame it closes.
+    DialogInput buttons;
+    buttons.up      = input.isButtonPressed(BTN_UP);
+    buttons.down    = input.isButtonPressed(BTN_DOWN);
+    buttons.confirm = input.isButtonPressed(BTN_A);
+    buttons.cancel  = input.isButtonPressed(BTN_B);
+
+    const GridCell ahead =
+        facingCell(playerCellAt(player_.pixelX(), player_.pixelY()), player_.facing());
+    dialogController.update(buttons, interactableAt(ahead.col, ahead.row), deltaTime);
+
+    // Scene::update skips disabled entities, the same lock the room slide uses.
+    player_.setEnabled(!dialogController.blocksPlayer());
 }
 
 void TopDownScene::checkRoomExit() {
@@ -303,8 +337,9 @@ void TopDownScene::adviseFramebufferBeforeBeginFrame(gfx::Renderer& renderer) {
     int camY = 0;
     cameraSample(camX, camY);
     const gfx::TileMap4bppDrawSpec staticLayers[] = { terrainLayer() };
+    const gfx::TileMap4bppDrawSpec dynamicLayers[] = { overlayLayer() };
     tilemapLayerCache_.adviseFramebufferBeforeBeginFrame(
-        renderer, camX, camY, staticLayers, 1, nullptr, 0);
+        renderer, camX, camY, staticLayers, 1, dynamicLayers, 1);
 #else
     (void)renderer;
 #endif
@@ -332,11 +367,14 @@ void TopDownScene::draw(gfx::Renderer& renderer) {
 
     // One static layer. The cache replays it with a memcpy while the camera is
     // pinned and rebuilds it during a slide, which is the only time it moves.
+    // The overlay is a dynamic layer: drawn after the snapshot is taken or
+    // restored, so a cell it changes is never baked into the cache.
     int camX = 0;
     int camY = 0;
     cameraSample(camX, camY);
     const gfx::TileMap4bppDrawSpec staticLayers[] = { terrainLayer() };
-    tilemapLayerCache_.draw(renderer, camX, camY, staticLayers, 1, nullptr, 0);
+    const gfx::TileMap4bppDrawSpec dynamicLayers[] = { overlayLayer() };
+    tilemapLayerCache_.draw(renderer, camX, camY, staticLayers, 1, dynamicLayers, 1);
 
     // Entities — the player, and whatever a later iteration adds.
     Scene::draw(renderer);
@@ -344,7 +382,16 @@ void TopDownScene::draw(gfx::Renderer& renderer) {
     // Drawn last and opaque: the camera viewport is 176 px tall but the panel is
     // 240, so world rows below the current room would otherwise bleed into the
     // strip the status bar occupies.
-    drawStatusBar(renderer);
+    //
+    // While a dialog is active, the dialog box replaces the room readout. A
+    // shop answer starts in the same update() that ends the menu, so the box
+    // never has a frame with nothing to draw between the two.
+    if (dialogController.blocksPlayer()) {
+        TopDownScene::drawStatusBar(renderer);
+        dialogBox_.draw(renderer, dialogController.runner());
+    } else {
+        drawStatusBar(renderer);
+    }
 }
 
 void TopDownScene::drawStatusBar(gfx::Renderer& renderer) {
@@ -354,6 +401,17 @@ void TopDownScene::drawStatusBar(gfx::Renderer& renderer) {
 
     renderer.drawFilledRectangle(0, kStatusBarY, kDisplayWidth, kStatusBarHeight,
                                  gfx::Color::Black);
+
+    renderer.setOffsetBypass(oldBypass);
+}
+
+void TopDownScene::drawRupees(gfx::Renderer& renderer, int y) const {
+    const bool oldBypass = renderer.isOffsetBypassEnabled();
+    renderer.setOffsetBypass(true);
+
+    char buffer[24];
+    std::snprintf(buffer, sizeof(buffer), "RUPEES %u", static_cast<unsigned>(gameState.rupees));
+    renderer.drawText(buffer, 8, y, gfx::Color::White, 1);
 
     renderer.setOffsetBypass(oldBypass);
 }

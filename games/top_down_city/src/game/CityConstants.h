@@ -863,10 +863,12 @@ constexpr int kShopMarkerW   = 6;
 /* "$9999" -- the currency mark plus economy::kMaxCash's four digits. */
 constexpr int kShopPriceChars = 5;
 
-/* "FIRE BUY  RUN CLOSE". Counted rather than measured because the string is a
- * literal in the draw call and the panel has to be wide enough for it before
- * either exists. */
-constexpr int kShopFooterChars = 19;
+/* The footer naming the picker's two buttons. Counted from the literal itself
+ * rather than measured, because the panel has to be wide enough for it at
+ * compile time and TextLayout::measureWidthPx is a runtime call -- it could not
+ * feed the constexpr width below or the static_asserts after it. */
+constexpr char kShopFooterText[] = "FIRE BUY  RUN CLOSE";
+constexpr int kShopFooterChars = sizeof(kShopFooterText) - 1;
 
 constexpr int kShopRowNeedPx =
     kHudPadPx + kShopMarkerW

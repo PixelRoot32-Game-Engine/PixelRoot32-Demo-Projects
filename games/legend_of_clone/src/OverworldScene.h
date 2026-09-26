@@ -13,7 +13,7 @@ namespace legend_of_clone {
  *
  * Everything about moving between screens lives in TopDownScene. What is left
  * here is what makes this map the overworld rather than the dungeon: its data,
- * its status readout, and the one tile that changes scene.
+ * its status readout, the one tile that changes scene, and the sign beside it.
  */
 class OverworldScene : public TopDownScene {
 public:
@@ -31,6 +31,7 @@ protected:
     Setup setup() override;
     void drawStatusBar(pixelroot32::graphics::Renderer& renderer) override;
     void onPlayerSettled() override;
+    Interactable interactableAt(int col, int row) const override;
 
 private:
     /// Points at the exported overworld map. Three pointers, no pixel data.

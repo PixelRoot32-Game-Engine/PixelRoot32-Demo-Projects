@@ -3,6 +3,9 @@
  */
 #include "ChessScene.h"
 
+#include <graphics/FontManager.h>
+#include <graphics/TextLayout.h>
+
 #include "ChessConstants.h"
 #include "ChessPalettes.h"
 #include "assets/ChessPieces.h"
@@ -15,15 +18,18 @@ namespace input = pixelroot32::input;
 
 namespace {
 
-/** Default font advance per character, in pixels, at size 1. */
-constexpr int kFontAdvance = 6;
-
-/** X that centres `text` inside a box, so button labels do not need a helper. */
+/**
+ * X that centres `text` inside a box, so button labels do not need a helper.
+ *
+ * Measured by the engine rather than by a character count times a copied
+ * advance, so it follows the font. TextLayout stops at the last glyph, while
+ * the advance this replaced also counted the gap after it; that gap is added
+ * back so every label stays on the pixel it was drawn at.
+ */
 int centeredTextX(int boxX, int boxWidth, const char* text, int size) {
-    int length = 0;
-    while (text[length] != '\0') ++length;
-
-    const int textWidth = length * kFontAdvance * size;
+    const gfx::Font* font = gfx::FontManager::getDefaultFont();
+    int textWidth = gfx::TextLayout::measureWidthPx(text, font, static_cast<uint8_t>(size));
+    if (textWidth > 0 && font != nullptr) textWidth += font->spacing * size;
     return boxX + (boxWidth - textWidth) / 2;
 }
 
@@ -34,12 +40,6 @@ bool pointInRect(int16_t x, int16_t y, int rectX, int rectY, int width, int heig
 int clamp(int value, int low, int high) {
     return value < low ? low : (value > high ? high : value);
 }
-
-/** The four promotion choices, in the order the picker shows them. */
-constexpr chess::PieceType kPromotionChoices[4] = {
-    chess::PieceType::Queen, chess::PieceType::Rook,
-    chess::PieceType::Bishop, chess::PieceType::Knight
-};
 
 /**
  * Draw a 4bpp sprite at its stored size.
@@ -90,6 +90,7 @@ void ChessScene::cancelDrag() {
     dragOrigin_     = chess::kNoSquare;
     dragMoveCount_  = 0;
     hoveredSquare_  = chess::kNoSquare;
+    promotion_.close();
     promotionFrom_  = chess::kNoSquare;
     promotionTo_    = chess::kNoSquare;
 }
@@ -147,7 +148,7 @@ void ChessScene::onUnconsumedTouchEvent(const input::TouchEvent& event) {
 
 void ChessScene::handlePress(int16_t x, int16_t y) {
     // While the picker is open nothing on the board is grabbable.
-    if (interaction_ == Interaction::ChoosingPromotion) return;
+    if (promotion_.isOpen()) return;
     if (chess::isGameOver(game_.status())) return;
 
     const chess::Square origin = squareAt(x, y);
@@ -195,7 +196,7 @@ void ChessScene::handleDrop(int16_t x, int16_t y) {
         cancelDrag();
         promotionFrom_ = origin;
         promotionTo_   = target;
-        interaction_   = Interaction::ChoosingPromotion;
+        promotion_.open();
         return;
     }
 
@@ -204,7 +205,7 @@ void ChessScene::handleDrop(int16_t x, int16_t y) {
 }
 
 void ChessScene::handleTap(int16_t x, int16_t y) {
-    if (interaction_ == Interaction::ChoosingPromotion) {
+    if (promotion_.isOpen()) {
         handlePromotionTap(x, y);
         return;
     }
@@ -225,19 +226,13 @@ void ChessScene::handleTap(int16_t x, int16_t y) {
 }
 
 void ChessScene::handlePromotionTap(int16_t x, int16_t y) {
-    for (int choice = 0; choice < 4; ++choice) {
-        const int cellX = kPromoX + 4 + choice * kPromoCell;
-        if (!pointInRect(x, y, cellX, kPromoRowY, kPromoCell, kPromoCell)) continue;
-
-        if (game_.tryMove(promotionFrom_, promotionTo_, kPromotionChoices[choice])) {
-            emitMoveFeedback();
-        }
-        cancelDrag();
-        return;
+    // A tap on no cell cancels inside the picker: the move is not committed
+    // until a piece is chosen, so there is nothing to undo.
+    chess::PieceType piece = chess::PieceType::None;
+    if (promotion_.tap(x, y, piece) == PromotionPicker::TapResult::Chosen &&
+        game_.tryMove(promotionFrom_, promotionTo_, piece)) {
+        emitMoveFeedback();
     }
-
-    // A tap anywhere else cancels: the move is not committed until a piece is
-    // chosen, so there is nothing to undo.
     cancelDrag();
 }
 
@@ -330,7 +325,7 @@ void ChessScene::draw(gfx::Renderer& renderer) {
 
     drawHud(renderer);
 
-    if (interaction_ == Interaction::ChoosingPromotion) drawPromotionPicker(renderer);
+    if (promotion_.isOpen()) drawPromotionPicker(renderer);
 
     Scene::draw(renderer);
 }
@@ -483,17 +478,18 @@ void ChessScene::drawPromotionPicker(gfx::Renderer& renderer) const {
 
     const chess::Side side = game_.sideToMove();
 
-    for (int choice = 0; choice < 4; ++choice) {
-        const int cellX = kPromoX + 4 + choice * kPromoCell;
+    for (uint8_t choice = 0; choice < promotion_.choiceCount(); ++choice) {
+        int cellX = 0, cellY = 0, cellW = 0, cellH = 0;
+        PromotionPicker::cellRect(choice, cellX, cellY, cellW, cellH);
 
-        renderer.drawRectangle(cellX, kPromoRowY, kPromoCell, kPromoCell, kPanelBorder);
+        renderer.drawRectangle(cellX, cellY, cellW, cellH, kPanelBorder);
 
         const gfx::Sprite4bpp* sprite =
-            spriteFor(chess::makePiece(kPromotionChoices[choice], side));
+            spriteFor(chess::makePiece(promotion_.pieceAt(choice), side));
         if (sprite == nullptr) continue;
 
-        const int inset = (kPromoCell - kPieceSize) / 2;
-        drawSprite4bpp(renderer, *sprite, cellX + inset, kPromoRowY + inset);
+        const int inset = (cellW - kPieceSize) / 2;
+        drawSprite4bpp(renderer, *sprite, cellX + inset, cellY + inset);
     }
 }
 

@@ -33,6 +33,7 @@ constexpr std::uint16_t kCooldownMs[static_cast<std::uint8_t>(Cue::Count)] = {
     /* BrakeScreech     */  700,
     /* CarHorn          */ 1500,
     /* CrowdPanic       */  900,
+    /* MissionAccepted  */  500,
 };
 
 }  // namespace
@@ -153,6 +154,7 @@ constexpr CuePriority kPriority[static_cast<std::uint8_t>(Cue::Count)] = {
     /* BrakeScreech     */ CuePriority::Ambient,
     /* CarHorn          */ CuePriority::Ambient,
     /* CrowdPanic       */ CuePriority::Ambient,
+    /* MissionAccepted  */ CuePriority::Essential,
 };
 
 }  // namespace

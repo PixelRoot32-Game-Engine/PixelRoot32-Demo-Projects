@@ -6,6 +6,7 @@
 
 #include "core/Scene.h"
 #include "graphics/Camera2D.h"
+#include "graphics/DialogBox.h"
 #include "graphics/Renderer.h"
 #include "graphics/StaticTilemapLayerCache.h"
 #include "gameplay/RoomGraph.h"
@@ -14,6 +15,7 @@
 #include "GameConstants.h"
 #include "PlayerActor.h"
 #include "TileWorld.h"
+#include "game/Interaction.h"
 
 namespace legend_of_clone {
 
@@ -28,8 +30,16 @@ namespace legend_of_clone {
  * and a second copy of it in the dungeon would be a second chance to get it
  * wrong.
  *
- * A subclass supplies data through setup() and, if it wants them, two hooks:
- * drawStatusBar() and onPlayerSettled().
+ * A subclass supplies data through setup() and, if it wants them, four hooks:
+ * drawStatusBar(), onPlayerSettled(), interactableAt() and overlayLayer().
+ *
+ * ### Talking to things
+ *
+ * Every frame the scene reads the A/B/D-pad press edges and the cell in front
+ * of the player, and hands both to the shared DialogController (see
+ * GameSession.h), which owns every dialog rule. While the controller reports
+ * blocksPlayer() the player is disabled, and the status bar shows the dialog
+ * box instead of the room readout.
  *
  * ### How a room change works
  *
@@ -132,6 +142,33 @@ protected:
      */
     virtual void onPlayerSettled() {}
 
+    /**
+     * @brief What occupies world cell (col, row) for the A button.
+     *
+     * Asked once per frame for the cell in front of the player. A subclass
+     * maps its own tile ids; the default is nothing to talk to.
+     */
+    virtual Interactable interactableAt(int col, int row) const {
+        (void)col;
+        (void)row;
+        return Interactable::None;
+    }
+
+    /**
+     * @brief An optional tile layer drawn over the terrain every frame.
+     *
+     * Passed to StaticTilemapLayerCache as a dynamic layer, so it is redrawn
+     * after the terrain snapshot is restored and never baked into it. For
+     * cells whose look changes at runtime while the exported map, which lives
+     * in flash, cannot. `map == nullptr` draws nothing.
+     */
+    virtual pixelroot32::graphics::TileMap4bppDrawSpec overlayLayer() const {
+        return { nullptr, 0, 0 };
+    }
+
+    /// Draws the rupee count on one status bar row, in screen space.
+    void drawRupees(pixelroot32::graphics::Renderer& renderer, int y) const;
+
     PlayerActor& player() { return player_; }
     const TileWorld& world() const { return *world_; }
     uint16_t currentRoom() const { return rooms_.currentRoomIndex(); }
@@ -147,6 +184,9 @@ private:
     pixelroot32::graphics::StaticTilemapLayerCache tilemapLayerCache_;
     PlayerActor player_;
     const TileWorld* world_ = nullptr;
+
+    /// Presents dialogController's runner. Styled and placed once, at init().
+    pixelroot32::graphics::DialogBox dialogBox_;
 
     /// False when buildRoomGraph() rejected the layer; draw() then reports it.
     bool worldReady_ = false;
@@ -167,6 +207,9 @@ private:
     void checkRoomExit();
     void beginTransition(pixelroot32::gameplay::RoomDir dir, uint16_t targetIdx);
     void updateTransition(unsigned long deltaTime);
+
+    /// Feeds this frame's buttons and facing cell to the dialog controller.
+    void updateDialog(unsigned long deltaTime);
 
     /**
      * @brief The camera position the tilemap cache keys its snapshot on.
