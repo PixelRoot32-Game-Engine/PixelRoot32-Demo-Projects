@@ -269,4 +269,14 @@ void World::substep(const Table& table) {
     friction();
 }
 
+bool World::allBallsAtRest() const {
+    for (uint8_t i = 0; i < kMaxBalls; ++i) {
+        const Ball& ball = balls_[i];
+        if (ball.active && (ball.vx != 0 || ball.vy != 0)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace pool

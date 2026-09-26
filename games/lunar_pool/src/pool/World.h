@@ -65,6 +65,12 @@ public:
     /** @brief Advances one 1/240 s substep: move(), resolveCushions(), resolveBalls(), captureNear(), friction(). */
     void substep(const Table& table);
 
+    /**
+     * @brief True when no active ball has nonzero velocity.
+     * @return False as soon as one active ball still moves.
+     */
+    [[nodiscard]] bool allBallsAtRest() const;
+
     [[nodiscard]] const Ball& ball(uint8_t index) const { return balls_[index]; }
     [[nodiscard]] uint8_t ballCount() const { return ballCount_; }
     [[nodiscard]] const PocketLog& pocketLog() const { return log_; }
