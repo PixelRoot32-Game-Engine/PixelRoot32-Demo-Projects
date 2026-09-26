@@ -80,6 +80,8 @@ restarts the run from stage 1 after clearing stage 10.
 
 ## The 10 tables
 
+![All 10 stages](screenshots/stages_sheet.png)
+
 | Stage | Table | NES reference |
 |-------|-------|---------------|
 | 1 | Classic rectangle | STAGE01 |
