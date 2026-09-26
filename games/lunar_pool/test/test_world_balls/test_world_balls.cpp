@@ -1,7 +1,7 @@
 /*
  * Unit tests for ball movement, capture and friction/rest (src/pool/World.*).
- * Covers only this slice's substeps: move(), captureNear(), friction().
- * Ball-ball/cushion resolution (steps 3-4) are added by later slices.
+ * Covers move(), captureNear() and friction() in isolation; collision
+ * response (resolveCushions/resolveBalls) lives in test_collisions.
  */
 #include <unity.h>
 

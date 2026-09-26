@@ -1,11 +1,9 @@
 /*
- * World.h - Ball simulation state and the move/capture/friction substeps.
+ * World.h - Ball simulation state and the move/collide/capture/friction substeps.
  *
- * This slice implements only pipeline steps 1 (move), 2 (capture) and 5
- * (friction/rest); ball-ball and cushion resolution (steps 3-4) are added by
- * later slices, so substep() runs straight from capture to friction for now.
- * Each step is also exposed directly so it can be tested in isolation (e.g.
- * a drift test needs friction out of the way).
+ * Full 1/240 s pipeline: 1 move, 2 cushion resolve, 3 ball-ball resolve,
+ * 4 capture, 5 friction/rest. Each step is also exposed directly so it can
+ * be tested in isolation (e.g. a drift test needs friction out of the way).
  */
 #pragma once
 
@@ -52,13 +50,19 @@ public:
     /** @brief Pipeline step 1: drift-free integration for every active ball. */
     void move();
 
-    /** @brief Pipeline step 2: captures balls index-ascending whose center lies strictly inside a pocket's radius, so the log ends up ball-number ordered (TableDef.h's index-order convention) with no extra sort. */
+    /** @brief Pipeline step 2: reflects overlapping balls off cushions and pushes them out to radius + slop. */
+    void resolveCushions(const Table& table);
+
+    /** @brief Pipeline step 3: separates overlapping ball pairs and exchanges their normal velocity component. */
+    void resolveBalls();
+
+    /** @brief Pipeline step 4: captures balls index-ascending whose center lies strictly inside a pocket's radius, so the log ends up ball-number ordered (TableDef.h's index-order convention) with no extra sort. */
     void captureNear(const Table& table);
 
     /** @brief Pipeline step 5: reduces every active ball's speed by kFrictionPerSubstepRaw along its direction of motion, zeroing it at or below that amount. */
     void friction();
 
-    /** @brief Advances one 1/240 s substep: move(), captureNear(), friction() only (see file header). */
+    /** @brief Advances one 1/240 s substep: move(), resolveCushions(), resolveBalls(), captureNear(), friction(). */
     void substep(const Table& table);
 
     [[nodiscard]] const Ball& ball(uint8_t index) const { return balls_[index]; }
