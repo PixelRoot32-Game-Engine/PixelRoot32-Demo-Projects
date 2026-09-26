@@ -15,7 +15,7 @@
 namespace pool {
 
 /** Number of stages currently shipped. Grows as more tables are added. */
-constexpr uint8_t kStageCount = 3;
+constexpr uint8_t kStageCount = 4;
 
 /**
  * @brief Returns the TableDef for a 1-based stage number.

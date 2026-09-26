@@ -41,9 +41,9 @@ void test_game_new_game_starts_in_menu(void) {
 
     TEST_ASSERT_EQUAL(static_cast<int>(State::Menu), static_cast<int>(game.state()));
     TEST_ASSERT_EQUAL_UINT8(1, game.stage());
-    TEST_ASSERT_EQUAL_UINT8(7, game.world().ballCount());
-    // 6 targets x 2 shots each.
-    TEST_ASSERT_EQUAL_UINT8(12, game.shotsLeft());
+    TEST_ASSERT_EQUAL_UINT8(4, game.world().ballCount());
+    // 3 targets x 2 shots each.
+    TEST_ASSERT_EQUAL_UINT8(6, game.shotsLeft());
     TEST_ASSERT_EQUAL_INT32(0, game.score());
     TEST_ASSERT_EQUAL_UINT8(0, game.turn());
     TEST_ASSERT_EQUAL_UINT8(kDefaultPower, game.power());
@@ -134,7 +134,7 @@ void test_game_quiet_shot_costs_shot_scores_nothing(void) {
     runUntil(game, State::Aiming, 300);
 
     TEST_ASSERT_EQUAL(static_cast<int>(State::Aiming), static_cast<int>(game.state()));
-    TEST_ASSERT_EQUAL_UINT8(11, game.shotsLeft());
+    TEST_ASSERT_EQUAL_UINT8(5, game.shotsLeft());
     TEST_ASSERT_EQUAL_INT32(0, game.score());
     TEST_ASSERT_EQUAL_UINT8(2, game.turn());
     TEST_ASSERT_EQUAL_UINT8(1, game.nextExpected());
@@ -157,7 +157,7 @@ void test_game_pocket_in_order_scores(void) {
     TEST_ASSERT_FALSE(game.world().ball(1).active);
     TEST_ASSERT_EQUAL_INT32(kPointsPerBall, game.score());
     TEST_ASSERT_EQUAL_UINT8(2, game.nextExpected());
-    TEST_ASSERT_EQUAL_UINT8(11, game.shotsLeft());
+    TEST_ASSERT_EQUAL_UINT8(5, game.shotsLeft());
 }
 
 void test_game_cue_scratch_fouls_and_respots(void) {
@@ -174,7 +174,7 @@ void test_game_cue_scratch_fouls_and_respots(void) {
     TEST_ASSERT_TRUE(game.world().ball(0).active);
     TEST_ASSERT_EQUAL_INT32(70 * kPxScale, game.world().ball(0).x);
     TEST_ASSERT_EQUAL_INT32(140 * kPxScale, game.world().ball(0).y);
-    TEST_ASSERT_EQUAL_UINT8(11, game.shotsLeft());
+    TEST_ASSERT_EQUAL_UINT8(5, game.shotsLeft());
     TEST_ASSERT_EQUAL_UINT8(1, game.nextExpected());
 }
 
@@ -191,7 +191,7 @@ void test_game_wrong_order_fouls_without_points(void) {
     TEST_ASSERT_FALSE(game.world().ball(2).active);
     TEST_ASSERT_EQUAL_INT32(0, game.score());
     TEST_ASSERT_EQUAL_UINT8(1, game.nextExpected());
-    TEST_ASSERT_EQUAL_UINT8(11, game.shotsLeft());
+    TEST_ASSERT_EQUAL_UINT8(5, game.shotsLeft());
 }
 
 void test_game_clearing_table_wins(void) {
@@ -218,7 +218,7 @@ void test_game_clearing_nonfinal_stage_advances(void) {
     // stage 2 instead of ending the game.
     Game game;
     startStage1(game);
-    for (uint8_t b = 1; b <= 6; ++b) {
+    for (uint8_t b = 1; b <= 3; ++b) {
         const Pocket& pocket = game.table().pockets[b - 1];
         game.world().placeBall(b, pocket.x, pocket.y, 0, 0);
     }
@@ -227,12 +227,13 @@ void test_game_clearing_nonfinal_stage_advances(void) {
 
     TEST_ASSERT_EQUAL(static_cast<int>(State::Aiming), static_cast<int>(game.state()));
     TEST_ASSERT_EQUAL_UINT8(2, game.stage());
-    TEST_ASSERT_EQUAL_INT32(6 * kPointsPerBall, game.score());
-    // Fresh stage: full shot budget, turn 1, ball 1 expected, stage-2 rack.
-    TEST_ASSERT_EQUAL_UINT8(12, game.shotsLeft());
+    TEST_ASSERT_EQUAL_INT32(3 * kPointsPerBall, game.score());
+    // Fresh stage: full shot budget (4 targets x 2), turn 1, ball 1
+    // expected, stage-2 rack.
+    TEST_ASSERT_EQUAL_UINT8(8, game.shotsLeft());
     TEST_ASSERT_EQUAL_UINT8(1, game.turn());
     TEST_ASSERT_EQUAL_UINT8(1, game.nextExpected());
-    TEST_ASSERT_EQUAL_UINT8(7, game.world().ballCount());
+    TEST_ASSERT_EQUAL_UINT8(5, game.world().ballCount());
     TEST_ASSERT_EQUAL_INT32(60 * kPxScale, game.world().ball(0).x);
     TEST_ASSERT_EQUAL_INT32(140 * kPxScale, game.world().ball(0).y);
     TEST_ASSERT_EQUAL_INT32(150 * kPxScale, game.world().ball(1).x);
@@ -249,7 +250,7 @@ void test_game_burning_shots_loses(void) {
     }
     TEST_ASSERT_EQUAL_UINT16(768, game.angle());
 
-    for (int shot = 0; shot < 12; ++shot) {
+    for (int shot = 0; shot < 6; ++shot) {
         TEST_ASSERT_TRUE(game.shoot());
         runUntil(game, State::Aiming, 400);
         if (game.state() == State::GameOver) {

@@ -1,36 +1,30 @@
 /*
  * Tables.cpp - see Tables.h.
+ *
+ * The four shipped stages share the six pocket centers but differ in cushion
+ * geometry, obstacles and rack size, in increasing difficulty:
+ *
+ * - Stage 1 ("Classic", NES STAGE01-like): plain rectangle, 3 targets.
+ * - Stage 2 ("Bites", NES STAGE08/10-like): rectangular bites cut into both
+ *   side cushions, 4 targets.
+ * - Stage 3 ("Zigzag", NES STAGE04-like): angled teeth on both side
+ *   cushions, 5 targets.
+ * - Stage 4 ("Donut", NES STAGE09-like): rectangle with a central octagon
+ *   island, 6 targets.
+ *
+ * Stages 2 and 3 reuse the stage-1 pocket notches verbatim and only reshape
+ * the straight side runs between them, so their mouth indices match; stage 4
+ * reuses the whole stage-1 border. Every border below is wound clockwise on
+ * screen (positive shoelace) and every obstacle counter-clockwise
+ * (negative), the windings loadTable() requires.
  */
 #include "pool/Tables.h"
 
 namespace pool {
 namespace {
 
-/**
- * Shared cushion border: a rectangle (play area x 16..224, y 56..224) with a
- * bag notch cut at each of the 6 pocket locations, so every pocket mouth is
- * formed by two of the border's own vertices (loadTable()'s BadMouthIndex
- * check needs those as indices into this array). Wound clockwise on screen,
- * the winding loadTable() requires for a border. All three shipped tables
- * share it; they differ in obstacles and ball layouts instead.
- */
-constexpr PointPx kSharedBorder[24] = {
-    // Top-left corner: enters from the left edge, exits to the top edge.
-    {16, 66}, {10, 60}, {20, 50}, {26, 56},
-    // Top-side pocket.
-    {113, 56}, {113, 48}, {127, 48}, {127, 56},
-    // Top-right corner: enters from the top edge, exits to the right edge.
-    {214, 56}, {220, 50}, {230, 60}, {224, 66},
-    // Bottom-right corner: enters from the right edge, exits to the bottom edge.
-    {224, 214}, {230, 220}, {220, 230}, {214, 224},
-    // Bottom-side pocket.
-    {127, 224}, {127, 232}, {113, 232}, {113, 224},
-    // Bottom-left corner: enters from the bottom edge, exits to the left edge.
-    {26, 224}, {20, 230}, {10, 220}, {16, 214},
-};
-constexpr Polyline kSharedBorderLine{kSharedBorder, 24};
+// --- Shared pocket data ------------------------------------------------------
 
-/** {mouthA, mouthB} index into kSharedBorder; center is the capture point. */
 constexpr PocketDef kSharedPockets[6] = {
     {{17, 57}, 0, 3},      // top-left
     {{120, 52}, 4, 7},     // top-side
@@ -40,61 +34,118 @@ constexpr PocketDef kSharedPockets[6] = {
     {{17, 223}, 20, 23},   // bottom-left
 };
 
-// --- Table 1: open table, no obstacles ---------------------------------------
+// --- Stage 1 & 4 border: plain rectangle with bag notches --------------------
 
-constexpr TargetDef kTable1Targets[6] = {
-    {1, {150, 140}}, {2, {158, 135}}, {3, {158, 145}},
-    {4, {166, 130}}, {5, {166, 140}}, {6, {166, 150}},
+constexpr PointPx kRectBorder[24] = {
+    // Top-left corner: enters from the left edge, exits to the top edge.
+    {16, 66}, {10, 60}, {20, 50}, {26, 56},
+    // Top-side pocket.
+    {113, 56}, {113, 48}, {127, 48}, {127, 56},
+    // Top-right corner: enters from the top edge, exits to the right edge.
+    {214, 56}, {220, 50}, {230, 60}, {224, 66},
+    // Right edge.
+    // Bottom-right corner: enters from the right edge, exits to the bottom edge.
+    {224, 214}, {230, 220}, {220, 230}, {214, 224},
+    // Bottom-side pocket.
+    {127, 224}, {127, 232}, {113, 232}, {113, 224},
+    // Bottom-left corner: enters from the bottom edge, exits to the left edge.
+    {26, 224}, {20, 230}, {10, 220}, {16, 214},
+};
+constexpr Polyline kRectBorderLine{kRectBorder, 24};
+
+constexpr TargetDef kTable1Targets[3] = {
+    {1, {150, 140}}, {2, {160, 132}}, {3, {160, 148}},
 };
 
 constexpr TableDef kTable1{
-    kSharedBorderLine, nullptr, 0, kSharedPockets, 6, {70, 140}, kTable1Targets, 6,
+    kRectBorderLine, nullptr, 0, kSharedPockets, 6, {70, 140}, kTable1Targets, 3,
 };
 
-// --- Table 2: one central block ----------------------------------------------
+// --- Stage 2 border: side bites ----------------------------------------------
 //
-// A 30x16 block left of the rack forces bank shots around it. Wound
-// top-left -> bottom-left -> bottom-right -> top-right (counter-clockwise on
-// screen), the winding loadTable() requires for obstacles. Balls sit clear:
-// the cue 35 px left of the block, the rack at y <= 130 (top edge at 132)
-// and x >= 150 (right edge at 125).
+// The left run (16,214)->(16,66) detours in to x=44 over y 120..160 and the
+// right run mirrors it, leaving the pocket notches untouched.
 
-constexpr PointPx kTable2ObstaclePoints[4] = {{95, 132}, {95, 148}, {125, 148}, {125, 132}};
-constexpr Polyline kTable2Obstacles[1] = {Polyline{kTable2ObstaclePoints, 4}};
+constexpr PointPx kTable2Border[32] = {
+    {16, 66}, {10, 60}, {20, 50}, {26, 56},
+    {113, 56}, {113, 48}, {127, 48}, {127, 56},
+    {214, 56}, {220, 50}, {230, 60}, {224, 66},
+    // Right bite: down, in, down, out, down.
+    {224, 120}, {196, 120}, {196, 160}, {224, 160}, {224, 214},
+    {230, 220}, {220, 230}, {214, 224},
+    {127, 224}, {127, 232}, {113, 232}, {113, 224},
+    {26, 224}, {20, 230}, {10, 220}, {16, 214},
+    // Left bite: up, in, up, out, up.
+    {16, 160}, {44, 160}, {44, 120}, {16, 120},
+};
+constexpr Polyline kTable2BorderLine{kTable2Border, 32};
 
-constexpr TargetDef kTable2Targets[6] = {
-    {1, {150, 120}}, {2, {158, 115}}, {3, {158, 125}},
-    {4, {166, 110}}, {5, {166, 120}}, {6, {166, 130}},
+// Same notch indices as the rectangle: TL(0,3) TS(4,7) TR(8,11) BR(16,19)
+// BS(20,23) BL(24,27).
+constexpr PocketDef kTable2Pockets[6] = {
+    {{17, 57}, 0, 3},      // top-left
+    {{120, 52}, 4, 7},     // top-side
+    {{223, 57}, 8, 11},    // top-right
+    {{223, 223}, 16, 19},  // bottom-right
+    {{120, 228}, 20, 23},  // bottom-side
+    {{17, 223}, 24, 27},   // bottom-left
+};
+
+constexpr TargetDef kTable2Targets[4] = {
+    {1, {150, 120}}, {2, {158, 130}}, {3, {166, 112}}, {4, {166, 138}},
 };
 
 constexpr TableDef kTable2{
-    kSharedBorderLine, kTable2Obstacles, 1, kSharedPockets, 6, {60, 140}, kTable2Targets, 6,
+    kTable2BorderLine, nullptr, 0, kTable2Pockets, 6, {60, 140}, kTable2Targets, 4,
 };
 
-// --- Table 3: gate pair ------------------------------------------------------
+// --- Stage 3 border: angled teeth --------------------------------------------
 //
-// Two 20x8 blocks above and below the middle form a gate the cue must thread.
-// Same counter-clockwise winding as table 2's block. The rack clusters
-// between the blocks (y 125..145) and the cue sits left at (60, 120), all
-// well clear of both blocks (x 110..130, y 100..108 and 172..180).
+// Both side runs zigzag with tips at x=44/x=196, so straight shots up either
+// side come back at an angle. Notches untouched, same indices as stage 2.
 
-constexpr PointPx kTable3ObstacleAPoints[4] = {{110, 100}, {110, 108}, {130, 108}, {130, 100}};
-constexpr PointPx kTable3ObstacleBPoints[4] = {{110, 172}, {110, 180}, {130, 180}, {130, 172}};
-constexpr Polyline kTable3Obstacles[2] = {
-    Polyline{kTable3ObstacleAPoints, 4},
-    Polyline{kTable3ObstacleBPoints, 4},
+constexpr PointPx kTable3Border[32] = {
+    {16, 66}, {10, 60}, {20, 50}, {26, 56},
+    {113, 56}, {113, 48}, {127, 48}, {127, 56},
+    {214, 56}, {220, 50}, {230, 60}, {224, 66},
+    // Right teeth, traced top to bottom.
+    {224, 126}, {196, 148}, {224, 170}, {196, 192}, {224, 214},
+    {230, 220}, {220, 230}, {214, 224},
+    {127, 224}, {127, 232}, {113, 232}, {113, 224},
+    {26, 224}, {20, 230}, {10, 220}, {16, 214},
+    // Left teeth, traced bottom to top.
+    {44, 192}, {16, 170}, {44, 148}, {16, 126},
 };
+constexpr Polyline kTable3BorderLine{kTable3Border, 32};
 
-constexpr TargetDef kTable3Targets[6] = {
-    {1, {150, 135}}, {2, {158, 130}}, {3, {158, 140}},
-    {4, {166, 125}}, {5, {166, 135}}, {6, {166, 145}},
+constexpr TargetDef kTable3Targets[5] = {
+    {1, {140, 140}}, {2, {148, 132}}, {3, {148, 148}}, {4, {156, 124}}, {5, {156, 156}},
 };
 
 constexpr TableDef kTable3{
-    kSharedBorderLine, kTable3Obstacles, 2, kSharedPockets, 6, {60, 120}, kTable3Targets, 6,
+    kTable3BorderLine, nullptr, 0, kTable2Pockets, 6, {70, 110}, kTable3Targets, 5,
 };
 
-constexpr const TableDef* kStages[kStageCount] = {&kTable1, &kTable2, &kTable3};
+// --- Stage 4: central island -------------------------------------------------
+//
+// Plain rectangle plus one octagon block mid-table. The rack splits around
+// it: two targets left, four right.
+
+constexpr PointPx kTable4IslandPoints[8] = {
+    {95, 130}, {95, 150}, {105, 160}, {135, 160}, {145, 150}, {145, 130}, {135, 120}, {105, 120},
+};
+constexpr Polyline kTable4Obstacles[1] = {Polyline{kTable4IslandPoints, 8}};
+
+constexpr TargetDef kTable4Targets[6] = {
+    {1, {60, 170}}, {2, {80, 120}}, {3, {160, 110}},
+    {4, {170, 140}}, {5, {160, 170}}, {6, {185, 150}},
+};
+
+constexpr TableDef kTable4{
+    kRectBorderLine, kTable4Obstacles, 1, kSharedPockets, 6, {60, 100}, kTable4Targets, 6,
+};
+
+constexpr const TableDef* kStages[kStageCount] = {&kTable1, &kTable2, &kTable3, &kTable4};
 
 }  // namespace
 
@@ -103,7 +154,7 @@ const TableDef& tableForStage(uint8_t stage) {
         return kTable1;
     }
     if (stage > kStageCount) {
-        return kTable3;
+        return kTable4;
     }
     return *kStages[stage - 1];
 }

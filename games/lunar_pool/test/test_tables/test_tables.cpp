@@ -351,7 +351,7 @@ void test_tables_stage1_loads_with_expected_counts(void) {
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
     TEST_ASSERT_EQUAL_UINT8(24, table.segmentCount);
     TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
-    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
+    TEST_ASSERT_EQUAL_UINT8(4, table.ballCount);  // cue + 3 targets
 }
 
 void test_tables_stage1_matches_shipped_positions(void) {
@@ -373,14 +373,14 @@ void test_tables_stage2_loads_with_expected_counts(void) {
     Table table;
     const TableError err = loadTable(tableForStage(2), table);
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
-    TEST_ASSERT_EQUAL_UINT8(28, table.segmentCount);  // 24 border + 4 block
+    TEST_ASSERT_EQUAL_UINT8(32, table.segmentCount);  // 24 notches + 8 bite edges
     TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
-    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
+    TEST_ASSERT_EQUAL_UINT8(5, table.ballCount);  // cue + 4 targets
 }
 
 void test_tables_stage2_matches_shipped_positions(void) {
     // Stage 2's own cue and rack, not table 1's: proves tableForStage(2)
-    // hands back the block table.
+    // hands back the bites table.
     Table table;
     const TableError err = loadTable(tableForStage(2), table);
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
@@ -395,20 +395,40 @@ void test_tables_stage3_loads_with_expected_counts(void) {
     Table table;
     const TableError err = loadTable(tableForStage(3), table);
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
-    TEST_ASSERT_EQUAL_UINT8(32, table.segmentCount);  // 24 border + 2x4 gate
+    TEST_ASSERT_EQUAL_UINT8(32, table.segmentCount);  // 24 notches + 8 teeth edges
     TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
-    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
+    TEST_ASSERT_EQUAL_UINT8(6, table.ballCount);  // cue + 5 targets
 }
 
 void test_tables_stage3_matches_shipped_positions(void) {
     Table table;
     const TableError err = loadTable(tableForStage(3), table);
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
-    TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[0].x);
-    TEST_ASSERT_EQUAL_INT32(120 * 256, table.balls[0].y);
+    TEST_ASSERT_EQUAL_INT32(70 * 256, table.balls[0].x);
+    TEST_ASSERT_EQUAL_INT32(110 * 256, table.balls[0].y);
     TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
-    TEST_ASSERT_EQUAL_INT32(150 * 256, table.balls[1].x);
-    TEST_ASSERT_EQUAL_INT32(135 * 256, table.balls[1].y);
+    TEST_ASSERT_EQUAL_INT32(140 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(140 * 256, table.balls[1].y);
+}
+
+void test_tables_stage4_loads_with_expected_counts(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(4), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_UINT8(32, table.segmentCount);  // 24 border + 8 island
+    TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
+    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);  // cue + 6 targets
+}
+
+void test_tables_stage4_matches_shipped_positions(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(4), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[0].x);
+    TEST_ASSERT_EQUAL_INT32(100 * 256, table.balls[0].y);
+    TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
+    TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(170 * 256, table.balls[1].y);
 }
 
 void test_tables_stage_clamps_out_of_range(void) {
@@ -424,6 +444,7 @@ void test_tables_stage_clamps_out_of_range(void) {
                       static_cast<int>(loadTable(tableForStage(99), high)));
     TEST_ASSERT_EQUAL_UINT8(32, high.segmentCount);
     TEST_ASSERT_EQUAL_INT32(60 * 256, high.balls[0].x);
+    TEST_ASSERT_EQUAL_INT32(100 * 256, high.balls[0].y);
 }
 
 int main(int argc, char** argv) {
@@ -467,6 +488,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_tables_stage2_matches_shipped_positions);
     RUN_TEST(test_tables_stage3_loads_with_expected_counts);
     RUN_TEST(test_tables_stage3_matches_shipped_positions);
+    RUN_TEST(test_tables_stage4_loads_with_expected_counts);
+    RUN_TEST(test_tables_stage4_matches_shipped_positions);
     RUN_TEST(test_tables_stage_clamps_out_of_range);
     return UNITY_END();
 }
