@@ -1,10 +1,10 @@
-# Lunar Pool
+# Pool
 
 > **Demonstration project** — provided as an example of what the PixelRoot32
 > Game Engine can do. It is not a product: parts may be incomplete,
 > experimental, or deliberately simplified to keep one idea in focus.
 
-Fixed-point pool inspired by the NES title *Lunar Pool*: aim the cue ball,
+Fixed-point pool: aim the cue ball,
 sink the 6 numbered targets **in ascending order**, and clear all **10 tables**
 on 12 shots each. The single idea it is about is the **engine-free integer
 core**: ball movement, collisions, cushions, pockets, friction, and the
@@ -17,7 +17,7 @@ Engine: `gperez88/PixelRoot32-Game-Engine@^1.10.0`
 Environments: `native`, `esp32dev`  
 Category: Games
 
-![Lunar Pool](screenshots/screenshot.png)
+![Pool](screenshots/screenshot.png)
 
 ## Requirements (build flags)
 
@@ -121,7 +121,7 @@ full island, two islands, fewer pockets, no banking angles.
 - **Exact 60 Hz pacing in integers.** The scene piles up `ms × 60` units and
   steps one `Game::stepFrame()` per 1000, capped at 4 catch-up steps per tick:
   under heavy lag the game slows down instead of spiralling, and every step
-  stays deterministic (`LunarPoolScene::stepSimulation()`).
+  stays deterministic (`PoolScene::stepSimulation()`).
 - **One rendering lesson, kept.** Ball numbers use a hand-authored 3×5
   micro-font of 1bpp `Sprite`s — but `drawSprite()` walks bits MSB-first
   (bit `width-1` = left pixel), opposite to the `Sprite` doc comment, so every
@@ -134,7 +134,7 @@ full island, two islands, fewer pockets, no banking angles.
 
 ```
 src/
-├── LunarPoolScene.h/.cpp   input map, 60 Hz pacing, table/balls/aim/HUD draw
+├── PoolScene.h/.cpp   input map, 60 Hz pacing, table/balls/aim/HUD draw
 ├── main.cpp                platform selector
 ├── platforms/              native.h, esp32_dev.h — backend wiring per target
 └── pool/                   engine-free integer core (no floats, no heap)
@@ -178,7 +178,7 @@ are fixed-size arrays; the HUD formats into a 32-byte stack buffer.
 
 ## Build
 
-From **`games/lunar_pool`**:
+From **`games/pool**`:
 
 ```bash
 pio test -e host_test   # engine-free unit suites (no display needed)
@@ -198,7 +198,7 @@ Source code: [MIT](../../LICENSE).
 
 | Asset | Author | License | Source |
 |-------|--------|---------|--------|
-| 3×5 digit font | This repository | CC0 1.0 (public domain) | Original work, hand-authored rows in `LunarPoolScene.cpp` |
+| 3×5 digit font | This repository | CC0 1.0 (public domain) | Original work, hand-authored rows in `PoolScene.cpp` |
 
 This demo ships no art and no generated asset headers — felt, rails, pockets,
 balls, aim guide, and HUD are renderer primitives, and the digits above are

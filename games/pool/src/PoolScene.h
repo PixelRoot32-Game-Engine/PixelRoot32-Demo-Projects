@@ -4,18 +4,18 @@
 
 #include "pool/Game.h"
 
-namespace lunar_pool {
+namespace pool {
 
 /**
- * @class LunarPoolScene
- * @brief Engine-side presentation layer for the Lunar Pool demo.
+ * @class PoolScene
+ * @brief Engine-side presentation layer for the Pool demo.
  *
  * Owns the engine-free `pool::Game` core, maps the 6 engine buttons to it
  * (Up/Down/Left/Right/A/B, see the InputConfig order in platforms/native.h),
  * paces fixed 1/60 s simulation steps against wall-clock time, and draws the
  * table, balls, aim guide and HUD from the core's const accessors.
  */
-class LunarPoolScene : public pixelroot32::core::Scene {
+class PoolScene : public pixelroot32::core::Scene {
 public:
     /**
      * @brief Initializes the scene. Always calls `Scene::init()` first.
@@ -73,14 +73,14 @@ private:
     /// The rules core. draw() only reads it; update() drives it. A failed
     /// newGame() leaves it in GameOver (lost), which is why draw() checks
     /// tableError_ first instead of drawing from a partial load.
-    pool::Game game_;
+    Game game_;
     /// Result of loading the stage table in init(). The engine always calls
     /// init() before draw(), so a fresh Scene never draws with a stale None.
-    pool::TableError tableError_ = pool::TableError::None;
+    TableError tableError_ = TableError::None;
     /// ms x 60 accumulator: 1000 units make exactly one 1/60 s frame.
     unsigned long accUnits_ = 0;
     /// Freeze flag toggled with B; update() skips input and simulation while set.
     bool paused_ = false;
 };
 
-}  // namespace lunar_pool
+}  // namespace pool

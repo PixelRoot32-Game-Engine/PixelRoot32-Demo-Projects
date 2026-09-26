@@ -6,7 +6,7 @@
 #include <drivers/native/SDL2_Drawer.h>
 #include <platforms/EngineConfig.h>
 
-#include "LunarPoolScene.h"
+#include "PoolScene.h"
 
 namespace pr32 = pixelroot32;
 
@@ -20,7 +20,7 @@ pr32::input::InputConfig inputConfig(SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCA
 
 pr32::core::Engine engine(config, inputConfig);
 
-lunar_pool::LunarPoolScene scene;
+pool::PoolScene scene;
 
 int main(int argc, char* argv[]) {
     (void)argc;

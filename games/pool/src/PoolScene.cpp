@@ -1,4 +1,4 @@
-#include "LunarPoolScene.h"
+#include "PoolScene.h"
 
 #include <core/Engine.h>
 
@@ -14,7 +14,7 @@ namespace pr32 = pixelroot32;
 
 extern pr32::core::Engine engine;
 
-namespace lunar_pool {
+namespace pool {
 
 namespace {
 
@@ -80,7 +80,7 @@ constexpr pr32::graphics::Font kDigitFont = {kDigitGlyphs, '0', '9', 3, 5, 4, 6,
 
 }  // namespace
 
-void LunarPoolScene::init() {
+void PoolScene::init() {
     Scene::init();  // resetState() + physicsScheduler.init() — always call base first
     // init() is idempotent by Scene contract: re-running it deals a fresh
     // stage-1 game instead of stacking state on the previous one.
@@ -89,7 +89,7 @@ void LunarPoolScene::init() {
     tableError_ = game_.newGame(1);
 }
 
-void LunarPoolScene::update(unsigned long deltaTime) {
+void PoolScene::update(unsigned long deltaTime) {
     Scene::update(deltaTime);
     if (tableError_ != pool::TableError::None) {
         return;
@@ -100,7 +100,7 @@ void LunarPoolScene::update(unsigned long deltaTime) {
     }
 }
 
-void LunarPoolScene::handleInput() {
+void PoolScene::handleInput() {
     auto& input = engine.getInputManager();
     const pool::State state = game_.state();
     // B pauses anywhere a shot can be live; Menu and GameOver confirm with A,
@@ -157,7 +157,7 @@ void LunarPoolScene::handleInput() {
     }
 }
 
-void LunarPoolScene::stepSimulation(unsigned long deltaTime) {
+void PoolScene::stepSimulation(unsigned long deltaTime) {
     // Exact 60 Hz pacing in integer units: ms x 60 piles up 1000 units per
     // frame with no drift, so the sim neither races nor drags the display.
     accUnits_ += deltaTime * 60;
@@ -172,7 +172,7 @@ void LunarPoolScene::stepSimulation(unsigned long deltaTime) {
     }
 }
 
-void LunarPoolScene::draw(pr32::graphics::Renderer& renderer) {
+void PoolScene::draw(pr32::graphics::Renderer& renderer) {
     if (tableError_ != pool::TableError::None) {
         // A solid color is the only way to surface a bad table instead of
         // drawing from a partially-written Table or crashing.
@@ -190,7 +190,7 @@ void LunarPoolScene::draw(pr32::graphics::Renderer& renderer) {
     Scene::draw(renderer);
 }
 
-void LunarPoolScene::drawTable(pr32::graphics::Renderer& renderer) const {
+void PoolScene::drawTable(pr32::graphics::Renderer& renderer) const {
     const pool::Table& table = game_.table();
     // Rail color across the whole table area; the felt fill below overpaints
     // every row inside the border, leaving the rail visible only at the
@@ -235,7 +235,7 @@ void LunarPoolScene::drawTable(pr32::graphics::Renderer& renderer) const {
     }
 }
 
-void LunarPoolScene::drawBalls(pr32::graphics::Renderer& renderer) const {
+void PoolScene::drawBalls(pr32::graphics::Renderer& renderer) const {
     const pool::World& world = game_.world();
     const uint8_t expected = game_.nextExpected();
     const int radius = static_cast<int>(pool::toPixel(pool::kBallRadiusRaw));
@@ -268,7 +268,7 @@ void LunarPoolScene::drawBalls(pr32::graphics::Renderer& renderer) const {
     }
 }
 
-void LunarPoolScene::drawAim(pr32::graphics::Renderer& renderer) const {
+void PoolScene::drawAim(pr32::graphics::Renderer& renderer) const {
     if (game_.state() != pool::State::Aiming) {
         return;
     }
@@ -293,7 +293,7 @@ void LunarPoolScene::drawAim(pr32::graphics::Renderer& renderer) const {
     renderer.drawLine(sx, sy, ex, ey, pr32::graphics::Color::White);
 }
 
-void LunarPoolScene::drawHud(pr32::graphics::Renderer& renderer) const {
+void PoolScene::drawHud(pr32::graphics::Renderer& renderer) const {
     using Color = pr32::graphics::Color;
     renderer.drawFilledRectangle(0, 0, renderer.getLogicalWidth(), kHudHeight, Color::Black);
 
@@ -317,7 +317,7 @@ void LunarPoolScene::drawHud(pr32::graphics::Renderer& renderer) const {
         return;
     }
     if (game_.state() == pool::State::Menu) {
-        renderer.drawTextCentered("LUNAR POOL", 100, Color::White, 2);
+        renderer.drawTextCentered("POOL", 100, Color::White, 2);
         renderer.drawTextCentered("PRESS A TO START", 130, Color::Gray, 1);
     } else if (game_.state() == pool::State::GameOver) {
         if (game_.won()) {
@@ -329,4 +329,4 @@ void LunarPoolScene::drawHud(pr32::graphics::Renderer& renderer) const {
     }
 }
 
-}  // namespace lunar_pool
+}  // namespace pool

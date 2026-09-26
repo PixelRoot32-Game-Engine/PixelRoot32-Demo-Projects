@@ -5,7 +5,7 @@
 #include <drivers/esp32/TFT_eSPI_Drawer.h>
 #include <platforms/EngineConfig.h>
 
-#include "LunarPoolScene.h"
+#include "PoolScene.h"
 
 namespace pr32 = pixelroot32;
 
@@ -26,7 +26,7 @@ pr32::input::InputConfig inputConfig(BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_
 
 pr32::core::Engine engine(config, inputConfig);
 
-lunar_pool::LunarPoolScene scene;
+pool::PoolScene scene;
 
 void setup() {
     engine.init();
