@@ -189,6 +189,47 @@ void test_substep_bounces_ball_off_cushion(void) {
     TEST_ASSERT_EQUAL_INT32(24000 - kFrictionPerSubstepRaw, world.ball(0).vy);
 }
 
+void test_contact_flags_report_reflections_only(void) {
+    // Cushion reflection sets the cushion flag; a second drain reads clear.
+    Table table = flatCushion();
+    World world;
+    world.placeBall(0, 50 * kPxScale, 512, 0, -5000);
+    world.resolveCushions(table);
+
+    TEST_ASSERT_TRUE(world.drainCushionHit());
+    TEST_ASSERT_FALSE(world.drainCushionHit());
+    TEST_ASSERT_FALSE(world.drainBallHit());
+}
+
+void test_contact_flags_ignore_separating_contact(void) {
+    // Overlapping but receding: pushed out, velocities kept, no flags — a
+    // resting ball must not click every substep.
+    Table table = flatCushion();
+    World world;
+    world.placeBall(0, 50 * kPxScale, 512, 0, 2000);
+    world.resolveCushions(table);
+
+    TEST_ASSERT_FALSE(world.drainCushionHit());
+
+    World pair;
+    pair.placeBall(0, 0, 0, -1000, 0);
+    pair.placeBall(1, 2000, 0, 0, 0);
+    pair.resolveBalls();
+
+    TEST_ASSERT_FALSE(pair.drainBallHit());
+}
+
+void test_contact_flags_report_ball_impact(void) {
+    World world;
+    world.placeBall(0, 0, 0, 1000, 0);
+    world.placeBall(1, 2000, 0, 0, 0);
+    world.resolveBalls();
+
+    TEST_ASSERT_TRUE(world.drainBallHit());
+    TEST_ASSERT_FALSE(world.drainBallHit());
+    TEST_ASSERT_FALSE(world.drainCushionHit());
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -204,5 +245,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_balls_resolve_clears_overlap);
     RUN_TEST(test_balls_coincident_centers_separate_deterministically);
     RUN_TEST(test_substep_bounces_ball_off_cushion);
+    RUN_TEST(test_contact_flags_report_reflections_only);
+    RUN_TEST(test_contact_flags_ignore_separating_contact);
+    RUN_TEST(test_contact_flags_report_ball_impact);
     return UNITY_END();
 }

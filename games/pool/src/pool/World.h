@@ -75,10 +75,36 @@ public:
     [[nodiscard]] uint8_t ballCount() const { return ballCount_; }
     [[nodiscard]] const PocketLog& pocketLog() const { return log_; }
 
+    /**
+     * @brief True if resolveCushions() reflected a ball since the last drain.
+     *
+     * Write-only observation for sound triggers: resting contact that only
+     * pushes a ball out never sets it. Clearing it cannot change the
+     * simulation, so polling it from the scene stays deterministic.
+     * @return The flag, cleared as a side effect.
+     */
+    bool drainCushionHit() {
+        const bool hit = cushionHit_;
+        cushionHit_ = false;
+        return hit;
+    }
+
+    /**
+     * @brief True if resolveBalls() exchanged velocity since the last drain.
+     * @return The flag, cleared as a side effect.
+     */
+    bool drainBallHit() {
+        const bool hit = ballHit_;
+        ballHit_ = false;
+        return hit;
+    }
+
 private:
     Ball balls_[kMaxBalls]{};
     uint8_t ballCount_ = 0;
     PocketLog log_{};
+    bool cushionHit_ = false;
+    bool ballHit_ = false;
 };
 
 }  // namespace pool

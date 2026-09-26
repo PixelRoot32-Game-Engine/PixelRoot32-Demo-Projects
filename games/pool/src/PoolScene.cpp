@@ -87,6 +87,10 @@ void PoolScene::init() {
     accUnits_ = 0;
     paused_ = false;
     tableError_ = game_.newGame(1);
+    audio_.reset();
+    audio_.stopMusic();
+    audioKey_ = 0;
+    snapshotAudioBaseline();
 }
 
 void PoolScene::update(unsigned long deltaTime) {
@@ -97,6 +101,17 @@ void PoolScene::update(unsigned long deltaTime) {
     handleInput();
     if (!paused_) {
         stepSimulation(deltaTime);
+    }
+    // A pause held through the final shot must not freeze the GameOver
+    // screen (or mute its jingle): losing/winning always releases it.
+    if (game_.state() == pool::State::GameOver && paused_) {
+        paused_ = false;
+        audio_.setMusicPaused(false);
+    }
+    audio_.update(deltaTime);
+    if (!paused_) {
+        pollAudio();
+        syncMusic();
     }
 }
 
@@ -109,6 +124,8 @@ void PoolScene::handleInput() {
         (state == pool::State::Aiming || state == pool::State::Shooting ||
          state == pool::State::BallsMoving)) {
         paused_ = !paused_;
+        audio_.playSfx(PoolSfx::PauseToggle);
+        audio_.setMusicPaused(paused_);
     }
     if (paused_) {
         return;
@@ -117,6 +134,7 @@ void PoolScene::handleInput() {
         case pool::State::Menu:
             if (input.isButtonPressed(kBtnA)) {
                 game_.startGame();
+                audio_.playSfx(PoolSfx::UiConfirm);
             }
             break;
         case pool::State::Aiming:
@@ -135,7 +153,9 @@ void PoolScene::handleInput() {
                 game_.powerDown();
             }
             if (input.isButtonPressed(kBtnA)) {
-                game_.shoot();
+                if (game_.shoot()) {
+                    audio_.playSfx(PoolSfx::CueStrike);
+                }
             }
             break;
         case pool::State::GameOver:
@@ -147,6 +167,8 @@ void PoolScene::handleInput() {
                 const pool::TableError err = game_.newGame(stage);
                 if (err == pool::TableError::None) {
                     game_.startGame();
+                    audio_.playSfx(PoolSfx::UiConfirm);
+                    snapshotAudioBaseline();
                 } else {
                     tableError_ = err;
                 }
@@ -170,6 +192,89 @@ void PoolScene::stepSimulation(unsigned long deltaTime) {
     if (steps == kMaxStepsPerTick) {
         accUnits_ = 0;
     }
+}
+
+void PoolScene::pollAudio() {
+    if (game_.world().drainCushionHit()) {
+        audio_.playSfx(PoolSfx::CushionThud);
+    }
+    if (game_.world().drainBallHit()) {
+        audio_.playSfx(PoolSfx::BallClick);
+    }
+    // A 1->0 edge on the active mask is a pocket: the cue scratches, a
+    // target drops. Stage advances re-deal every ball (0->1 edges), so they
+    // never read as pockets here.
+    uint8_t mask = 0;
+    bool cuePocketed = false;
+    bool targetPocketed = false;
+    for (uint8_t i = 0; i < game_.world().ballCount(); ++i) {
+        const pool::Ball& ball = game_.world().ball(i);
+        if (ball.active) {
+            mask |= static_cast<uint8_t>(1u << i);
+        } else if ((prevActiveMask_ & static_cast<uint8_t>(1u << i)) != 0) {
+            if (ball.number == 0) {
+                cuePocketed = true;
+            } else {
+                targetPocketed = true;
+            }
+        }
+    }
+    prevActiveMask_ = mask;
+    if (cuePocketed) {
+        audio_.playSfx(PoolSfx::Scratch);
+    } else if (targetPocketed) {
+        audio_.playSfx(PoolSfx::PocketDrop);
+    }
+    // A fouled shot scores nothing and may drop the total; the scratch
+    // already covers the cue case, so only buzz otherwise.
+    if (game_.score() < prevScore_ && !cuePocketed) {
+        audio_.playSfx(PoolSfx::Foul);
+    }
+    prevScore_ = game_.score();
+}
+
+void PoolScene::syncMusic() {
+    const pool::State state = game_.state();
+    if (state == pool::State::EvaluateShot || state == pool::State::NextTurn) {
+        return;  // Transient single-frame states keep whatever is playing.
+    }
+    uint8_t want = 0;
+    if (state == pool::State::Aiming || state == pool::State::Shooting ||
+        state == pool::State::BallsMoving) {
+        want = game_.stage();
+    } else if (state == pool::State::GameOver) {
+        want = game_.won() ? 11 : 12;
+    }
+    if (want == audioKey_) {
+        return;
+    }
+    // Clearing a stage into the next one earns the arpeggio; the win fanfare
+    // covers the final clear on its own.
+    if (want >= 1 && want <= 10 && audioKey_ >= 1 && audioKey_ <= 10 &&
+        want == static_cast<uint8_t>(audioKey_ + 1)) {
+        audio_.playSfx(PoolSfx::StageClear);
+    }
+    audioKey_ = want;
+    if (want >= 1 && want <= 10) {
+        audio_.playStageMusic(want);
+    } else if (want == 11) {
+        audio_.playWinJingle();
+    } else if (want == 12) {
+        audio_.playLoseJingle();
+    } else {
+        audio_.stopMusic();
+    }
+}
+
+void PoolScene::snapshotAudioBaseline() {
+    uint8_t mask = 0;
+    for (uint8_t i = 0; i < game_.world().ballCount(); ++i) {
+        if (game_.world().ball(i).active) {
+            mask |= static_cast<uint8_t>(1u << i);
+        }
+    }
+    prevActiveMask_ = mask;
+    prevScore_ = game_.score();
 }
 
 void PoolScene::draw(pr32::graphics::Renderer& renderer) {

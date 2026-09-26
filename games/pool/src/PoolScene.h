@@ -2,6 +2,7 @@
 #include <core/Scene.h>
 #include <graphics/Renderer.h>
 
+#include "audio/PoolAudio.h"
 #include "pool/Game.h"
 
 namespace pool {
@@ -53,6 +54,26 @@ private:
     void drawTable(pixelroot32::graphics::Renderer& renderer) const;
 
     /**
+     * @brief Polls the simulation for audible events (contacts, pockets, fouls).
+     *
+     * Drains the World's contact flags and diffs the active-ball mask and the
+     * score against the previous tick. Read-only: it never writes the sim.
+     */
+    void pollAudio();
+
+    /**
+     * @brief Switches music to match the game state (stage track, jingle, stop).
+     *
+     * Transient EvaluateShot/NextTurn frames keep whatever is playing.
+     */
+    void syncMusic();
+
+    /**
+     * @brief Resets the audio baseline after a (re)deal: full mask, score 0.
+     */
+    void snapshotAudioBaseline();
+
+    /**
      * @brief Draws every active ball, ringing the next expected target.
      * @param renderer The renderer to draw into.
      */
@@ -81,6 +102,14 @@ private:
     unsigned long accUnits_ = 0;
     /// Freeze flag toggled with B; update() skips input and simulation while set.
     bool paused_ = false;
+    /// Sound director: stage BGM, jingles and SFX. Silent when the audio flag is 0.
+    PoolAudio audio_;
+    /// Music key currently playing: 0 = none, 1-10 = stage, 11 = win, 12 = lose.
+    uint8_t audioKey_ = 0;
+    /// Active-ball bitmask at the previous tick; a 1->0 edge is a pocket.
+    uint8_t prevActiveMask_ = 0;
+    /// Score at the previous tick; a drop is a foul.
+    int32_t prevScore_ = 0;
 };
 
 }  // namespace pool

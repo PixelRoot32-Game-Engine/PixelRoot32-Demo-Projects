@@ -29,8 +29,11 @@ physics core:
 - **`PIXELROOT32_ENABLE_PHYSICS=0`** — deliberate. Balls integrate on the
   demo's own fixed-point core (`src/pool/`), not the engine's float-based
   `Scalar` solver. Costs ~9 KB when on.
-- **`PIXELROOT32_ENABLE_AUDIO=0`** — v1 is silent. ~17 KB, nearly all of it
-  the scheduler's own buffers.
+- **`PIXELROOT32_ENABLE_AUDIO=1`** — required. One looping stage track per
+  table plus win/lose jingles through `MusicPlayer`, and cue/pocket/foul
+  effects through `AudioEngine` (`src/audio/PoolAudio.*`). ~17 KB, nearly
+  all of it the scheduler's own buffers. The scene still compiles silent
+  with the flag at 0 — every engine call in the director is fenced.
 - **`PIXELROOT32_ENABLE_UI_SYSTEM=0`** — the HUD is `Renderer::drawText` plus
   rectangles drawn in the scene, not UI widgets. ~9 KB.
 - **`PIXELROOT32_ENABLE_PARTICLES=0`** — no particle effects in v1. ~2 KB.
@@ -60,7 +63,7 @@ Pin choices (ST7789 SPI, D-pad + two buttons) are in
 | Aim (hold) | Arrow keys Left/Right | D-pad Left/Right (33/14) |
 | Power level (tap) | Arrow keys Up/Down | D-pad Up/Down (32/27) |
 | Shoot / confirm | Space | Button A (13) |
-| Pause | Return | Button B (12) |
+| Pause (gameplay + music) | Return | Button B (12) |
 
 Aim tracks the held level for smooth sweeps; power steps on the press edge so
 one tap is exactly one meter level. Input is only read in `Aiming` (plus
@@ -99,6 +102,38 @@ Each step adds one harder element without taking any away: open table, side
 dents, angled teeth, a first obstacle, an angled wall, bites everywhere, a
 full island, two islands, fewer pockets, no banking angles.
 
+## Audio
+
+One looping track per stage, all original chiptune compositions in the
+spirit of the 8-bit era (not transcriptions): a square-wave lead over a
+triangle bass walking the chord roots, a shared noise groove, a pulse
+harmony entering from stage 6, and a tempo that climbs the difficulty
+curve (×1.00 → ×1.34). Clearing stage 10 plays a major fanfare, losing a
+descending line; both are one-shot jingles, then silence until retry.
+
+| Stage | Feel | Tempo |
+|-------|------|-------|
+| 1 | C major bounce | ×1.00 |
+| 2 | Jaunty | ×1.04 |
+| 3 | Wide leaps | ×1.08 |
+| 4 | March | ×1.10 |
+| 5 | Turn to minor | ×1.14 |
+| 6 | Driving minor (+ harmony) | ×1.18 |
+| 7 | Half-time, mysterious | ×1.16 |
+| 8 | Call and response | ×1.22 |
+| 9 | Tense | ×1.28 |
+| 10 | Urgent | ×1.34 |
+
+Effects (same NES vocabulary — pulse blips, noise ticks, sweeps): cue
+strike, ball click, cushion thud, pocket drop, scratch wah, order-foul
+buzz, a 6-note stage-clear arpeggio, confirm and pause blips. Clicks and
+thuds come from deterministic contact flags in `World` (set only on a real
+reflection/impulse, so resting contact never machine-guns); pockets and
+fouls are read off the active-ball mask and the score each tick — the
+scene never writes the sim to make a sound. Backends: SDL2 audio on
+native, I2S (BCLK 26 / LRCK 25 / DOUT 22, clear of the display and button
+pins) on ESP32.
+
 ## What it demonstrates
 
 - **Determinism as a build property.** `src/pool/` includes no engine header
@@ -127,6 +162,12 @@ full island, two islands, fewer pockets, no banking angles.
   (bit `width-1` = left pixel), opposite to the `Sprite` doc comment, so every
   asymmetric glyph is stored pre-mirrored. Symmetric digits (0, 1, 8) hid the
   bug until 2–7 and 9 exposed it.
+- **Sound as observation, never as input.** The scene hears the game three
+  ways — `World` contact flags (set only on a real bounce, drained per
+  tick), the active-ball mask (a 1→0 edge is a pocket), and the score (a
+  drop is a foul) — and none of them can feed back into the simulation, so
+  the soundtrack is deterministic by construction
+  (`PoolScene::pollAudio()`).
 - **A fixed shot budget as difficulty.** No lives, no timer: 12 shots per
   stage, −50 per foul, and geometry doing the rest.
 
@@ -134,9 +175,11 @@ full island, two islands, fewer pockets, no banking angles.
 
 ```
 src/
-├── PoolScene.h/.cpp   input map, 60 Hz pacing, table/balls/aim/HUD draw
+├── PoolScene.h/.cpp   input map, 60 Hz pacing, table/balls/aim/HUD draw, audio triggers
 ├── main.cpp                platform selector
 ├── platforms/              native.h, esp32_dev.h — backend wiring per target
+├── assets/audio/           PoolMusic.h (10 stage loops + jingles), PoolSfx.h (effect bank)
+├── audio/                  PoolAudio.h/.cpp — music/SFX director (silent at AUDIO=0)
 └── pool/                   engine-free integer core (no floats, no heap)
     ├── Fixed.h/.cpp        units, divRound, isqrt64, toPixel
     ├── Trig.h/.cpp         Q14 angle table (1024 steps/revolution)
@@ -171,6 +214,8 @@ Measured `sizeof` on the host (identical layout for these PODs on ESP32):
 | `pool::Game` (owns `Table` 964 B + `World` 252 B) | 1,256 B | — |
 | Scene (`Game` + accumulator + flags) | ~1.3 KB | — |
 | 10 `TableDef`s (`constexpr`) | 0 | ~2 KB |
+| 13 music tracks + drum grooves (`static const`, ~260 notes) | 0 | ~5 KB |
+| SFX bank (9 effects + 6-step arpeggio) | 0 | ~1 KB |
 | 3×5 digit font (10 glyphs) | 0 | ~200 B |
 
 No per-frame allocation: ball starts, segments, pockets, and the pocket log
@@ -206,7 +251,8 @@ the only font data, so there is nothing else here to attribute.
 
 ## Not in this iteration
 
-- No audio. The engine backend structs exist per platform; nothing plays yet.
+- No mute toggle — B pauses gameplay and music together, but there is no
+  music-only switch yet.
 - No aim ricochet preview — the guide is a straight 44 px line, no bounce
   simulation.
 - No per-stage par, high-score persistence, or versus modes.

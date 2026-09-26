@@ -45,6 +45,8 @@ void World::placeFromTable(const Table& table) {
         b.active = true;
     }
     ballCount_ = table.ballCount;
+    cushionHit_ = false;
+    ballHit_ = false;
     clearLog();
 }
 
@@ -163,6 +165,7 @@ void World::resolveCushions(const Table& table) {
             if (vDotN < 0) {
                 ball.vx -= static_cast<int32_t>(divRound(2 * vDotN * nx, seg.lenSqPx));
                 ball.vy -= static_cast<int32_t>(divRound(2 * vDotN * ny, seg.lenSqPx));
+                cushionHit_ = true;
             }
         }
         // Phase 2: vertices. Every polyline vertex is exactly one segment's
@@ -195,6 +198,7 @@ void World::resolveCushions(const Table& table) {
             if (vDotD < 0) {
                 ball.vx -= static_cast<int32_t>(divRound(2 * vDotD * dx, distSq));
                 ball.vy -= static_cast<int32_t>(divRound(2 * vDotD * dy, distSq));
+                cushionHit_ = true;
             }
         }
     }
@@ -231,6 +235,7 @@ void World::resolveBalls() {
                 const int32_t tmp = first.vx;
                 first.vx = second.vx;
                 second.vx = tmp;
+                ballHit_ = true;
                 continue;
             }
             const int64_t dist = static_cast<int64_t>(isqrt64(static_cast<uint64_t>(distSq)));
@@ -256,6 +261,7 @@ void World::resolveBalls() {
                 first.vy -= jy;
                 second.vx += jx;
                 second.vy += jy;
+                ballHit_ = true;
             }
         }
     }
