@@ -33,6 +33,10 @@ namespace pool {
 
 void PoolAudio::playStageMusic(uint8_t stage) {
 #if PIXELROOT32_ENABLE_AUDIO
+    lastStage_ = stage;
+    if (musicMuted_) {
+        return;
+    }
     engine.getMusicPlayer().play(music::trackForStage(stage));
     engine.getMusicPlayer().setTempoFactor(music::tempoForStage(stage));
 #else
@@ -42,6 +46,9 @@ void PoolAudio::playStageMusic(uint8_t stage) {
 
 void PoolAudio::playWinJingle() {
 #if PIXELROOT32_ENABLE_AUDIO
+    if (musicMuted_) {
+        return;
+    }
     engine.getMusicPlayer().play(music::WIN_JINGLE);
     engine.getMusicPlayer().setTempoFactor(1.0f);
 #endif
@@ -49,6 +56,9 @@ void PoolAudio::playWinJingle() {
 
 void PoolAudio::playLoseJingle() {
 #if PIXELROOT32_ENABLE_AUDIO
+    if (musicMuted_) {
+        return;
+    }
     engine.getMusicPlayer().play(music::LOSE_JINGLE);
     engine.getMusicPlayer().setTempoFactor(1.0f);
 #endif
@@ -56,6 +66,7 @@ void PoolAudio::playLoseJingle() {
 
 void PoolAudio::stopMusic() {
 #if PIXELROOT32_ENABLE_AUDIO
+    lastStage_ = 0;
     engine.getMusicPlayer().stop();
 #endif
 }
@@ -73,6 +84,9 @@ void PoolAudio::setMusicPaused(bool paused) {
 }
 
 void PoolAudio::playSfx(PoolSfx id) {
+    if (sfxMuted_) {
+        return;
+    }
     const size_t idx = static_cast<size_t>(id);
     if (idx >= static_cast<size_t>(PoolSfx::Count)) {
         return;
@@ -118,6 +132,21 @@ void PoolAudio::update(unsigned long dtMs) {
 #else
     (void)dtMs;
 #endif
+}
+
+void PoolAudio::setMusicMuted(bool muted) {
+    musicMuted_ = muted;
+#if PIXELROOT32_ENABLE_AUDIO
+    if (muted) {
+        engine.getMusicPlayer().stop();
+    } else if (lastStage_ >= 1 && lastStage_ <= 10) {
+        playStageMusic(lastStage_);
+    }
+#endif
+}
+
+void PoolAudio::setSfxMuted(bool muted) {
+    sfxMuted_ = muted;
 }
 
 void PoolAudio::reset() {

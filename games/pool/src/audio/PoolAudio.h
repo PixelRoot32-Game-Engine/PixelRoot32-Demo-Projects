@@ -30,6 +30,13 @@ public:
     /// @brief Pauses/resumes the sequencer voice without losing its position.
     void setMusicPaused(bool paused);
 
+    /// @brief Mutes stage music and jingles (user pref, survives reset()).
+    void setMusicMuted(bool muted);
+    /// @brief Mutes all sound effects (user pref, survives reset()).
+    void setSfxMuted(bool muted);
+    [[nodiscard]] bool isMusicMuted() const { return musicMuted_; }
+    [[nodiscard]] bool isSfxMuted() const { return sfxMuted_; }
+
     /// @brief Fires an effect unless its cooldown is still running.
     void playSfx(PoolSfx id);
     /// @brief Ticks cooldowns and delayed sequence steps. Call every update().
@@ -42,6 +49,9 @@ private:
     void enqueueDelayed(float delaySec, const pixelroot32::audio::AudioEvent& event);
 
     unsigned long cooldownMs_[static_cast<size_t>(PoolSfx::Count)] = {};
+    bool musicMuted_ = false;
+    bool sfxMuted_ = false;
+    uint8_t lastStage_ = 0;
 
 #if PIXELROOT32_ENABLE_AUDIO
     static constexpr uint8_t kMaxPending = 8;

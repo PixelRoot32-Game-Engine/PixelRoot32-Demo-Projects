@@ -34,8 +34,10 @@ physics core:
   effects through `AudioEngine` (`src/audio/PoolAudio.*`). ~17 KB, nearly
   all of it the scheduler's own buffers. The scene still compiles silent
   with the flag at 0 — every engine call in the director is fenced.
-- **`PIXELROOT32_ENABLE_UI_SYSTEM=0`** — the HUD is `Renderer::drawText` plus
-  rectangles drawn in the scene, not UI widgets. ~9 KB.
+- **`PIXELROOT32_ENABLE_UI_SYSTEM=1`** — the start menu is engine widgets:
+  a `UIButton` START GAME row plus two `UICheckBox` rows (MUSIC, SFX) and
+  `UILabel` title/hint, all drawn by the scene. The HUD itself stays
+  hand-drawn `drawText`. ~9 KB.
 - **`PIXELROOT32_ENABLE_PARTICLES=0`** — no particle effects in v1. ~2 KB.
 - **`PIXELROOT32_ENABLE_SCENE_TRANSITIONS=0`** — a single scene for the whole
   game, nothing to transition between.
@@ -60,10 +62,17 @@ Pin choices (ST7789 SPI, D-pad + two buttons) are in
 
 | Action | `native` (keyboard) | `esp32dev` (GPIO) |
 |--------|----------------------|--------------------|
+| Menu: move cursor | Arrow keys Up/Down | D-pad Up/Down (32/27) |
+| Menu: start / toggle | Space | Button A (13) |
 | Aim (hold) | Arrow keys Left/Right | D-pad Left/Right (33/14) |
 | Power level (tap) | Arrow keys Up/Down | D-pad Up/Down (32/27) |
 | Shoot / confirm | Space | Button A (13) |
 | Pause (gameplay + music) | Return | Button B (12) |
+
+The menu offers START GAME plus two independent checks — MUSIC and SFX,
+both on by default. Muting music stops the sequencer (unmuting replays the
+current stage track); muting SFX silences every effect. Choices persist for
+the whole session.
 
 Aim tracks the held level for smooth sweeps; power steps on the press edge so
 one tap is exactly one meter level. Input is only read in `Aiming` (plus
@@ -256,8 +265,6 @@ the only font data, so there is nothing else here to attribute.
 
 ## Not in this iteration
 
-- No mute toggle — B pauses gameplay and music together, but there is no
-  music-only switch yet.
 - No aim ricochet preview — the guide is a straight 44 px line, no bounce
   simulation.
 - No per-stage par, high-score persistence, or versus modes.
