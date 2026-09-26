@@ -2,7 +2,7 @@
 #include <core/Scene.h>
 #include <graphics/Renderer.h>
 
-#include "pool/Table.h"
+#include "pool/Game.h"
 
 namespace lunar_pool {
 
@@ -10,10 +10,10 @@ namespace lunar_pool {
  * @class LunarPoolScene
  * @brief Engine-side presentation layer for the Lunar Pool demo.
  *
- * Maps the 6 engine buttons to the engine-free `pool::Game` core, paces
- * simulation steps against wall-clock time, and draws from the core's const
- * accessors. Input mapping, pacing, and `pool::Game` itself are wired in a
- * later slice; this one loads and draws the table only.
+ * Owns the engine-free `pool::Game` core, maps the 6 engine buttons to it
+ * (Up/Down/Left/Right/A/B, see the InputConfig order in platforms/native.h),
+ * paces fixed 1/60 s simulation steps against wall-clock time, and draws the
+ * table, balls, aim guide and HUD from the core's const accessors.
  */
 class LunarPoolScene : public pixelroot32::core::Scene {
 public:
@@ -35,13 +35,52 @@ public:
     void draw(pixelroot32::graphics::Renderer& renderer) override;
 
 private:
-    /// Loaded once in init() from tableForStage(1). draw() reads this every
-    /// frame; a failed load leaves it only partially written (loadTable()'s
-    /// own contract), which is why draw() always checks tableError_ first.
-    pool::Table table_;
-    /// Result of loading table_ in init(). The engine always calls init()
-    /// before draw(), so a fresh Scene never draws with a stale None here.
+    /**
+     * @brief Applies button edges and levels to the game for its current state.
+     */
+    void handleInput();
+
+    /**
+     * @brief Advances fixed simulation steps from wall-clock milliseconds.
+     * @param deltaTime Elapsed time in milliseconds since the last update.
+     */
+    void stepSimulation(unsigned long deltaTime);
+
+    /**
+     * @brief Draws felt, cushions and pockets from the loaded table.
+     * @param renderer The renderer to draw into.
+     */
+    void drawTable(pixelroot32::graphics::Renderer& renderer) const;
+
+    /**
+     * @brief Draws every active ball, ringing the next expected target.
+     * @param renderer The renderer to draw into.
+     */
+    void drawBalls(pixelroot32::graphics::Renderer& renderer) const;
+
+    /**
+     * @brief Draws the aim guide while aiming with a live cue ball.
+     * @param renderer The renderer to draw into.
+     */
+    void drawAim(pixelroot32::graphics::Renderer& renderer) const;
+
+    /**
+     * @brief Draws the HUD band and the Menu/Pause/GameOver overlays.
+     * @param renderer The renderer to draw into.
+     */
+    void drawHud(pixelroot32::graphics::Renderer& renderer) const;
+
+    /// The rules core. draw() only reads it; update() drives it. A failed
+    /// newGame() leaves it in GameOver (lost), which is why draw() checks
+    /// tableError_ first instead of drawing from a partial load.
+    pool::Game game_;
+    /// Result of loading the stage table in init(). The engine always calls
+    /// init() before draw(), so a fresh Scene never draws with a stale None.
     pool::TableError tableError_ = pool::TableError::None;
+    /// ms x 60 accumulator: 1000 units make exactly one 1/60 s frame.
+    unsigned long accUnits_ = 0;
+    /// Freeze flag toggled with B; update() skips input and simulation while set.
+    bool paused_ = false;
 };
 
 }  // namespace lunar_pool
