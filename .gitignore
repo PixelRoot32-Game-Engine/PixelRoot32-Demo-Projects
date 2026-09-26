@@ -44,3 +44,6 @@ CLAUDE.md
 
 # CodeGraph index (per-checkout, never shared)
 .codegraph/
+
+# OpenCode agent config (local skills, session data)
+.opencode/
