@@ -431,6 +431,129 @@ void test_tables_stage4_matches_shipped_positions(void) {
     TEST_ASSERT_EQUAL_INT32(170 * 256, table.balls[1].y);
 }
 
+void test_tables_stage5_loads_with_expected_counts(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(5), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_UINT8(28, table.segmentCount);  // 24 border + 4 bar
+    TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
+    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
+}
+
+void test_tables_stage5_matches_shipped_positions(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(5), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[0].x);
+    TEST_ASSERT_EQUAL_INT32(140 * 256, table.balls[0].y);
+    TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
+    TEST_ASSERT_EQUAL_INT32(150 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(120 * 256, table.balls[1].y);
+}
+
+void test_tables_stage6_loads_with_expected_counts(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(6), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_UINT8(27, table.segmentCount);  // 24 + 3 chevron edges
+    TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
+    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
+}
+
+void test_tables_stage6_matches_shipped_positions(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(6), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[0].x);
+    TEST_ASSERT_EQUAL_INT32(140 * 256, table.balls[0].y);
+    TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
+    TEST_ASSERT_EQUAL_INT32(120 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(110 * 256, table.balls[1].y);
+}
+
+void test_tables_stage7_loads_with_expected_counts(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(7), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_UINT8(40, table.segmentCount);  // 24 + 4x4 bite edges
+    TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
+    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
+}
+
+void test_tables_stage7_matches_shipped_positions(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(7), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[0].x);
+    TEST_ASSERT_EQUAL_INT32(140 * 256, table.balls[0].y);
+    TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
+    TEST_ASSERT_EQUAL_INT32(110 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(130 * 256, table.balls[1].y);
+}
+
+void test_tables_stage8_loads_with_expected_counts(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(8), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_UINT8(32, table.segmentCount);  // 24 border + 2x4 islands
+    TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
+    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
+}
+
+void test_tables_stage8_matches_shipped_positions(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(8), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[0].x);
+    TEST_ASSERT_EQUAL_INT32(100 * 256, table.balls[0].y);
+    TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
+    TEST_ASSERT_EQUAL_INT32(60 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(160 * 256, table.balls[1].y);
+}
+
+void test_tables_stage9_loads_with_expected_counts(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(9), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_UINT8(24, table.segmentCount);
+    TEST_ASSERT_EQUAL_UINT8(4, table.pocketCount);  // only 4 holes
+    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
+}
+
+void test_tables_stage9_matches_shipped_positions(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(9), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_INT32(70 * 256, table.balls[0].x);
+    TEST_ASSERT_EQUAL_INT32(100 * 256, table.balls[0].y);
+    TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
+    TEST_ASSERT_EQUAL_INT32(110 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(140 * 256, table.balls[1].y);
+    // Mid-right pocket sits on the side bump, far from any corner.
+    TEST_ASSERT_EQUAL_INT32(228 * 256, table.pockets[1].x);
+    TEST_ASSERT_EQUAL_INT32(140 * 256, table.pockets[1].y);
+}
+
+void test_tables_stage10_loads_with_expected_counts(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(10), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_UINT8(24, table.segmentCount);
+    TEST_ASSERT_EQUAL_UINT8(6, table.pocketCount);
+    TEST_ASSERT_EQUAL_UINT8(7, table.ballCount);
+}
+
+void test_tables_stage10_matches_shipped_positions(void) {
+    Table table;
+    const TableError err = loadTable(tableForStage(10), table);
+    TEST_ASSERT_EQUAL(static_cast<int>(TableError::None), static_cast<int>(err));
+    TEST_ASSERT_EQUAL_INT32(120 * 256, table.balls[0].x);
+    TEST_ASSERT_EQUAL_INT32(200 * 256, table.balls[0].y);
+    TEST_ASSERT_EQUAL_UINT8(1, table.balls[1].number);
+    TEST_ASSERT_EQUAL_INT32(120 * 256, table.balls[1].x);
+    TEST_ASSERT_EQUAL_INT32(100 * 256, table.balls[1].y);
+}
+
 void test_tables_stage_clamps_out_of_range(void) {
     // Below 1 gives table 1, above kStageCount gives the last table; both
     // must still load cleanly.
@@ -442,9 +565,9 @@ void test_tables_stage_clamps_out_of_range(void) {
     Table high;
     TEST_ASSERT_EQUAL(static_cast<int>(TableError::None),
                       static_cast<int>(loadTable(tableForStage(99), high)));
-    TEST_ASSERT_EQUAL_UINT8(32, high.segmentCount);
-    TEST_ASSERT_EQUAL_INT32(60 * 256, high.balls[0].x);
-    TEST_ASSERT_EQUAL_INT32(100 * 256, high.balls[0].y);
+    TEST_ASSERT_EQUAL_UINT8(24, high.segmentCount);
+    TEST_ASSERT_EQUAL_INT32(120 * 256, high.balls[0].x);
+    TEST_ASSERT_EQUAL_INT32(200 * 256, high.balls[0].y);
 }
 
 int main(int argc, char** argv) {
@@ -490,6 +613,18 @@ int main(int argc, char** argv) {
     RUN_TEST(test_tables_stage3_matches_shipped_positions);
     RUN_TEST(test_tables_stage4_loads_with_expected_counts);
     RUN_TEST(test_tables_stage4_matches_shipped_positions);
+    RUN_TEST(test_tables_stage5_loads_with_expected_counts);
+    RUN_TEST(test_tables_stage5_matches_shipped_positions);
+    RUN_TEST(test_tables_stage6_loads_with_expected_counts);
+    RUN_TEST(test_tables_stage6_matches_shipped_positions);
+    RUN_TEST(test_tables_stage7_loads_with_expected_counts);
+    RUN_TEST(test_tables_stage7_matches_shipped_positions);
+    RUN_TEST(test_tables_stage8_loads_with_expected_counts);
+    RUN_TEST(test_tables_stage8_matches_shipped_positions);
+    RUN_TEST(test_tables_stage9_loads_with_expected_counts);
+    RUN_TEST(test_tables_stage9_matches_shipped_positions);
+    RUN_TEST(test_tables_stage10_loads_with_expected_counts);
+    RUN_TEST(test_tables_stage10_matches_shipped_positions);
     RUN_TEST(test_tables_stage_clamps_out_of_range);
     return UNITY_END();
 }
