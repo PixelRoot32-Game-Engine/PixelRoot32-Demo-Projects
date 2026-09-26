@@ -50,6 +50,33 @@ constexpr pr32::graphics::Color kTargetColors[6] = {
     pr32::graphics::Color::Cyan,     pr32::graphics::Color::Green,
 };
 
+// 3x5 ball-number digits, one row per uint16_t with bit 0 as the left pixel
+// (the Sprite convention). 3 px wide centers on the 8 px ball with a pixel
+// to spare, and the farthest glyph pixel (dx=1, dy=2) sits at 1+4=5 < 4^2,
+// so every set pixel lands inside the ball.
+constexpr uint16_t kDigitRows[10][5] = {
+    {0x7, 0x5, 0x5, 0x5, 0x7},  // 0
+    {0x2, 0x3, 0x2, 0x2, 0x7},  // 1
+    {0x7, 0x4, 0x2, 0x1, 0x7},  // 2
+    {0x7, 0x4, 0x6, 0x4, 0x7},  // 3
+    {0x5, 0x5, 0x7, 0x4, 0x4},  // 4
+    {0x7, 0x1, 0x3, 0x4, 0x7},  // 5
+    {0x7, 0x1, 0x7, 0x5, 0x7},  // 6
+    {0x7, 0x4, 0x4, 0x2, 0x2},  // 7
+    {0x7, 0x5, 0x7, 0x5, 0x7},  // 8
+    {0x7, 0x5, 0x7, 0x4, 0x7},  // 9
+};
+
+constexpr pr32::graphics::Sprite kDigitGlyphs[10] = {
+    {kDigitRows[0], 3, 5}, {kDigitRows[1], 3, 5}, {kDigitRows[2], 3, 5}, {kDigitRows[3], 3, 5},
+    {kDigitRows[4], 3, 5}, {kDigitRows[5], 3, 5}, {kDigitRows[6], 3, 5}, {kDigitRows[7], 3, 5},
+    {kDigitRows[8], 3, 5}, {kDigitRows[9], 3, 5},
+};
+
+// Micro-font covering '0'..'9' for ball numbers; flash-resident like any
+// other const asset, zero RAM cost.
+constexpr pr32::graphics::Font kDigitFont = {kDigitGlyphs, '0', '9', 3, 5, 4, 6, nullptr, 0, 0, 0};
+
 }  // namespace
 
 void LunarPoolScene::init() {
@@ -215,6 +242,13 @@ void LunarPoolScene::drawBalls(pr32::graphics::Renderer& renderer) const {
         // Ring the ball the rules want next, so "in order" needs no HUD text.
         if (ball.number != 0 && ball.number == expected) {
             renderer.drawCircle(x, y, radius + 2, pr32::graphics::Color::White);
+        }
+        // NES-style number inside the ball: the 3x5 glyph centers on the ball
+        // center with one pixel of margin on every side.
+        if (ball.number >= 1 && ball.number <= 9) {
+            const char label[2] = {static_cast<char>('0' + ball.number), '\0'};
+            renderer.drawText(label, static_cast<int16_t>(x - 1), static_cast<int16_t>(y - 2),
+                              pr32::graphics::Color::Black, 1, &kDigitFont);
         }
     }
 }
