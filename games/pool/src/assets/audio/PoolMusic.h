@@ -12,8 +12,9 @@
  * Original chiptune compositions in the spirit of the NES era, not
  * transcriptions: a square-wave lead (pulse 50%), a triangle bass walking
  * the chord roots, an optional pulse harmony entering from stage 6, and a
- * shared noise groove. Durations are beats (quarter = 1.0); every loop is
- * 8 beats. All data is `static const` (flash, zero RAM) and must stay in
+ * shared noise groove. Durations are beats (quarter = 1.0); every stage loop
+ * is 16 beats in two 8-beat halves (statement, then answer) so the repetition
+ * breathes instead of machine-gunning. All data is `static const` (flash,
  * scope while playing — the sequencer references it by pointer.
  */
 
@@ -65,9 +66,8 @@ static const a::MusicTrack GROOVE_B = {
 };
 
 // --- Stage 1: Classic (C F G C, airy 16-beat loop) ---------------------------
-// Nods to the original's 9-second ambient stage loop: a slower harmonic
-// rhythm (half-note bass), a sparse lead with breathing room, and an
-// unhurried 16-beat span instead of the 8-beat bounce of the other stages.
+// Nods to the original's 9-second ambient stage loop: the slowest harmonic
+// rhythm (half-note bass), the sparsest lead, and the most breathing room.
 
 static const a::MusicNote S1_LEAD[] = {
     a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 5, Q),
@@ -96,174 +96,161 @@ static const a::MusicNote S1_BASS[] = {
     a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
 };
 
-// --- Stage 2: Bites (C C F G, jaunty) ---------------------------------------
+// --- Stage 2: Bites (C C F G, jaunty call, settled answer) --------------------
 
 static const a::MusicNote S2_LEAD[] = {
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, H),
+    a::makeRest(H),
 };
 
 static const a::MusicNote S2_BASS[] = {
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
 };
 
-// --- Stage 3: Zigzag (G C D G, wide leaps) ----------------------------------
+// --- Stage 3: Zigzag (G C D G, leaps then a held answer) ----------------------
 
 static const a::MusicNote S3_LEAD[] = {
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Fs, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, H),
+    a::makeRest(H),
 };
 
 static const a::MusicNote S3_BASS[] = {
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, Q),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
 };
 
-// --- Stage 4: Gate (F Bb C F, march) ----------------------------------------
+// --- Stage 4: Gate (F Bb C F, march and echo) ---------------------------------
 
 static const a::MusicNote S4_LEAD[] = {
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::As, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::As, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::As, 5, H),
+    a::makeRest(H),
 };
 
 static const a::MusicNote S4_BASS[] = {
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::As, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::As, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, Q),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::As, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::As, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, H),
 };
 
-// --- Stage 5: Chevron (Dm Gm A Dm, turn to minor) ----------------------------
+// --- Stage 5: Chevron (Dm Gm A Dm, question and answer) -----------------------
 
 static const a::MusicNote S5_LEAD[] = {
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::As, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Cs, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, E),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Cs, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, H),
+    a::makeRest(H),
 };
 
 static const a::MusicNote S5_BASS[] = {
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, Q),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, H),
 };
 
-// --- Stage 6: Fortress (Dm, harmony enters, driving) -------------------------
+// --- Stage 6: Fortress (Dm, assault then a held line) -------------------------
 
 static const a::MusicNote S6_LEAD[] = {
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::As, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, E),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 5, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, H),
+    a::makeRest(H),
 };
 
 static const a::MusicNote S6_BASS[] = {
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::As, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::As, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, Q),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::As, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::As, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, H),
 };
 
 static const a::MusicNote S6_HARMONY[] = {
-    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::F, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::D, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::As, 3, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::C, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::D, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::D, 4, H),
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::As, 3, H),
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::C, 4, H),
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::A, 3, H),
 };
 
-// --- Stage 7: Donut (Em, half-time, mysterious) ------------------------------
+// --- Stage 7: Donut (Em, half-time call and higher answer) --------------------
 
 static const a::MusicNote S7_LEAD[] = {
     a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, Q),
@@ -272,9 +259,19 @@ static const a::MusicNote S7_LEAD[] = {
     a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, Q),
     a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
     a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, H),
+    a::makeRest(H),
 };
 
 static const a::MusicNote S7_BASS[] = {
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::E, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::B, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::E, 2, H),
     a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::E, 2, H),
     a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, H),
     a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::B, 2, H),
@@ -286,38 +283,38 @@ static const a::MusicNote S7_HARMONY[] = {
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::A, 4, H),
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::B, 4, H),
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::E, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::E, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::A, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::B, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::E, 4, H),
 };
 
-// --- Stage 8: Twins (Am call and response) -----------------------------------
+// --- Stage 8: Twins (Am low call, high answer) ---------------------------------
 
 static const a::MusicNote S8_LEAD[] = {
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, E),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 6, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, H),
 };
 
 static const a::MusicNote S8_BASS[] = {
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::E, 2, Q),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::A, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::F, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::E, 2, H),
 };
 
 static const a::MusicNote S8_HARMONY[] = {
@@ -325,38 +322,39 @@ static const a::MusicNote S8_HARMONY[] = {
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::F, 4, H),
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::G, 4, H),
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::A, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::C, 5, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::F, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::B, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::A, 4, H),
 };
 
-// --- Stage 9: Octagon (Em, tense) --------------------------------------------
+// --- Stage 9: Octagon (Em, climbing tension, dark landing) ---------------------
 
 static const a::MusicNote S9_LEAD[] = {
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Fs, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Fs, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Fs, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, E),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::E, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Fs, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::A, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::B, 5, H),
 };
 
 static const a::MusicNote S9_BASS[] = {
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::E, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::E, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::E, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::B, 2, Q),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::E, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::E, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::E, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::D, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::B, 2, H),
 };
 
 static const a::MusicNote S9_HARMONY[] = {
@@ -364,44 +362,48 @@ static const a::MusicNote S9_HARMONY[] = {
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::G, 4, H),
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::A, 4, H),
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::B, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::E, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::G, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::A, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::B, 4, H),
 };
 
-// --- Stage 10: Corridor (Cm, urgent) ------------------------------------------
+// --- Stage 10: Corridor (Cm, descent then an unresolved cry) -------------------
 
 static const a::MusicNote S10_LEAD[] = {
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::As, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Gs, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Gs, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Ds, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::As, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::F, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::As, 5, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, E),
-    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Ds, 6, E),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::As, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Gs, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Gs, 5, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::G, 5, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::As, 5, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::C, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Ds, 6, Q),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::Ds, 6, H),
+    a::makeNote(a::INSTR_PULSE_LEAD, a::Note::D, 6, H),
 };
 
 static const a::MusicNote S10_BASS[] = {
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::Gs, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::Gs, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::As, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::As, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, Q),
-    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, Q),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::Gs, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::As, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::C, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::Gs, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::As, 2, H),
+    a::makeNote(a::INSTR_TRIANGLE_BASS, a::Note::G, 2, H),
 };
 
 static const a::MusicNote S10_HARMONY[] = {
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::Ds, 5, H),
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::Gs, 4, H),
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::As, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::C, 5, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::Ds, 5, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::Gs, 4, H),
+    a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::D, 5, H),
     a::makeNote(a::INSTR_PULSE_HARMONY, a::Note::C, 5, H),
 };
 
