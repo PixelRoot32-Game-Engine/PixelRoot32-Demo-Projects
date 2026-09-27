@@ -159,6 +159,8 @@ jobs:
             env: host_test
           - demo: games/chess
             env: dialog_test
+          - demo: games/pool
+            env: host_test
           - demo: games/top_down_city
             env: host_test
           - demo: games/top_down_city
