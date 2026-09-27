@@ -7,14 +7,9 @@
 #include "core/Entity.h"
 #include "GameConstants.h"
 #include "TileWorld.h"
+#include "game/Facing.h"
 
 namespace legend_of_clone {
-
-/**
- * @enum Facing
- * @brief The four directions the player sprite can face.
- */
-enum class Facing : uint8_t { Down = 0, Up, Left, Right };
 
 /**
  * @class PlayerActor
@@ -34,7 +29,8 @@ enum class Facing : uint8_t { Down = 0, Up, Left, Right };
  *
  * The scene disables the actor (`setEnabled(false)`) for the duration of a
  * screen transition and writes the position itself — that is how input stays
- * locked out while the camera slides, exactly as on the NES.
+ * locked out while the camera slides, exactly as on the NES. It does the same
+ * while a dialog is open.
  */
 class PlayerActor : public pixelroot32::core::Entity {
 public:

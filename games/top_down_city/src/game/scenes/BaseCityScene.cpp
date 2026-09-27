@@ -52,10 +52,8 @@ void drawDiamond(gfx::Renderer& renderer, int x, int y, gfx::Color colour) {
 BaseCityScene::BaseCityScene()
     : camera_(DISPLAY_WIDTH, DISPLAY_HEIGHT),
       accumulatorMs_(0),
-      zoneBannerMs_(kZoneBannerMs),
-      bannerOverride_(nullptr),
+      banner_(),
       frenzyLabel_{},
-      bannerSerial_(0),
       hintVisible_(false),
       drawnFocusKey_(0),
       drawnCrowdKey_(0),
@@ -73,10 +71,10 @@ BaseCityScene::BaseCityScene()
       drawnTintStep_(0),
       drawnCooling_(false),
       drawnBusted_(false),
-      drawnBannerVisible_(false),
-      drawnBannerSerial_(0),
+      drawnBannerRevision_(0),
       drawnHintVisible_(false),
       drawnOnce_(false) {
+    banner_.show(nullptr, kZoneBannerMs);
 }
 
 void BaseCityScene::init() {
@@ -95,8 +93,7 @@ void BaseCityScene::init() {
     // Before the space, so anything it puts up on arrival wins. A scene keeps
     // its banner state across a visit, so without this the city would step
     // back out of the station still announcing what it was on the way in.
-    bannerOverride_ = nullptr;
-    zoneBannerMs_   = kZoneBannerMs;
+    banner_.show(nullptr, kZoneBannerMs);
 
     onEnterSpace(firstEntry);
 
@@ -359,13 +356,11 @@ void BaseCityScene::showBodiesLeft(std::uint8_t left) {
 }
 
 void BaseCityScene::showBanner(const char* label, int ms) {
-    bannerOverride_ = label;
-    zoneBannerMs_   = ms;
-    // Every call, whether or not anything else about the banner changed -- see
-    // `bannerSerial_` for why the dirty check cannot compare anything else.
-    // Wrapping is harmless: what the check asks is "different from last frame",
-    // and 65536 banners between two frames is not a thing.
-    ++bannerSerial_;
+    // Every call restarts the line, whether or not anything else about the
+    // banner changed, and that is what bumps the revision the dirty check
+    // compares. Wrapping is harmless: what the check asks is "different from
+    // last frame", and 65536 banners between two frames is not a thing.
+    banner_.show(label, ms);
 }
 
 void BaseCityScene::stepWantedClock() {
@@ -535,8 +530,7 @@ void BaseCityScene::respawn() {
     // No banner: the held notice has just spent two seconds saying what
     // happened, and the strip has something better to say -- which district
     // they have been turned out into.
-    bannerOverride_ = nullptr;
-    zoneBannerMs_   = kZoneBannerMs;
+    banner_.show(nullptr, kZoneBannerMs);
 }
 
 void BaseCityScene::update(unsigned long deltaTime) {
@@ -687,17 +681,13 @@ void BaseCityScene::update(unsigned long deltaTime) {
     const std::uint8_t zone = zoneUnderFocus();
     if (zone != world.zone) {
         world.zone = zone;
-        zoneBannerMs_ = kZoneBannerMs;
         AudioDirector::instance().playCue(audio_cues::Cue::DistrictChange);
         // A new district outranks the weapon notice: leaving it up would mean
         // the banner lies about where you are.
-        bannerOverride_ = nullptr;
-    } else if (zoneBannerMs_ > 0) {
-        zoneBannerMs_ -= static_cast<int>(deltaTime);
-        if (zoneBannerMs_ <= 0) {
-            zoneBannerMs_ = 0;
-            bannerOverride_ = nullptr;
-        }
+        banner_.show(nullptr, kZoneBannerMs);
+    } else {
+        // Real time, like the countdown this was: a no-op once it is down.
+        banner_.update(deltaTime);
     }
 }
 
@@ -731,9 +721,9 @@ bool BaseCityScene::shouldRedrawFramebuffer() const {
         || objectiveSecondsLeft()    != drawnObjectiveSeconds_
         || world.zone                != drawnZone_
         || world.dayNight.step()     != drawnTintStep_
-        || (zoneBannerMs_ > 0)       != drawnBannerVisible_
-        // And WHICH banner, not just whether there is one. See showBanner.
-        || bannerSerial_             != drawnBannerSerial_
+        // Whether there is a banner AND which one: the revision moves on
+        // every showBanner and again when a notice runs out.
+        || banner_.revision()        != drawnBannerRevision_
         || hintVisible_              != drawnHintVisible_
         // A bool, not the countdown: the notice does not animate.
         || (world.bustedMs > 0)      != drawnBusted_;
@@ -794,8 +784,7 @@ void BaseCityScene::draw(gfx::Renderer& renderer) {
     drawnZone_           = world.zone;
     drawnTintStep_       = world.dayNight.step();
     drawnBusted_         = world.bustedMs > 0;
-    drawnBannerVisible_  = zoneBannerMs_ > 0;
-    drawnBannerSerial_   = bannerSerial_;
+    drawnBannerRevision_ = banner_.revision();
     drawnHintVisible_    = hintVisible_;
     recordSpaceDrawn();
     drawnOnce_           = true;
@@ -931,7 +920,7 @@ void BaseCityScene::drawBustedNotice(gfx::Renderer& renderer) {
 }
 
 void BaseCityScene::drawZoneBanner(gfx::Renderer& renderer) {
-    if (zoneBannerMs_ <= 0) {
+    if (!banner_.visible()) {
         return;
     }
     renderer.drawFilledRectangle(0, 0, DISPLAY_WIDTH, kZoneBannerH,
@@ -939,7 +928,7 @@ void BaseCityScene::drawZoneBanner(gfx::Renderer& renderer) {
     renderer.drawLine(0, kZoneBannerH, DISPLAY_WIDTH - 1, kZoneBannerH,
                       hud::kAccent);
     const char* label =
-        bannerOverride_ != nullptr ? bannerOverride_ : spaceLabel();
+        banner_.label() != nullptr ? banner_.label() : spaceLabel();
     renderer.drawTextCentered(label, 4, hud::kInk, 1);
 }
 

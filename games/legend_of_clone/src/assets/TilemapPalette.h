@@ -33,16 +33,16 @@ namespace legend_of_clone {
     // red for anything that names a color instead of indexing art.
     static const uint16_t TILEMAP_PALETTE_DATA[16] = {
         0x0000, //  0 Black  'k'  #000000  outlines, cave mouth, dungeon floor
-        0xFFFF, //  1 White - text and error messages
+        0xFFFF, //  1 White  'w'  #FCFCFC  text, old man hair and beard, shopkeeper apron
         0x0015, //  2 Navy  'n'  #0000A8  drop shadow, dungeon wall mortar
         0x3DFF, //  3 Blue  'b'  #3CBCFC  dungeon wall block
-        0x0000, //  4 Cyan - unused
+        0xFCC7, //  4 Cyan  's'  #FC9838  skin - Link and the dungeon NPCs
         0x03C0, //  5 DarkGreen  'd'  #007800  foliage shading
         0x0540, //  6 Green  'g'  #00A800  foliage body
-        0x0000, //  7 LightGreen - unused
+        0x8682, //  7 LightGreen  'l'  #80D010  Link's tunic, shopkeeper tunic
         0xEE94, //  8 Yellow  '.'  #E8D0A0  sand - the ground everything sits on
         0xAAA0, //  9 Orange  'o'  #A85400  mountain rock, lit face
-        0x0000, // 10 LightRed - unused
+        0xCA61, // 10 LightRed  'h'  #C84C0C  Link's brown - outline, hair, boots, belt; old man robe
         0xF9C0, // 11 Red - error text - must never resolve to black
         0x71C0, // 12 DarkRed  'r'  #703800  mountain rock, shaded face
         0x6A3F, // 13 Purple - unused
@@ -57,18 +57,18 @@ namespace legend_of_clone {
     static const pixelroot32::graphics::Color TILEMAP_PALETTE_MAPPING[16] = {
         pixelroot32::graphics::Color::Black, //  0 transparent - never read
         pixelroot32::graphics::Color::Black, //  1 'k' -> Black
-        pixelroot32::graphics::Color::Navy, //  2 'n' -> Navy
-        pixelroot32::graphics::Color::Blue, //  3 'b' -> Blue
-        pixelroot32::graphics::Color::DarkGreen, //  4 'd' -> DarkGreen
-        pixelroot32::graphics::Color::Green, //  5 'g' -> Green
-        pixelroot32::graphics::Color::Yellow, //  6 '.' -> Yellow
-        pixelroot32::graphics::Color::Orange, //  7 'o' -> Orange
-        pixelroot32::graphics::Color::DarkRed, //  8 'r' -> DarkRed
-        pixelroot32::graphics::Color::Gray, //  9 'y' -> Gray
-        pixelroot32::graphics::Color::Black, // 10 unused
-        pixelroot32::graphics::Color::Black, // 11 unused
-        pixelroot32::graphics::Color::Black, // 12 unused
-        pixelroot32::graphics::Color::Black, // 13 unused
+        pixelroot32::graphics::Color::White, //  2 'w' -> White
+        pixelroot32::graphics::Color::Navy, //  3 'n' -> Navy
+        pixelroot32::graphics::Color::Blue, //  4 'b' -> Blue
+        pixelroot32::graphics::Color::Cyan, //  5 's' -> Cyan
+        pixelroot32::graphics::Color::DarkGreen, //  6 'd' -> DarkGreen
+        pixelroot32::graphics::Color::Green, //  7 'g' -> Green
+        pixelroot32::graphics::Color::LightGreen, //  8 'l' -> LightGreen
+        pixelroot32::graphics::Color::Yellow, //  9 '.' -> Yellow
+        pixelroot32::graphics::Color::Orange, // 10 'o' -> Orange
+        pixelroot32::graphics::Color::LightRed, // 11 'h' -> LightRed
+        pixelroot32::graphics::Color::DarkRed, // 12 'r' -> DarkRed
+        pixelroot32::graphics::Color::Gray, // 13 'y' -> Gray
         pixelroot32::graphics::Color::Black, // 14 unused
         pixelroot32::graphics::Color::Black, // 15 unused
     };

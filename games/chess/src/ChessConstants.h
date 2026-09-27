@@ -57,9 +57,16 @@ constexpr int kResignX      = kNewGameX + kButtonWidth + 12;
 
 // --- Promotion picker --------------------------------------------------------
 
-/** A four-cell strip centred over the board while a promotion is pending. */
+/**
+ * A four-cell strip centred over the board while a promotion is pending.
+ *
+ * The option count is the dialog script's (src/dialog/PromotionPicker.cpp),
+ * which static_asserts against this constant: the panel is sized at compile
+ * time, before any script is running.
+ */
+constexpr int kPromoChoiceCount = 4;
 constexpr int kPromoCell   = 44;
-constexpr int kPromoWidth  = kPromoCell * 4 + 8;
+constexpr int kPromoWidth  = kPromoCell * kPromoChoiceCount + 8;
 constexpr int kPromoHeight = kPromoCell + 22;
 constexpr int kPromoX      = (kBoardPixels - kPromoWidth) / 2;
 constexpr int kPromoY      = (kBoardPixels - kPromoHeight) / 2;

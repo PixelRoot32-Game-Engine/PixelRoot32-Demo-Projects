@@ -186,5 +186,7 @@ inline constexpr std::uint8_t BTN_UP    = 0;
 inline constexpr std::uint8_t BTN_DOWN  = 1;
 inline constexpr std::uint8_t BTN_LEFT  = 2;
 inline constexpr std::uint8_t BTN_RIGHT = 3;
+inline constexpr std::uint8_t BTN_A     = 4;
+inline constexpr std::uint8_t BTN_B     = 5;
 
 } // namespace legend_of_clone

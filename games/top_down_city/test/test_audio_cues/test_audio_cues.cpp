@@ -40,7 +40,7 @@ void test_every_cue_has_a_nonzero_cooldown() {
     // Cue::Count itself, so rows are walked for free the moment the enum
     // grows, and the explicit count below is what proves this test still
     // exercises every row rather than a copy frozen at an earlier size.
-    TEST_ASSERT_EQUAL_UINT8(22, static_cast<std::uint8_t>(cues::Cue::Count));
+    TEST_ASSERT_EQUAL_UINT8(23, static_cast<std::uint8_t>(cues::Cue::Count));
     for (std::uint8_t c = 0; c < static_cast<std::uint8_t>(cues::Cue::Count);
          ++c) {
         const cues::Cue cue = static_cast<cues::Cue>(c);
@@ -312,13 +312,13 @@ void test_a_car_stopping_from_rest_is_not_a_crash() {
 
 void test_every_essential_cue_is_never_refused() {
     // Refusal (ambientCueAllowed's gate) is only ever consulted for the one
-    // Ambient row -- these seven are the things a player did or must notice,
+    // Ambient row -- these eight are the things a player did or must notice,
     // and none of them may be silently dropped for a footfall's sake.
     const cues::Cue kEssential[] = {
         cues::Cue::Gunshot,     cues::Cue::ShotgunBlast,
         cues::Cue::WantedUp,    cues::Cue::PlayerHit,
         cues::Cue::Busted,      cues::Cue::MissionDelivered,
-        cues::Cue::MissionFailed,
+        cues::Cue::MissionFailed, cues::Cue::MissionAccepted,
     };
     for (cues::Cue cue : kEssential) {
         TEST_ASSERT_EQUAL(cues::CuePriority::Essential, cues::priorityOf(cue));

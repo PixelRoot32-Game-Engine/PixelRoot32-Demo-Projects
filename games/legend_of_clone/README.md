@@ -6,8 +6,8 @@
 > experimental, or deliberately simplified to keep one idea in focus.
 
 Language: C++17  
-Engine: `gperez88/PixelRoot32-Game-Engine@^1.9.0`  
-Environments: `native`, `esp32dev`  
+Engine: `feature/dialog-system` branch of PixelRoot32-Game-Engine (git dependency, until 1.11.0 is released)  
+Environments: `native`, `esp32dev`, `host_test`  
 Category: Games  
 
 
@@ -15,14 +15,15 @@ Category: Games
 ![Legend of Clone](screenshots/screenshot.png)
 
 An 8-bit-style overworld and the dungeon under it. Two scenes, four rooms each,
-and one player who walks between them.
+one player who walks between them, and four things to talk to: a sign, an old
+man, a chest and a shop.
 
 The name is the honest label. This is a **clone** of The Legend of Zelda, built to exercise engine
 features — room graphs, scrolling screen transitions, scene fades, 4bpp
 tilemaps — against a layout everyone already knows, so the machinery is the
 thing under review and not the level design. It is not a reproduction: the maps
 are hand-authored rather than ripped, the hero carries nothing and is nobody in
-particular, and there are no enemies, items or combat.
+particular, and there are no enemies or combat.
 
 It started as an answer to one question — *does a player walking off the edge
 of one screen land correctly on the next?* — and the dungeon is the same
@@ -51,6 +52,31 @@ into the black cave mouth on the start screen and the picture fades into the
 dungeon; walk onto the staircase you arrive beside and it fades back out,
 putting you below the cave rather than at the start of the game.
 
+Face something and press **A** to read it, talk to it or open it. **A** also
+turns the page and closes a line. In the shop, **Up**/**Down** pick an item,
+**A** buys it, and **B** or `LEAVE` walks away. The player cannot move while a
+dialog is open.
+
+On the simulator the six buttons are the arrow keys, **Space** (A) and **Enter**
+(B); see `src/platforms/native.h`.
+
+## Tests
+
+```bash
+pio test -e host_test
+```
+
+Host-only Unity suites for `src/game/`, the dialog, interaction and shop logic.
+They run on the engine's real `DialogRunner`, `DialogBox` and 5x7 font, with no
+display, no SDL2 and no board. `test/support/EngineUnits.cpp` compiles those
+engine sources straight from the installed checkout.
+
+| Suite | What it pins |
+| --- | --- |
+| `test_rules` | Prices, stock, the shop menu per inventory, the old man's first line, the chest paying once, the cell in front of the player |
+| `test_dialog_controller` | Frame by frame: the opening A press is not fed to the runner, a purchase is answered in the same frame and outside the runner's callback, the player stays frozen throughout |
+| `test_dialog_layout` | The old man's speech pages, and every script's `measureHeightPx` fits the status bar |
+
 ## What it demonstrates
 
 | Engine capability | Where |
@@ -66,6 +92,9 @@ putting you below the cave rather than at the start of the game.
 | Sprite flipping as animation, NES-style | `PlayerActor::draw()` |
 | Offset bypass for a non-scrolling HUD strip | `drawStatusBar()` |
 | Per-pixel tile collision via `isTilePixelSolid` | `TileWorld::isSolidAtPixel()` |
+| `DialogRunner` with tags, choices, cancel and paging | `game/DialogController.cpp` |
+| `DialogBox` sized with `measureHeightPx` | `game/DialogLayout.cpp` |
+| Dynamic layer over a cached static layer | `DungeonScene::overlayLayer()` |
 
 The asset shapes here follow **[metroidvania](../metroidvania/)**, which is the
 reference for how this engine expects tilemaps and sprites to be fed to it:
@@ -93,8 +122,8 @@ room would bleed into the strip — so the bar is drawn last, and opaque.
 The overworld and the dungeon are separate `Scene`s. What they have in common —
 a room grid, a camera pinned per room, the scrolling change between rooms,
 collision, the player — lives in `TopDownScene`, and each concrete scene is
-about eighty lines: its map, its status readout, and the one tile that changes
-scene.
+about a hundred lines: its map, its status readout, the one tile that changes
+scene, and which of its tiles can be talked to.
 
 That split is not tidiness. The room transition below contains one step that is
 easy to leave out and impossible to spot afterwards, and a second copy of it in
@@ -102,9 +131,10 @@ the dungeon would have been a second chance to get it wrong.
 
 `TopDownScene::Setup` is what a scene hands over: two palettes (world and
 player), a room layer, a `TileWorld` already attached to its export, and where
-to put the player. Two hooks are optional — `drawStatusBar()` and
-`onPlayerSettled()`, the latter being where a scene reacts to the tile the
-player is standing on.
+to put the player. Four hooks are optional: `drawStatusBar()`,
+`onPlayerSettled()`, where a scene reacts to the tile the player is standing on,
+`interactableAt()`, which names what a cell holds for the A button, and
+`overlayLayer()`, a tile layer drawn over the terrain every frame.
 
 `onPlayerSettled()` is deliberately not called mid-slide. During a room change
 the player is being interpolated across a seam and passes over tiles they never
@@ -171,6 +201,110 @@ move the player in lockstep with it, which needs a timer the scene owns
 anyway — at which point the camera lerp is two lines and a second timer inside
 `CameraTween` would only be state to keep in sync. If a later iteration adds a
 transition that moves the camera alone, `CameraTween` is the right tool for it.
+
+## Dialog
+
+Everything the A button does lives in `src/game/`, which takes no `Renderer`
+and reads no buttons, so all of it runs under `pio test -e host_test`.
+
+| File | Role |
+| --- | --- |
+| `GameState.h` | Story flags, potions and rupees. A POD, so a save phase can write it as bytes. |
+| `DialogScripts.cpp` | The four scripts as `const` tables in flash |
+| `ShopRules.cpp`, `StoryRules.cpp` | Prices and stock, the shop menu per inventory, the old man's first line, the chest |
+| `Interaction.cpp` | The player's cell and the cell in front of it |
+| `DialogController.cpp` | Starts dialogs, feeds them input, applies their tags |
+| `DialogLayout.cpp` | The box's style and where it goes |
+
+`GameState` and the one `DialogController` are defined in `GameSession.cpp`,
+beside the scenes rather than in them: `init()` runs on every scene swap, and
+the rupees have to survive the cave doorway. Nothing is saved to storage.
+
+### What each object does
+
+| Object | Where | Behaviour |
+| --- | --- | --- |
+| Sign | Overworld room 2, beside the cave | One line, no speaker |
+| Old man | Dungeon room 2 | A speech that pages, then `YOU GOT THE SWORD!`. Later visits start at his directions instead. |
+| Chest | Dungeon room 0 | Pays 40 rupees once, then draws open and says nothing |
+| Shopkeeper | Dungeon room 3 | Shield 30 and key 20 once each, potion 10 any number of times |
+
+Interaction is a grid lookup of the cell in front of the player on the A press
+edge. `InteractionTracker` needs `PIXELROOT32_ENABLE_PHYSICS=1`, and this game
+builds with physics off.
+
+### One frame
+
+`TopDownScene::updateDialog()` runs before `Scene::update()` and hands the
+controller this frame's press edges and what the player faces. The controller
+then does one of two things:
+
+1. While a dialog is active, it feeds Up, Down, A (Confirm) and B (Cancel) to
+   the runner, in that order.
+2. Otherwise, on an A press, it starts the dialog for what the player faces.
+   That press is not fed to the runner, or the first line would be skipped.
+
+The player is disabled while `blocksPlayer()` is true, the same lock the room
+slide uses.
+
+### The shop answer starts in the same frame
+
+A choice's `next` is a constant in flash, so it cannot depend on the player's
+rupees. A `start()` made from inside the runner's event callback is ignored by
+its reentrancy guard. So every buy choice points at `kNoLine`, and the answer
+is started from outside the callback instead:
+
+1. Before feeding Confirm, the controller reads the highlighted row with
+   `runner.choice(runner.selectedChoice())`. Afterwards the runner no longer
+   exposes it.
+2. It feeds Confirm. Inside that call the runner emits `ChoiceConfirmed`, ends
+   the menu and emits `Ended`.
+3. `feed()` returns, which releases the reentrancy guard. If the row was a buy
+   row and the runner is now `Finished`, the controller pays and starts
+   `THANK YOU!` or `NOT ENOUGH RUPEES.`.
+
+All three steps run inside one `update()`. The scene reads `blocksPlayer()` and
+draws only after `update()` returns, so no frame shows a `Finished` runner and
+the player is never unfrozen between the menu and the answer. The controller
+reacts to neither `ChoiceConfirmed` nor `Ended`, so the menu's `Ended` cannot
+unfreeze anything early. This costs no stored state.
+
+The runner reports Cancel but does not end the line itself, so the controller
+calls `stop()` on `Cancelled`, the one call that is legal inside the callback.
+
+### Four shop menus
+
+The engine has no way to hide a choice, so the shop has one choice line per
+(shield owned, key owned) state, each listing only what is still for sale plus
+`LEAVE`. Two once-only items make **four choice lines**.
+
+### Where the box goes
+
+`DialogBox::measureHeightPx` at the box's style (200 px wide, 1 px border, 1 px
+padding, 5x7 font):
+
+| Script | Height |
+| --- | ---: |
+| Sign | 22 px |
+| Old man | 58 px |
+| Chest | 13 px |
+| Shop | 62 px |
+
+All four fit the 64 px status bar, so the box covers the bar and the playfield
+stays visible. `placeDialogBox()` would anchor a taller box to the bottom of the
+screen, over the playfield. The 200 px width is what makes the old man's speech
+wrap to five lines and page. With the engine example's 4 px padding, the shop
+would measure 92 px.
+
+### The open chest
+
+The map indices are `const` in flash, so the chest cell cannot be rewritten.
+`DungeonScene` finds the chest in the map at `setup()`, and once `chestOpened` is
+set it returns a one-cell map holding `TILE_CHEST_OPEN` from `overlayLayer()`.
+The scene passes that to `StaticTilemapLayerCache` as a **dynamic** layer. The
+cache draws dynamic layers after it takes or restores its terrain snapshot, so
+the open chest is never baked into the snapshot and nothing has to be
+invalidated. Collision still reads the export, and both chest tiles are solid.
 
 ## The asset pipeline
 
@@ -246,8 +380,8 @@ touches bitmap data.
 Worth knowing on *this* map: `PerPixel` and `WholeTile` behave identically,
 because these terrain tiles are fully opaque — a bush is drawn over its own
 background, not on transparency. Sweeping the overworld one pixel at a time,
-both allow **70,299** of 156,705 body positions. Only `PerPixelEroded` differs,
-at **75,187** — about 7% more room, which is the fringe of tree crowns and bush
+both allow **69,803** of 156,705 body positions. Only `PerPixelEroded` differs,
+at **74,723** — about 7% more room, which is the fringe of tree crowns and bush
 edges no longer catching the player. Per-pixel collision pays off against art
 with real transparency; erosion pays off against art with ragged edges.
 
@@ -287,13 +421,18 @@ exported to a `TERRAIN_INDICES` array. The legend:
 
 ```
 OVERWORLD                        DUNGEON
-'.'  sand         walkable       '.'  floor    walkable
-','  grass patch  walkable       '#'  wall     blocking
-'B'  bush         blocking       'S'  stairs   walkable, leaves the dungeon
-'T'  forest       blocking
-'#'  mountain     blocking
+'.'  sand         walkable       '.'  floor       walkable
+','  grass patch  walkable       '#'  wall        blocking
+'B'  bush         blocking       'S'  stairs      walkable, leaves the dungeon
+'T'  forest       blocking       'O'  old man     blocking
+'#'  mountain     blocking       'X'  chest       blocking
+'P'  signpost     blocking       'K'  shopkeeper  blocking
 'C'  cave mouth   walkable, enters the dungeon
 ```
+
+The dungeon tileset also carries `TILE_CHEST_OPEN`, which has no map character:
+it is never placed by the map, only drawn over the closed chest once it is
+opened (see [The open chest](#the-open-chest)).
 
 Alongside the indices, each tileset exports a `TILE_SOLID` table. Collision is a
 property of the **tile**, not of a second layer — a bush blocks wherever it is —
@@ -303,7 +442,7 @@ pairs them at runtime: three pointers, no data of its own.
 > This is where this example diverges from metroidvania, which derives collision
 > from a separate `platforms` layer. That is the right answer *there*, because a
 > platform tile and a background tile can share art. Here tile type **is**
-> collision, so a 7-byte table beats a 660-byte layer.
+> collision, so an 8-byte table beats a 660-byte layer.
 
 The cave mouth and the stairs are **walkable**. They have to be — you enter a
 cave in a game like this by walking into it, not by bumping into it — which is why both are
@@ -465,7 +604,8 @@ uses. A pinned camera is the case that cache exists for:
 
 ```cpp
 const TileMap4bppDrawSpec staticLayers[] = { terrainLayer() };
-tilemapLayerCache_.draw(renderer, camX, camY, staticLayers, 1, nullptr, 0);
+const TileMap4bppDrawSpec dynamicLayers[] = { overlayLayer() };
+tilemapLayerCache_.draw(renderer, camX, camY, staticLayers, 1, dynamicLayers, 1);
 ```
 
 While the player walks around a room the camera does not move, so the terrain is
@@ -502,16 +642,19 @@ it costs flash rather than RAM:
 
 | Item | Bytes | Where |
 | --- | ---: | --- |
-| Tileset pixel data | 1,408 | flash — 11 tiles x 128 B across both maps |
+| Tileset pixel data | 2,048 | flash — 16 tiles x 128 B across both maps |
 | Player pixel data | 640 | flash — 5 sprites x 128 B |
 | Map indices | 1,320 | flash — 660 per map |
-| Collision tables | 11 | flash — one `bool` per tile, not per cell |
+| Collision tables | 16 | flash — one `bool` per tile, not per cell |
 | `TileWorld` x2 | ~40 | RAM — three pointers each, no data |
 | `RoomGraph<4>` x2 | ~240 | RAM — fixed capacity, no allocation |
+| `GameState` + `DialogController` | ~40 | RAM — 8 B of state, a 28 B `DialogRunner` and a reference |
+| `DialogBox` x2 | ~56 | RAM — style and last revision, one per scene |
+| Dialog scripts | — | flash — `const` line and choice tables and their strings |
 | Framebuffer snapshot | 57,600 | heap, `allocateForRenderer()` at init, ESP32 only |
 
-Measured on `esp32dev`, whole example: **24,800 B RAM (7.6%)** and 351,073 B
-flash (26.8%).
+Measured on `esp32dev`, whole example: **24,976 B RAM (7.6%)** and 368,041 B
+flash (28.1%).
 
 The previous version of this example expanded character maps into `.bss` at
 startup and packed art into RAM buffers. Moving to the exported format took RAM
@@ -525,9 +668,9 @@ writes through it.
 
 ## Not in this iteration
 
-- The dungeon has no keys, no locked doors, no enemies and nothing to find. Four
-  rooms and a way out.
-- The status bar is a placeholder. `UISpriteRow` is what the heart row is for,
-  once the player has something to lose.
-- No enemies, items, sword or combat anywhere.
-- No persistence — leaving the dungeon forgets everything about it.
+- No locked doors and no enemies. The sword, shield, key and potions are flags
+  and counters: nothing uses them yet.
+- The status bar shows the room and the rupee count only. `UISpriteRow` is what
+  the heart row is for, once the player has something to lose.
+- No combat anywhere.
+- No saving. Story flags and rupees survive scene changes but not a restart.

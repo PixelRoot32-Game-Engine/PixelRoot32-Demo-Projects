@@ -96,11 +96,66 @@ CityScene::CityScene()
       driving_(nullptr),
       prevThrottle_(0),
       drawnTrafficKey_(0),
-      drawnPickupKey_(0) {
+      drawnPickupKey_(0),
+      briefing_(),
+      briefingBox_(),
+      briefingBoxSized_(false),
+      heldUp_(false),
+      heldDown_(false),
+      drawnBriefingRevision_(0) {
+    drawnBriefingRevision_ = briefing_.revision();
+}
+
+void CityScene::setupBriefingBox() {
+    gfx::DialogBoxStyle style;
+    style.x = 4;
+    style.w = static_cast<int16_t>(DISPLAY_WIDTH - 8);
+    style.borderWidth = 1;
+    style.padding = 4;
+    style.textSize = 1;
+    style.lineSpacing = 1;
+    style.fixedPosition = true;
+
+    // Tallest single page of any chapter's script, so the panel never
+    // resizes mid-call when the next chapter's briefing is longer.
+    // measureHeightPx() only reads style.w/padding/borderWidth/textSize/
+    // lineSpacing, so it can be sized before style.h/y are known.
+    int16_t tallest = 0;
+    for (std::uint8_t c = 0;
+         c < static_cast<std::uint8_t>(contract::Chapter::Count); ++c) {
+        const int16_t need = gfx::DialogBox::measureHeightPx(
+            ContractDialog::scriptFor(static_cast<contract::Chapter>(c)),
+            style);
+        if (need > tallest) {
+            tallest = need;
+        }
+    }
+    style.h = tallest;
+    // Above the prompt strip, not over it: the strip names the buttons
+    // while the call is up (see hintLabel), and a panel drawn across it
+    // would cover the one line explaining how to work the dialog.
+    // drawHint() draws at DISPLAY_HEIGHT - kHintHeight, so the panel ends
+    // two pixels above that.
+    style.y = static_cast<int16_t>(DISPLAY_HEIGHT - kHintHeight - style.h - 2);
+    briefingBox_.setStyle(style);
 }
 
 void CityScene::onEnterSpace(bool firstEntry) {
     CityWorld& world = CityWorld::instance();
+
+    // Nobody arrives mid-call. A briefing that survived a doorway would be
+    // drawn over a room the player has not seen yet.
+    briefing_.close();
+    heldUp_ = false;
+    heldDown_ = false;
+
+    // Sized here rather than in the constructor: the default font only
+    // exists after Engine::init(), and scenes are globals. Retried until
+    // it sticks, so a font that arrives late still gets a panel.
+    if (!briefingBoxSized_) {
+        setupBriefingBox();
+        briefingBoxSized_ = briefingBox_.style().h > 0;
+    }
 
     // The collision space is global state and this scene may be entered more
     // than once, so it is set rather than assumed.
@@ -260,14 +315,72 @@ std::uint32_t CityScene::crowdVisualKey() const {
     return pedestrians_.visualKey();
 }
 
+bool CityScene::onFirePressed() {
+    // Only while the briefing is up. Anywhere else outdoors the trigger is
+    // still the trigger, and a round fired next to a payphone costs
+    // ammunition and raises the level like anywhere else.
+    if (!briefing_.isOpen()) {
+        return false;
+    }
+    briefing_.cancel();
+    return true;
+}
+
+bool CityScene::stepBriefing(const StepInput& in) {
+    // Both edges are taken every step whether the briefing is open or not,
+    // so closing it and reopening it does not arrive with a stale latch --
+    // the same reason the shop's picker does this.
+    const bool upPressed   = in.up && !heldUp_;
+    const bool downPressed = in.down && !heldDown_;
+    heldUp_   = in.up;
+    heldDown_ = in.down;
+
+    if (briefing_.isOpen()) {
+        // Down wins over up: both held at once is reachable on a real D-pad.
+        briefing_.navigate(upPressed, downPressed);
+        briefing_.update(kLogicStepMs);
+    }
+    // Served AFTER the runner, open or just finished: confirming the last
+    // line's choice ends the runner (Finished reads as closed), and the
+    // verdict it fired arrives with that same feed. Gating this on isOpen()
+    // would drop every ACCEPT and every HANG UP on the floor -- the dialog
+    // would vanish and the phone would keep ringing with no job started.
+    //
+    // The verdict is served here, once per decision, on a logic step --
+    // never on the input edge that fed the runner. takeVerdict() reports
+    // each decision exactly once, so a RUN edge held across two frames
+    // cannot start the chapter twice.
+    switch (briefing_.takeVerdict()) {
+        case ContractDialog::Verdict::Accepted:
+            briefing_.close();
+            // The confirm the mix was missing: answering the phone itself
+            // stays silent (there is nothing to confirm yet), but ACCEPT
+            // moves the mission state and gets the two-tone fifth.
+            // Essential, so it is never refused; rare, so its 500 ms
+            // cooldown never binds.
+            AudioDirector::instance().playCue(
+                audio_cues::Cue::MissionAccepted);
+            takeContract();
+            return true;
+        case ContractDialog::Verdict::Declined:
+            briefing_.close();
+            return true;
+        case ContractDialog::Verdict::None:
+            break;
+    }
+    return briefing_.isOpen();
+}
+
 bool CityScene::spaceNeedsRedraw() const {
     return traffic_.visualKey() != drawnTrafficKey_
-        || pickups_.visualKey() != drawnPickupKey_;
+        || pickups_.visualKey() != drawnPickupKey_
+        || briefing_.revision() != drawnBriefingRevision_;
 }
 
 void CityScene::recordSpaceDrawn() {
     drawnTrafficKey_ = traffic_.visualKey();
     drawnPickupKey_  = pickups_.visualKey();
+    drawnBriefingRevision_ = briefing_.revision();
 }
 
 const char* CityScene::spaceLabel() const {
@@ -275,6 +388,13 @@ const char* CityScene::spaceLabel() const {
 }
 
 const char* CityScene::hintLabel() {
+    // While the briefing is up the panel says what the job is; the strip
+    // says which buttons work it. Up/Down only matter on the last line,
+    // but naming them throughout costs nothing and avoids a strip that
+    // changes meaning mid-call.
+    if (briefing_.isOpen()) {
+        return "RUN NEXT  UP/DN PICK  FIRE LEAVE";
+    }
     // Same order as onActionPressed, and it has to be: this strip is the only
     // thing that tells the player which of the three the button is about, so a
     // line that named one and pressed another would be worse than no line.
@@ -337,6 +457,15 @@ std::uint8_t CityScene::doorwayUnderfoot() const {
 bool CityScene::onActionPressed() {
     CityWorld& world = CityWorld::instance();
 
+    // While the briefing is up RUN belongs to it: advance a text line, or
+    // confirm the highlighted answer. The verdict is served in stepSpace,
+    // not here -- takeContract moves the contract state and must run once
+    // per decision, on a logic step, rather than on an input edge.
+    if (briefing_.isOpen()) {
+        briefing_.advance();
+        return true;
+    }
+
     // Doors before cars: an entrance is on the pavement, where a car may well
     // be parked within reach, and somebody standing in a doorway pressing the
     // button is going through the door.
@@ -361,10 +490,13 @@ bool CityScene::onActionPressed() {
         return true;
     }
     // Then the phone, before the car and for the doors' reason: a car may well
-    // be parked within reach of the ring. It is also the only one of the three
-    // that can be missed -- the car is still there afterwards, the job is not.
+    // be parked within reach of the ring.
+    //
+    // RUN only opens the briefing -- the job starts on ACCEPT, served in
+    // stepSpace. A phone answered twice in a row re-opens nothing: open()
+    // restarts the same briefing, and the chapter it names has not moved.
     if (atContractPhone()) {
-        takeContract();
+        briefing_.open(world.contract.chapter);
         return true;
     }
     if (driving_ != nullptr) {
@@ -889,6 +1021,14 @@ void CityScene::exitVehicle() {
 bool CityScene::stepSpace(const StepInput& in) {
     CityWorld& world = CityWorld::instance();
 
+    // First, before anybody moves: the briefing owns the pad while it is
+    // up. The street is frozen for the call -- the mission clock has not
+    // started yet, the courier's keeps whatever it held, and nobody runs
+    // the player over while they read.
+    if (stepBriefing(in)) {
+        return true;
+    }
+
     stepWantedClock();
     stepObjectiveClock();
 
@@ -1237,6 +1377,18 @@ void CityScene::drawMinimap(gfx::Renderer& renderer) {
     renderer.drawLine(kMinimapCentreX, kMinimapCentreY - 3,
                       kMinimapCentreX, kMinimapCentreY + 3, hud::kRadarYou);
     renderer.drawPixel(kMinimapCentreX, kMinimapCentreY, hud::kRadarYouCore);
+}
+
+void CityScene::drawModal(gfx::Renderer& renderer) {
+    // Over everything, including the HUD: while the call is up nothing
+    // else on screen is what the player is being asked to read. The
+    // caught notice draws after this in the base scene, so a bust
+    // mid-call would still show -- which cannot happen, the street is
+    // frozen in stepBriefing, but the order stays honest anyway.
+    if (!briefing_.isOpen()) {
+        return;
+    }
+    briefingBox_.draw(renderer, briefing_.runner());
 }
 
 }  // namespace top_down_city
