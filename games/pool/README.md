@@ -64,7 +64,7 @@ Pin choices (ST7789 SPI, D-pad + two buttons) are in
 |--------|----------------------|--------------------|
 | Menu: move cursor | Arrow keys Up/Down | D-pad Up/Down (32/27) |
 | Menu: start / toggle | Space | Button A (13) |
-| Aim (hold) | Arrow keys Left/Right | D-pad Left/Right (33/14) |
+| Aim: tap nudges 0.35°, hold sweeps | Arrow keys Left/Right | D-pad Left/Right (33/14) |
 | Power level (tap) | Arrow keys Up/Down | D-pad Up/Down (32/27) |
 | Shoot / confirm | Space | Button A (13) |
 | Pause (gameplay + music) | Return | Button B (12) |

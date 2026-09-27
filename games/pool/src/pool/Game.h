@@ -43,6 +43,8 @@ constexpr uint8_t kMaxPower = 10;
 constexpr uint8_t kDefaultPower = 5;
 /** Aim steps (1/1024-revolution units, see Trig.h) per aimLeft/aimRight call. */
 constexpr uint16_t kAimStep = 4;
+/** Aim micro-step per aimLeftFine/aimRightFine call: one table unit (0.35 deg). */
+constexpr uint16_t kAimFineStep = 1;
 /** Points awarded per correctly pocketed target ball. */
 constexpr int32_t kPointsPerBall = 100;
 /** Points lost on a foul shot; the score never drops below zero. */
@@ -87,6 +89,20 @@ public:
      * No-op unless aiming.
      */
     void aimRight();
+
+    /**
+     * @brief Nudges the aim counter-clockwise by one angle unit.
+     *
+     * Single-tap precision companion to aimLeft(); no-op unless aiming.
+     */
+    void aimLeftFine();
+
+    /**
+     * @brief Nudges the aim clockwise by one angle unit.
+     *
+     * Single-tap precision companion to aimRight(); no-op unless aiming.
+     */
+    void aimRightFine();
 
     /**
      * @brief Raises the power-meter level by one, clamped to kMaxPower.

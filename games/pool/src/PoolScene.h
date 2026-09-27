@@ -71,8 +71,9 @@ public:
 private:
     /**
      * @brief Applies button edges and levels to the game for its current state.
+     * @param deltaTime Elapsed time in milliseconds since the last update.
      */
-    void handleInput();
+    void handleInput(unsigned long deltaTime);
 
     /**
      * @brief Advances fixed simulation steps from wall-clock milliseconds.
@@ -143,6 +144,12 @@ private:
     uint8_t prevActiveMask_ = 0;
     /// Score at the previous tick; a drop is a foul.
     int32_t prevScore_ = 0;
+    /// Aim hold state for the tap-nudge / hold-sweep repeat: -1/0/+1.
+    int8_t aimHoldDir_ = 0;
+    /// Milliseconds the current aim direction has been held.
+    unsigned long aimHoldMs_ = 0;
+    /// Repeat accumulator once past the hold delay.
+    unsigned long aimRepeatMs_ = 0;
 };
 
 }  // namespace pool

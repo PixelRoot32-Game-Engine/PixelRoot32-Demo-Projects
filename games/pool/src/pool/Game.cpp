@@ -50,6 +50,20 @@ void Game::aimRight() {
     angle_ = static_cast<uint16_t>((angle_ + kAimStep) % kAngleSteps);
 }
 
+void Game::aimLeftFine() {
+    if (state_ != State::Aiming) {
+        return;
+    }
+    angle_ = static_cast<uint16_t>((angle_ + kAngleSteps - kAimFineStep) % kAngleSteps);
+}
+
+void Game::aimRightFine() {
+    if (state_ != State::Aiming) {
+        return;
+    }
+    angle_ = static_cast<uint16_t>((angle_ + kAimFineStep) % kAngleSteps);
+}
+
 void Game::powerUp() {
     if (state_ != State::Aiming || power_ >= kMaxPower) {
         return;

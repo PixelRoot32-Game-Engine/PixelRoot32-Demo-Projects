@@ -275,6 +275,20 @@ void test_game_menu_and_gameover_frames_are_noops(void) {
     TEST_ASSERT_EQUAL(static_cast<int>(State::Aiming), static_cast<int>(game.state()));
 }
 
+void test_game_fine_aim_steps_single_units(void) {
+    Game game;
+    game.newGame(1);
+    game.startGame();
+    game.aimLeftFine();
+    TEST_ASSERT_EQUAL_UINT16(kAngleSteps - kAimFineStep, game.angle());
+    game.aimRightFine();
+    TEST_ASSERT_EQUAL_UINT16(0, game.angle());
+    for (int i = 0; i < kAimStep; ++i) {
+        game.aimRightFine();
+    }
+    TEST_ASSERT_EQUAL_UINT16(kAimStep, game.angle());
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -284,6 +298,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_game_shoot_rejected_outside_aiming);
     RUN_TEST(test_game_shoot_applies_aim_power_velocity);
     RUN_TEST(test_game_aim_wraps_and_power_clamps);
+    RUN_TEST(test_game_fine_aim_steps_single_units);
     RUN_TEST(test_game_quiet_shot_costs_shot_scores_nothing);
     RUN_TEST(test_game_pocket_in_order_scores);
     RUN_TEST(test_game_cue_scratch_fouls_and_respots);

@@ -43,6 +43,12 @@ constexpr int kHudHeight = 40;
 /// spiralling (each step stays deterministic, only wall-clock slips).
 constexpr uint8_t kMaxStepsPerTick = 4;
 
+/// Aim auto-repeat: one tap nudges a single unit (0.35 deg); holding past
+/// the delay sweeps coarse steps so full turns stay practical.
+constexpr unsigned long kAimRepeatDelayMs = 250;
+constexpr unsigned long kAimRepeatEveryMs = 50;
+constexpr uint8_t kAimRepeatCoarseSteps = 2;
+
 // Target ball colors by ball number (index = number - 1); the cue is White.
 constexpr pr32::graphics::Color kTargetColors[6] = {
     pr32::graphics::Color::Yellow,   pr32::graphics::Color::Orange,
@@ -124,7 +130,7 @@ void PoolScene::update(unsigned long deltaTime) {
     if (tableError_ != pool::TableError::None) {
         return;
     }
-    handleInput();
+    handleInput(deltaTime);
     if (!paused_) {
         stepSimulation(deltaTime);
     }
@@ -141,7 +147,7 @@ void PoolScene::update(unsigned long deltaTime) {
     }
 }
 
-void PoolScene::handleInput() {
+void PoolScene::handleInput(unsigned long deltaTime) {
     auto& input = engine.getInputManager();
     const pool::State state = game_.state();
     // B pauses anywhere a shot can be live; Menu and GameOver confirm with A,
@@ -165,16 +171,52 @@ void PoolScene::handleInput() {
             }
             break;
         case pool::State::Aiming:
-            // Aim tracks the held level for smooth sweeps; power steps on the
-            // press edge so one tap is exactly one meter level. Both tick
-            // softly, like the original's cursor chirp (cooldown-gated).
-            if (input.isButtonDown(kBtnLeft)) {
-                game_.aimLeft();
-                audio_.playSfx(PoolSfx::AimTick);
-            }
-            if (input.isButtonDown(kBtnRight)) {
-                game_.aimRight();
-                audio_.playSfx(PoolSfx::AimTick);
+            // Fine aim: a tap edge nudges one unit; holding past the repeat
+            // delay sweeps coarse steps. Both keys down (or none) holds still.
+            {
+                const bool leftDown = input.isButtonDown(kBtnLeft);
+                const bool rightDown = input.isButtonDown(kBtnRight);
+                const bool leftEdge = input.isButtonPressed(kBtnLeft);
+                const bool rightEdge = input.isButtonPressed(kBtnRight);
+                if (leftEdge && !rightDown) {
+                    game_.aimLeftFine();
+                    audio_.playSfx(PoolSfx::AimTick);
+                    aimHoldDir_ = -1;
+                    aimHoldMs_ = 0;
+                    aimRepeatMs_ = 0;
+                } else if (rightEdge && !leftDown) {
+                    game_.aimRightFine();
+                    audio_.playSfx(PoolSfx::AimTick);
+                    aimHoldDir_ = 1;
+                    aimHoldMs_ = 0;
+                    aimRepeatMs_ = 0;
+                } else if (leftDown && !rightDown && aimHoldDir_ == -1) {
+                    aimHoldMs_ += deltaTime;
+                    if (aimHoldMs_ >= kAimRepeatDelayMs) {
+                        aimRepeatMs_ += deltaTime;
+                        while (aimRepeatMs_ >= kAimRepeatEveryMs) {
+                            aimRepeatMs_ -= kAimRepeatEveryMs;
+                            for (uint8_t i = 0; i < kAimRepeatCoarseSteps; ++i) {
+                                game_.aimLeft();
+                            }
+                            audio_.playSfx(PoolSfx::AimTick);
+                        }
+                    }
+                } else if (rightDown && !leftDown && aimHoldDir_ == 1) {
+                    aimHoldMs_ += deltaTime;
+                    if (aimHoldMs_ >= kAimRepeatDelayMs) {
+                        aimRepeatMs_ += deltaTime;
+                        while (aimRepeatMs_ >= kAimRepeatEveryMs) {
+                            aimRepeatMs_ -= kAimRepeatEveryMs;
+                            for (uint8_t i = 0; i < kAimRepeatCoarseSteps; ++i) {
+                                game_.aimRight();
+                            }
+                            audio_.playSfx(PoolSfx::AimTick);
+                        }
+                    }
+                } else if (!leftDown && !rightDown) {
+                    aimHoldDir_ = 0;
+                }
             }
             if (input.isButtonPressed(kBtnUp)) {
                 game_.powerUp();
