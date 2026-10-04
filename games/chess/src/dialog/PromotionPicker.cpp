@@ -17,10 +17,10 @@ namespace {
  * here; the option letters only keep the table readable.
  */
 constexpr dlg::DialogChoice kChoices[] = {
-    { "Q", dlg::kNoLine, static_cast<uint16_t>(chess::PieceType::Queen)  },
-    { "R", dlg::kNoLine, static_cast<uint16_t>(chess::PieceType::Rook)   },
-    { "B", dlg::kNoLine, static_cast<uint16_t>(chess::PieceType::Bishop) },
-    { "N", dlg::kNoLine, static_cast<uint16_t>(chess::PieceType::Knight) },
+    { "Q", nullptr, dlg::kNoLine, static_cast<uint16_t>(chess::PieceType::Queen)  },
+    { "R", nullptr, dlg::kNoLine, static_cast<uint16_t>(chess::PieceType::Rook)   },
+    { "B", nullptr, dlg::kNoLine, static_cast<uint16_t>(chess::PieceType::Bishop) },
+    { "N", nullptr, dlg::kNoLine, static_cast<uint16_t>(chess::PieceType::Knight) },
 };
 
 constexpr uint8_t kChoiceCount = sizeof(kChoices) / sizeof(kChoices[0]);

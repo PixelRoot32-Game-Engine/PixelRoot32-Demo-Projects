@@ -24,8 +24,8 @@ looks like. That is what keeps the engine's audio and particle headers, and thei
 feature guards, out of `ChessScene` entirely.
 
 Language: C++17  
-Engine: `gperez88/PixelRoot32-Game-Engine@^1.9.0`  
-Environments: `native`, `esp32cyd`, `host_test`  
+Engine: `gperez88/PixelRoot32-Game-Engine@^1.12.0`  
+Environments: `native`, `esp32cyd`, `host_test`, `dialog_test`  
 Category: Games
 
 ![Chess](screenshots/screenshot.png)
@@ -350,7 +350,7 @@ pio run -e esp32cyd                  # ESP32-2432S028 firmware
 pio run -t clean -e native
 ```
 
-PlatformIO fetches the engine itself — `gperez88/PixelRoot32-Game-Engine@^1.9.0`,
+PlatformIO fetches the engine itself — `gperez88/PixelRoot32-Game-Engine@^1.12.0`,
 which in turn pulls `gperez88/PixelRoot32-APU@^2.0.0` for the audio core — so no
 local engine checkout is needed. Native builds also need SDL2: from MSYS2/MinGW
 on Windows, `libsdl2-dev` on Linux, `brew install sdl2` on macOS. The
