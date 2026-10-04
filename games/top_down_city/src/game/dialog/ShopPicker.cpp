@@ -26,7 +26,7 @@ ShopPicker::ShopPicker()
     for (std::uint8_t i = 0; i < shop::kLineCount; ++i) {
         const shop::Line line = static_cast<shop::Line>(i);
         // Back to the catalogue, not kNoLine: a sale does not close the shop.
-        choices_[i] = dlg::DialogChoice{shop::offer(line).label, kCatalogueLine, i};
+        choices_[i] = dlg::DialogChoice{shop::offer(line).label, nullptr, kCatalogueLine, i};
     }
     runner_.configure(this, &ShopPicker::onDialogEvent);
 }

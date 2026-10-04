@@ -6,7 +6,7 @@
 > experimental, or deliberately simplified to keep one idea in focus.
 
 Language: C++17  
-Engine: `feature/dialog-system` branch of PixelRoot32-Game-Engine (git dependency, until 1.11.0 is released)  
+Engine: `gperez88/PixelRoot32-Game-Engine@^1.12.0`  
 Environments: `native`, `esp32dev`, `host_test`  
 Category: Games  
 
