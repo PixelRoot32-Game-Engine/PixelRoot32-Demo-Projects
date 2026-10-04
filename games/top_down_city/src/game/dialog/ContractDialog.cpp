@@ -27,8 +27,8 @@ constexpr dlg::LineId kChoiceLine = 2;
 // plus change, for the chapter that follows.
 
 const dlg::DialogChoice kBoostChoices[] = {
-    {"ACCEPT", dlg::kNoLine, kTagAccept},
-    {"HANG UP", dlg::kNoLine, kTagDecline},
+    {"ACCEPT", nullptr, dlg::kNoLine, kTagAccept},
+    {"HANG UP", nullptr, dlg::kNoLine, kTagDecline},
 };
 
 const dlg::DialogLine kBoostLines[] = {
@@ -53,8 +53,8 @@ const dlg::DialogScript kBoostScript{
 // stars. Pays $125: the gun it took plus most of a vest.
 
 const dlg::DialogChoice kHitChoices[] = {
-    {"ACCEPT", dlg::kNoLine, kTagAccept},
-    {"HANG UP", dlg::kNoLine, kTagDecline},
+    {"ACCEPT", nullptr, dlg::kNoLine, kTagAccept},
+    {"HANG UP", nullptr, dlg::kNoLine, kTagDecline},
 };
 
 const dlg::DialogLine kHitLines[] = {
@@ -79,8 +79,8 @@ const dlg::DialogScript kHitScript{
 // the player to the shop first. Pays $200, the story ends with it.
 
 const dlg::DialogChoice kFrenzyChoices[] = {
-    {"ACCEPT", dlg::kNoLine, kTagAccept},
-    {"HANG UP", dlg::kNoLine, kTagDecline},
+    {"ACCEPT", nullptr, dlg::kNoLine, kTagAccept},
+    {"HANG UP", nullptr, dlg::kNoLine, kTagDecline},
 };
 
 const dlg::DialogLine kFrenzyLines[] = {

@@ -45,21 +45,21 @@ const gp::DialogLine kChestLines[] = {
 // controller starts THANK YOU or NOT ENOUGH RUPEES in the same frame.
 const gp::DialogChoice kShopChoices[] = {
     // kShopMenuNothingOwned: 0..3
-    {"SHIELD   30", gp::kNoLine, TAG_BUY_SHIELD},
-    {"KEY      20", gp::kNoLine, TAG_BUY_KEY},
-    {"POTION   10", gp::kNoLine, TAG_BUY_POTION},
-    {"LEAVE", gp::kNoLine, TAG_NONE},
+    {"SHIELD   30", nullptr, gp::kNoLine, TAG_BUY_SHIELD},
+    {"KEY      20", nullptr, gp::kNoLine, TAG_BUY_KEY},
+    {"POTION   10", nullptr, gp::kNoLine, TAG_BUY_POTION},
+    {"LEAVE", nullptr, gp::kNoLine, TAG_NONE},
     // kShopMenuShieldOwned: 4..6
-    {"KEY      20", gp::kNoLine, TAG_BUY_KEY},
-    {"POTION   10", gp::kNoLine, TAG_BUY_POTION},
-    {"LEAVE", gp::kNoLine, TAG_NONE},
+    {"KEY      20", nullptr, gp::kNoLine, TAG_BUY_KEY},
+    {"POTION   10", nullptr, gp::kNoLine, TAG_BUY_POTION},
+    {"LEAVE", nullptr, gp::kNoLine, TAG_NONE},
     // kShopMenuKeyOwned: 7..9
-    {"SHIELD   30", gp::kNoLine, TAG_BUY_SHIELD},
-    {"POTION   10", gp::kNoLine, TAG_BUY_POTION},
-    {"LEAVE", gp::kNoLine, TAG_NONE},
+    {"SHIELD   30", nullptr, gp::kNoLine, TAG_BUY_SHIELD},
+    {"POTION   10", nullptr, gp::kNoLine, TAG_BUY_POTION},
+    {"LEAVE", nullptr, gp::kNoLine, TAG_NONE},
     // kShopMenuBothOwned: 10..11
-    {"POTION   10", gp::kNoLine, TAG_BUY_POTION},
-    {"LEAVE", gp::kNoLine, TAG_NONE},
+    {"POTION   10", nullptr, gp::kNoLine, TAG_BUY_POTION},
+    {"LEAVE", nullptr, gp::kNoLine, TAG_NONE},
 };
 
 const gp::DialogLine kShopLines[] = {
