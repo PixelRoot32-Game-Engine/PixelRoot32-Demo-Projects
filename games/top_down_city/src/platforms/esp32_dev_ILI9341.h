@@ -1,4 +1,4 @@
-#ifdef PLATFORM_ESP32DEV
+#ifdef PLATFORM_ESP32DEV_ILI9341
 
 #include <Arduino.h>
 #include <drivers/esp32/TFT_eSPI_Drawer.h>
@@ -20,44 +20,29 @@ namespace pr32 = pixelroot32;
 // Button mapping (Arduino ESP32), common mapping for a 4-directional pad plus
 // two action buttons. A holds a run and works every door; B fires.
 const int BTN_PIN_UP = 32;
-const int BTN_PIN_DOWN = 27;
-const int BTN_PIN_LEFT = 33;
-const int BTN_PIN_RIGHT = 14;
-const int BTN_PIN_A = 13;
-const int BTN_PIN_B = 12;
+const int BTN_PIN_DOWN = 33;
+const int BTN_PIN_LEFT = 25;
+const int BTN_PIN_RIGHT = 26;
+const int BTN_PIN_A = 27;
+const int BTN_PIN_B = 13;
+const int BTN_PIN_START = 34;
+const int BTN_PIN_SELECT = 35;
+
+// ESP32-2432S028 "Cheap Yellow Display": ILI9341 240x320 with an XPT2046
+// resistive panel on its own GPIO bus (see the esp32cyd flags in platformio.ini).
 
 pr32::graphics::DisplayConfig config(
-    pr32::graphics::DisplayType::ST7789,
-    DISPLAY_ROTATION,
-    PHYSICAL_DISPLAY_WIDTH,
-    PHYSICAL_DISPLAY_HEIGHT,
-    LOGICAL_WIDTH,
-    LOGICAL_HEIGHT,
-    X_OFF_SET,
-    Y_OFF_SET
-);
+    pr32::graphics::DisplayType::ILI9341_2,
+    DISPLAY_ROTATION, PHYSICAL_DISPLAY_WIDTH, PHYSICAL_DISPLAY_HEIGHT,
+    LOGICAL_WIDTH, LOGICAL_HEIGHT, X_OFF_SET, Y_OFF_SET);
 
 // 6 buttons: Up, Down, Left, Right, A (run / contextual), B (fire).
 pr32::input::InputConfig inputConfig(BTN_PIN_UP, BTN_PIN_DOWN, BTN_PIN_LEFT,
-                                     BTN_PIN_RIGHT, BTN_PIN_A, BTN_PIN_B);
+                                     BTN_PIN_RIGHT, BTN_PIN_A, BTN_PIN_B, 
+                                     BTN_PIN_START, BTN_PIN_SELECT);
 
-#if PIXELROOT32_ENABLE_AUDIO
-// I2S out to a MAX98357A-class DAC. Neither the TFT/SPI pin map above nor
-// the six button pins use 26, 25 or 22 -- checked against both maps, not
-// assumed -- and 25/26 doubling as the SoC's internal-DAC pins is harmless
-// here: they are driven as ordinary I2S digital outputs, never through
-// ESP32_DAC_AudioBackend.
-const int I2S_BCLK_PIN = 26;
-const int I2S_LRCK_PIN = 25;
-const int I2S_DOUT_PIN = 22;
 
-pr32::drivers::esp32::ESP32_I2S_AudioBackend audioBackend(
-    I2S_BCLK_PIN, I2S_LRCK_PIN, I2S_DOUT_PIN, 22050);
-pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate());
-pr32::core::Engine engine(config, inputConfig, audioConfig);
-#else
 pr32::core::Engine engine(config, inputConfig);
-#endif
 
 // One scene per space, one run. The scenes are swapped through CityWorld,
 // which holds everything a doorway must not reset -- the player, the wanted
@@ -108,4 +93,4 @@ void loop() {
     engine.run();
 }
 
-#endif
+#endif  // PLATFORM_ESP32DEV_ILI9341

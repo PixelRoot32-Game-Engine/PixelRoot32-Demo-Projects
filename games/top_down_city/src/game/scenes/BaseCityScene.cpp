@@ -908,12 +908,12 @@ void BaseCityScene::drawBustedNotice(gfx::Renderer& renderer) {
     }
     // A full-width band rather than a fitted box: measuring the string to fit
     // a rectangle nobody is looking at is arithmetic for nothing.
-    renderer.drawFilledRectangle(0, kBustedNoticeY, DISPLAY_WIDTH,
+    renderer.drawFilledRectangle(0, kBustedNoticeY, kEffectiveDisplayWidth,
                                  kBustedNoticeH, hud::kPanel);
-    renderer.drawLine(0, kBustedNoticeY, DISPLAY_WIDTH - 1, kBustedNoticeY,
+    renderer.drawLine(0, kBustedNoticeY, kEffectiveDisplayWidth - 1, kBustedNoticeY,
                       hud::kDanger);
     renderer.drawLine(0, kBustedNoticeY + kBustedNoticeH - 1,
-                      DISPLAY_WIDTH - 1, kBustedNoticeY + kBustedNoticeH - 1,
+                      kEffectiveDisplayWidth - 1, kBustedNoticeY + kBustedNoticeH - 1,
                       hud::kDanger);
     renderer.drawTextCentered("WANTED", kBustedNoticeY + kHudPadPx,
                               hud::kDanger, kBustedNoticeScale);
@@ -923,9 +923,9 @@ void BaseCityScene::drawZoneBanner(gfx::Renderer& renderer) {
     if (!banner_.visible()) {
         return;
     }
-    renderer.drawFilledRectangle(0, 0, DISPLAY_WIDTH, kZoneBannerH,
+    renderer.drawFilledRectangle(0, 0, kEffectiveDisplayWidth, kZoneBannerH,
                                  hud::kPanel);
-    renderer.drawLine(0, kZoneBannerH, DISPLAY_WIDTH - 1, kZoneBannerH,
+    renderer.drawLine(0, kZoneBannerH, kEffectiveDisplayWidth - 1, kZoneBannerH,
                       hud::kAccent);
     const char* label =
         banner_.label() != nullptr ? banner_.label() : spaceLabel();
@@ -1020,8 +1020,8 @@ void BaseCityScene::drawHint(gfx::Renderer& renderer) {
     }
     // One contextual button needs one line of text, or nobody finds it: the
     // demo has no menu to put controls in.
-    const int top = DISPLAY_HEIGHT - kHintHeight;
-    renderer.drawFilledRectangle(0, top, DISPLAY_WIDTH, kHintHeight,
+    const int top = kEffectiveDisplayHeight - kHintHeight;
+    renderer.drawFilledRectangle(0, top, kEffectiveDisplayWidth, kHintHeight,
                                  hud::kPanel);
     renderer.drawTextCentered(label, top + 2, hud::kInk, 1);
 }

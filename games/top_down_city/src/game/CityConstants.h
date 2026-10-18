@@ -668,8 +668,17 @@ constexpr int kGlyphAdvancePx = 6;
 
 /* Shared HUD geometry. Every right-aligned element -- the clock and the whole
  * column under it -- measures back from this edge, so it has to be declared
- * before the first of them. */
-constexpr int kHudRightEdge = DISPLAY_WIDTH - 2;
+ * before the first of them.
+ *
+ * When the display is rotated 90 or 270 degrees, the physical width becomes
+ * the physical height (e.g. ILI9341 240x320 with rotation 3 has an effective
+ * width of 320). The HUD must measure back from the actual right edge of the
+ * panel, not from the unrotated logical width. */
+constexpr int kEffectiveDisplayWidth =
+    (DISPLAY_ROTATION % 2 == 0) ? DISPLAY_WIDTH : PHYSICAL_DISPLAY_HEIGHT;
+constexpr int kEffectiveDisplayHeight =
+    (DISPLAY_ROTATION % 2 == 0) ? DISPLAY_HEIGHT : PHYSICAL_DISPLAY_WIDTH;
+constexpr int kHudRightEdge = kEffectiveDisplayWidth - 2;
 constexpr int kHudPadPx     = 2;
 
 /* The in-game clock, top right. It shares the top strip with the district

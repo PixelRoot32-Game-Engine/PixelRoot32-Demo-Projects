@@ -116,9 +116,25 @@ renderer already reads and repoints a tileset it already draws from.
 | Environment | Display | Driver | Input | Audio |
 |-------------|---------|--------|-------|-------|
 | `native` | 320×240 logical | SDL2 (`DisplayType::NONE`) | Keyboard (SDL scancodes) | SDL2, 22050 Hz |
-| `esp32dev` | 240×240 ST7789 | TFT_eSPI | 6 GPIO buttons | I2S — MAX98357A-class DAC on BCLK 26 / LRCK 25 / DOUT 22 |
+| `esp32dev_ST7789` | 240×240 ST7789 | TFT_eSPI | 6 GPIO buttons | I2S — MAX98357A-class DAC on BCLK 26 / LRCK 25 / DOUT 22 |
+| `esp32dev_ILI9341` | 240×320 ILI9341 (rotation 3, effective 320×240) | TFT_eSPI | 6 GPIO buttons | I2S — MAX98357A-class DAC on BCLK 26 / LRCK 25 / DOUT 22 |
 
-ESP32 button pins: Up 32, Down 27, Left 33, Right 14, A 13, B 12.
+**ST7789 button pins:** Up 32, Down 27, Left 33, Right 14, A 13, B 12.
+
+**ILI9341 button pins (ESP32-2432S028 "Cheap Yellow Display"):** Up 32, Down 33, Left 25, Right 26, A 27, B 13, Start 34, Select 35.
+
+### Display rotation
+
+The HUD and scene geometry adapt automatically at compile time through two constants in [`CityConstants.h`](src/game/CityConstants.h):
+
+```cpp
+constexpr int kEffectiveDisplayWidth =
+    (DISPLAY_ROTATION % 2 == 0) ? DISPLAY_WIDTH : PHYSICAL_DISPLAY_HEIGHT;
+constexpr int kEffectiveDisplayHeight =
+    (DISPLAY_ROTATION % 2 == 0) ? DISPLAY_HEIGHT : PHYSICAL_DISPLAY_WIDTH;
+```
+
+These feed `kHudRightEdge`, `drawZoneBanner()`, `drawBustedNotice()`, `drawHint()`, and the interior scenes' residue fill. The ST7789 (rotation 0) and the native simulator (rotation 0) use the logical dimensions unchanged; the ILI9341 (rotation 3) swaps them, so a 240×320 portrait panel is treated as a 320×240 landscape framebuffer. The 15×15-tile interiors are 240×240 and fill the left portion of the rotated screen; the uncovered right strip is filled with `hud::kEdge` so residue from the previous scene never shows through.
 
 ## Controls
 
