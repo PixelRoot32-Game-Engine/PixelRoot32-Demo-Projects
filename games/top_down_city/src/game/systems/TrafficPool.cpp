@@ -75,9 +75,9 @@ void TrafficPool::reset(std::uint32_t seed) {
 bool TrafficPool::isOnScreen(int spriteX, int spriteY,
                              int cameraX, int cameraY, int margin) {
     return spriteX + kVehicleSpriteW > cameraX - margin &&
-           spriteX < cameraX + DISPLAY_WIDTH + margin &&
+           spriteX < cameraX + kEffectiveDisplayWidth + margin &&
            spriteY + kVehicleSpriteH > cameraY - margin &&
-           spriteY < cameraY + DISPLAY_HEIGHT + margin;
+           spriteY < cameraY + kEffectiveDisplayHeight + margin;
 }
 
 bool TrafficPool::trySpawn(int cameraX, int cameraY, bool police) {
@@ -164,8 +164,8 @@ TrafficNoise TrafficPool::step(int cameraX, int cameraY,
     // this is the same point CityScene's own cameraOriginX/Y arithmetic
     // targets, just derived here rather than threaded through as a third
     // parameter (ADR-15 §17.1).
-    const int listenerX = cameraX + DISPLAY_WIDTH / 2;
-    const int listenerY = cameraY + DISPLAY_HEIGHT / 2;
+    const int listenerX = cameraX + kEffectiveDisplayWidth / 2;
+    const int listenerY = cameraY + kEffectiveDisplayHeight / 2;
 
     std::uint8_t policeLive = 0;
     for (std::uint16_t i = pool_.nextLive(0); i != Pool::kEnd;

@@ -50,7 +50,7 @@ void drawDiamond(gfx::Renderer& renderer, int x, int y, gfx::Color colour) {
 }  // namespace
 
 BaseCityScene::BaseCityScene()
-    : camera_(DISPLAY_WIDTH, DISPLAY_HEIGHT),
+    : camera_(kEffectiveDisplayWidth, kEffectiveDisplayHeight),
       accumulatorMs_(0),
       banner_(),
       frenzyLabel_{},
@@ -141,18 +141,18 @@ void BaseCityScene::focusHitBox(int& left, int& top,
 }
 
 int BaseCityScene::cameraOriginX() const {
-    const int high = collision::spaceWidthPx() - DISPLAY_WIDTH;
-    return clampInt(focusCentreX() - DISPLAY_WIDTH / 2, 0, high > 0 ? high : 0);
+    const int high = collision::spaceWidthPx() - kEffectiveDisplayWidth;
+    return clampInt(focusCentreX() - kEffectiveDisplayWidth / 2, 0, high > 0 ? high : 0);
 }
 
 int BaseCityScene::cameraOriginY() const {
-    const int high = collision::spaceHeightPx() - DISPLAY_HEIGHT;
-    return clampInt(focusCentreY() - DISPLAY_HEIGHT / 2, 0, high > 0 ? high : 0);
+    const int high = collision::spaceHeightPx() - kEffectiveDisplayHeight;
+    return clampInt(focusCentreY() - kEffectiveDisplayHeight / 2, 0, high > 0 ? high : 0);
 }
 
 void BaseCityScene::applySpaceBounds() {
-    const int highX = collision::spaceWidthPx() - DISPLAY_WIDTH;
-    const int highY = collision::spaceHeightPx() - DISPLAY_HEIGHT;
+    const int highX = collision::spaceWidthPx() - kEffectiveDisplayWidth;
+    const int highY = collision::spaceHeightPx() - kEffectiveDisplayHeight;
     camera_.setBounds(toScalar(0), toScalar(highX > 0 ? highX : 0));
     camera_.setVerticalBounds(toScalar(0), toScalar(highY > 0 ? highY : 0));
     camera_.setPosition(math::Vector2(cameraOriginX(), cameraOriginY()));
@@ -908,12 +908,12 @@ void BaseCityScene::drawBustedNotice(gfx::Renderer& renderer) {
     }
     // A full-width band rather than a fitted box: measuring the string to fit
     // a rectangle nobody is looking at is arithmetic for nothing.
-    renderer.drawFilledRectangle(0, kBustedNoticeY, DISPLAY_WIDTH,
+    renderer.drawFilledRectangle(0, kBustedNoticeY, kEffectiveDisplayWidth,
                                  kBustedNoticeH, hud::kPanel);
-    renderer.drawLine(0, kBustedNoticeY, DISPLAY_WIDTH - 1, kBustedNoticeY,
+    renderer.drawLine(0, kBustedNoticeY, kEffectiveDisplayWidth - 1, kBustedNoticeY,
                       hud::kDanger);
     renderer.drawLine(0, kBustedNoticeY + kBustedNoticeH - 1,
-                      DISPLAY_WIDTH - 1, kBustedNoticeY + kBustedNoticeH - 1,
+                      kEffectiveDisplayWidth - 1, kBustedNoticeY + kBustedNoticeH - 1,
                       hud::kDanger);
     renderer.drawTextCentered("WANTED", kBustedNoticeY + kHudPadPx,
                               hud::kDanger, kBustedNoticeScale);
@@ -923,9 +923,9 @@ void BaseCityScene::drawZoneBanner(gfx::Renderer& renderer) {
     if (!banner_.visible()) {
         return;
     }
-    renderer.drawFilledRectangle(0, 0, DISPLAY_WIDTH, kZoneBannerH,
+    renderer.drawFilledRectangle(0, 0, kEffectiveDisplayWidth, kZoneBannerH,
                                  hud::kPanel);
-    renderer.drawLine(0, kZoneBannerH, DISPLAY_WIDTH - 1, kZoneBannerH,
+    renderer.drawLine(0, kZoneBannerH, kEffectiveDisplayWidth - 1, kZoneBannerH,
                       hud::kAccent);
     const char* label =
         banner_.label() != nullptr ? banner_.label() : spaceLabel();
@@ -1020,8 +1020,8 @@ void BaseCityScene::drawHint(gfx::Renderer& renderer) {
     }
     // One contextual button needs one line of text, or nobody finds it: the
     // demo has no menu to put controls in.
-    const int top = DISPLAY_HEIGHT - kHintHeight;
-    renderer.drawFilledRectangle(0, top, DISPLAY_WIDTH, kHintHeight,
+    const int top = kEffectiveDisplayHeight - kHintHeight;
+    renderer.drawFilledRectangle(0, top, kEffectiveDisplayWidth, kHintHeight,
                                  hud::kPanel);
     renderer.drawTextCentered(label, top + 2, hud::kInk, 1);
 }

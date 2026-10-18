@@ -337,6 +337,24 @@ bool CornerShopScene::stepSpace(const StepInput& in) {
 }
 
 void CornerShopScene::drawSpace(gfx::Renderer& renderer) {
+    // The room's tilemap is 15x15 tiles (240x240 px). On a rotated display
+    // (e.g. ILI9341 240x320 with rotation 3, effective 320x240), the tilemap
+    // covers only the left portion and the right strip would show residue
+    // from the previous scene. On an unrotated display (e.g. ST7789 240x240),
+    // the tilemap covers the full screen. The fill uses effective dimensions
+    // based on rotation.
+    if (DISPLAY_ROTATION % 2 != 0) {
+        renderer.drawFilledRectangle(240, 0,
+                                     kEffectiveDisplayWidth - 240,
+                                     kEffectiveDisplayHeight,
+                                     hud::kEdge);
+    } else {
+        renderer.drawFilledRectangle(0, 240,
+                                     kEffectiveDisplayWidth,
+                                     kEffectiveDisplayHeight - 240,
+                                     hud::kEdge);
+    }
+
     // Two layers, not three: a room has no third storey of decoration. The
     // camera is pinned at the origin, so this is the whole frame.
     renderer.drawTileMap(shop_room::background, 0, 0, gfx::LayerType::Static);
