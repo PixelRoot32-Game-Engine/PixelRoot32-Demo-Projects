@@ -42,7 +42,25 @@ pr32::input::InputConfig inputConfig(BTN_PIN_UP, BTN_PIN_DOWN, BTN_PIN_LEFT,
                                      BTN_PIN_START, BTN_PIN_SELECT);
 
 
+#if PIXELROOT32_ENABLE_AUDIO
+// I2S output to a MAX98357A-class DAC. GPIO 17 (BCLK), GPIO 21 (LRCK)
+// and GPIO 19 (DOUT) are assigned to the I2S audio interface. Verify that
+// these pins do not conflict with the TFT/SPI configuration or the six
+// physical button pins. GPIO 25 and 26 may serve as internal DAC outputs
+// on the original ESP32, but that is irrelevant to this configuration:
+// audio is transmitted digitally over I2S, without using
+// ESP32_DAC_AudioBackend.
+const int I2S_BCLK_PIN = 5;
+const int I2S_LRCK_PIN = 21;
+const int I2S_DOUT_PIN = 19;
+
+pr32::drivers::esp32::ESP32_I2S_AudioBackend audioBackend(
+    I2S_BCLK_PIN, I2S_LRCK_PIN, I2S_DOUT_PIN, 22050);
+pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate());
+pr32::core::Engine engine(config, inputConfig, audioConfig);
+#else
 pr32::core::Engine engine(config, inputConfig);
+#endif
 
 // One scene per space, one run. The scenes are swapped through CityWorld,
 // which holds everything a doorway must not reset -- the player, the wanted
