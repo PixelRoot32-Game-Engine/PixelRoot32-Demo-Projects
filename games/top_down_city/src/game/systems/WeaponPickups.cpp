@@ -60,8 +60,8 @@ void WeaponPickups::draw(gfx::Renderer& renderer, int cameraX, int cameraY) {
         // the three that used to lie around the island would have been three
         // sprites a frame for the renderer to clip for the whole run, and the
         // loop is written for whatever the table turns out to hold.
-        if (px + kPlayerSpriteW <= cameraX || px >= cameraX + DISPLAY_WIDTH
-            || py + kPlayerSpriteH <= cameraY || py >= cameraY + DISPLAY_HEIGHT) {
+        if (px + kPlayerSpriteW <= cameraX || px >= cameraX + kEffectiveDisplayWidth
+            || py + kPlayerSpriteH <= cameraY || py >= cameraY + kEffectiveDisplayHeight) {
             continue;
         }
         // Slot 7, the player's: the pickup is drawn from the player palette

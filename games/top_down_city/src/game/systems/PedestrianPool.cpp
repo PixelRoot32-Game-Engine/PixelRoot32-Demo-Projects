@@ -58,9 +58,9 @@ void PedestrianPool::reset(std::uint32_t seed) {
 bool PedestrianPool::isOnScreen(int spriteX, int spriteY,
                                 int cameraX, int cameraY, int margin) {
     return spriteX + kPlayerSpriteW > cameraX - margin &&
-           spriteX < cameraX + DISPLAY_WIDTH + margin &&
+           spriteX < cameraX + kEffectiveDisplayWidth + margin &&
            spriteY + kPlayerSpriteH > cameraY - margin &&
-           spriteY < cameraY + DISPLAY_HEIGHT + margin;
+           spriteY < cameraY + kEffectiveDisplayHeight + margin;
 }
 
 bool PedestrianPool::trySpawn(int cameraX, int cameraY, bool allowOnScreen) {
@@ -71,9 +71,9 @@ bool PedestrianPool::trySpawn(int cameraX, int cameraY, bool allowOnScreen) {
     // rand_int rejection-samples, so the ring is sampled without the modulo
     // bias that would otherwise crowd its left and top edges.
     const int minX = cameraX - kPedSpawnMarginPx;
-    const int maxX = cameraX + DISPLAY_WIDTH + kPedSpawnMarginPx;
+    const int maxX = cameraX + kEffectiveDisplayWidth + kPedSpawnMarginPx;
     const int minY = cameraY - kPedSpawnMarginPx;
-    const int maxY = cameraY + DISPLAY_HEIGHT + kPedSpawnMarginPx;
+    const int maxY = cameraY + kEffectiveDisplayHeight + kPedSpawnMarginPx;
 
     // Rejection sampling, bounded: most of the city is roof, water or hedge,
     // so a spawn attempt usually fails and the honest fix is to give up for
@@ -93,8 +93,8 @@ bool PedestrianPool::trySpawn(int cameraX, int cameraY, bool allowOnScreen) {
             // The first fill may use the visible street, but not the middle
             // of it: that is where the player is standing, and a pedestrian
             // constructed on top of them would walk out through their chest.
-            const int dx = px - (cameraX + DISPLAY_WIDTH / 2);
-            const int dy = py - (cameraY + DISPLAY_HEIGHT / 2);
+            const int dx = px - (cameraX + kEffectiveDisplayWidth / 2);
+            const int dy = py - (cameraY + kEffectiveDisplayHeight / 2);
             if (dx * dx + dy * dy < kPedPrimeClearPx * kPedPrimeClearPx) {
                 continue;
             }

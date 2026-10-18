@@ -49,9 +49,9 @@ void drawObjectiveRing(gfx::Renderer& renderer, int tileX, int tileY,
     const int ringX = tileX * kTilePx + (kTilePx - kMarkerRingPx) / 2;
     const int ringY = tileY * kTilePx + (kTilePx - kMarkerRingPx) / 2;
     if (ringX + kMarkerRingPx <= cameraX
-        || ringX >= cameraX + DISPLAY_WIDTH
+        || ringX >= cameraX + kEffectiveDisplayWidth
         || ringY + kMarkerRingPx <= cameraY
-        || ringY >= cameraY + DISPLAY_HEIGHT) {
+        || ringY >= cameraY + kEffectiveDisplayHeight) {
         return;
     }
     renderer.drawRectangle(ringX, ringY, kMarkerRingPx, kMarkerRingPx, colour);
@@ -109,7 +109,7 @@ CityScene::CityScene()
 void CityScene::setupBriefingBox() {
     gfx::DialogBoxStyle style;
     style.x = 4;
-    style.w = static_cast<int16_t>(DISPLAY_WIDTH - 8);
+    style.w = static_cast<int16_t>(kEffectiveDisplayWidth - 8);
     style.borderWidth = 1;
     style.padding = 4;
     style.textSize = 1;
@@ -136,7 +136,7 @@ void CityScene::setupBriefingBox() {
     // would cover the one line explaining how to work the dialog.
     // drawHint() draws at DISPLAY_HEIGHT - kHintHeight, so the panel ends
     // two pixels above that.
-    style.y = static_cast<int16_t>(DISPLAY_HEIGHT - kHintHeight - style.h - 2);
+    style.y = static_cast<int16_t>(kEffectiveDisplayHeight - kHintHeight - style.h - 2);
     briefingBox_.setStyle(style);
 }
 
@@ -1230,9 +1230,9 @@ void CityScene::drawSpace(gfx::Renderer& renderer) {
         // One AABB each: cheaper than asking the renderer to clip two dozen
         // sprites that are nowhere near the viewport.
         if (vehicle.spriteX() + kVehicleSpriteW <= cameraX ||
-            vehicle.spriteX() >= cameraX + DISPLAY_WIDTH ||
+            vehicle.spriteX() >= cameraX + kEffectiveDisplayWidth ||
             vehicle.spriteY() + kVehicleSpriteH <= cameraY ||
-            vehicle.spriteY() >= cameraY + DISPLAY_HEIGHT) {
+            vehicle.spriteY() >= cameraY + kEffectiveDisplayHeight) {
             continue;
         }
         vehicle.draw(renderer);

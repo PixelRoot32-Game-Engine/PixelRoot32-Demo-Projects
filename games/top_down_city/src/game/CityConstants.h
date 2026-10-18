@@ -895,8 +895,8 @@ constexpr int kShopPickerW = kShopRowNeedPx > kShopFooterNeedPx
 constexpr int kShopPickerH = kHudPadPx + kShopTitleH
                            + shop::kLineCount * kShopRowH
                            + kShopFooterH + kHudPadPx;
-constexpr int kShopPickerX = (DISPLAY_WIDTH - kShopPickerW) / 2;
-constexpr int kShopPickerY = (DISPLAY_HEIGHT - kShopPickerH) / 2;
+constexpr int kShopPickerX = (kEffectiveDisplayWidth - kShopPickerW) / 2;
+constexpr int kShopPickerY = (kEffectiveDisplayHeight - kShopPickerH) / 2;
 constexpr int kShopRowsY   = kShopPickerY + kHudPadPx + kShopTitleH;
 /* Where the price ends, measured from the plate's RIGHT edge so it stays put
  * whatever the label beside it does. */

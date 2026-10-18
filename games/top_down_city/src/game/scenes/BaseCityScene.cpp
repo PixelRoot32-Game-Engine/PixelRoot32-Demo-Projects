@@ -50,7 +50,7 @@ void drawDiamond(gfx::Renderer& renderer, int x, int y, gfx::Color colour) {
 }  // namespace
 
 BaseCityScene::BaseCityScene()
-    : camera_(DISPLAY_WIDTH, DISPLAY_HEIGHT),
+    : camera_(kEffectiveDisplayWidth, kEffectiveDisplayHeight),
       accumulatorMs_(0),
       banner_(),
       frenzyLabel_{},
@@ -141,18 +141,18 @@ void BaseCityScene::focusHitBox(int& left, int& top,
 }
 
 int BaseCityScene::cameraOriginX() const {
-    const int high = collision::spaceWidthPx() - DISPLAY_WIDTH;
-    return clampInt(focusCentreX() - DISPLAY_WIDTH / 2, 0, high > 0 ? high : 0);
+    const int high = collision::spaceWidthPx() - kEffectiveDisplayWidth;
+    return clampInt(focusCentreX() - kEffectiveDisplayWidth / 2, 0, high > 0 ? high : 0);
 }
 
 int BaseCityScene::cameraOriginY() const {
-    const int high = collision::spaceHeightPx() - DISPLAY_HEIGHT;
-    return clampInt(focusCentreY() - DISPLAY_HEIGHT / 2, 0, high > 0 ? high : 0);
+    const int high = collision::spaceHeightPx() - kEffectiveDisplayHeight;
+    return clampInt(focusCentreY() - kEffectiveDisplayHeight / 2, 0, high > 0 ? high : 0);
 }
 
 void BaseCityScene::applySpaceBounds() {
-    const int highX = collision::spaceWidthPx() - DISPLAY_WIDTH;
-    const int highY = collision::spaceHeightPx() - DISPLAY_HEIGHT;
+    const int highX = collision::spaceWidthPx() - kEffectiveDisplayWidth;
+    const int highY = collision::spaceHeightPx() - kEffectiveDisplayHeight;
     camera_.setBounds(toScalar(0), toScalar(highX > 0 ? highX : 0));
     camera_.setVerticalBounds(toScalar(0), toScalar(highY > 0 ? highY : 0));
     camera_.setPosition(math::Vector2(cameraOriginX(), cameraOriginY()));
