@@ -22,6 +22,14 @@ PacmanSession::PacmanSession() : PacmanSession(PacmanMaze::defaultLevel()) {}
 
 PacmanSession::PacmanSession(const PacmanLevelConfig& config) : maze_(config), player_() {
     remainingCollectibles_ = maze_.collectibleCount();
+    resetBoard();
+}
+
+void PacmanSession::resetBoard() {
+    player_.reset(maze_);
+    for (int index = 0; index < maze_.enemyCount(); ++index) {
+        enemies_[index].reset(maze_, index);
+    }
 }
 
 void PacmanSession::startNewGame() {
@@ -32,15 +40,22 @@ void PacmanSession::startNewGame() {
     lives_ = kStartingLives;
     remainingCollectibles_ = maze_.collectibleCount();
     powerStepsLeft_ = 0;
-    player_.reset(maze_);
-    for (int index = 0; index < maze_.enemyCount(); ++index) {
-        enemies_[index].reset(maze_, index);
-    }
+    invulnerableSteps_ = 0;
+    enemyChain_ = 0;
+    respawnSteps_ = kRespawnSteps;
+    resetBoard();
     state_ = GameState::Playing;
 }
 
 void PacmanSession::step(Direction requestedDirection) {
     if (state_ != GameState::Playing) {
+        return;
+    }
+
+    // 0. The respawn sequence freezes the board. Nothing moves and no
+    // contact is resolved until it is over.
+    if (respawnSteps_ > 0) {
+        --respawnSteps_;
         return;
     }
 
@@ -57,7 +72,13 @@ void PacmanSession::step(Direction requestedDirection) {
     // 4. The power effect ages.
     updatePowerTimer();
 
-    // 5. End conditions: the level is over once nothing is left to collect.
+    // 5. Contacts: the player and a hunter share a cell.
+    resolveContacts();
+
+    // 6. Timers: the player's protection runs out.
+    updateInvulnerability();
+
+    // 7. End conditions: the level is over once nothing is left to collect.
     if (remainingCollectibles_ == 0) {
         state_ = GameState::Victory;
     }
@@ -101,15 +122,21 @@ void PacmanSession::collectAt(int col, int row) {
 
     --remainingCollectibles_;
 
-    const int scoreBefore = score_;
     if (collectible == Collectible::Dot) {
-        score_ += kScoreDot;
+        addScore(kScoreDot);
     } else {
-        score_ += kScorePower;
+        addScore(kScorePower);
         // Picking up a pellet while the effect is already running refreshes
         // the timer instead of stacking a second effect.
         powerStepsLeft_ = kPowerDurationSteps;
+        // A new pellet starts a new chain of defeats.
+        enemyChain_ = 0;
     }
+}
+
+void PacmanSession::addScore(int amount) {
+    const int scoreBefore = score_;
+    score_ += amount;
 
     // One extra life for every full ten thousand points.
     if (score_ / kScoreExtraLife > scoreBefore / kScoreExtraLife) {
@@ -120,7 +147,76 @@ void PacmanSession::collectAt(int col, int row) {
 void PacmanSession::updatePowerTimer() {
     if (powerStepsLeft_ > 0) {
         --powerStepsLeft_;
+        if (powerStepsLeft_ == 0) {
+            // The effect is over: the chain of defeats starts again.
+            enemyChain_ = 0;
+        }
     }
+}
+
+void PacmanSession::updateInvulnerability() {
+    if (invulnerableSteps_ > 0) {
+        --invulnerableSteps_;
+    }
+}
+
+void PacmanSession::resolveContacts() {
+    const int playerCol = player_.cellCol();
+    const int playerRow = player_.cellRow();
+
+    for (int index = 0; index < maze_.enemyCount(); ++index) {
+        const PacmanEnemy& enemy = enemies_[index];
+        if (enemy.cellCol() != playerCol || enemy.cellRow() != playerRow) {
+            continue;
+        }
+
+        if (enemy.isVulnerable()) {
+            defeatEnemy(index);
+            continue;
+        }
+
+        // A hunter that is heading home or waiting to come back is harmless.
+        if (enemy.isDefeated()) {
+            continue;
+        }
+
+        if (invulnerableSteps_ > 0) {
+            // The player is still protected from the last life.
+            continue;
+        }
+
+        loseLife();
+        return;
+    }
+}
+
+void PacmanSession::defeatEnemy(int index) {
+    enemies_[index].defeat();
+
+    // Consecutive defeats inside one power effect are worth more each time.
+    const int multiplier = 1 << enemyChain_;
+    addScore(kScoreEnemy * multiplier);
+    if (enemyChain_ < kEnemyChainLength - 1) {
+        ++enemyChain_;
+    }
+}
+
+void PacmanSession::loseLife() {
+    --lives_;
+
+    if (lives_ <= 0) {
+        state_ = GameState::Defeat;
+        return;
+    }
+
+    // The board goes back to its starting shape. The dots that were already
+    // collected and the score are kept: only the positions and the effects
+    // are reset.
+    resetBoard();
+    powerStepsLeft_ = 0;
+    enemyChain_ = 0;
+    invulnerableSteps_ = kInvulnerableSteps;
+    respawnSteps_ = kRespawnSteps;
 }
 
 void PacmanSession::stepEnemies() {

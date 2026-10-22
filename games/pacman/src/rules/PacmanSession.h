@@ -114,6 +114,24 @@ public:
     [[nodiscard]] bool powerIsActive() const { return powerStepsLeft_ > 0; }
 
     /**
+     * @brief Tells whether the player is protected after losing a life.
+     * @return true while the player cannot be hit.
+     */
+    [[nodiscard]] bool playerIsInvulnerable() const { return invulnerableSteps_ > 0; }
+
+    /**
+     * @brief Tells whether the board is frozen for a respawn.
+     * @return true while the respawn sequence runs.
+     */
+    [[nodiscard]] bool isRespawning() const { return respawnSteps_ > 0; }
+
+    /**
+     * @brief How many hunters have been defeated in a row.
+     * @return The length of the current chain.
+     */
+    [[nodiscard]] int enemyChain() const { return enemyChain_; }
+
+    /**
      * @brief The player character.
      * @return A reference to the player.
      */
@@ -172,7 +190,23 @@ private:
     int lives_ = kStartingLives;
     int remainingCollectibles_ = 0;
     int powerStepsLeft_ = 0;
+    int invulnerableSteps_ = 0;
+    int enemyChain_ = 0;
+    int respawnSteps_ = 0;
     GameState state_ = GameState::Title;
+
+    /**
+     * @brief Puts the player and the hunters back on their starting cells.
+     */
+    void resetBoard();
+
+    /**
+     * @brief Adds points to the score, handing out an extra life whenever the
+     *        score crosses a multiple of the extra-life threshold.
+     *
+     * @param amount The points to add.
+     */
+    void addScore(int amount);
 
     /**
      * @brief Picks up whatever is in a cell.
@@ -188,9 +222,31 @@ private:
     void stepEnemies();
 
     /**
+     * @brief Resolves the contact between the player and the hunters.
+     */
+    void resolveContacts();
+
+    /**
+     * @brief Costs the player a life and puts the board back in order.
+     */
+    void loseLife();
+
+    /**
+     * @brief Defeats a hunter and scores the hit.
+     *
+     * @param index Index of the hunter.
+     */
+    void defeatEnemy(int index);
+
+    /**
      * @brief Ages the power effect by one logic step.
      */
     void updatePowerTimer();
+
+    /**
+     * @brief Ages the player's protection by one logic step.
+     */
+    void updateInvulnerability();
 };
 
 }  // namespace pacman

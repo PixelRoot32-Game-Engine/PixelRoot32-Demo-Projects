@@ -217,6 +217,16 @@ constexpr int kPowerDurationSteps = 300;
 constexpr int kInvulnerableSteps = 100;
 
 /**
+ * @brief Length of the respawn sequence, in logic steps.
+ *
+ * The board is frozen for this long after a life is lost, and for the same
+ * length at the start of a game: the "ready" beat the arcade original shows
+ * before the player is allowed to move. Nothing moves and no contact is
+ * resolved while the sequence runs.
+ */
+constexpr int kRespawnSteps = 60;
+
+/**
  * @brief How long a defeated enemy waits in the house before it re-enters play.
  *
  * 50 steps is 1 second.
