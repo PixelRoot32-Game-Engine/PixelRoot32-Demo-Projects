@@ -35,6 +35,9 @@ Thumbs.db
 
 .atl/
 
+# ODD working documents (agent-local, never shared)
+odd/
+
 # Local Claude Code skill copy (canonical source: .agents/skills/)
 .claude/skills/
 .agents/skills/

@@ -165,6 +165,8 @@ jobs:
             env: host_test
           - demo: games/top_down_city
             env: dialog_test
+          - demo: games/pacman
+            env: rules_test
           - demo: input/digital_buttons
             env: host_test
     name: test ${{ matrix.demo }} (${{ matrix.env }})
