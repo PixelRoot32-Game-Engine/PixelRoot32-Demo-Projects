@@ -293,7 +293,11 @@ void VehicleActor::driveAutonomous(std::uint8_t desiredHeading, bool go) {
 }
 
 void VehicleActor::syncEntityPosition() {
-    position = math::Vector2(x_ >> kSubPixelShift, y_ >> kSubPixelShift);
+    // The int accessors, not the raw shifts: the engine's Vector2 has both an
+    // (int, int) and a (Scalar, Scalar) constructor, and handing it an
+    // int32_t coordinate is an ambiguous call on the toolchains where
+    // int32_t is not int.
+    position = math::Vector2(spriteX(), spriteY());
 }
 
 void VehicleActor::update(unsigned long deltaTime) {
