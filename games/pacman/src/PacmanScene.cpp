@@ -207,7 +207,8 @@ void PacmanScene::updateTheme() {
     if (respawning && !wasRespawning_) {
         audio_->stopTheme();
     } else if (!respawning && wasRespawning_) {
-        audio_->startBackgroundMusic();
+        // no background music, so this is commented out for now
+        //audio_->startBackgroundMusic();
     }
     wasRespawning_ = respawning;
 #endif
