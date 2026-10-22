@@ -200,10 +200,10 @@ pio run -e esp32dev --target upload
 
 ## Engine documentation
 
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [Gameplay API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/gameplay.md)
-- [Graphics / Renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/graphics.md)
-- [Input API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/input.md)
+- [Core API](https://docs.pixelroot32.org/api/core)
+- [Gameplay API](https://docs.pixelroot32.org/guide/gameplay-guidelines)
+- [Graphics / Renderer](https://docs.pixelroot32.org/api/graphics)
+- [Input API](https://docs.pixelroot32.org/api/input)
 - [`gameplay/StateMachine.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/gameplay/StateMachine.h) — the header documents every rule quoted above
 - [`src/gameplay/StateMachine.cpp`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/src/gameplay/StateMachine.cpp) — the drain loop, in about thirty lines
 

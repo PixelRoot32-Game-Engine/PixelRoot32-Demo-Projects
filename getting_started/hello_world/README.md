@@ -41,9 +41,9 @@ The scene uses **`extern pixelroot32::core::Engine engine`** from your platform 
 - **InputManager** button bitmask
 
 ## Engine documentation
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [UI API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/ui.md)
-- [Graphics / Renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/graphics.md)
+- [Core API](https://docs.pixelroot32.org/api/core)
+- [UI API](https://docs.pixelroot32.org/api/ui)
+- [Graphics / Renderer](https://docs.pixelroot32.org/api/graphics)
 
 ## Build
 

@@ -144,9 +144,9 @@ pio run -e esp32dev --target upload
 
 ## Engine documentation
 
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [Graphics / Renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/graphics.md)
-- [Input API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/input.md)
+- [Core API](https://docs.pixelroot32.org/api/core)
+- [Graphics / Renderer](https://docs.pixelroot32.org/api/graphics)
+- [Input API](https://docs.pixelroot32.org/api/input)
 - [`graphics/ui/UIElement.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/graphics/ui/UIElement.h) — `setFixedPosition()` lives here, on the base class
 - [`graphics/ui/UIAnchorLayout.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/graphics/ui/UIAnchorLayout.h)
 - [`graphics/ui/UISpriteRow.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/graphics/ui/UISpriteRow.h) — the header states each of the three traps above

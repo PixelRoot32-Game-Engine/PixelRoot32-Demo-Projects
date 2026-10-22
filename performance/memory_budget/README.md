@@ -114,10 +114,10 @@ pio run -e esp32dev --target upload
 
 ## Engine documentation
 
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [Graphics / Renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/graphics.md)
-- [Input API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/input.md)
-- [Memory system](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/architecture/memory-system.md)
+- [Core API](https://docs.pixelroot32.org/api/core)
+- [Graphics / Renderer](https://docs.pixelroot32.org/api/graphics)
+- [Input API](https://docs.pixelroot32.org/api/input)
+- [Memory system](https://docs.pixelroot32.org/architecture/memory-system)
 - [`core/Scene.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/core/Scene.h) — `SceneArena` and `arenaNew()` are declared here, not in a header of their own
 - [`gameplay/ObjectPool.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/gameplay/ObjectPool.h)
 

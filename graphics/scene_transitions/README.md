@@ -197,8 +197,8 @@ pio run -e esp32dev --target upload
 
 ## Engine documentation
 
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [Scene manager](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/scene-manager.md)
+- [Core API](https://docs.pixelroot32.org/api/core)
+- [Scene manager](https://docs.pixelroot32.org/guide/scenes)
 - [`core/Engine.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/core/Engine.h): both `triggerTransition` overloads
 - [`graphics/TransitionEffect.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/graphics/TransitionEffect.h): `TransitionType`, `WipeDirection`, and the disabled-flag stub
 

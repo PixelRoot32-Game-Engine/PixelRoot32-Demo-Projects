@@ -296,7 +296,7 @@ in the shape the PixelRoot32 Tilemap Editor emits:
 | `src/assets/IsoDungeonRoomTileMapPalette.h` | `TILEMAP_PALETTE_DATA`, `TILEMAP_PALETTE_MAPPING` |
 
 That is the same three-file shape as the real editor output in
-[`examples/metroidvania`](../metroidvania/src/assets/), which is orthogonal.
+[`examples/metroidvania`](../../gameplay/metroidvania/src/assets/), which is orthogonal.
 Read the two side by side: this example exists to make the difference concrete.
 
 **The Tool Suite emits this shape.** Its tilemap exporter has an isometric
@@ -361,7 +361,7 @@ that refusal is what makes the movement read as a board rather than a walk.
 - [`math/Projection.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/math/Projection.h) — the projection math (`gameplay/Projection.h` forwards to it)
 - [`gameplay/GridMotion.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/gameplay/GridMotion.h) — cell-to-cell step state
 - [`gameplay/DepthCompare.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/gameplay/DepthCompare.h) — `compareByDepthKey`
-- [Memory system](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/architecture/memory-system.md) — per-capability budgets
+- [Memory system](https://docs.pixelroot32.org/architecture/memory-system) — per-capability budgets
 
 ## Build
 

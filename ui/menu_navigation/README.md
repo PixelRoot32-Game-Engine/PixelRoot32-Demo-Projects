@@ -185,15 +185,15 @@ pio device monitor -b 115200
 ## Engine documentation
 
 - [PixelRoot32 Game Engine](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine)
-- [UI API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/ui.md)
-- [Input API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/input.md)
-- [Core API — Engine, Scene, Renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
+- [UI API](https://docs.pixelroot32.org/api/ui)
+- [Input API](https://docs.pixelroot32.org/api/input)
+- [Core API — Engine, Scene, Renderer](https://docs.pixelroot32.org/api/core)
 - [`UIButton`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/graphics/ui/UIButton.h) — the `index` parameter and the `handleInput()` quoted above
 - [`UICheckbox.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/graphics/ui/UICheckbox.h) — the file is `UICheckbox.h`, the class is `UICheckBox`
 - [`UIVerticalLayout`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/graphics/ui/UIVerticalLayout.h) — navigation, selection and scrolling
 - [`UIElement`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/graphics/ui/UIElement.h) — the callback types and `TextAlignment`
 - [Engine configuration flags](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/platforms/EngineConfig.h)
-- [Memory system — flags and byte budgets](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/architecture/memory-system.md)
+- [Memory system — flags and byte budgets](https://docs.pixelroot32.org/architecture/memory-system)
 
 ## License
 

@@ -21,7 +21,7 @@ The graph is not hand-written in C++. `src/assets/roomscreen_main_scene.h` / `.c
 gameplay::buildRoomGraph(ROOMSCREEN_MAIN_SCENE_ROOM_LAYER, rooms_);
 ```
 
-That keeps rects and connections in one place instead of spread across `addRoom`/`connect` calls that can drift out of sync with the map. See [Tilemap Editor — Room Layer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/tools/tilemap-editor/technical-reference.md#room-layer) for the format.
+That keeps rects and connections in one place instead of spread across `addRoom`/`connect` calls that can drift out of sync with the map. See [Tilemap Editor — Room Layer](https://docs.pixelroot32.org/tools/tilemap-editor/technical-reference#room-layer) for the format.
 
 ## Requirements (build flags)
 

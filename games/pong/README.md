@@ -124,10 +124,10 @@ src/
 ```
 
 ## Engine documentation
-- [Physics API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/physics.md)
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [Audio API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/audio.md)
-- [Graphics / Renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/graphics.md)
+- [Physics API](https://docs.pixelroot32.org/api/physics)
+- [Core API](https://docs.pixelroot32.org/api/core)
+- [Audio API](https://docs.pixelroot32.org/api/audio)
+- [Graphics / Renderer](https://docs.pixelroot32.org/api/graphics)
 
 ## Build
 

@@ -48,10 +48,10 @@ This example does **not** ship an `esp32dev` TFT environment — only **`native`
 
 ## Documentation links
 
-- [Physics API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/physics.md)
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [Platform / drivers](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/platform.md)
-- [Memory system — gameplay flags and byte budgets](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/architecture/memory-system.md) — RAM cost of `PIXELROOT32_ENABLE_GAMEPLAY_STATE_MACHINE`
+- [Physics API](https://docs.pixelroot32.org/api/physics)
+- [Core API](https://docs.pixelroot32.org/api/core)
+- [Platform / drivers](https://docs.pixelroot32.org/api/platform)
+- [Memory system — gameplay flags and byte budgets](https://docs.pixelroot32.org/architecture/memory-system) — RAM cost of `PIXELROOT32_ENABLE_GAMEPLAY_STATE_MACHINE`
 - [`gameplay/StateMachine.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/gameplay/StateMachine.h) — the full contract, including the time-in-state ordering warning on `update()`
 
 ## Build

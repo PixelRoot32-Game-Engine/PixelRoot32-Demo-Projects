@@ -18,7 +18,7 @@ directory layout to build.
 > focus.
 
 > **Looking for something smaller?** The engine repository ships
-> [**five minimal capability examples**](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/tree/main/examples) — sprites, camera,
+> [**five minimal capability examples**](https://docs.pixelroot32.org/examples/demos) — sprites, camera,
 > animated tilemap, physics and a monochrome OLED. Each one isolates a single
 > engine feature and stops there. Read those to learn an API; read these to see
 > a project built out of several.

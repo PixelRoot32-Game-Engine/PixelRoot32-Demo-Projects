@@ -456,10 +456,10 @@ file, so moving a file is a `git mv` and one line.
 ## Engine documentation
 
 - [PixelRoot32 Game Engine](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine)
-- [Sprite renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/sprite-renderer.md)
-- [Audio API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/audio.md)
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [Memory system — gameplay flags and byte budgets](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/architecture/memory-system.md)
+- [Sprite renderer](https://docs.pixelroot32.org/guide/rendering)
+- [Audio API](https://docs.pixelroot32.org/api/audio)
+- [Core API](https://docs.pixelroot32.org/api/core)
+- [Memory system — gameplay flags and byte budgets](https://docs.pixelroot32.org/architecture/memory-system)
 
 ## License
 

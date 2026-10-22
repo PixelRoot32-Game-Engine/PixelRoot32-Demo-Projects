@@ -151,11 +151,11 @@ src/
 ```
 
 ## Engine documentation
-- [Physics API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/physics.md)
-- [Graphics / Renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/graphics.md)
-- [Audio API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/audio.md)
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [Memory system — flags and byte budgets](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/architecture/memory-system.md)
+- [Physics API](https://docs.pixelroot32.org/api/physics)
+- [Graphics / Renderer](https://docs.pixelroot32.org/api/graphics)
+- [Audio API](https://docs.pixelroot32.org/api/audio)
+- [Core API](https://docs.pixelroot32.org/api/core)
+- [Memory system — flags and byte budgets](https://docs.pixelroot32.org/architecture/memory-system)
 
 ## Build
 

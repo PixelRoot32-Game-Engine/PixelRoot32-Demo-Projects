@@ -112,7 +112,7 @@ The **`PlayerActor`** extends **`KinematicActor`** and implements:
 
 ## How this scene uses the tilemap cache
 
-Drawing goes through **`StaticTilemapLayerCache`**: allocate for the renderer when layers are ready, draw static groups with camera offsets, and **`invalidate()`** when static tile data or relevant animators change. See [Animated Tilemap README](../animated_tilemap/README.md) for the detailed invalidation table and [Architecture — static tilemap cache](../../docs/architecture/architecture-index.md#static-tilemap-layer-cache-engine--scenes).
+Drawing goes through **`StaticTilemapLayerCache`**: allocate for the renderer when layers are ready, draw static groups with camera offsets, and **`invalidate()`** when static tile data or relevant animators change. See [Animated Tilemap README](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/tree/main/examples/animated_tilemap) for the detailed invalidation table and [Architecture — static tilemap cache](https://docs.pixelroot32.org/architecture/architecture-index#static-tilemap-layer-cache).
 
 **Note**: During camera shake, the `StaticTilemapLayerCache` auto-invalidates each frame because the renderer offset changes. This ensures tilemaps shake along with entities. After the shake ends, the cache resumes its fast memcpy path.
 
@@ -133,11 +133,11 @@ This example enables **`PIXELROOT32_ENABLE_DIRTY_REGIONS`** for targeted clearin
 
 ## Documentation links
 
-- [Graphics — tilemaps & `StaticTilemapLayerCache`](../../docs/api/graphics.md#multi-layer-4bpp-tilemap-framebuffer-snapshot-statictilemaplayercache)
-- [Architecture — static tilemap layer cache](../../docs/architecture/architecture-index.md#static-tilemap-layer-cache-engine--scenes)
-- [Architecture — ESP32 rendering / tilemap caching](../../docs/architecture/architecture-index.md#esp32-rendering-pipeline-and-tilemap-caching)
-- [Physics API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/physics.md)
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
+- [Graphics — tilemaps & `StaticTilemapLayerCache`](https://docs.pixelroot32.org/api/graphics#multi-layer-4bpp-tilemap-framebuffer-snapshot-statictilemaplayercache)
+- [Architecture — static tilemap layer cache](https://docs.pixelroot32.org/architecture/architecture-index#static-tilemap-layer-cache)
+- [Architecture — ESP32 rendering / tilemap caching](https://docs.pixelroot32.org/architecture/architecture-index#esp32-rendering-pipeline-and-tilemap-caching)
+- [Physics API](https://docs.pixelroot32.org/api/physics)
+- [Core API](https://docs.pixelroot32.org/api/core)
 
 ## Build
 

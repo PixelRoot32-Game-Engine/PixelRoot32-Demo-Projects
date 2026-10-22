@@ -507,5 +507,5 @@ v1 is scoped to a complete two-player game. Left out deliberately, and why:
 ## Engine documentation
 
 - [PixelRoot32 Game Engine](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine)
-- [Touch input](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/touch-input.md)
-- [Sprite renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/sprite-renderer.md)
+- [Touch input](https://docs.pixelroot32.org/architecture/touch-input)
+- [Sprite renderer](https://docs.pixelroot32.org/guide/rendering)
