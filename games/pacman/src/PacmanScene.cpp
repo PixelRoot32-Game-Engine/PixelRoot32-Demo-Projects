@@ -473,18 +473,23 @@ void PacmanScene::drawEnemies(pr32::graphics::Renderer& renderer) const {
 void PacmanScene::drawStatusBand(pr32::graphics::Renderer& renderer) const {
     char buffer[24];
 
+    // The band lines up with the playfield rather than with the screen, so
+    // the score sits over the maze on a wide panel.
+    const int left = boardOriginX();
+    const int right = boardOriginX() + kMazeCols * kCellSize - 1;
+
     std::snprintf(buffer, sizeof(buffer), "SCORE %06d", session_.score());
-    renderer.drawText(buffer, 4, 2, kTextColor, 1);
+    renderer.drawText(buffer, left, 2, kTextColor, 1);
 
     std::snprintf(buffer, sizeof(buffer), "LIVES %d", session_.lives());
     const int width = static_cast<int>(std::strlen(buffer)) * kTextAdvance;
-    renderer.drawText(buffer, LOGICAL_WIDTH - 4 - width, 2, kTextColor, 1);
+    renderer.drawText(buffer, right - width, 2, kTextColor, 1);
 
     std::snprintf(buffer, sizeof(buffer), "LEFT %d", session_.remainingCollectibles());
-    renderer.drawText(buffer, 4, 12, kTextColor, 1);
+    renderer.drawText(buffer, left, 12, kTextColor, 1);
 
     if (session_.powerIsActive()) {
-        renderer.drawFilledCircle(LOGICAL_WIDTH - 12, 16, 3, kPelletColor);
+        renderer.drawFilledCircle(right - 8, 16, 3, kPelletColor);
     }
 }
 
