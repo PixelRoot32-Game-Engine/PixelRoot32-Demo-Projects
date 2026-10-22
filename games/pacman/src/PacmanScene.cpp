@@ -1,0 +1,248 @@
+#include "PacmanScene.h"
+
+#include <cstdio>
+#include <cstring>
+
+#include <core/Engine.h>
+#include <graphics/FontManager.h>
+#include <platforms/EngineConfig.h>
+
+#include "PacmanPalette.h"
+#include "assets/PacmanSprites.h"
+#include "rules/PacmanConfig.h"
+
+namespace pr32 = pixelroot32;
+
+/// The Engine lives in the platform file; the scene reaches it from there.
+extern pr32::core::Engine engine;
+
+namespace pacman {
+
+namespace {
+
+/**
+ * @brief Width of the playfield, in pixels.
+ */
+constexpr int kBoardWidth = kMazeCols * kCellSize;
+
+/**
+ * @brief Width of one text cell of the engine's default font.
+ *
+ * The default font is 5 pixels wide with 1 pixel of spacing, so a character
+ * advances 6 pixels. Used to right-align the status band.
+ */
+constexpr int kTextAdvance = 6;
+
+}  // namespace
+
+PacmanScene::PacmanScene() = default;
+
+void PacmanScene::init() {
+    Scene::init();
+
+    session_.startNewGame();
+    accumulator_ = 0;
+    requestedDirection_ = Direction::None;
+}
+
+void PacmanScene::update(unsigned long deltaTime) {
+    Scene::update(deltaTime);
+
+    auto& input = engine.getInputManager();
+
+    // A direction press is latched here, at frame scope, and only read by
+    // the logic step. The step below may run zero times in this frame, and a
+    // press that lands on such a frame must not be lost.
+    if (input.isButtonPressed(kBtnUp)) {
+        requestedDirection_ = Direction::Up;
+    } else if (input.isButtonPressed(kBtnDown)) {
+        requestedDirection_ = Direction::Down;
+    } else if (input.isButtonPressed(kBtnLeft)) {
+        requestedDirection_ = Direction::Left;
+    } else if (input.isButtonPressed(kBtnRight)) {
+        requestedDirection_ = Direction::Right;
+    }
+
+    // Button A pauses and resumes, button B starts a new game.
+    if (input.isButtonPressed(kBtnA)) {
+        session_.togglePause();
+    }
+    if (input.isButtonPressed(kBtnB)) {
+        session_.startNewGame();
+        accumulator_ = 0;
+    }
+
+    accumulator_ += deltaTime;
+
+    int steps = 0;
+    while (accumulator_ >= static_cast<unsigned long>(kLogicStepMs) &&
+           steps < kMaxLogicStepsPerFrame) {
+        accumulator_ -= static_cast<unsigned long>(kLogicStepMs);
+        session_.step(requestedDirection_);
+        ++steps;
+    }
+
+    if (steps == kMaxLogicStepsPerFrame) {
+        // The frame arrived with a backlog. Dropping it keeps the game from
+        // fast-forwarding after a stall.
+        accumulator_ = 0;
+    }
+}
+
+int PacmanScene::boardOriginX() const {
+    return (LOGICAL_WIDTH - kBoardWidth) / 2;
+}
+
+int PacmanScene::boardOriginY() const {
+    return kStatusBandHeight;
+}
+
+bool PacmanScene::levelIsValid() const {
+    return session_.maze().validate() == PacmanMaze::ValidationError::None;
+}
+
+void PacmanScene::draw(pixelroot32::graphics::Renderer& renderer) {
+    // The background is painted first and the base Scene::draw() is called
+    // afterwards, so the scene's entities stay visible on top of it.
+    renderer.drawFilledRectangle(0, 0, renderer.getLogicalWidth(), renderer.getLogicalHeight(),
+                                 kBackgroundColor);
+
+    Scene::draw(renderer);
+
+    drawMazeWalls(renderer);
+    drawCollectibles(renderer);
+    drawPlayer(renderer);
+    drawStatusBand(renderer);
+}
+
+void PacmanScene::drawMazeWalls(pr32::graphics::Renderer& renderer) const {
+    const PacmanMaze& maze = session_.maze();
+    const int originX = boardOriginX();
+    const int originY = boardOriginY();
+
+    // The maze is drawn as the outline of its wall regions: a wall cell
+    // paints the side that faces a non-wall cell and stays silent on the
+    // sides that face another wall. A region two cells thick therefore shows
+    // two parallel lines with the corridor between them, which is the shape
+    // the arcade original uses.
+    for (int row = 0; row < maze.rowCount(); ++row) {
+        for (int col = 0; col < maze.colCount(); ++col) {
+            if (!maze.isWall(col, row)) {
+                continue;
+            }
+
+            const int x = originX + col * kCellSize;
+            const int y = originY + row * kCellSize;
+            const int right = x + kCellSize - 1;
+            const int bottom = y + kCellSize - 1;
+
+            if (!maze.isWall(col, row - 1)) {
+                renderer.drawLine(x, y, right, y, kWallColor);
+            }
+            if (!maze.isWall(col, row + 1)) {
+                renderer.drawLine(x, bottom, right, bottom, kWallColor);
+            }
+            if (!maze.isWall(col - 1, row)) {
+                renderer.drawLine(x, y, x, bottom, kWallColor);
+            }
+            if (!maze.isWall(col + 1, row)) {
+                renderer.drawLine(right, y, right, bottom, kWallColor);
+            }
+        }
+    }
+
+    // The ghost house doorway: a bar across the opening at the top of the
+    // house, so the room is closed to the player and open to the enemies.
+    for (int col = 0; col < maze.colCount(); ++col) {
+        if (maze.cellType(col, 12) != CellType::HouseDoor) {
+            continue;
+        }
+        const int x = originX + col * kCellSize;
+        const int y = originY + 13 * kCellSize;
+        renderer.drawLine(x, y, x + kCellSize - 1, y, kHouseColor);
+    }
+}
+
+void PacmanScene::drawCollectibles(pr32::graphics::Renderer& renderer) const {
+    const PacmanMaze& maze = session_.maze();
+    const int originX = boardOriginX();
+    const int originY = boardOriginY();
+
+    for (int row = 0; row < maze.rowCount(); ++row) {
+        for (int col = 0; col < maze.colCount(); ++col) {
+            const Collectible collectible = session_.collectibleAt(col, row);
+            if (collectible == Collectible::None) {
+                continue;
+            }
+
+            const int centerX = originX + col * kCellSize + kCellSize / 2;
+            const int centerY = originY + row * kCellSize + kCellSize / 2;
+
+            if (collectible == Collectible::Dot) {
+                renderer.drawFilledRectangle(centerX - 1, centerY - 1, 2, 2, kDotColor);
+            } else {
+                renderer.drawFilledCircle(centerX, centerY, 3, kPelletColor);
+            }
+        }
+    }
+}
+
+void PacmanScene::drawPlayer(pr32::graphics::Renderer& renderer) const {
+    const PacmanPlayer& player = session_.player();
+
+    // The player's position is interpolated between the cell it came from
+    // and the cell it is travelling towards, so the sprite slides smoothly
+    // from one cell to the next.
+    const int deltaCol = player.targetCol() - player.cellCol();
+    const int deltaRow = player.targetRow() - player.cellRow();
+    const int subCol = player.cellCol() * kPlayerStepsPerCell + deltaCol * player.progress();
+    const int subRow = player.cellRow() * kPlayerStepsPerCell + deltaRow * player.progress();
+
+    const int x = boardOriginX() + subCol * kCellSize / kPlayerStepsPerCell;
+    const int y = boardOriginY() + subRow * kCellSize / kPlayerStepsPerCell;
+
+    const bool mouthOpen = player.mouthIsOpen();
+    const pr32::graphics::Sprite* sprite = nullptr;
+    bool flipX = false;
+
+    switch (player.direction()) {
+        case Direction::Up:
+            sprite = mouthOpen ? &sprites::PLAYER_UP_OPEN_SPRITE : &sprites::PLAYER_UP_CLOSED_SPRITE;
+            break;
+        case Direction::Down:
+            sprite = mouthOpen ? &sprites::PLAYER_DOWN_OPEN_SPRITE : &sprites::PLAYER_DOWN_CLOSED_SPRITE;
+            break;
+        case Direction::Left:
+            sprite = mouthOpen ? &sprites::PLAYER_RIGHT_OPEN_SPRITE : &sprites::PLAYER_RIGHT_CLOSED_SPRITE;
+            flipX = true;
+            break;
+        case Direction::Right:
+        case Direction::None:
+            sprite = mouthOpen ? &sprites::PLAYER_RIGHT_OPEN_SPRITE : &sprites::PLAYER_RIGHT_CLOSED_SPRITE;
+            break;
+    }
+
+    if (sprite != nullptr) {
+        renderer.drawSprite(*sprite, x, y, kPlayerColor, flipX);
+    }
+}
+
+void PacmanScene::drawStatusBand(pr32::graphics::Renderer& renderer) const {
+    char buffer[24];
+
+    std::snprintf(buffer, sizeof(buffer), "SCORE %06d", session_.score());
+    renderer.drawText(buffer, 4, 2, kTextColor, 1);
+
+    std::snprintf(buffer, sizeof(buffer), "LIVES %d", session_.lives());
+    const int width = static_cast<int>(std::strlen(buffer)) * kTextAdvance;
+    renderer.drawText(buffer, LOGICAL_WIDTH - 4 - width, 2, kTextColor, 1);
+
+    std::snprintf(buffer, sizeof(buffer), "LEFT %d", session_.remainingCollectibles());
+    renderer.drawText(buffer, 4, 12, kTextColor, 1);
+
+    if (session_.powerIsActive()) {
+        renderer.drawFilledCircle(LOGICAL_WIDTH - 12, 16, 3, kPelletColor);
+    }
+}
+
+}  // namespace pacman
