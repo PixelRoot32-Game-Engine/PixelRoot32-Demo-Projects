@@ -1,4 +1,4 @@
-#ifdef PLATFORM_ESP32DEV
+#ifdef PLATFORM_ESP32DEV_ST7789
 
 #include <Arduino.h>
 #include <drivers/esp32/TFT_eSPI_Drawer.h>
@@ -54,4 +54,4 @@ void loop() {
     engine.run();
 }
 
-#endif  // PLATFORM_ESP32DEV
+#endif  // PLATFORM_ESP32DEV_ST7789

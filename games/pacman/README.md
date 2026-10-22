@@ -12,7 +12,7 @@ exercised by a host-side test with no graphics session at all.
 
 Language: C++17
 Engine: `gperez88/PixelRoot32-Game-Engine@^1.12.0`
-Environments: `native`, `esp32dev`
+Environments: `native`, `esp32dev_ST7789`, `esp32dev_ILI9341`
 Category: Games
 
 ![Pac-Man Clone](screenshots/screenshot.png)
@@ -33,10 +33,21 @@ Category: Games
 | Environment | Display | Driver | Audio backend | Input |
 | --- | --- | --- | --- | --- |
 | `native` | 240×240 logical, windowed | SDL2 | SDL2 | Arrow keys, Space, Enter |
-| `esp32dev` | 240×240 | ST7789 (TFT_eSPI) | ESP32 I2S (MAX98357A-class DAC) | Six GPIO buttons: up, down, left, right, A, B |
+| `esp32dev_ST7789` | 240×240 | ST7789 (TFT_eSPI) | ESP32 I2S (MAX98357A-class DAC) | Six GPIO buttons: up, down, left, right, A, B |
+| `esp32dev_ILI9341` | 240×320 panel, rotated to 320×240 | ILI9341_2 (TFT_eSPI) | ESP32 I2S (MAX98357A-class DAC) | Six GPIO buttons on the board |
 
 Both environments run the same rules layer. The native build is the fast
-iteration loop; the ESP32 build is the target the demo is written for.
+iteration loop; the ESP32 builds are the target the demo is written for.
+
+The `esp32dev_ILI9341` environment is the ESP32-2432S028 "Cheap Yellow
+Display": an ILI9341 panel with an XPT2046 touch screen. The panel is
+mounted in portrait, so the build turns it a quarter turn and the logical
+framebuffer becomes 320×240 — the shape the game wants anyway. The touch bus
+is left unclaimed: the game is played with the six buttons.
+
+The layout follows the logical size rather than the panel: the status band
+stays at the top and the maze is centred in what is left, so the same build
+serves both panels.
 
 ## Controls
 
@@ -128,12 +139,12 @@ compiled out.
 
 ```text
 games/pacman/
-├── platformio.ini          # envs: native, esp32dev, native_test
+├── platformio.ini          # envs: native, esp32dev_ST7789, esp32dev_ILI9341, rules_test
 ├── lib/platformio.ini      # [base] / [base_native] / [base_esp32] templates
 ├── screenshots/            # screenshot.png
 ├── src/
 │   ├── main.cpp            # platform selector only
-│   ├── platforms/          # native.h, esp32_dev.h — backend wiring per target
+│   ├── platforms/          # native.h, esp32_dev_ST7789.h, esp32_dev_ILI9341.h
 │   ├── assets/             # generated sprite tables (CC0, original art)
 │   ├── audio/              # the sound effects, synthesised rather than sampled
 │   ├── PacmanScene.*       # presentation: reads input, draws the rules
@@ -156,7 +167,8 @@ games/pacman/
 
 ```bash
 pio run -e native
-pio run -e esp32dev
+pio run -e esp32dev_ST7789
+pio run -e esp32dev_ILI9341
 ```
 
 Host-side unit suite (no window, no SDL, no hardware):
@@ -173,9 +185,11 @@ so the suite runs on a machine with no display stack at all.
 ## Upload (ESP32)
 
 ```bash
-pio run -e esp32dev --target upload
+pio run -e esp32dev_ST7789 --target upload
 pio device monitor
 ```
+
+Swap `esp32dev_ST7789` for `esp32dev_ILI9341` on the 240×320 panel.
 
 ## Engine documentation
 
