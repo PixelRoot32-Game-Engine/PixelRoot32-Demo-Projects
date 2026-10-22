@@ -105,20 +105,23 @@ public:
     [[nodiscard]] Direction requestedDirection() const { return requestedDirection_; }
 
     /**
-     * @brief Tells whether the player's mouth is drawn open.
+     * @brief The shape the player's mouth is drawn in.
      *
-     * The mouth alternates while the player moves, which is what makes the
-     * character read as walking rather than sliding.
+     * The mouth walks through the cabinet's three shapes -- shut, half open
+     * and wide open -- while the player travels, and is shut again while the
+     * player stands still. That is what makes the character read as walking
+     * rather than sliding.
      *
-     * @return true on the open frames.
+     * @return 0 for the shut mouth, 1 for the half-open mouth and 2 for the
+     *         wide-open mouth.
      */
-    [[nodiscard]] bool mouthIsOpen() const;
+    [[nodiscard]] int chompFrame() const;
 
 private:
     gameplay::GridMotion motion_;
     Direction direction_ = Direction::None;
     Direction requestedDirection_ = Direction::None;
-    int animationPhase_ = 0;
+    int chompStep_ = 0;
 
     /**
      * @brief Tells whether the player may step into a direction right now.

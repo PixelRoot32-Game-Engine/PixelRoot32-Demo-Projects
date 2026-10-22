@@ -48,6 +48,18 @@ constexpr pixelroot32::graphics::Color kPelletColor = pixelroot32::graphics::Col
 constexpr pixelroot32::graphics::Color kPlayerColor = pixelroot32::graphics::Color::Yellow;
 
 /**
+ * @brief Colour of the player's eye.
+ *
+ * The eye is drawn on top of the yellow head, the way the cabinet draws it.
+ */
+constexpr pixelroot32::graphics::Color kPlayerEyeColor = pixelroot32::graphics::Color::Black;
+
+/**
+ * @brief Colour of the highlight inside the player's eye.
+ */
+constexpr pixelroot32::graphics::Color kPlayerEyeGlintColor = pixelroot32::graphics::Color::White;
+
+/**
  * @brief Colour of the enemies while they hunt.
  */
 constexpr pixelroot32::graphics::Color kEnemyColors[4] = {

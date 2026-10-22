@@ -149,12 +149,20 @@ constexpr int kPlayerStepsPerCell = 8;
 constexpr int kEnemyStepsPerCell = 10;
 
 /**
- * @brief Number of logic steps between two changes of the player's mouth.
+ * @brief Number of logic steps the player's mouth holds each shape.
  *
- * The mouth alternates between open and closed every three sub-steps, which
- * is roughly the pace the arcade original uses.
+ * The mouth walks through the cabinet's three shapes every three sub-steps,
+ * which is roughly the pace the arcade original uses.
  */
-constexpr int kMouthAnimationDivisor = 3;
+constexpr int kChompFrameSteps = 3;
+
+/**
+ * @brief Number of shapes the player's mouth walks through.
+ *
+ * Three, the way the cabinet draws them: the mouth shut, the mouth half
+ * open and the mouth wide open.
+ */
+constexpr int kChompFrameCount = 3;
 
 /**
  * @brief Column of the cell just outside the ghost house doorway.

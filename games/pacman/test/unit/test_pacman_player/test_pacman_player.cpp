@@ -128,6 +128,49 @@ void test_pacman_player_reports_its_travel_direction(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * The walk cycle
+ * ------------------------------------------------------------------------- */
+
+void test_pacman_player_chomps_through_three_shapes_while_it_moves(void) {
+    PacmanMaze maze;
+    PacmanPlayer player;
+    player.reset(maze);
+    player.requestDirection(Direction::Left);
+
+    // The first step starts the move; the mouth then walks through the
+    // cabinet's three shapes, one every few sub-steps.
+    player.step(maze);
+    TEST_ASSERT_TRUE(player.isMoving());
+    TEST_ASSERT_EQUAL_INT(0, player.chompFrame());
+
+    runSteps(player, maze, kChompFrameSteps);
+    TEST_ASSERT_EQUAL_INT(1, player.chompFrame());
+
+    runSteps(player, maze, kChompFrameSteps);
+    TEST_ASSERT_EQUAL_INT(2, player.chompFrame());
+
+    // The cycle comes back round to the shut mouth.
+    runSteps(player, maze, kChompFrameSteps);
+    TEST_ASSERT_EQUAL_INT(0, player.chompFrame());
+}
+
+void test_pacman_player_keeps_its_mouth_shut_while_it_stands_still(void) {
+    PacmanMaze maze;
+    PacmanPlayer player;
+    player.reset(maze);
+    TEST_ASSERT_EQUAL_INT(0, player.chompFrame());
+
+    // The cell above the player's start is the ghost house, which the player
+    // may not enter: the player never leaves the spot, so the mouth stays
+    // shut.
+    player.requestDirection(Direction::Up);
+    runSteps(player, maze, kPlayerStepsPerCell * 2);
+
+    TEST_ASSERT_FALSE(player.isMoving());
+    TEST_ASSERT_EQUAL_INT(0, player.chompFrame());
+}
+
+/* ---------------------------------------------------------------------------
  * Tunnels
  * ------------------------------------------------------------------------- */
 
@@ -194,6 +237,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_pacman_player_keeps_its_direction_when_the_request_cannot_be_taken);
     RUN_TEST(test_pacman_player_keeps_a_pending_turn_until_it_can_be_taken);
     RUN_TEST(test_pacman_player_reports_its_travel_direction);
+    RUN_TEST(test_pacman_player_chomps_through_three_shapes_while_it_moves);
+    RUN_TEST(test_pacman_player_keeps_its_mouth_shut_while_it_stands_still);
     RUN_TEST(test_pacman_player_wraps_around_a_tunnel);
     RUN_TEST(test_pacman_player_leaves_the_map_only_through_a_tunnel);
 

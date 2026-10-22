@@ -61,6 +61,32 @@ constexpr int kBoardWidth = kMazeCols * kCellSize;
 constexpr int kTextAdvance = 6;
 
 /**
+ * @brief The player's body, one entry per shape of the walk cycle.
+ *
+ * The cycle has three shapes -- the mouth shut, half open and wide open --
+ * and the cabinet draws a set of frames per direction. The left-facing
+ * frames are the right-facing ones flipped horizontally, the way the
+ * cabinet's own left-facing frames are.
+ */
+const pr32::graphics::Sprite* const kPlayerBodiesUp[kChompFrameCount] = {
+    &sprites::PLAYER_UP_CLOSED_SPRITE,
+    &sprites::PLAYER_UP_HALF_SPRITE,
+    &sprites::PLAYER_UP_WIDE_SPRITE,
+};
+
+const pr32::graphics::Sprite* const kPlayerBodiesDown[kChompFrameCount] = {
+    &sprites::PLAYER_DOWN_CLOSED_SPRITE,
+    &sprites::PLAYER_DOWN_HALF_SPRITE,
+    &sprites::PLAYER_DOWN_WIDE_SPRITE,
+};
+
+const pr32::graphics::Sprite* const kPlayerBodiesRight[kChompFrameCount] = {
+    &sprites::PLAYER_RIGHT_CLOSED_SPRITE,
+    &sprites::PLAYER_RIGHT_HALF_SPRITE,
+    &sprites::PLAYER_RIGHT_WIDE_SPRITE,
+};
+
+/**
  * @brief Interpolates a grid actor's position between two cells.
  *
  * @param cell The cell the actor came from.
@@ -425,29 +451,43 @@ void PacmanScene::drawPlayer(pr32::graphics::Renderer& renderer) const {
     const int x = boardOriginX() + subCol * kCellSize / kPlayerStepsPerCell;
     const int y = boardOriginY() + subRow * kCellSize / kPlayerStepsPerCell;
 
-    const bool mouthOpen = player.mouthIsOpen();
-    const pr32::graphics::Sprite* sprite = nullptr;
+    const int frame = player.chompFrame();
+    const pr32::graphics::Sprite* body = nullptr;
+    const pr32::graphics::Sprite* eye = nullptr;
+    const pr32::graphics::Sprite* glint = nullptr;
     bool flipX = false;
 
     switch (player.direction()) {
         case Direction::Up:
-            sprite = mouthOpen ? &sprites::PLAYER_UP_OPEN_SPRITE : &sprites::PLAYER_UP_CLOSED_SPRITE;
+            body = kPlayerBodiesUp[frame];
+            eye = &sprites::PLAYER_UP_EYE_SPRITE;
+            glint = &sprites::PLAYER_UP_EYE_GLINT_SPRITE;
             break;
         case Direction::Down:
-            sprite = mouthOpen ? &sprites::PLAYER_DOWN_OPEN_SPRITE : &sprites::PLAYER_DOWN_CLOSED_SPRITE;
+            body = kPlayerBodiesDown[frame];
+            eye = &sprites::PLAYER_DOWN_EYE_SPRITE;
+            glint = &sprites::PLAYER_DOWN_EYE_GLINT_SPRITE;
             break;
         case Direction::Left:
-            sprite = mouthOpen ? &sprites::PLAYER_RIGHT_OPEN_SPRITE : &sprites::PLAYER_RIGHT_CLOSED_SPRITE;
+            body = kPlayerBodiesRight[frame];
+            eye = &sprites::PLAYER_RIGHT_EYE_SPRITE;
+            glint = &sprites::PLAYER_RIGHT_EYE_GLINT_SPRITE;
             flipX = true;
             break;
         case Direction::Right:
         case Direction::None:
-            sprite = mouthOpen ? &sprites::PLAYER_RIGHT_OPEN_SPRITE : &sprites::PLAYER_RIGHT_CLOSED_SPRITE;
+            body = kPlayerBodiesRight[frame];
+            eye = &sprites::PLAYER_RIGHT_EYE_SPRITE;
+            glint = &sprites::PLAYER_RIGHT_EYE_GLINT_SPRITE;
             break;
     }
 
-    if (sprite != nullptr) {
-        renderer.drawSprite(*sprite, x, y, kPlayerColor, flipX);
+    if (body != nullptr) {
+        renderer.drawSprite(*body, x, y, kPlayerColor, flipX);
+        // The eye is drawn over the head, the way the cabinet's player wears
+        // one: it is what tells the character which way it is going.
+        renderer.drawSprite(*eye, x, y, kPlayerEyeColor, flipX);
+        renderer.drawSprite(*glint, x, y, kPlayerEyeGlintColor, flipX);
     }
 }
 

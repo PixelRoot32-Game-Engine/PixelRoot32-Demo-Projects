@@ -96,6 +96,14 @@ blue rectangle with a pink door across the opening, not a block of the maze's
 masonry. The four hunters start where the cabinet put them - one above the
 doorway, the other three inside the house.
 
+The player is drawn with the cabinet's own walk cycle: three shapes - the
+mouth shut, half open and wide open - that the character walks through while
+it travels and returns to when it stands still. The head is a disc with the
+mouth bitten out of it, and the eye is drawn over the head in black with a
+highlight inside it, the way the cabinet's player wears one. All of it is
+original artwork written as ASCII art in `tools/generate_sprites.py`, which
+emits the engine's packed 1bpp tables at the cell size the build uses.
+
 ## The sounds
 
 The demo follows the 1980 Namco cabinet's sound design, synthesised by the engine's

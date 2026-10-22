@@ -30,26 +30,71 @@ SIZES = (7, 8)
 # --- Artwork ----------------------------------------------------------------
 # Original artwork, created from scratch for this demo. Not derived from any
 # copyrighted game's assets; free to use and redistribute.
+#
+# The player's walk cycle has the three shapes the cabinet draws: the mouth
+# shut, the mouth half open and the mouth wide open. The head is a disc with
+# the mouth bitten out of it, so the shapes differ only in how much of the
+# disc the wedge takes. The eye is drawn on top of the head in a second
+# sprite, the way the cabinet's own eye sits over the yellow.
 
-PLAYER_RIGHT_OPEN = [
+PLAYER_RIGHT_CLOSED = [
+    "..####..",
+    ".######.",
+    "########",
+    "########",
+    "########",
+    "########",
+    ".######.",
+    "..####..",
+]
+
+PLAYER_RIGHT_HALF = [
+    "..####..",
+    ".######.",
+    "########",
+    "######..",
+    "######..",
+    "########",
+    ".######.",
+    "..####..",
+]
+
+PLAYER_RIGHT_WIDE = [
+    "..####..",
+    ".######.",
+    "#######.",
+    "####....",
+    "####....",
+    "#######.",
+    ".######.",
+    "..####..",
+]
+
+# The eye sits above the mouth, in the upper corner of the head. It is one
+# row higher than a hand-drawn head would put it, because at eight pixels the
+# mouth wedge reaches up to the eye otherwise and the two read as one black
+# blot. The head is rotated for the other directions, and the eye goes with
+# it, the way the cabinet's own eye sits over the yellow.
+PLAYER_RIGHT_EYE = [
+    "....##..",
+    "....##..",
     "........",
-    "..####..",
-    ".######.",
-    "####....",
-    "####....",
-    ".######.",
-    "..####..",
+    "........",
+    "........",
+    "........",
+    "........",
     "........",
 ]
 
-PLAYER_RIGHT_CLOSED = [
+# The little highlight inside the eye, drawn in the text colour.
+PLAYER_RIGHT_EYE_GLINT = [
+    "....#...",
     "........",
-    "..####..",
-    ".######.",
-    "#######.",
-    "#######.",
-    ".######.",
-    "..####..",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........",
     "........",
 ]
 
@@ -165,24 +210,42 @@ def emit(name: str, art: List[str], note: str, out: List[str]) -> None:
 
 def main() -> None:
     art: Dict[str, List[str]] = {
-        "PLAYER_RIGHT_OPEN": PLAYER_RIGHT_OPEN,
         "PLAYER_RIGHT_CLOSED": PLAYER_RIGHT_CLOSED,
-        "PLAYER_UP_OPEN": rotate_ccw(PLAYER_RIGHT_OPEN),
+        "PLAYER_RIGHT_HALF": PLAYER_RIGHT_HALF,
+        "PLAYER_RIGHT_WIDE": PLAYER_RIGHT_WIDE,
         "PLAYER_UP_CLOSED": rotate_ccw(PLAYER_RIGHT_CLOSED),
-        "PLAYER_DOWN_OPEN": rotate_cw(PLAYER_RIGHT_OPEN),
+        "PLAYER_UP_HALF": rotate_ccw(PLAYER_RIGHT_HALF),
+        "PLAYER_UP_WIDE": rotate_ccw(PLAYER_RIGHT_WIDE),
         "PLAYER_DOWN_CLOSED": rotate_cw(PLAYER_RIGHT_CLOSED),
+        "PLAYER_DOWN_HALF": rotate_cw(PLAYER_RIGHT_HALF),
+        "PLAYER_DOWN_WIDE": rotate_cw(PLAYER_RIGHT_WIDE),
+        "PLAYER_RIGHT_EYE": PLAYER_RIGHT_EYE,
+        "PLAYER_UP_EYE": rotate_ccw(PLAYER_RIGHT_EYE),
+        "PLAYER_DOWN_EYE": rotate_cw(PLAYER_RIGHT_EYE),
+        "PLAYER_RIGHT_EYE_GLINT": PLAYER_RIGHT_EYE_GLINT,
+        "PLAYER_UP_EYE_GLINT": rotate_ccw(PLAYER_RIGHT_EYE_GLINT),
+        "PLAYER_DOWN_EYE_GLINT": rotate_cw(PLAYER_RIGHT_EYE_GLINT),
         "GHOST_BODY": GHOST_BODY,
         "GHOST_SCARED_BODY": GHOST_SCARED_BODY,
         "GHOST_EYES": GHOST_EYES,
         "GHOST_SCARED_EYES": GHOST_SCARED_EYES,
     }
     notes: Dict[str, str] = {
-        "PLAYER_RIGHT_OPEN": "Player, mouth open, facing right. Flipped horizontally for the left-facing frame.",
-        "PLAYER_RIGHT_CLOSED": "Player, mouth closed, facing right.",
-        "PLAYER_UP_OPEN": "Player, mouth open, facing up.",
-        "PLAYER_UP_CLOSED": "Player, mouth closed, facing up.",
-        "PLAYER_DOWN_OPEN": "Player, mouth open, facing down.",
-        "PLAYER_DOWN_CLOSED": "Player, mouth closed, facing down.",
+        "PLAYER_RIGHT_CLOSED": "Player, mouth shut, facing right. Flipped horizontally for the left-facing frame.",
+        "PLAYER_RIGHT_HALF": "Player, mouth half open, facing right.",
+        "PLAYER_RIGHT_WIDE": "Player, mouth wide open, facing right.",
+        "PLAYER_UP_CLOSED": "Player, mouth shut, facing up.",
+        "PLAYER_UP_HALF": "Player, mouth half open, facing up.",
+        "PLAYER_UP_WIDE": "Player, mouth wide open, facing up.",
+        "PLAYER_DOWN_CLOSED": "Player, mouth shut, facing down.",
+        "PLAYER_DOWN_HALF": "Player, mouth half open, facing down.",
+        "PLAYER_DOWN_WIDE": "Player, mouth wide open, facing down.",
+        "PLAYER_RIGHT_EYE": "Player's eye, facing right. Drawn in black on top of the head.",
+        "PLAYER_UP_EYE": "Player's eye, facing up. Drawn in black on top of the head.",
+        "PLAYER_DOWN_EYE": "Player's eye, facing down. Drawn in black on top of the head.",
+        "PLAYER_RIGHT_EYE_GLINT": "Highlight inside the player's eye, facing right.",
+        "PLAYER_UP_EYE_GLINT": "Highlight inside the player's eye, facing up.",
+        "PLAYER_DOWN_EYE_GLINT": "Highlight inside the player's eye, facing down.",
         "GHOST_BODY": "Hunter body in its normal colour.",
         "GHOST_SCARED_BODY": "Hunter body while the power effect is active.",
         "GHOST_EYES": "Hunter eyes, drawn in white on top of the body.",

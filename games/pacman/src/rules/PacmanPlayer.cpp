@@ -6,7 +6,7 @@ void PacmanPlayer::reset(const PacmanMaze& maze) {
     gameplay::placeAt(motion_, maze.playerStartCol(), maze.playerStartRow());
     direction_ = Direction::None;
     requestedDirection_ = Direction::None;
-    animationPhase_ = 0;
+    chompStep_ = 0;
 }
 
 void PacmanPlayer::requestDirection(Direction direction) {
@@ -21,8 +21,11 @@ void PacmanPlayer::requestDirection(Direction direction) {
 void PacmanPlayer::step(const PacmanMaze& maze) {
     if (gameplay::isMoving(motion_)) {
         const bool arrived = gameplay::tickStep(motion_, kPlayerStepsPerCell);
+        // The mouth keeps chewing while the player travels: the walk cycle
+        // runs on sub-steps, not on cells, so the character reads as walking
+        // rather than sliding.
+        ++chompStep_;
         if (arrived) {
-            ++animationPhase_;
             if (!maze.isInside(motion_.cellX, motion_.cellY)) {
                 // The step left the map through a tunnel: the player comes
                 // back in on the opposite edge.
@@ -48,8 +51,12 @@ void PacmanPlayer::step(const PacmanMaze& maze) {
     }
 }
 
-bool PacmanPlayer::mouthIsOpen() const {
-    return (animationPhase_ / kMouthAnimationDivisor) % 2 == 0;
+int PacmanPlayer::chompFrame() const {
+    if (!isMoving()) {
+        // A player that stands still keeps its mouth shut.
+        return 0;
+    }
+    return (chompStep_ / kChompFrameSteps) % kChompFrameCount;
 }
 
 bool PacmanPlayer::canEnter(const PacmanMaze& maze, Direction direction) const {

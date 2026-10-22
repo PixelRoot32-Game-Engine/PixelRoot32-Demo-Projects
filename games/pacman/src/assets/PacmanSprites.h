@@ -14,118 +14,289 @@ namespace pacman {
 namespace sprites7 {
 
 /**
- * @brief Player, mouth open, facing right. Flipped horizontally for the left-facing frame.
+ * @brief Player, mouth shut, facing right. Flipped horizontally for the left-facing frame.
  *
  *
- *     .......
  *     ..###..
  *     .#####.
- *     ###....
+ *     #######
+ *     #######
+ *     #######
  *     .#####.
  *     ..###..
- *     .......
- *
- * Packed rows, most significant bit = leftmost pixel.
- */
-static const uint16_t PLAYER_RIGHT_OPEN[7] = {
-    0x0000, 0x001C, 0x003E, 0x0070, 0x003E, 0x001C, 0x0000
-};
-static const pixelroot32::graphics::Sprite PLAYER_RIGHT_OPEN_SPRITE = { PLAYER_RIGHT_OPEN, 7, 7 };
-
-/**
- * @brief Player, mouth closed, facing right.
- *
- *
- *     .......
- *     ..###..
- *     .#####.
- *     ######.
- *     .#####.
- *     ..###..
- *     .......
  *
  * Packed rows, most significant bit = leftmost pixel.
  */
 static const uint16_t PLAYER_RIGHT_CLOSED[7] = {
-    0x0000, 0x001C, 0x003E, 0x007E, 0x003E, 0x001C, 0x0000
+    0x001C, 0x003E, 0x007F, 0x007F, 0x007F, 0x003E, 0x001C
 };
 static const pixelroot32::graphics::Sprite PLAYER_RIGHT_CLOSED_SPRITE = { PLAYER_RIGHT_CLOSED, 7, 7 };
 
 /**
- * @brief Player, mouth open, facing up.
+ * @brief Player, mouth half open, facing right.
  *
  *
- *     .......
- *     ..#.#..
- *     .##.##.
+ *     ..###..
  *     .#####.
+ *     #######
+ *     #####..
+ *     #######
  *     .#####.
  *     ..###..
- *     ...#...
  *
  * Packed rows, most significant bit = leftmost pixel.
  */
-static const uint16_t PLAYER_UP_OPEN[7] = {
-    0x0000, 0x0014, 0x0036, 0x003E, 0x003E, 0x001C, 0x0008
+static const uint16_t PLAYER_RIGHT_HALF[7] = {
+    0x001C, 0x003E, 0x007F, 0x007C, 0x007F, 0x003E, 0x001C
 };
-static const pixelroot32::graphics::Sprite PLAYER_UP_OPEN_SPRITE = { PLAYER_UP_OPEN, 7, 7 };
+static const pixelroot32::graphics::Sprite PLAYER_RIGHT_HALF_SPRITE = { PLAYER_RIGHT_HALF, 7, 7 };
 
 /**
- * @brief Player, mouth closed, facing up.
+ * @brief Player, mouth wide open, facing right.
  *
  *
- *     .......
  *     ..###..
  *     .#####.
- *     .#####.
+ *     ######.
+ *     ###....
+ *     ######.
  *     .#####.
  *     ..###..
- *     ...#...
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_RIGHT_WIDE[7] = {
+    0x001C, 0x003E, 0x007E, 0x0070, 0x007E, 0x003E, 0x001C
+};
+static const pixelroot32::graphics::Sprite PLAYER_RIGHT_WIDE_SPRITE = { PLAYER_RIGHT_WIDE, 7, 7 };
+
+/**
+ * @brief Player, mouth shut, facing up.
+ *
+ *
+ *     ..###..
+ *     .#####.
+ *     #######
+ *     #######
+ *     #######
+ *     .#####.
+ *     ..###..
  *
  * Packed rows, most significant bit = leftmost pixel.
  */
 static const uint16_t PLAYER_UP_CLOSED[7] = {
-    0x0000, 0x001C, 0x003E, 0x003E, 0x003E, 0x001C, 0x0008
+    0x001C, 0x003E, 0x007F, 0x007F, 0x007F, 0x003E, 0x001C
 };
 static const pixelroot32::graphics::Sprite PLAYER_UP_CLOSED_SPRITE = { PLAYER_UP_CLOSED, 7, 7 };
 
 /**
- * @brief Player, mouth open, facing down.
+ * @brief Player, mouth half open, facing up.
  *
  *
- *     ...#...
- *     ..###..
- *     .#####.
- *     .##.##.
- *     .##.##.
  *     ..#.#..
- *     .......
+ *     .##.##.
+ *     #######
+ *     #######
+ *     #######
+ *     .#####.
+ *     ..###..
  *
  * Packed rows, most significant bit = leftmost pixel.
  */
-static const uint16_t PLAYER_DOWN_OPEN[7] = {
-    0x0008, 0x001C, 0x003E, 0x0036, 0x0036, 0x0014, 0x0000
+static const uint16_t PLAYER_UP_HALF[7] = {
+    0x0014, 0x0036, 0x007F, 0x007F, 0x007F, 0x003E, 0x001C
 };
-static const pixelroot32::graphics::Sprite PLAYER_DOWN_OPEN_SPRITE = { PLAYER_DOWN_OPEN, 7, 7 };
+static const pixelroot32::graphics::Sprite PLAYER_UP_HALF_SPRITE = { PLAYER_UP_HALF, 7, 7 };
 
 /**
- * @brief Player, mouth closed, facing down.
+ * @brief Player, mouth wide open, facing up.
  *
  *
- *     ...#...
- *     ..###..
- *     .#####.
- *     .#####.
- *     .#####.
- *     ..###..
  *     .......
+ *     .##.##.
+ *     ###.###
+ *     #######
+ *     #######
+ *     .#####.
+ *     ..###..
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_UP_WIDE[7] = {
+    0x0000, 0x0036, 0x0077, 0x007F, 0x007F, 0x003E, 0x001C
+};
+static const pixelroot32::graphics::Sprite PLAYER_UP_WIDE_SPRITE = { PLAYER_UP_WIDE, 7, 7 };
+
+/**
+ * @brief Player, mouth shut, facing down.
+ *
+ *
+ *     ..###..
+ *     .#####.
+ *     #######
+ *     #######
+ *     #######
+ *     .#####.
+ *     ..###..
  *
  * Packed rows, most significant bit = leftmost pixel.
  */
 static const uint16_t PLAYER_DOWN_CLOSED[7] = {
-    0x0008, 0x001C, 0x003E, 0x003E, 0x003E, 0x001C, 0x0000
+    0x001C, 0x003E, 0x007F, 0x007F, 0x007F, 0x003E, 0x001C
 };
 static const pixelroot32::graphics::Sprite PLAYER_DOWN_CLOSED_SPRITE = { PLAYER_DOWN_CLOSED, 7, 7 };
+
+/**
+ * @brief Player, mouth half open, facing down.
+ *
+ *
+ *     ..###..
+ *     .#####.
+ *     #######
+ *     #######
+ *     #######
+ *     .##.##.
+ *     ..#.#..
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_DOWN_HALF[7] = {
+    0x001C, 0x003E, 0x007F, 0x007F, 0x007F, 0x0036, 0x0014
+};
+static const pixelroot32::graphics::Sprite PLAYER_DOWN_HALF_SPRITE = { PLAYER_DOWN_HALF, 7, 7 };
+
+/**
+ * @brief Player, mouth wide open, facing down.
+ *
+ *
+ *     ..###..
+ *     .#####.
+ *     #######
+ *     ###.###
+ *     ###.###
+ *     .##.##.
+ *     .......
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_DOWN_WIDE[7] = {
+    0x001C, 0x003E, 0x007F, 0x0077, 0x0077, 0x0036, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_DOWN_WIDE_SPRITE = { PLAYER_DOWN_WIDE, 7, 7 };
+
+/**
+ * @brief Player's eye, facing right. Drawn in black on top of the head.
+ *
+ *
+ *     ...##..
+ *     ...##..
+ *     .......
+ *     .......
+ *     .......
+ *     .......
+ *     .......
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_RIGHT_EYE[7] = {
+    0x000C, 0x000C, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_RIGHT_EYE_SPRITE = { PLAYER_RIGHT_EYE, 7, 7 };
+
+/**
+ * @brief Player's eye, facing up. Drawn in black on top of the head.
+ *
+ *
+ *     .......
+ *     .......
+ *     ##.....
+ *     .......
+ *     .......
+ *     .......
+ *     .......
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_UP_EYE[7] = {
+    0x0000, 0x0000, 0x0060, 0x0000, 0x0000, 0x0000, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_UP_EYE_SPRITE = { PLAYER_UP_EYE, 7, 7 };
+
+/**
+ * @brief Player's eye, facing down. Drawn in black on top of the head.
+ *
+ *
+ *     .......
+ *     .......
+ *     .......
+ *     .....##
+ *     .....##
+ *     .......
+ *     .......
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_DOWN_EYE[7] = {
+    0x0000, 0x0000, 0x0000, 0x0003, 0x0003, 0x0000, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_DOWN_EYE_SPRITE = { PLAYER_DOWN_EYE, 7, 7 };
+
+/**
+ * @brief Highlight inside the player's eye, facing right.
+ *
+ *
+ *     ...#...
+ *     .......
+ *     .......
+ *     .......
+ *     .......
+ *     .......
+ *     .......
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_RIGHT_EYE_GLINT[7] = {
+    0x0008, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_RIGHT_EYE_GLINT_SPRITE = { PLAYER_RIGHT_EYE_GLINT, 7, 7 };
+
+/**
+ * @brief Highlight inside the player's eye, facing up.
+ *
+ *
+ *     .......
+ *     .......
+ *     .......
+ *     .......
+ *     .......
+ *     .......
+ *     .......
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_UP_EYE_GLINT[7] = {
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_UP_EYE_GLINT_SPRITE = { PLAYER_UP_EYE_GLINT, 7, 7 };
+
+/**
+ * @brief Highlight inside the player's eye, facing down.
+ *
+ *
+ *     .......
+ *     .......
+ *     .......
+ *     ......#
+ *     .......
+ *     .......
+ *     .......
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_DOWN_EYE_GLINT[7] = {
+    0x0000, 0x0000, 0x0000, 0x0001, 0x0000, 0x0000, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_DOWN_EYE_GLINT_SPRITE = { PLAYER_DOWN_EYE_GLINT, 7, 7 };
 
 /**
  * @brief Hunter body in its normal colour.
@@ -208,124 +379,304 @@ static const pixelroot32::graphics::Sprite GHOST_SCARED_EYES_SPRITE = { GHOST_SC
 namespace sprites8 {
 
 /**
- * @brief Player, mouth open, facing right. Flipped horizontally for the left-facing frame.
+ * @brief Player, mouth shut, facing right. Flipped horizontally for the left-facing frame.
  *
  *
- *     ........
  *     ..####..
  *     .######.
- *     ####....
- *     ####....
+ *     ########
+ *     ########
+ *     ########
+ *     ########
  *     .######.
  *     ..####..
- *     ........
- *
- * Packed rows, most significant bit = leftmost pixel.
- */
-static const uint16_t PLAYER_RIGHT_OPEN[8] = {
-    0x0000, 0x003C, 0x007E, 0x00F0, 0x00F0, 0x007E, 0x003C, 0x0000
-};
-static const pixelroot32::graphics::Sprite PLAYER_RIGHT_OPEN_SPRITE = { PLAYER_RIGHT_OPEN, 8, 8 };
-
-/**
- * @brief Player, mouth closed, facing right.
- *
- *
- *     ........
- *     ..####..
- *     .######.
- *     #######.
- *     #######.
- *     .######.
- *     ..####..
- *     ........
  *
  * Packed rows, most significant bit = leftmost pixel.
  */
 static const uint16_t PLAYER_RIGHT_CLOSED[8] = {
-    0x0000, 0x003C, 0x007E, 0x00FE, 0x00FE, 0x007E, 0x003C, 0x0000
+    0x003C, 0x007E, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x007E, 0x003C
 };
 static const pixelroot32::graphics::Sprite PLAYER_RIGHT_CLOSED_SPRITE = { PLAYER_RIGHT_CLOSED, 8, 8 };
 
 /**
- * @brief Player, mouth open, facing up.
+ * @brief Player, mouth half open, facing right.
  *
  *
- *     ........
- *     ..#..#..
- *     .##..##.
- *     .##..##.
+ *     ..####..
  *     .######.
+ *     ########
+ *     ######..
+ *     ######..
+ *     ########
  *     .######.
  *     ..####..
- *     ...##...
  *
  * Packed rows, most significant bit = leftmost pixel.
  */
-static const uint16_t PLAYER_UP_OPEN[8] = {
-    0x0000, 0x0024, 0x0066, 0x0066, 0x007E, 0x007E, 0x003C, 0x0018
+static const uint16_t PLAYER_RIGHT_HALF[8] = {
+    0x003C, 0x007E, 0x00FF, 0x00FC, 0x00FC, 0x00FF, 0x007E, 0x003C
 };
-static const pixelroot32::graphics::Sprite PLAYER_UP_OPEN_SPRITE = { PLAYER_UP_OPEN, 8, 8 };
+static const pixelroot32::graphics::Sprite PLAYER_RIGHT_HALF_SPRITE = { PLAYER_RIGHT_HALF, 8, 8 };
 
 /**
- * @brief Player, mouth closed, facing up.
+ * @brief Player, mouth wide open, facing right.
  *
  *
- *     ........
  *     ..####..
  *     .######.
- *     .######.
- *     .######.
+ *     #######.
+ *     ####....
+ *     ####....
+ *     #######.
  *     .######.
  *     ..####..
- *     ...##...
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_RIGHT_WIDE[8] = {
+    0x003C, 0x007E, 0x00FE, 0x00F0, 0x00F0, 0x00FE, 0x007E, 0x003C
+};
+static const pixelroot32::graphics::Sprite PLAYER_RIGHT_WIDE_SPRITE = { PLAYER_RIGHT_WIDE, 8, 8 };
+
+/**
+ * @brief Player, mouth shut, facing up.
+ *
+ *
+ *     ..####..
+ *     .######.
+ *     ########
+ *     ########
+ *     ########
+ *     ########
+ *     .######.
+ *     ..####..
  *
  * Packed rows, most significant bit = leftmost pixel.
  */
 static const uint16_t PLAYER_UP_CLOSED[8] = {
-    0x0000, 0x003C, 0x007E, 0x007E, 0x007E, 0x007E, 0x003C, 0x0018
+    0x003C, 0x007E, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x007E, 0x003C
 };
 static const pixelroot32::graphics::Sprite PLAYER_UP_CLOSED_SPRITE = { PLAYER_UP_CLOSED, 8, 8 };
 
 /**
- * @brief Player, mouth open, facing down.
+ * @brief Player, mouth half open, facing up.
  *
  *
- *     ...##...
- *     ..####..
- *     .######.
- *     .######.
- *     .##..##.
- *     .##..##.
  *     ..#..#..
- *     ........
+ *     .##..##.
+ *     ########
+ *     ########
+ *     ########
+ *     ########
+ *     .######.
+ *     ..####..
  *
  * Packed rows, most significant bit = leftmost pixel.
  */
-static const uint16_t PLAYER_DOWN_OPEN[8] = {
-    0x0018, 0x003C, 0x007E, 0x007E, 0x0066, 0x0066, 0x0024, 0x0000
+static const uint16_t PLAYER_UP_HALF[8] = {
+    0x0024, 0x0066, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x007E, 0x003C
 };
-static const pixelroot32::graphics::Sprite PLAYER_DOWN_OPEN_SPRITE = { PLAYER_DOWN_OPEN, 8, 8 };
+static const pixelroot32::graphics::Sprite PLAYER_UP_HALF_SPRITE = { PLAYER_UP_HALF, 8, 8 };
 
 /**
- * @brief Player, mouth closed, facing down.
+ * @brief Player, mouth wide open, facing up.
  *
  *
- *     ...##...
- *     ..####..
- *     .######.
- *     .######.
- *     .######.
- *     .######.
- *     ..####..
  *     ........
+ *     .##..##.
+ *     ###..###
+ *     ###..###
+ *     ########
+ *     ########
+ *     .######.
+ *     ..####..
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_UP_WIDE[8] = {
+    0x0000, 0x0066, 0x00E7, 0x00E7, 0x00FF, 0x00FF, 0x007E, 0x003C
+};
+static const pixelroot32::graphics::Sprite PLAYER_UP_WIDE_SPRITE = { PLAYER_UP_WIDE, 8, 8 };
+
+/**
+ * @brief Player, mouth shut, facing down.
+ *
+ *
+ *     ..####..
+ *     .######.
+ *     ########
+ *     ########
+ *     ########
+ *     ########
+ *     .######.
+ *     ..####..
  *
  * Packed rows, most significant bit = leftmost pixel.
  */
 static const uint16_t PLAYER_DOWN_CLOSED[8] = {
-    0x0018, 0x003C, 0x007E, 0x007E, 0x007E, 0x007E, 0x003C, 0x0000
+    0x003C, 0x007E, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x007E, 0x003C
 };
 static const pixelroot32::graphics::Sprite PLAYER_DOWN_CLOSED_SPRITE = { PLAYER_DOWN_CLOSED, 8, 8 };
+
+/**
+ * @brief Player, mouth half open, facing down.
+ *
+ *
+ *     ..####..
+ *     .######.
+ *     ########
+ *     ########
+ *     ########
+ *     ########
+ *     .##..##.
+ *     ..#..#..
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_DOWN_HALF[8] = {
+    0x003C, 0x007E, 0x00FF, 0x00FF, 0x00FF, 0x00FF, 0x0066, 0x0024
+};
+static const pixelroot32::graphics::Sprite PLAYER_DOWN_HALF_SPRITE = { PLAYER_DOWN_HALF, 8, 8 };
+
+/**
+ * @brief Player, mouth wide open, facing down.
+ *
+ *
+ *     ..####..
+ *     .######.
+ *     ########
+ *     ########
+ *     ###..###
+ *     ###..###
+ *     .##..##.
+ *     ........
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_DOWN_WIDE[8] = {
+    0x003C, 0x007E, 0x00FF, 0x00FF, 0x00E7, 0x00E7, 0x0066, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_DOWN_WIDE_SPRITE = { PLAYER_DOWN_WIDE, 8, 8 };
+
+/**
+ * @brief Player's eye, facing right. Drawn in black on top of the head.
+ *
+ *
+ *     ....##..
+ *     ....##..
+ *     ........
+ *     ........
+ *     ........
+ *     ........
+ *     ........
+ *     ........
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_RIGHT_EYE[8] = {
+    0x000C, 0x000C, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_RIGHT_EYE_SPRITE = { PLAYER_RIGHT_EYE, 8, 8 };
+
+/**
+ * @brief Player's eye, facing up. Drawn in black on top of the head.
+ *
+ *
+ *     ........
+ *     ........
+ *     ##......
+ *     ##......
+ *     ........
+ *     ........
+ *     ........
+ *     ........
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_UP_EYE[8] = {
+    0x0000, 0x0000, 0x00C0, 0x00C0, 0x0000, 0x0000, 0x0000, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_UP_EYE_SPRITE = { PLAYER_UP_EYE, 8, 8 };
+
+/**
+ * @brief Player's eye, facing down. Drawn in black on top of the head.
+ *
+ *
+ *     ........
+ *     ........
+ *     ........
+ *     ........
+ *     ......##
+ *     ......##
+ *     ........
+ *     ........
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_DOWN_EYE[8] = {
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0003, 0x0003, 0x0000, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_DOWN_EYE_SPRITE = { PLAYER_DOWN_EYE, 8, 8 };
+
+/**
+ * @brief Highlight inside the player's eye, facing right.
+ *
+ *
+ *     ....#...
+ *     ........
+ *     ........
+ *     ........
+ *     ........
+ *     ........
+ *     ........
+ *     ........
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_RIGHT_EYE_GLINT[8] = {
+    0x0008, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_RIGHT_EYE_GLINT_SPRITE = { PLAYER_RIGHT_EYE_GLINT, 8, 8 };
+
+/**
+ * @brief Highlight inside the player's eye, facing up.
+ *
+ *
+ *     ........
+ *     ........
+ *     ........
+ *     #.......
+ *     ........
+ *     ........
+ *     ........
+ *     ........
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_UP_EYE_GLINT[8] = {
+    0x0000, 0x0000, 0x0000, 0x0080, 0x0000, 0x0000, 0x0000, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_UP_EYE_GLINT_SPRITE = { PLAYER_UP_EYE_GLINT, 8, 8 };
+
+/**
+ * @brief Highlight inside the player's eye, facing down.
+ *
+ *
+ *     ........
+ *     ........
+ *     ........
+ *     ........
+ *     .......#
+ *     ........
+ *     ........
+ *     ........
+ *
+ * Packed rows, most significant bit = leftmost pixel.
+ */
+static const uint16_t PLAYER_DOWN_EYE_GLINT[8] = {
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0001, 0x0000, 0x0000, 0x0000
+};
+static const pixelroot32::graphics::Sprite PLAYER_DOWN_EYE_GLINT_SPRITE = { PLAYER_DOWN_EYE_GLINT, 8, 8 };
 
 /**
  * @brief Hunter body in its normal colour.
