@@ -163,9 +163,9 @@ pio device monitor -e esp32dev    # 115200 baud — where dirty_ratio appears
 ## Engine documentation
 
 - [PixelRoot32 Game Engine](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine)
-- [Sprite renderer — dirty regions, framebuffer and blit paths](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/sprite-renderer.md)
-- [Memory system — feature flags and byte budgets](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/architecture/memory-system.md)
-- [Core API — Engine, Scene, Renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
+- [Sprite renderer — dirty regions, framebuffer and blit paths](https://docs.pixelroot32.org/guide/rendering)
+- [Memory system — feature flags and byte budgets](https://docs.pixelroot32.org/architecture/memory-system)
+- [Core API — Engine, Scene, Renderer](https://docs.pixelroot32.org/api/core)
 
 ## License
 

@@ -306,7 +306,7 @@ pio device monitor -e esp32dev     # 115200 baud
 
 - [Input system](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/input/InputManager.h)
 - [InputConfig](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/input/InputConfig.h)
-- [Touch Input System](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/TOUCH_INPUT.md) — the other half of `InputManager`
+- [Touch Input System](https://docs.pixelroot32.org/architecture/touch-input) — the other half of `InputManager`
 - [Engine configuration flags](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/platforms/EngineConfig.h)
 - [Scene API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/core/Scene.h)
 - [Engine repository](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine)

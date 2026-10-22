@@ -160,7 +160,7 @@ Three separate gaps in the Tool Suite's `cpp_code_generator.cpp`, since fixed:
 A fourth is latent rather than fixed: both sprite emitters hardcode
 `ctx.tileSize` for width *and* height, so a 32x40 wall sheet would export as
 32x32. This project's art is 32x32, so it does not bite — but the reference
-contract at [`iso_dungeon`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/tree/main/examples/iso_dungeon) mixes 32x16 floors with 32x40 walls, which
+contract at [`iso_dungeon`](https://docs.pixelroot32.org/examples/graphics/iso_dungeon/) mixes 32x16 floors with 32x40 walls, which
 is the normal isometric case.
 
 ## Performance optimisations

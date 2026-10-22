@@ -112,11 +112,11 @@ To disable AI, remove `-D GAME2048_AI_MODE=1` from build_flags in platformio.ini
 
 ## Documentation links
 
-- [Game Logic](game_logic.md)
+- [Game Objective](game_objetive.md)
 - [Game Rules](game_rules.md)
-- [UI API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/ui.md)
-- [Input API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/input.md)
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
+- [UI API](https://docs.pixelroot32.org/api/ui)
+- [Input API](https://docs.pixelroot32.org/api/input)
+- [Core API](https://docs.pixelroot32.org/api/core)
 
 ## Build
 

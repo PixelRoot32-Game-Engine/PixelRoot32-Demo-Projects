@@ -98,10 +98,10 @@ src/
 ```
 
 ## Engine documentation
-- [Audio API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/audio.md)
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [Graphics / Renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/graphics.md)
-- [Memory system — flags and byte budgets](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/architecture/memory-system.md)
+- [Audio API](https://docs.pixelroot32.org/api/audio)
+- [Core API](https://docs.pixelroot32.org/api/core)
+- [Graphics / Renderer](https://docs.pixelroot32.org/api/graphics)
+- [Memory system — flags and byte budgets](https://docs.pixelroot32.org/architecture/memory-system)
 - [`gameplay/ObjectPool.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/gameplay/ObjectPool.h) — the engine's own pooling primitive
 
 ## Build

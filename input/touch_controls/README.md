@@ -206,7 +206,7 @@ pio device monitor -e esp32cyd     # 115200 baud
 
 ## Engine documentation
 
-- [Touch Input System](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/TOUCH_INPUT.md)
+- [Touch Input System](https://docs.pixelroot32.org/architecture/touch-input)
 - [Engine configuration flags](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/platforms/EngineConfig.h)
 - [Scene API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/core/Scene.h)
 - [Engine repository](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine)

@@ -170,10 +170,10 @@ pickup use; they are not currently triggered by the scene.
   value is a first estimate, not a value tuned against a timed play session.
 
 ## Engine documentation
-- [Audio API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/audio.md)
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [Input API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/input.md)
-- [Memory system — gameplay flags and byte budgets](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/architecture/memory-system.md)
+- [Audio API](https://docs.pixelroot32.org/api/audio)
+- [Core API](https://docs.pixelroot32.org/api/core)
+- [Input API](https://docs.pixelroot32.org/api/input)
+- [Memory system — gameplay flags and byte budgets](https://docs.pixelroot32.org/architecture/memory-system)
 - [Grid cell occupancy pattern](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/patterns/grid-cell-occupancy.md) — the status-band-above-the-grid layout this example uses
 - [`gameplay/GridSpace.h`](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/include/gameplay/GridSpace.h) — the full grid conversion API
 

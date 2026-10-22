@@ -80,7 +80,7 @@ and correcting it to a true `1/√2` makes the aircraft feel sluggish diagonally
 | Sprite-vs-sprite AABB with no physics engine | `MidwayScene::resolveCollisions()` |
 | Press-edge input (`isButtonPressed`) for restart | `MidwayScene::update()` |
 
-The asset shapes follow **[metroidvania](../metroidvania/)** and
+The asset shapes follow **[metroidvania](../../gameplay/metroidvania/)** and
 **[legend_of_clone](../legend_of_clone/)**: tileset pools and map indices in
 flash behind `PIXELROOT32_SCENE_FLASH_ATTR`, drawn through
 `StaticTilemapLayerCache`, every header gated on
@@ -135,7 +135,7 @@ ones this was developed against do not.
 `RES_160x160` and friends shrink the **logical** framebuffer, so the clear and
 every blit get cheaper. They do **not** reduce the DMA bytes, because the push
 happens at *physical* resolution. The ~30% quoted in
-[resolution-scaling.md](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/architecture/resolution-scaling.md) is
+[resolution-scaling.md](https://docs.pixelroot32.org/architecture/resolution-scaling) is
 CPU-side work, not wire time. Worth doing; it will not buy you 60 FPS.
 
 ### What the scroll actually costs

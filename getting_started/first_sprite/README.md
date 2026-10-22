@@ -267,9 +267,9 @@ pio run -e esp32dev --target upload
 
 ## Engine documentation
 
-- [Graphics / Renderer API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/graphics.md)
-- [Core API (`Scene`, `Engine`)](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [Input API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/input.md)
+- [Graphics / Renderer API](https://docs.pixelroot32.org/api/graphics)
+- [Core API (`Scene`, `Engine`)](https://docs.pixelroot32.org/api/core)
+- [Input API](https://docs.pixelroot32.org/api/input)
 - [Engine repository](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine)
 
 ## License

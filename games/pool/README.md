@@ -217,10 +217,10 @@ display needed.
 
 ## Engine documentation
 
-- [Core API](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/core.md)
-- [Graphics / Renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/graphics.md)
-- [Input](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/api/input.md)
-- [Memory system — flags and byte budgets](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/architecture/memory-system.md)
+- [Core API](https://docs.pixelroot32.org/api/core)
+- [Graphics / Renderer](https://docs.pixelroot32.org/api/graphics)
+- [Input](https://docs.pixelroot32.org/api/input)
+- [Memory system — flags and byte budgets](https://docs.pixelroot32.org/architecture/memory-system)
 
 ## Memory
 

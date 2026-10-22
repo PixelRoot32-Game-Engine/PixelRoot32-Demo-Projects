@@ -215,8 +215,8 @@ Swap `esp32dev_ST7789` for `esp32dev_ILI9341` on the 240×320 panel.
 ## Engine documentation
 
 -   Engine repository: <https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine>
--   Gameplay framework (`GridSpec`, `GridMotion`): <https://pixelroot32.org/docs/gameplay-framework>
--   Getting started with the engine: <https://pixelroot32.org/docs/getting-started>
+-   Gameplay framework (`GridSpec`, `GridMotion`): <https://docs.pixelroot32.org/guide/gameplay-guidelines>
+-   Getting started with the engine: <https://docs.pixelroot32.org/guide/>
 
 ## License
 

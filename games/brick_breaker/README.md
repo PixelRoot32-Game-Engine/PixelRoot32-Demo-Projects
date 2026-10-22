@@ -269,8 +269,8 @@ audio scheduler is about 17 KB.
 ## Engine documentation
 
 - [PixelRoot32 Game Engine](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine)
-- [Audio](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/audio.md)
-- [Physics & collision](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/physics.md)
-- [Particles](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/particles.md)
-- [Scene manager](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/scene-manager.md)
-- [Sprite renderer](https://github.com/PixelRoot32-Game-Engine/PixelRoot32-Game-Engine/blob/main/docs/sprite-renderer.md)
+- [Audio](https://docs.pixelroot32.org/guide/audio)
+- [Physics & collision](https://docs.pixelroot32.org/guide/physics)
+- [Particles](https://docs.pixelroot32.org/api/generated/graphics/ParticleEmitter)
+- [Scene manager](https://docs.pixelroot32.org/guide/scenes)
+- [Sprite renderer](https://docs.pixelroot32.org/guide/rendering)
