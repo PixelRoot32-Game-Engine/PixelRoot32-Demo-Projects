@@ -164,6 +164,34 @@ void PacmanSession::updateInvulnerability() {
     }
 }
 
+int PacmanSession::nearestHunterIndex() const {
+    if (state_ != GameState::Playing) {
+        return -1;
+    }
+
+    const int playerCol = player_.cellCol();
+    const int playerRow = player_.cellRow();
+
+    int nearest = -1;
+    int nearestDistance = 0;
+    for (int index = 0; index < maze_.enemyCount(); ++index) {
+        const PacmanEnemy& enemy = enemies_[index];
+        // A hunter that is heading home or waiting to come back is not on
+        // the board, so it has no voice.
+        if (!enemy.isPlaying()) {
+            continue;
+        }
+        const int deltaCol = enemy.cellCol() - playerCol;
+        const int deltaRow = enemy.cellRow() - playerRow;
+        const int distance = deltaCol * deltaCol + deltaRow * deltaRow;
+        if (nearest < 0 || distance < nearestDistance) {
+            nearest = index;
+            nearestDistance = distance;
+        }
+    }
+    return nearest;
+}
+
 void PacmanSession::resolveContacts() {
     const int playerCol = player_.cellCol();
     const int playerRow = player_.cellRow();

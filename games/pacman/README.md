@@ -73,6 +73,31 @@ a ragged row, an open border, a start inside a wall, nothing to collect, or
 a corridor that cannot be reached from the player's start — before a game
 ever begins.
 
+## The sounds
+
+The demo follows the 1980 Namco cabinet's sound design, synthesised by the engine's
+NES-style audio subsystem rather than played from samples:
+
+-   **The theme.** The arcade's jingle, in four bars with a bass line under it. The
+    title screen plays it as the attract-mode tune; the level plays it as the
+    background music — the same melody, slower and quieter, so it stays out of
+    the way of the sound effects. The background music belongs to the level,
+    not to the `READY!` beat: it starts once the player is allowed to move,
+    and not before.
+-   **The waka.** Two notes that alternate on every dot, the way the arcade alternates
+    them, so the rhythm of the eating is audible.
+-   **The hunters.** Every hunter has a pitch of its own, and the siren that follows the
+    player belongs to whichever hunter is closest to him. While the power effect lasts
+    the siren becomes a fast, high warble.
+-   **The moments.** A chirp that climbs when a hunter is defeated, a long wail that
+    falls away when the player is caught, a warble for the power pellet and a rising
+    figure for the extra life.
+
+The rules layer never plays a sound: it reports what happened as a set of flags, and the
+scene asks for the matching effect. That is what keeps the audio backend out of the
+rules, and it is why the game would still play correctly with the audio subsystem
+compiled out.
+
 ## What it demonstrates
 
 -   **A grid-locked actor.** The player occupies exactly one logical cell at
@@ -95,6 +120,9 @@ ever begins.
     plays a sound: it reports what happened as a set of flags, and the scene
     decides what that should look and sound like. The same split keeps the
     audio backend out of the rules.
+-   **A synthesised soundtrack.** The theme and the effects are built from
+    oscillators and a sequencer instead of samples, so the demo ships no
+    binary audio assets at all.
 
 ## Project layout
 

@@ -240,8 +240,7 @@ void test_pacman_session_finishes_the_level_when_nothing_is_left(void) {
     TEST_ASSERT_EQUAL_INT(GameState::Victory, session.state());
 }
 
-void test_pacman_session_opening_freezes_the_board(void) {
-    PacmanSession session;
+void test_pacman_session_opening_freezes_the_board(void) {    PacmanSession session;
     session.startNewGame();
 
     TEST_ASSERT_TRUE(session.isRespawning());
@@ -260,6 +259,22 @@ void test_pacman_session_opening_freezes_the_board(void) {
         session.step(Direction::Right);
     }
     TEST_ASSERT_NOT_EQUAL(startCol, session.player().cellCol());
+}
+
+void test_pacman_session_reports_the_closest_hunter(void) {
+    PacmanSession session;
+
+    // Before the game starts there is no hunter on the board.
+    TEST_ASSERT_EQUAL_INT(-1, session.nearestHunterIndex());
+
+    session.startNewGame();
+    runPastOpening(session);
+
+    // The hunter outside the house is the only one playing at first: the
+    // other three are still waiting in there.
+    const int nearest = session.nearestHunterIndex();
+    TEST_ASSERT_TRUE(nearest >= 0);
+    TEST_ASSERT_EQUAL_INT(0, nearest);
 }
 
 void test_pacman_session_pause_freezes_the_simulation(void) {    PacmanSession session;
@@ -319,6 +334,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_pacman_session_second_pellet_refreshes_the_timer);
     RUN_TEST(test_pacman_session_finishes_the_level_when_nothing_is_left);
     RUN_TEST(test_pacman_session_opening_freezes_the_board);
+    RUN_TEST(test_pacman_session_reports_the_closest_hunter);
     RUN_TEST(test_pacman_session_pause_freezes_the_simulation);
     RUN_TEST(test_pacman_session_restart_clears_the_previous_game);
 

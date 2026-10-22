@@ -172,6 +172,16 @@ public:
     [[nodiscard]] int enemyCount() const { return maze_.enemyCount(); }
 
     /**
+     * @brief The hunter that is closest to the player.
+     *
+     * The hunter's siren belongs to the one that is on top of the player, so
+     * the rules report which one that is and the audio layer owns the pitch.
+     *
+     * @return The hunter's index, or -1 when no hunter is on the board.
+     */
+    [[nodiscard]] int nearestHunterIndex() const;
+
+    /**
      * @brief The level being played.
      * @return A reference to the maze.
      */

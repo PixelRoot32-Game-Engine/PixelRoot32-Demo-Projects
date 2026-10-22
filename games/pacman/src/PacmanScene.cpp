@@ -9,7 +9,7 @@
 
 #include "PacmanPalette.h"
 #include "assets/PacmanSprites.h"
-#include "audio/PacmanSounds.h"
+#include "audio/PacmanAudio.h"
 #include "rules/PacmanConfig.h"
 
 namespace pr32 = pixelroot32;
@@ -51,12 +51,21 @@ constexpr int interpolatedSubCell(int cell, int target, int progress, int stepsP
 
 PacmanScene::PacmanScene() = default;
 
+PacmanScene::~PacmanScene() = default;
+
 void PacmanScene::init() {
     Scene::init();
 
     accumulator_ = 0;
     frameCounter_ = 0;
     requestedDirection_ = Direction::None;
+    wasRespawning_ = false;
+
+#if PIXELROOT32_ENABLE_AUDIO
+    // The audio facade is built once, after the engine is up: it owns the
+    // sequencer, which has to outlive the playback.
+    audio_ = std::make_unique<audio::PacmanAudio>(engine.getAudioEngine());
+#endif
 }
 
 void PacmanScene::update(unsigned long deltaTime) {
@@ -118,6 +127,18 @@ void PacmanScene::update(unsigned long deltaTime) {
     }
 
     playReportedEvents();
+    updateTheme();
+
+#if PIXELROOT32_ENABLE_AUDIO
+    if (audio_) {
+        // The siren stays quiet while the board is frozen for a respawn: the
+        // theme has the floor during the "ready" beat.
+        const bool playing = session_.state() == GameState::Playing && !session_.isRespawning();
+        audio_->updateHunterVoice(deltaTime,
+                                  playing ? session_.nearestHunterIndex() : -1,
+                                  playing && session_.powerIsActive());
+    }
+#endif
 }
 
 void PacmanScene::playReportedEvents() {
@@ -128,30 +149,67 @@ void PacmanScene::playReportedEvents() {
     session_.clearEvents();
 
 #if PIXELROOT32_ENABLE_AUDIO
-    auto& audioEngine = engine.getAudioEngine();
-
+    if (!audio_) {
+        return;
+    }
     if ((events & kEventDot) != 0) {
-        audioEngine.playEvent(pacman::audio::dotSound());
+        audio_->playDot();
     }
     if ((events & kEventPowerPellet) != 0) {
-        audioEngine.playEvent(pacman::audio::powerPelletSound());
+        audio_->playPowerPellet();
     }
     if ((events & kEventEnemyDefeated) != 0) {
-        audioEngine.playEvent(pacman::audio::enemyDefeatedSound());
+        audio_->playEnemyDefeated();
     }
     if ((events & kEventLifeLost) != 0) {
-        audioEngine.playEvent(pacman::audio::lifeLostSound());
+        audio_->playLifeLost();
     }
     if ((events & kEventLevelCompleted) != 0) {
-        audioEngine.playEvent(pacman::audio::levelCompletedSound());
+        audio_->playLevelCompleted();
+        audio_->stopTheme();
     }
     if ((events & kEventExtraLife) != 0) {
-        audioEngine.playEvent(pacman::audio::extraLifeSound());
+        audio_->playExtraLife();
     }
 #else
     // Without the audio subsystem the events are simply dropped: the rules
     // never depend on a sound being played.
     (void)events;
+#endif
+}
+
+void PacmanScene::updateTheme() {
+#if PIXELROOT32_ENABLE_AUDIO
+    if (!audio_) {
+        return;
+    }
+
+    // The title screen plays the arcade's attract-mode jingle.
+    if (session_.state() == GameState::Title) {
+        if (!wasOnTitleScreen_) {
+            audio_->startIntroJingle();
+        }
+        wasOnTitleScreen_ = true;
+        return;
+    }
+    wasOnTitleScreen_ = false;
+
+    if (session_.state() == GameState::Defeat) {
+        audio_->stopTheme();
+        wasRespawning_ = false;
+        return;
+    }
+
+    // The background music belongs to the level, not to the "ready" beat: it
+    // is silent while the board is frozen and starts once the player is
+    // allowed to move.
+    const bool respawning = session_.isRespawning();
+    if (respawning && !wasRespawning_) {
+        audio_->stopTheme();
+    } else if (!respawning && wasRespawning_) {
+        audio_->startBackgroundMusic();
+    }
+    wasRespawning_ = respawning;
 #endif
 }
 
