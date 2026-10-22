@@ -90,11 +90,11 @@ The demo follows the 1980 Namco cabinet's sound design, synthesised by the engin
 NES-style audio subsystem rather than played from samples:
 
 -   **The theme.** The arcade's jingle, in four bars with a bass line under it. The
-    title screen plays it as the attract-mode tune; the level plays it as the
-    background music — the same melody, slower and quieter, so it stays out of
-    the way of the sound effects. The background music belongs to the level,
-    not to the `READY!` beat: it starts once the player is allowed to move,
-    and not before.
+    title screen plays it as the attract-mode tune, and it stops as soon as the
+    game starts. The arcade also plays the same tune under the level, slower and
+    quieter, so that it stays out of the way of the sound effects; that part is
+    written (`PacmanAudio::startBackgroundMusic()`) but not switched on yet, so a
+    level plays in silence for the time being.
 -   **The waka.** Two notes that alternate on every dot, the way the arcade alternates
     them, so the rhythm of the eating is audible.
 -   **The hunters.** Every hunter has a pitch of its own, and the siren that follows the
