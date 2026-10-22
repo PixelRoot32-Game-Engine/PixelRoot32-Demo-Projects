@@ -254,10 +254,10 @@ void PacmanScene::draw(pixelroot32::graphics::Renderer& renderer) {
 void PacmanScene::drawStateOverlay(pr32::graphics::Renderer& renderer) const {
     switch (session_.state()) {
         case GameState::Title: {
-            // The title sits over the empty stretch of corridors that runs
-            // through the middle of the maze, the way the arcade puts its
-            // own title over the board.
-            const int bandY = boardOriginY() + 10 * kCellSize;
+            // The title sits on the row the player starts on, the way the
+            // arcade puts its own title over the board. The maze stays
+            // visible behind it, ghost house and all.
+            const int bandY = messageBandY();
             renderer.drawFilledRectangle(0, bandY, LOGICAL_WIDTH, 48, kBackgroundColor);
             renderer.drawTextCentered("PAC-MAN", bandY + 8, kPelletColor, 2);
             renderer.drawTextCentered("PRESS SPACE TO START", bandY + 30, kTextColor, 1);
@@ -285,12 +285,16 @@ void PacmanScene::drawMessage(pr32::graphics::Renderer& renderer, const char* ti
     const int bandHeight = subtitle != nullptr ? 36 : 20;
     // The message sits on the row the player starts on, the way the arcade
     // puts "READY!" under the ghost house.
-    const int bandY = boardOriginY() + kPlayerStartRow * kCellSize - 8;
+    const int bandY = messageBandY();
     renderer.drawFilledRectangle(0, bandY, LOGICAL_WIDTH, bandHeight, kBackgroundColor);
     renderer.drawTextCentered(title, bandY + 6, titleColor, 1);
     if (subtitle != nullptr) {
         renderer.drawTextCentered(subtitle, bandY + 20, kTextColor, 1);
     }
+}
+
+int PacmanScene::messageBandY() const {
+    return boardOriginY() + kPlayerStartRow * kCellSize - 8;
 }
 
 void PacmanScene::drawMazeWalls(pr32::graphics::Renderer& renderer) const {
@@ -329,15 +333,31 @@ void PacmanScene::drawMazeWalls(pr32::graphics::Renderer& renderer) const {
         }
     }
 
-    // The ghost house doorway: a bar across the opening at the top of the
-    // house, so the room is closed to the player and open to the hunters.
-    for (int col = 0; col < maze.colCount(); ++col) {
-        if (maze.cellType(col, 12) != CellType::HouseDoor) {
-            continue;
+    // The ghost house has a wall of its own, the way the cabinet drew it: a
+    // closed rectangle with a pink door across the opening. The house is not
+    // part of the maze's masonry, so it is drawn here rather than by the
+    // wall-outline pass above.
+    const PacmanMaze::HouseBounds house = maze.houseBounds();
+    if (house.rightCol >= house.leftCol) {
+        const int left = originX + house.leftCol * kCellSize;
+        const int right = originX + (house.rightCol + 1) * kCellSize - 1;
+        const int top = originY + house.topRow * kCellSize;
+        const int bottom = originY + (house.bottomRow + 1) * kCellSize - 1;
+
+        renderer.drawLine(left, top, right, top, kWallColor);
+        renderer.drawLine(left, bottom, right, bottom, kWallColor);
+        renderer.drawLine(left, top, left, bottom, kWallColor);
+        renderer.drawLine(right, top, right, bottom, kWallColor);
+
+        // The door: a pink bar across the opening, so the room is closed to
+        // the player and open to the hunters.
+        for (int col = house.leftCol; col <= house.rightCol; ++col) {
+            if (maze.cellType(col, house.topRow) != CellType::HouseDoor) {
+                continue;
+            }
+            const int x = originX + col * kCellSize;
+            renderer.drawLine(x, top, x + kCellSize - 1, top, kHouseColor);
         }
-        const int x = originX + col * kCellSize;
-        const int y = originY + 12 * kCellSize;
-        renderer.drawLine(x, y, x + kCellSize - 1, y, kHouseColor);
     }
 }
 
@@ -443,7 +463,7 @@ void PacmanScene::drawEnemies(pr32::graphics::Renderer& renderer) const {
             }
         }
 
-        if (!enemy.isDefeated()) {
+        if (!enemy.isEaten()) {
             renderer.drawSprite(*body, x, y, bodyColor, false);
         }
         renderer.drawSprite(*eyes, x, y, kTextColor, false);

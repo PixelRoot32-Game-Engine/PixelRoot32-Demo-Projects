@@ -18,10 +18,11 @@ namespace pacman {
  */
 enum class CellType : std::uint8_t {
     Wall,      ///< Blocks every actor.
+    HouseWall, ///< The ghost house's own wall: blocks every actor.
     Path,      ///< Ordinary corridor.
     Tunnel,    ///< Corridor that wraps to the opposite edge of the map.
-    HouseDoor, ///< Ghost-house doorway: walkable for enemies only.
-    House      ///< Ghost-house interior: walkable for enemies only.
+    HouseDoor, ///< Ghost-house doorway: walkable for the hunters only.
+    House      ///< Ghost-house interior: walkable for the hunters only.
 };
 
 /**
@@ -70,6 +71,17 @@ struct PacmanLevelConfig {
  */
 class PacmanMaze {
 public:
+    /**
+     * @struct HouseBounds
+     * @brief The ghost house's rectangle, in cells.
+     */
+    struct HouseBounds {
+        int leftCol = 0;   ///< Leftmost column of the house's wall.
+        int rightCol = 0;  ///< Rightmost column of the house's wall.
+        int topRow = 0;    ///< Top row of the house's wall.
+        int bottomRow = 0; ///< Bottom row of the house's wall.
+    };
+
     /// @brief Columns of the built-in level.
     static constexpr int kCols = kMazeCols;
 
@@ -254,6 +266,17 @@ public:
     [[nodiscard]] static const char* describe(ValidationError error);
 
     /**
+     * @brief The ghost house's rectangle, in cells.
+     *
+     * The house has a wall of its own, the way the cabinet drew it: a closed
+     * rectangle rather than a block of the maze's masonry, with a doorway
+     * across the top.
+     *
+     * @return The house's bounds.
+     */
+    [[nodiscard]] HouseBounds houseBounds() const { return house_; }
+
+    /**
      * @brief The built-in level's layout, one string per row.
      *
      * The legend is: `#` wall, `.` corridor with a dot, `o` corridor with a
@@ -270,6 +293,7 @@ public:
 
 private:
     const PacmanLevelConfig* config_;
+    HouseBounds house_;
 };
 
 }  // namespace pacman

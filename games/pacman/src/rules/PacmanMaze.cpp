@@ -13,6 +13,7 @@ constexpr char kCharDot = '.';
 constexpr char kCharPowerPellet = 'o';
 constexpr char kCharEmptyPath = ' ';
 constexpr char kCharTunnel = '-';
+constexpr char kCharHouseWall = 'H';
 constexpr char kCharHouseDoor = '=';
 constexpr char kCharHouse = '_';
 
@@ -40,11 +41,11 @@ const char* const kLevelLayout[kMazeRows] = {
     "######.##### ## #####.######",  // 9
     "######.##### ## #####.######",  // 10
     "######.##          ##.######",  // 11
-    "######.## ___==___ ##.######",  // 12
-    "######.## ________ ##.######",  // 13
-    "-     .   ________   .     -",  // 14
-    "######.## ________ ##.######",  // 15
-    "######.## ________ ##.######",  // 16
+    "######.## HHH==HHH ##.######",  // 12
+    "######.## H______H ##.######",  // 13
+    "-     .   H______H   .     -",  // 14
+    "######.## H______H ##.######",  // 15
+    "######.## HHHHHHHH ##.######",  // 16
     "######.##          ##.######",  // 17
     "######.## ######## ##.######",  // 18
     "######.## ######## ##.######",  // 19
@@ -71,6 +72,8 @@ constexpr CellType cellTypeForChar(char ch) {
     switch (ch) {
         case kCharWall:
             return CellType::Wall;
+        case kCharHouseWall:
+            return CellType::HouseWall;
         case kCharTunnel:
             return CellType::Tunnel;
         case kCharHouseDoor:
@@ -104,7 +107,33 @@ const PacmanLevelConfig& PacmanMaze::defaultLevel() {
 
 PacmanMaze::PacmanMaze() : PacmanMaze(defaultLevel()) {}
 
-PacmanMaze::PacmanMaze(const PacmanLevelConfig& config) : config_(&config) {}
+PacmanMaze::PacmanMaze(const PacmanLevelConfig& config) : config_(&config) {
+    // The ghost house has a wall of its own and the renderer draws it as a
+    // closed rectangle, so the maze measures where it is.
+    house_.leftCol = config.colCount;
+    house_.rightCol = -1;
+    house_.topRow = config.rowCount;
+    house_.bottomRow = -1;
+    for (int row = 0; row < config.rowCount; ++row) {
+        for (int col = 0; col < config.colCount; ++col) {
+            if (cellType(col, row) != CellType::HouseWall) {
+                continue;
+            }
+            if (col < house_.leftCol) {
+                house_.leftCol = col;
+            }
+            if (col > house_.rightCol) {
+                house_.rightCol = col;
+            }
+            if (row < house_.topRow) {
+                house_.topRow = row;
+            }
+            if (row > house_.bottomRow) {
+                house_.bottomRow = row;
+            }
+        }
+    }
+}
 
 bool PacmanMaze::isInside(int col, int row) const {
     return col >= 0 && col < config_->colCount && row >= 0 && row < config_->rowCount;
@@ -255,7 +284,7 @@ PacmanMaze::ValidationError PacmanMaze::validate() const {
     if (!isInside(config_->playerStartCol, config_->playerStartRow)) {
         return ValidationError::MissingStart;
     }
-    if (isWall(config_->playerStartCol, config_->playerStartRow)) {
+    if (!isWalkableForPlayer(config_->playerStartCol, config_->playerStartRow)) {
         return ValidationError::StartInWall;
     }
     for (int index = 0; index < config_->enemyCount; ++index) {
@@ -264,7 +293,7 @@ PacmanMaze::ValidationError PacmanMaze::validate() const {
         if (!isInside(col, row)) {
             return ValidationError::MissingStart;
         }
-        if (isWall(col, row)) {
+        if (!isWalkableForEnemy(col, row)) {
             return ValidationError::StartInWall;
         }
     }

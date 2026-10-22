@@ -117,6 +117,16 @@ private:
      */
     void drawMessage(pixelroot32::graphics::Renderer& renderer, const char* title,
                      pixelroot32::graphics::Color titleColor, const char* subtitle = nullptr) const;
+
+    /**
+     * @brief The row the messages are drawn on.
+     *
+     * It is the row the player starts on, the way the arcade puts "READY!"
+     * under the ghost house.
+     *
+     * @return The band's top edge, in pixels.
+     */
+    [[nodiscard]] int messageBandY() const;
 };
 
 }  // namespace pacman

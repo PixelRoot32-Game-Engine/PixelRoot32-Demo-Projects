@@ -146,6 +146,16 @@ public:
     [[nodiscard]] bool isDefeated() const { return state_ == EnemyState::Return || state_ == EnemyState::Respawn; }
 
     /**
+     * @brief Tells whether the hunter is on its way home as a pair of eyes.
+     *
+     * A hunter that is waiting inside the house is not defeated: it is still
+     * a whole hunter, and the cabinet drew it that way.
+     *
+     * @return true while the hunter is heading home.
+     */
+    [[nodiscard]] bool isEaten() const { return state_ == EnemyState::Return; }
+
+    /**
      * @brief Tells whether the hunter is out of the house and on the board.
      * @return true while the hunter is playing.
      */

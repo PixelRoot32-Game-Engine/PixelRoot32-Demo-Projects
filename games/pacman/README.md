@@ -89,6 +89,11 @@ ragged row, an open border, a start inside a wall, nothing to collect, or a
 corridor that cannot be reached from the player's start - before a game ever
 begins.
 
+The ghost house has a wall of its own, the way the cabinet drew it: a closed
+blue rectangle with a pink door across the opening, not a block of the maze's
+masonry. The four hunters start where the cabinet put them - one above the
+doorway, the other three inside the house.
+
 ## The sounds
 
 The demo follows the 1980 Namco cabinet's sound design, synthesised by the engine's
