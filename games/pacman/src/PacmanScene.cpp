@@ -53,13 +53,14 @@ PacmanScene::PacmanScene() = default;
 void PacmanScene::init() {
     Scene::init();
 
-    session_.startNewGame();
     accumulator_ = 0;
+    frameCounter_ = 0;
     requestedDirection_ = Direction::None;
 }
 
 void PacmanScene::update(unsigned long deltaTime) {
     Scene::update(deltaTime);
+    ++frameCounter_;
 
     auto& input = engine.getInputManager();
 
@@ -76,12 +77,26 @@ void PacmanScene::update(unsigned long deltaTime) {
         requestedDirection_ = Direction::Right;
     }
 
-    // Button A pauses and resumes, button B starts a new game.
+    // Button A starts the game, pauses it and resumes it. Button B always
+    // starts a new game.
     if (input.isButtonPressed(kBtnA)) {
-        session_.togglePause();
+        switch (session_.state()) {
+            case GameState::Title:
+            case GameState::Victory:
+            case GameState::Defeat:
+                session_.startNewGame();
+                requestedDirection_ = Direction::None;
+                accumulator_ = 0;
+                break;
+            case GameState::Playing:
+            case GameState::Paused:
+                session_.togglePause();
+                break;
+        }
     }
     if (input.isButtonPressed(kBtnB)) {
         session_.startNewGame();
+        requestedDirection_ = Direction::None;
         accumulator_ = 0;
     }
 
@@ -127,6 +142,46 @@ void PacmanScene::draw(pixelroot32::graphics::Renderer& renderer) {
     drawPlayer(renderer);
     drawEnemies(renderer);
     drawStatusBand(renderer);
+    drawStateOverlay(renderer);
+}
+
+void PacmanScene::drawStateOverlay(pr32::graphics::Renderer& renderer) const {
+    switch (session_.state()) {
+        case GameState::Title: {
+            // The title sits on a band that hides the maze behind it, so the
+            // text reads cleanly over the walls.
+            const int bandY = boardOriginY() + 60;
+            renderer.drawFilledRectangle(0, bandY, LOGICAL_WIDTH, 48, kBackgroundColor);
+            renderer.drawTextCentered("PAC-MAN", bandY + 8, kPelletColor, 2);
+            renderer.drawTextCentered("PRESS SPACE TO START", bandY + 30, kTextColor, 1);
+            break;
+        }
+        case GameState::Paused:
+            drawMessage(renderer, "PAUSED", kTextColor);
+            break;
+        case GameState::Victory:
+            drawMessage(renderer, "LEVEL COMPLETE", kPelletColor, "PRESS SPACE TO PLAY AGAIN");
+            break;
+        case GameState::Defeat:
+            drawMessage(renderer, "GAME OVER", kAlertColor, "PRESS SPACE TO PLAY AGAIN");
+            break;
+        case GameState::Playing:
+            if (session_.isRespawning()) {
+                drawMessage(renderer, "READY!", kPelletColor);
+            }
+            break;
+    }
+}
+
+void PacmanScene::drawMessage(pr32::graphics::Renderer& renderer, const char* title,
+                               pr32::graphics::Color titleColor, const char* subtitle) const {
+    const int bandHeight = subtitle != nullptr ? 36 : 20;
+    const int bandY = boardOriginY() + 72;
+    renderer.drawFilledRectangle(0, bandY, LOGICAL_WIDTH, bandHeight, kBackgroundColor);
+    renderer.drawTextCentered(title, bandY + 6, titleColor, 1);
+    if (subtitle != nullptr) {
+        renderer.drawTextCentered(subtitle, bandY + 20, kTextColor, 1);
+    }
 }
 
 void PacmanScene::drawMazeWalls(pr32::graphics::Renderer& renderer) const {
@@ -203,6 +258,12 @@ void PacmanScene::drawCollectibles(pr32::graphics::Renderer& renderer) const {
 
 void PacmanScene::drawPlayer(pr32::graphics::Renderer& renderer) const {
     const PacmanPlayer& player = session_.player();
+
+    // A player that is still protected from a lost life blinks, so the
+    // protection is visible instead of being a rule the player cannot see.
+    if (session_.playerIsInvulnerable() && ((frameCounter_ / 4) % 2 == 0)) {
+        return;
+    }
 
     // The player's position is interpolated between the cell it came from
     // and the cell it is travelling towards, so the sprite slides smoothly

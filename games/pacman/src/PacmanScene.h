@@ -53,6 +53,9 @@ private:
     /// Milliseconds of real time waiting to be turned into logic steps.
     unsigned long accumulator_ = 0;
 
+    /// Frames drawn since the scene started, used for the blinking player.
+    unsigned long frameCounter_ = 0;
+
     /// The direction the player last asked for, latched at frame scope.
     Direction requestedDirection_ = Direction::None;
 
@@ -61,6 +64,24 @@ private:
     void drawPlayer(pixelroot32::graphics::Renderer& renderer) const;
     void drawEnemies(pixelroot32::graphics::Renderer& renderer) const;
     void drawStatusBand(pixelroot32::graphics::Renderer& renderer) const;
+
+    /**
+     * @brief Draws the screen that belongs to the game's current state.
+     *
+     * @param renderer The renderer to draw with.
+     */
+    void drawStateOverlay(pixelroot32::graphics::Renderer& renderer) const;
+
+    /**
+     * @brief Draws a band across the maze with a message on it.
+     *
+     * @param renderer The renderer to draw with.
+     * @param title The headline.
+     * @param titleColor Colour of the headline.
+     * @param subtitle The second line, or nullptr for none.
+     */
+    void drawMessage(pixelroot32::graphics::Renderer& renderer, const char* title,
+                     pixelroot32::graphics::Color titleColor, const char* subtitle = nullptr) const;
 };
 
 }  // namespace pacman
