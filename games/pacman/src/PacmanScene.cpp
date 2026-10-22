@@ -31,6 +31,23 @@ namespace sprites = sprites7;
 namespace {
 
 /**
+ * @brief The display's width once the rotation has been applied.
+ *
+ * The engine swaps the panel's width and height when the rotation is odd, so
+ * the configuration macros alone do not describe the framebuffer the scene
+ * draws into. Measuring against the unrotated width is what puts the maze in
+ * the corner of a landscape panel instead of in the middle of it.
+ */
+constexpr int kDisplayWidth =
+    (DISPLAY_ROTATION % 2 == 0) ? LOGICAL_WIDTH : PHYSICAL_DISPLAY_HEIGHT;
+
+/**
+ * @brief The display's height once the rotation has been applied.
+ */
+constexpr int kDisplayHeight =
+    (DISPLAY_ROTATION % 2 == 0) ? LOGICAL_HEIGHT : PHYSICAL_DISPLAY_WIDTH;
+
+/**
  * @brief Width of the playfield, in pixels.
  */
 constexpr int kBoardWidth = kMazeCols * kCellSize;
@@ -224,7 +241,7 @@ void PacmanScene::updateTheme() {
 }
 
 int PacmanScene::boardOriginX() const {
-    return (LOGICAL_WIDTH - kBoardWidth) / 2;
+    return (kDisplayWidth - kBoardWidth) / 2;
 }
 
 int PacmanScene::boardOriginY() const {
@@ -258,7 +275,7 @@ void PacmanScene::drawStateOverlay(pr32::graphics::Renderer& renderer) const {
             // arcade puts its own title over the board. The maze stays
             // visible behind it, ghost house and all.
             const int bandY = messageBandY();
-            renderer.drawFilledRectangle(0, bandY, LOGICAL_WIDTH, 48, kBackgroundColor);
+            renderer.drawFilledRectangle(0, bandY, kDisplayWidth, 48, kBackgroundColor);
             renderer.drawTextCentered("PAC-MAN", bandY + 8, kPelletColor, 2);
             renderer.drawTextCentered("PRESS SPACE TO START", bandY + 30, kTextColor, 1);
             break;
@@ -286,7 +303,7 @@ void PacmanScene::drawMessage(pr32::graphics::Renderer& renderer, const char* ti
     // The message sits on the row the player starts on, the way the arcade
     // puts "READY!" under the ghost house.
     const int bandY = messageBandY();
-    renderer.drawFilledRectangle(0, bandY, LOGICAL_WIDTH, bandHeight, kBackgroundColor);
+    renderer.drawFilledRectangle(0, bandY, kDisplayWidth, bandHeight, kBackgroundColor);
     renderer.drawTextCentered(title, bandY + 6, titleColor, 1);
     if (subtitle != nullptr) {
         renderer.drawTextCentered(subtitle, bandY + 20, kTextColor, 1);
