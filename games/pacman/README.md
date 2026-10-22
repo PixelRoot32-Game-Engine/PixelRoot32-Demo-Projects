@@ -134,11 +134,13 @@ pio run -e esp32dev
 Host-side unit suite (no window, no SDL, no hardware):
 
 ```bash
-pio test -e native_test
+pio test -e rules_test
 ```
 
 The suite compiles only `src/rules`, which is the point: the rules have no
-dependency on the drawing system, the input device or the audio backend.
+dependency on the drawing system, the input device or the audio backend. The
+environment installs the engine for its gameplay headers but never builds it,
+so the suite runs on a machine with no display stack at all.
 
 ## Upload (ESP32)
 
