@@ -27,6 +27,25 @@ enum class GameState : std::uint8_t {
 };
 
 /**
+ * @enum PacmanEvent
+ * @brief The things the rules report back to the presentation layer.
+ *
+ * The rules layer never plays a sound itself: it reports what happened as a
+ * set of flags, and the presentation layer decides what that should look
+ * and sound like. That is what keeps the rules free of any dependency on
+ * the audio backend.
+ */
+enum PacmanEvent : std::uint8_t {
+    kEventNone = 0,                ///< Nothing happened.
+    kEventDot = 1 << 0,            ///< A dot was picked up.
+    kEventPowerPellet = 1 << 1,    ///< A power pellet was picked up.
+    kEventEnemyDefeated = 1 << 2, ///< A hunter was defeated.
+    kEventLifeLost = 1 << 3,       ///< The player lost a life.
+    kEventLevelCompleted = 1 << 4, ///< The last collectible was picked up.
+    kEventExtraLife = 1 << 5      ///< The player earned an extra life.
+};
+
+/**
  * @class PacmanSession
  * @brief The rules of one game: the level, the player, the score, the lives
  *        and the power effect.
@@ -38,7 +57,8 @@ enum class GameState : std::uint8_t {
  *
  * The order of the rules inside one logic step is fixed and documented, so
  * that a single event is never counted twice: input, player movement,
- * collectibles, power timer, end conditions.
+ * collectibles, hunter movement, power timer, contacts, timers, end
+ * conditions.
  */
 class PacmanSession {
 public:
@@ -168,13 +188,26 @@ public:
     [[nodiscard]] Collectible collectibleAt(int col, int row) const;
 
     /**
-     * @brief Tells whether a cell's collectible was picked up.
+     * @brief Tells whether the cell's collectible was picked up.
      *
      * @param col Column of the cell.
      * @param row Row of the cell.
      * @return true when the cell held something that has been collected.
      */
     [[nodiscard]] bool isCollected(int col, int row) const;
+
+    /**
+     * @brief The events the rules reported since the last time they were
+     *        cleared.
+     *
+     * @return A set of `PacmanEvent` flags.
+     */
+    [[nodiscard]] std::uint8_t pendingEvents() const { return events_; }
+
+    /**
+     * @brief Forgets the reported events.
+     */
+    void clearEvents() { events_ = 0; }
 
 private:
     PacmanMaze maze_;
@@ -193,6 +226,7 @@ private:
     int invulnerableSteps_ = 0;
     int enemyChain_ = 0;
     int respawnSteps_ = 0;
+    std::uint8_t events_ = kEventNone;
     GameState state_ = GameState::Title;
 
     /**

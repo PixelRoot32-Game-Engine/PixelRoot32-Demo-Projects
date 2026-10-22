@@ -203,6 +203,14 @@ constexpr int kFlankerLookAhead = 2;
 constexpr int kTimidHuntDistance = 8;
 
 /**
+ * @brief How long, in logic steps, the frightened hunters flash before the
+ *        power effect runs out.
+ *
+ * 100 steps is 2 seconds.
+ */
+constexpr int kPowerFlashSteps = 100;
+
+/**
  * @brief Duration of the power effect, in logic steps.
  *
  * 300 steps is 6 seconds.

@@ -9,6 +9,7 @@
 
 #include "PacmanPalette.h"
 #include "assets/PacmanSprites.h"
+#include "audio/PacmanSounds.h"
 #include "rules/PacmanConfig.h"
 
 namespace pr32 = pixelroot32;
@@ -115,6 +116,43 @@ void PacmanScene::update(unsigned long deltaTime) {
         // fast-forwarding after a stall.
         accumulator_ = 0;
     }
+
+    playReportedEvents();
+}
+
+void PacmanScene::playReportedEvents() {
+    const std::uint8_t events = session_.pendingEvents();
+    if (events == kEventNone) {
+        return;
+    }
+    session_.clearEvents();
+
+#if PIXELROOT32_ENABLE_AUDIO
+    auto& audioEngine = engine.getAudioEngine();
+
+    if ((events & kEventDot) != 0) {
+        audioEngine.playEvent(pacman::audio::dotSound());
+    }
+    if ((events & kEventPowerPellet) != 0) {
+        audioEngine.playEvent(pacman::audio::powerPelletSound());
+    }
+    if ((events & kEventEnemyDefeated) != 0) {
+        audioEngine.playEvent(pacman::audio::enemyDefeatedSound());
+    }
+    if ((events & kEventLifeLost) != 0) {
+        audioEngine.playEvent(pacman::audio::lifeLostSound());
+    }
+    if ((events & kEventLevelCompleted) != 0) {
+        audioEngine.playEvent(pacman::audio::levelCompletedSound());
+    }
+    if ((events & kEventExtraLife) != 0) {
+        audioEngine.playEvent(pacman::audio::extraLifeSound());
+    }
+#else
+    // Without the audio subsystem the events are simply dropped: the rules
+    // never depend on a sound being played.
+    (void)events;
+#endif
 }
 
 int PacmanScene::boardOriginX() const {
@@ -250,7 +288,10 @@ void PacmanScene::drawCollectibles(pr32::graphics::Renderer& renderer) const {
             if (collectible == Collectible::Dot) {
                 renderer.drawFilledRectangle(centerX - 1, centerY - 1, 2, 2, kDotColor);
             } else {
-                renderer.drawFilledCircle(centerX, centerY, 3, kPelletColor);
+                // The pellets pulse, so the player can tell at a glance that
+                // they are worth more than a dot.
+                const int radius = ((frameCounter_ / 8) % 2 == 0) ? 3 : 2;
+                renderer.drawFilledCircle(centerX, centerY, radius, kPelletColor);
             }
         }
     }
@@ -324,6 +365,11 @@ void PacmanScene::drawEnemies(pr32::graphics::Renderer& renderer) const {
             bodyColor = kVulnerableColor;
             body = &sprites::GHOST_SCARED_BODY_SPRITE;
             eyes = &sprites::GHOST_SCARED_EYES_SPRITE;
+            // The frightened hunters flash as the effect is about to run out,
+            // which is the warning that it is nearly over.
+            if (session_.powerStepsLeft() < kPowerFlashSteps && ((frameCounter_ / 4) % 2 == 0)) {
+                bodyColor = kTextColor;
+            }
         }
 
         if (!enemy.isDefeated()) {

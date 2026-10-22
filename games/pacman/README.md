@@ -30,10 +30,10 @@ Category: Games
 
 ## Platforms
 
-| Environment | Display | Driver | Input |
-| --- | --- | --- | --- |
-| `native` | 240×240 logical, windowed | SDL2 | Arrow keys, Space, Enter |
-| `esp32dev` | 240×240 | ST7789 (TFT_eSPI) | Six GPIO buttons: up, down, left, right, A, B |
+| Environment | Display | Driver | Audio backend | Input |
+| --- | --- | --- | --- | --- |
+| `native` | 240×240 logical, windowed | SDL2 | SDL2 | Arrow keys, Space, Enter |
+| `esp32dev` | 240×240 | ST7789 (TFT_eSPI) | ESP32 I2S (MAX98357A-class DAC) | Six GPIO buttons: up, down, left, right, A, B |
 
 Both environments run the same rules layer. The native build is the fast
 iteration loop; the ESP32 build is the target the demo is written for.
@@ -48,6 +48,30 @@ iteration loop; the ESP32 build is the target the demo is written for.
 
 A direction pressed before an intersection is remembered and taken at that
 intersection, exactly like the arcade original.
+
+## The rules
+
+The demo implements the rule set of the classic game: run the corridors,
+collect every dot, and stay away from four hunters that patrol the maze.
+The pieces are worth 10 points, a power pellet is worth 50 and turns the
+hunters around for six seconds, and a frightened hunter is worth 200, 400,
+800 and then 1600 points for consecutive hits inside one power effect. The
+player starts with three lives and earns a fourth at every ten thousand
+points.
+
+Each hunter hunts in its own way: one goes straight for the player, one
+aims four cells ahead of the player, one aims past the player measured from
+the first hunter, and one hunts from far away and retreats when the player
+gets close. All four find their way by asking a breadth-first route field
+for the distance to every neighbouring cell, which makes their behaviour
+deterministic and testable.
+
+The level is a table of ASCII rows under `src/rules/PacmanMaze.cpp`. It is
+28 columns by 26 rows with four power pellets, a tunnel on each side of the
+middle row and a ghost house in the centre. A validator rejects a level with
+a ragged row, an open border, a start inside a wall, nothing to collect, or
+a corridor that cannot be reached from the player's start — before a game
+ever begins.
 
 ## What it demonstrates
 
@@ -67,6 +91,10 @@ intersection, exactly like the arcade original.
 -   **A fixed logic step.** The simulation advances in 20 ms steps, capped at
     four steps per frame, so the game plays the same whether the screen is
     redrawn at 30 or 60 frames per second.
+-   **Rules that report, presentation that reacts.** The rules layer never
+    plays a sound: it reports what happened as a set of flags, and the scene
+    decides what that should look and sound like. The same split keeps the
+    audio backend out of the rules.
 
 ## Project layout
 
@@ -79,6 +107,7 @@ games/pacman/
 │   ├── main.cpp            # platform selector only
 │   ├── platforms/          # native.h, esp32_dev.h — backend wiring per target
 │   ├── assets/             # generated sprite tables (CC0, original art)
+│   ├── audio/              # the sound effects, synthesised rather than sampled
 │   ├── PacmanScene.*       # presentation: reads input, draws the rules
 │   ├── PacmanPalette.h     # the demo's colours, in one place
 │   └── rules/              # the rules layer: no drawing, no input, no audio
@@ -86,6 +115,7 @@ games/pacman/
 │       ├── PacmanMaze.*        # the level, its validator and its walkability
 │       ├── PacmanRouteField.*  # shortest-route distances over the grid
 │       ├── PacmanPlayer.*      # grid-locked movement and buffered turns
+│       ├── PacmanEnemy.*       # the hunters, their states and their targets
 │       ├── PacmanSession.*     # score, lives, collectibles, game states
 │       └── ...
 ├── test/                   # host-side Unity suite (no graphics session)

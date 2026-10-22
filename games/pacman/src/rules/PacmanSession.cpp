@@ -81,6 +81,7 @@ void PacmanSession::step(Direction requestedDirection) {
     // 7. End conditions: the level is over once nothing is left to collect.
     if (remainingCollectibles_ == 0) {
         state_ = GameState::Victory;
+        events_ = static_cast<std::uint8_t>(events_ | kEventLevelCompleted);
     }
 }
 
@@ -124,8 +125,10 @@ void PacmanSession::collectAt(int col, int row) {
 
     if (collectible == Collectible::Dot) {
         addScore(kScoreDot);
+        events_ = static_cast<std::uint8_t>(events_ | kEventDot);
     } else {
         addScore(kScorePower);
+        events_ = static_cast<std::uint8_t>(events_ | kEventPowerPellet);
         // Picking up a pellet while the effect is already running refreshes
         // the timer instead of stacking a second effect.
         powerStepsLeft_ = kPowerDurationSteps;
@@ -141,6 +144,7 @@ void PacmanSession::addScore(int amount) {
     // One extra life for every full ten thousand points.
     if (score_ / kScoreExtraLife > scoreBefore / kScoreExtraLife) {
         ++lives_;
+        events_ = static_cast<std::uint8_t>(events_ | kEventExtraLife);
     }
 }
 
@@ -192,6 +196,7 @@ void PacmanSession::resolveContacts() {
 
 void PacmanSession::defeatEnemy(int index) {
     enemies_[index].defeat();
+    events_ = static_cast<std::uint8_t>(events_ | kEventEnemyDefeated);
 
     // Consecutive defeats inside one power effect are worth more each time.
     const int multiplier = 1 << enemyChain_;
@@ -203,6 +208,7 @@ void PacmanSession::defeatEnemy(int index) {
 
 void PacmanSession::loseLife() {
     --lives_;
+    events_ = static_cast<std::uint8_t>(events_ | kEventLifeLost);
 
     if (lives_ <= 0) {
         state_ = GameState::Defeat;

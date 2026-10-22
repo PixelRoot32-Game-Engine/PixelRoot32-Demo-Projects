@@ -73,6 +73,11 @@ private:
     void drawStateOverlay(pixelroot32::graphics::Renderer& renderer) const;
 
     /**
+     * @brief Plays the sounds for the events the rules reported.
+     */
+    void playReportedEvents();
+
+    /**
      * @brief Draws a band across the maze with a message on it.
      *
      * @param renderer The renderer to draw with.

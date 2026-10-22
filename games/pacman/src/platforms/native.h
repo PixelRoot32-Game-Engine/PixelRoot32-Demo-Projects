@@ -3,6 +3,7 @@
 #include <SDL2/SDL.h>
 
 #include <drivers/native/SDL2_Drawer.h>
+#include <drivers/native/SDL2_AudioBackend.h>
 #include <core/Engine.h>
 #include <platforms/EngineConfig.h>
 
@@ -12,6 +13,8 @@ namespace pr32 = pixelroot32;
 
 // The Engine lives in the platform file, never in the scene: the scene reaches
 // it through the extern declaration below.
+pr32::drivers::native::SDL2_AudioBackend audioBackend(22050, 1024);
+
 pr32::graphics::DisplayConfig config(
     pr32::graphics::DisplayType::NONE,
     DISPLAY_ROTATION,
@@ -29,7 +32,9 @@ pr32::input::InputConfig inputConfig(
     SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT,
     SDL_SCANCODE_SPACE, SDL_SCANCODE_RETURN);
 
-pr32::core::Engine engine(config, inputConfig);
+pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate());
+
+pr32::core::Engine engine(config, inputConfig, audioConfig);
 
 pacman::PacmanScene pacmanScene;
 
