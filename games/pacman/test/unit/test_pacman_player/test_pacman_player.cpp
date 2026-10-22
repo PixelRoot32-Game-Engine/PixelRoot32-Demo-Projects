@@ -66,8 +66,9 @@ void test_pacman_player_does_not_move_into_a_wall(void) {
     PacmanPlayer player;
     player.reset(maze);
 
-    // The cell above the player's start is a wall in the shipped level.
-    TEST_ASSERT_TRUE(maze.isWall(maze.playerStartCol(), maze.playerStartRow() - 1));
+    // The cell above the player's start is the ghost house, which the player
+    // may not enter.
+    TEST_ASSERT_FALSE(maze.isWalkableForPlayer(maze.playerStartCol(), maze.playerStartRow() - 1));
 
     player.requestDirection(Direction::Up);
     runSteps(player, maze, kPlayerStepsPerCell * 2);

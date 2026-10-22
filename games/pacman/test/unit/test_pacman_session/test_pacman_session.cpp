@@ -131,18 +131,24 @@ void test_pacman_session_counter_never_goes_negative(void) {
 }
 
 void test_pacman_session_collecting_does_not_change_the_terrain(void) {
-    PacmanSession session;
+    static const char* const kRows[] = {
+        "#####",
+        "#...#",
+        "#####",
+    };
+    const PacmanLevelConfig config = makeCorridorLevel(kRows);
+    PacmanSession session(config);
     session.startNewGame();
     runPastOpening(session);
 
-    TEST_ASSERT_EQUAL_INT(Collectible::Dot, session.collectibleAt(13, 17));
+    TEST_ASSERT_EQUAL_INT(Collectible::Dot, session.collectibleAt(1, 1));
 
     session.step(Direction::None);
-    TEST_ASSERT_EQUAL_INT(Collectible::None, session.collectibleAt(13, 17));
+    TEST_ASSERT_EQUAL_INT(Collectible::None, session.collectibleAt(1, 1));
 
     // The maze still describes what the cell holds; the session keeps track
     // of what is still lying on the floor.
-    TEST_ASSERT_EQUAL_INT(Collectible::Dot, session.maze().collectibleAt(13, 17));
+    TEST_ASSERT_EQUAL_INT(Collectible::Dot, session.maze().collectibleAt(1, 1));
 }
 
 /* ---------------------------------------------------------------------------

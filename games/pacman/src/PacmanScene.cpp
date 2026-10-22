@@ -19,6 +19,15 @@ extern pr32::core::Engine engine;
 
 namespace pacman {
 
+// The sprite tables come in the cell size the build uses: the level is 28
+// cells wide and 31 cells tall, so a 240x320 screen holds it at the
+// arcade's own eight pixels and a 240x240 screen at seven.
+#if PACMAN_CELL_SIZE == 8
+namespace sprites = sprites8;
+#else
+namespace sprites = sprites7;
+#endif
+
 namespace {
 
 /**
@@ -245,9 +254,10 @@ void PacmanScene::draw(pixelroot32::graphics::Renderer& renderer) {
 void PacmanScene::drawStateOverlay(pr32::graphics::Renderer& renderer) const {
     switch (session_.state()) {
         case GameState::Title: {
-            // The title sits on a band that hides the maze behind it, so the
-            // text reads cleanly over the walls.
-            const int bandY = boardOriginY() + 60;
+            // The title sits over the empty stretch of corridors that runs
+            // through the middle of the maze, the way the arcade puts its
+            // own title over the board.
+            const int bandY = boardOriginY() + 10 * kCellSize;
             renderer.drawFilledRectangle(0, bandY, LOGICAL_WIDTH, 48, kBackgroundColor);
             renderer.drawTextCentered("PAC-MAN", bandY + 8, kPelletColor, 2);
             renderer.drawTextCentered("PRESS SPACE TO START", bandY + 30, kTextColor, 1);
@@ -273,7 +283,9 @@ void PacmanScene::drawStateOverlay(pr32::graphics::Renderer& renderer) const {
 void PacmanScene::drawMessage(pr32::graphics::Renderer& renderer, const char* title,
                                pr32::graphics::Color titleColor, const char* subtitle) const {
     const int bandHeight = subtitle != nullptr ? 36 : 20;
-    const int bandY = boardOriginY() + 72;
+    // The message sits on the row the player starts on, the way the arcade
+    // puts "READY!" under the ghost house.
+    const int bandY = boardOriginY() + kPlayerStartRow * kCellSize - 8;
     renderer.drawFilledRectangle(0, bandY, LOGICAL_WIDTH, bandHeight, kBackgroundColor);
     renderer.drawTextCentered(title, bandY + 6, titleColor, 1);
     if (subtitle != nullptr) {
@@ -318,13 +330,13 @@ void PacmanScene::drawMazeWalls(pr32::graphics::Renderer& renderer) const {
     }
 
     // The ghost house doorway: a bar across the opening at the top of the
-    // house, so the room is closed to the player and open to the enemies.
+    // house, so the room is closed to the player and open to the hunters.
     for (int col = 0; col < maze.colCount(); ++col) {
         if (maze.cellType(col, 12) != CellType::HouseDoor) {
             continue;
         }
         const int x = originX + col * kCellSize;
-        const int y = originY + 13 * kCellSize;
+        const int y = originY + 12 * kCellSize;
         renderer.drawLine(x, y, x + kCellSize - 1, y, kHouseColor);
     }
 }

@@ -30,20 +30,24 @@ Category: Games
 
 ## Platforms
 
-| Environment | Display | Driver | Audio backend | Input |
-| --- | --- | --- | --- | --- |
-| `native` | 240×240 logical, windowed | SDL2 | SDL2 | Arrow keys, Space, Enter |
-| `esp32dev_ST7789` | 240×240 | ST7789 (TFT_eSPI) | ESP32 I2S (MAX98357A-class DAC) | Six GPIO buttons: up, down, left, right, A, B |
-| `esp32dev_ILI9341` | 240×320 panel, rotated to 320×240 | ILI9341_2 (TFT_eSPI) | ESP32 I2S (MAX98357A-class DAC) | Six GPIO buttons on the board |
+| Environment | Display | Driver | Cells | Audio backend | Input |
+| --- | --- | --- | --- | --- | --- |
+| `native` | 240×288 logical, windowed | SDL2 | 8 px | SDL2 | Arrow keys, Space, Enter |
+| `esp32dev_ST7789` | 240×240 | ST7789 (TFT_eSPI) | 7 px | ESP32 I2S (MAX98357A-class DAC) | Six GPIO buttons: up, down, left, right, A, B |
+| `esp32dev_ILI9341` | 240×320, portrait | ILI9341_2 (TFT_eSPI) | 8 px | ESP32 I2S (MAX98357A-class DAC) | Six GPIO buttons on the board |
 
 Both environments run the same rules layer. The native build is the fast
 iteration loop; the ESP32 builds are the target the demo is written for.
 
+The level is the arcade's own: 28 cells wide and 31 cells tall. At the
+arcade's eight pixels it is 224×248, which is why the simulator takes the
+arcade's own screen shape and why the 240×320 panel is left in portrait. The
+240×240 panel cannot show 31 rows at eight pixels, so that build drops to
+seven and the sprite tables are generated at both sizes.
+
 The `esp32dev_ILI9341` environment is the ESP32-2432S028 "Cheap Yellow
-Display": an ILI9341 panel with an XPT2046 touch screen. The panel is
-mounted in portrait, so the build turns it a quarter turn and the logical
-framebuffer becomes 320×240 — the shape the game wants anyway. The touch bus
-is left unclaimed: the game is played with the six buttons.
+Display": an ILI9341 panel with an XPT2046 touch screen. The touch bus is
+left unclaimed: the game is played with the six buttons.
 
 The layout follows the logical size rather than the panel: the status band
 stays at the top and the maze is centred in what is left, so the same build
@@ -77,12 +81,13 @@ gets close. All four find their way by asking a breadth-first route field
 for the distance to every neighbouring cell, which makes their behaviour
 deterministic and testable.
 
-The level is a table of ASCII rows under `src/rules/PacmanMaze.cpp`. It is
-28 columns by 26 rows with four power pellets, a tunnel on each side of the
-middle row and a ghost house in the centre. A validator rejects a level with
-a ragged row, an open border, a start inside a wall, nothing to collect, or
-a corridor that cannot be reached from the player's start — before a game
-ever begins.
+The level is the arcade's own maze: 28 columns by 31 rows, with the ghost
+house in the middle, a tunnel on each side of the middle row, and exactly the
+arcade's 240 dots and 4 power pellets. The maze is a table of ASCII rows
+under `src/rules/PacmanMaze.cpp`, and a validator rejects a level with a
+ragged row, an open border, a start inside a wall, nothing to collect, or a
+corridor that cannot be reached from the player's start - before a game ever
+begins.
 
 ## The sounds
 
@@ -120,10 +125,11 @@ compiled out.
     engine's *gameplay* primitives but never its drawing system, its input
     device or its audio backend — which is what makes the whole rule set
     testable headless.
--   **A level as data.** The maze is a table of ASCII rows. A validator
-    rejects a level with a ragged row, an open border, a start inside a wall,
-    nothing to collect, or a corridor that cannot be reached from the
-    player's start — before a game ever begins.
+-   **A level as data.** The maze is a table of ASCII rows — the arcade's own
+    layout, with the same 240 dots and 4 power pellets the cabinet had. A
+    validator rejects a level with a ragged row, an open border, a start
+    inside a wall, nothing to collect, or a corridor that cannot be reached
+    from the player's start — before a game ever begins.
 -   **A fixed logic step.** The simulation advances in 20 ms steps, capped at
     four steps per frame, so the game plays the same whether the screen is
     redrawn at 30 or 60 frames per second.

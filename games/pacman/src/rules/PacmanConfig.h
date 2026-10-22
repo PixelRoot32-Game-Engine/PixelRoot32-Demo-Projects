@@ -37,10 +37,10 @@ constexpr int kMazeCols = 28;
 /**
  * @brief Rows in the level layout.
  *
- * 26 rows of 8 pixels is 208 pixels, which leaves 24 pixels for the status
- * band and 8 pixels of margin on a 240-pixel screen.
+ * The layout is the arcade's own: 28 columns by 31 rows, with the three score
+ * rows above it and the two lives rows below it left out of the maze.
  */
-constexpr int kMazeRows = 26;
+constexpr int kMazeRows = 31;
 
 /**
  * @brief Total number of cells in the maze.
@@ -48,18 +48,24 @@ constexpr int kMazeRows = 26;
 constexpr int kMazeCells = kMazeCols * kMazeRows;
 
 /**
- * @brief Edge length of one maze cell, in pixels.
+ * @brief The edge length of one maze cell, in pixels.
+ *
+ * The build chooses it, because the level is 28 cells wide and 31 cells tall:
+ * a 240x320 screen holds it at the arcade's own 8 pixels, and a 240x240
+ * screen has to make do with 7.
  */
-constexpr int kCellSize = 8;
+#ifndef PACMAN_CELL_SIZE
+#define PACMAN_CELL_SIZE 8
+#endif
+constexpr int kCellSize = PACMAN_CELL_SIZE;
 
 /**
  * @brief Height of the status band above the maze, in pixels.
  *
- * Three rows of the engine's 5x7 font (8 pixels per line) leave room for a
- * label row and a value row, the same shape the arcade original uses. The
- * band never overlaps the playfield.
+ * Two rows of the engine's 5x7 font (8 pixels per line), so the band never
+ * overlaps the playfield.
  */
-constexpr int kStatusBandHeight = 24;
+constexpr int kStatusBandHeight = 16;
 
 /**
  * @brief Row of the maze that holds the side tunnels.
@@ -98,7 +104,7 @@ constexpr int kEnemyCount = 4;
  * wait inside it. Enemies that start inside the house have to leave before
  * they can hunt.
  */
-constexpr int kEnemyStartCols[kEnemyCount] = {13, 12, 14, 15};
+constexpr int kEnemyStartCols[kEnemyCount] = {13, 13, 11, 15};
 
 /**
  * @brief Starting rows of the enemies, in enemy order.
@@ -174,7 +180,7 @@ constexpr int kCornerCols[kEnemyCount] = {1, 26, 1, 26};
 /**
  * @brief Row of each hunter's own corner, in enemy order.
  */
-constexpr int kCornerRows[kEnemyCount] = {1, 1, 24, 24};
+constexpr int kCornerRows[kEnemyCount] = {1, 1, 29, 29};
 
 /**
  * @brief Logic steps a hunter patrols its own corner before it starts

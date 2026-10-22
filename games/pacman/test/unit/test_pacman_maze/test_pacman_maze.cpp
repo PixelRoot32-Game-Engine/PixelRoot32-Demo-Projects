@@ -35,8 +35,8 @@ void test_pacman_maze_shipped_level_rows_have_the_declared_width(void) {
 
 void test_pacman_maze_shipped_level_holds_the_expected_collectibles(void) {
     PacmanMaze maze;
-    // 256 dots and 4 power pellets.
-    TEST_ASSERT_EQUAL_INT(260, maze.collectibleCount());
+    // The arcade's own level: 240 dots and 4 power pellets.
+    TEST_ASSERT_EQUAL_INT(244, maze.collectibleCount());
 
     int dots = 0;
     int pellets = 0;
@@ -50,7 +50,7 @@ void test_pacman_maze_shipped_level_holds_the_expected_collectibles(void) {
             }
         }
     }
-    TEST_ASSERT_EQUAL_INT(256, dots);
+    TEST_ASSERT_EQUAL_INT(240, dots);
     TEST_ASSERT_EQUAL_INT(4, pellets);
 }
 
