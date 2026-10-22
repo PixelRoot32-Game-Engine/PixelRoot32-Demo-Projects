@@ -59,6 +59,7 @@ private:
     void drawMazeWalls(pixelroot32::graphics::Renderer& renderer) const;
     void drawCollectibles(pixelroot32::graphics::Renderer& renderer) const;
     void drawPlayer(pixelroot32::graphics::Renderer& renderer) const;
+    void drawEnemies(pixelroot32::graphics::Renderer& renderer) const;
     void drawStatusBand(pixelroot32::graphics::Renderer& renderer) const;
 };
 

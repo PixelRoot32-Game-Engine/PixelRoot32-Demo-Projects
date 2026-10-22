@@ -4,6 +4,7 @@
 
 #include "PacmanConfig.h"
 #include "PacmanDirection.h"
+#include "PacmanEnemy.h"
 #include "PacmanMaze.h"
 #include "PacmanPlayer.h"
 
@@ -119,6 +120,20 @@ public:
     [[nodiscard]] const PacmanPlayer& player() const { return player_; }
 
     /**
+     * @brief One of the hunters.
+     *
+     * @param index Hunter index, below the level's enemy count.
+     * @return A reference to the hunter.
+     */
+    [[nodiscard]] const PacmanEnemy& enemy(int index) const { return enemies_[index]; }
+
+    /**
+     * @brief How many hunters the level has.
+     * @return The enemy count.
+     */
+    [[nodiscard]] int enemyCount() const { return maze_.enemyCount(); }
+
+    /**
      * @brief The level being played.
      * @return A reference to the maze.
      */
@@ -147,6 +162,9 @@ private:
     PacmanMaze maze_;
     PacmanPlayer player_;
 
+    /// The hunters, one per enemy of the level.
+    PacmanEnemy enemies_[kEnemyCount] = {};
+
     /// One bit per cell: has its collectible been picked up?
     std::uint8_t collected_[PacmanMaze::kCells / 8 + 1] = {};
 
@@ -163,6 +181,11 @@ private:
      * @param row Row of the cell.
      */
     void collectAt(int col, int row);
+
+    /**
+     * @brief Advances every hunter by one logic step.
+     */
+    void stepEnemies();
 
     /**
      * @brief Ages the power effect by one logic step.

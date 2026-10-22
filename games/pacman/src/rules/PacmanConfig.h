@@ -151,6 +151,58 @@ constexpr int kEnemyStepsPerCell = 10;
 constexpr int kMouthAnimationDivisor = 3;
 
 /**
+ * @brief Column of the cell just outside the ghost house doorway.
+ *
+ * A hunter that is released from the house walks to this cell before it
+ * joins the maze.
+ */
+constexpr int kHouseExitCol = 13;
+
+/**
+ * @brief Row of the cell just outside the ghost house doorway.
+ */
+constexpr int kHouseExitRow = 11;
+
+/**
+ * @brief Column of each hunter's own corner, in enemy order.
+ *
+ * The corners are where a hunter patrols before it starts hunting and where
+ * the timid hunter retreats to.
+ */
+constexpr int kCornerCols[kEnemyCount] = {1, 26, 1, 26};
+
+/**
+ * @brief Row of each hunter's own corner, in enemy order.
+ */
+constexpr int kCornerRows[kEnemyCount] = {1, 1, 24, 24};
+
+/**
+ * @brief Logic steps a hunter patrols its own corner before it starts
+ *        hunting.
+ *
+ * 200 steps is 4 seconds. The pause gives the player a moment to get
+ * oriented, the same way the arcade original opens a level.
+ */
+constexpr int kScatterSteps = 200;
+
+/**
+ * @brief Cells the timid hunter looks ahead of the player.
+ */
+constexpr int kAmbusherLookAhead = 4;
+
+/**
+ * @brief Cells the flanking hunter looks ahead of the player.
+ */
+constexpr int kFlankerLookAhead = 2;
+
+/**
+ * @brief Distance, in cells, beyond which the timid hunter hunts the player.
+ *
+ * Closer than this it retreats to its own corner instead.
+ */
+constexpr int kTimidHuntDistance = 8;
+
+/**
  * @brief Duration of the power effect, in logic steps.
  *
  * 300 steps is 6 seconds.

@@ -33,6 +33,9 @@ void PacmanSession::startNewGame() {
     remainingCollectibles_ = maze_.collectibleCount();
     powerStepsLeft_ = 0;
     player_.reset(maze_);
+    for (int index = 0; index < maze_.enemyCount(); ++index) {
+        enemies_[index].reset(maze_, index);
+    }
     state_ = GameState::Playing;
 }
 
@@ -48,10 +51,13 @@ void PacmanSession::step(Direction requestedDirection) {
     // 2. Collectibles: the player picks up whatever is under it.
     collectAt(player_.cellCol(), player_.cellRow());
 
-    // 3. The power effect ages.
+    // 3. The hunters move.
+    stepEnemies();
+
+    // 4. The power effect ages.
     updatePowerTimer();
 
-    // 4. End conditions: the level is over once nothing is left to collect.
+    // 5. End conditions: the level is over once nothing is left to collect.
     if (remainingCollectibles_ == 0) {
         state_ = GameState::Victory;
     }
@@ -114,6 +120,23 @@ void PacmanSession::collectAt(int col, int row) {
 void PacmanSession::updatePowerTimer() {
     if (powerStepsLeft_ > 0) {
         --powerStepsLeft_;
+    }
+}
+
+void PacmanSession::stepEnemies() {
+    PacmanEnemyContext context;
+    context.playerCol = player_.cellCol();
+    context.playerRow = player_.cellRow();
+    context.playerDirection = player_.direction();
+    context.powerIsActive = powerStepsLeft_ > 0;
+    // The chasing hunter is the one the flanking hunter measures from. Its
+    // position is read before any hunter moves, so the flanking rule sees a
+    // single, stable snapshot of the board.
+    context.chaserCol = enemies_[0].cellCol();
+    context.chaserRow = enemies_[0].cellRow();
+
+    for (int index = 0; index < maze_.enemyCount(); ++index) {
+        enemies_[index].step(maze_, context);
     }
 }
 

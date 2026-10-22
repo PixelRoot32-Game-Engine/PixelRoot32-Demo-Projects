@@ -33,6 +33,19 @@ constexpr int kBoardWidth = kMazeCols * kCellSize;
  */
 constexpr int kTextAdvance = 6;
 
+/**
+ * @brief Interpolates a grid actor's position between two cells.
+ *
+ * @param cell The cell the actor came from.
+ * @param target The cell the actor is travelling towards.
+ * @param progress How far the actor has travelled into the cell.
+ * @param stepsPerCell How many steps the actor takes to cross a cell.
+ * @return The position in sub-cell units.
+ */
+constexpr int interpolatedSubCell(int cell, int target, int progress, int stepsPerCell) {
+    return cell * stepsPerCell + (target - cell) * progress;
+}
+
 }  // namespace
 
 PacmanScene::PacmanScene() = default;
@@ -112,6 +125,7 @@ void PacmanScene::draw(pixelroot32::graphics::Renderer& renderer) {
     drawMazeWalls(renderer);
     drawCollectibles(renderer);
     drawPlayer(renderer);
+    drawEnemies(renderer);
     drawStatusBand(renderer);
 }
 
@@ -193,10 +207,10 @@ void PacmanScene::drawPlayer(pr32::graphics::Renderer& renderer) const {
     // The player's position is interpolated between the cell it came from
     // and the cell it is travelling towards, so the sprite slides smoothly
     // from one cell to the next.
-    const int deltaCol = player.targetCol() - player.cellCol();
-    const int deltaRow = player.targetRow() - player.cellRow();
-    const int subCol = player.cellCol() * kPlayerStepsPerCell + deltaCol * player.progress();
-    const int subRow = player.cellRow() * kPlayerStepsPerCell + deltaRow * player.progress();
+    const int subCol = interpolatedSubCell(player.cellCol(), player.targetCol(), player.progress(),
+                                            kPlayerStepsPerCell);
+    const int subRow = interpolatedSubCell(player.cellRow(), player.targetRow(), player.progress(),
+                                            kPlayerStepsPerCell);
 
     const int x = boardOriginX() + subCol * kCellSize / kPlayerStepsPerCell;
     const int y = boardOriginY() + subRow * kCellSize / kPlayerStepsPerCell;
@@ -224,6 +238,37 @@ void PacmanScene::drawPlayer(pr32::graphics::Renderer& renderer) const {
 
     if (sprite != nullptr) {
         renderer.drawSprite(*sprite, x, y, kPlayerColor, flipX);
+    }
+}
+
+void PacmanScene::drawEnemies(pr32::graphics::Renderer& renderer) const {
+    for (int index = 0; index < session_.enemyCount(); ++index) {
+        const PacmanEnemy& enemy = session_.enemy(index);
+
+        const int subCol = interpolatedSubCell(enemy.cellCol(), enemy.targetCol(), enemy.progress(),
+                                                kEnemyStepsPerCell);
+        const int subRow = interpolatedSubCell(enemy.cellRow(), enemy.targetRow(), enemy.progress(),
+                                                kEnemyStepsPerCell);
+        const int x = boardOriginX() + subCol * kCellSize / kEnemyStepsPerCell;
+        const int y = boardOriginY() + subRow * kCellSize / kEnemyStepsPerCell;
+
+        // A hunter that is fleeing shows the frightened face; a hunter that
+        // has been defeated shows nothing but its eyes, the way the arcade
+        // original draws the pair that floats home.
+        pr32::graphics::Color bodyColor = kEnemyColors[index];
+        const pr32::graphics::Sprite* body = &sprites::GHOST_BODY_SPRITE;
+        const pr32::graphics::Sprite* eyes = &sprites::GHOST_EYES_SPRITE;
+
+        if (enemy.isVulnerable()) {
+            bodyColor = kVulnerableColor;
+            body = &sprites::GHOST_SCARED_BODY_SPRITE;
+            eyes = &sprites::GHOST_SCARED_EYES_SPRITE;
+        }
+
+        if (!enemy.isDefeated()) {
+            renderer.drawSprite(*body, x, y, bodyColor, false);
+        }
+        renderer.drawSprite(*eyes, x, y, kTextColor, false);
     }
 }
 

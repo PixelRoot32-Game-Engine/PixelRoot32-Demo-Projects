@@ -24,9 +24,13 @@ constexpr pixelroot32::graphics::Color kBackgroundColor = pixelroot32::graphics:
 constexpr pixelroot32::graphics::Color kWallColor = pixelroot32::graphics::Color::Blue;
 
 /**
- * @brief Colour of the ghost house outline.
+ * @brief Colour of the ghost house doorway.
+ *
+ * The engine's `Magenta` entry resolves to a light grey in the default
+ * palette, so the pink of the arcade original is taken from `LightRed`,
+ * which is the palette's pink.
  */
-constexpr pixelroot32::graphics::Color kHouseColor = pixelroot32::graphics::Color::Magenta;
+constexpr pixelroot32::graphics::Color kHouseColor = pixelroot32::graphics::Color::LightRed;
 
 /**
  * @brief Colour of the dots still on the floor.
@@ -48,20 +52,19 @@ constexpr pixelroot32::graphics::Color kPlayerColor = pixelroot32::graphics::Col
  */
 constexpr pixelroot32::graphics::Color kEnemyColors[4] = {
     pixelroot32::graphics::Color::Red,
-    pixelroot32::graphics::Color::Magenta,
+    pixelroot32::graphics::Color::LightRed,
     pixelroot32::graphics::Color::Cyan,
     pixelroot32::graphics::Color::Orange,
 };
 
 /**
  * @brief Colour of the enemies while the power effect is active.
+ *
+ * The maze walls are already blue, so the frightened hunters are drawn in
+ * purple instead: they have to read as a different state at a glance, and
+ * they have to read differently from the wall they are standing next to.
  */
-constexpr pixelroot32::graphics::Color kVulnerableColor = pixelroot32::graphics::Color::Blue;
-
-/**
- * @brief Colour of the enemies that have been defeated and are heading home.
- */
-constexpr pixelroot32::graphics::Color kDefeatedColor = pixelroot32::graphics::Color::LightBlue;
+constexpr pixelroot32::graphics::Color kVulnerableColor = pixelroot32::graphics::Color::Purple;
 
 /**
  * @brief Colour of the status band text.
