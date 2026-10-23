@@ -3,3 +3,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Local working material: the fidelity plan and the reference art
+ROADMAP.md
+Arcade - Space Invaders - Miscellaneous - Game Graphics and Color Overlays.png
