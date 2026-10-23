@@ -76,10 +76,12 @@ void AlienActor::draw(pixelroot32::graphics::Renderer& renderer) {
     const int drawX = static_cast<int>(position.x);
     const int drawY = static_cast<int>(position.y);
 
+    // 1:1 draws: the arcade screen model has no scale factor, and a scaled draw
+    // would make the sprite disagree with its collision box.
     if (multiSprite) {
-        renderer.drawMultiSprite(*multiSprite, drawX, drawY, SPRITE_SCALE, SPRITE_SCALE);
+        renderer.drawMultiSprite(*multiSprite, drawX, drawY);
     } else if (sprite) {
-        renderer.drawSprite(*sprite, drawX, drawY, SPRITE_SCALE, SPRITE_SCALE, Color::Orange);
+        renderer.drawSprite(*sprite, drawX, drawY, Color::Orange);
     }
 }
 

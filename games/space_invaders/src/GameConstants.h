@@ -17,19 +17,34 @@ namespace spaceinvaders {
     constexpr uint8_t BTN_RIGHT = 3;
     constexpr uint8_t BTN_FIRE = 4;
 
-    /** Scale factor for all sprites (ceil for collision dimensions) */
-    constexpr float SPRITE_SCALE = 1.25f;
+    /**
+     * Screen model (S1). The playfield is 224 px wide starting at x=8 and runs
+     * the full screen height; every sprite is drawn 1:1, so there is no scale
+     * factor left to derive sizes from.
+     */
+    constexpr int FIELD_X = 8;
+    constexpr int FIELD_W = 224;
+    constexpr int FIELD_H = 240;
+    constexpr int HUD_HEIGHT = 16;
+
+    /** Vertical band origins, in screen pixels (S1) */
+    constexpr float SAUCER_Y = 24.0f;
+    constexpr float RACK_TOP_Y = 48.0f;
+    constexpr float SHIELD_TOP_Y = 184.0f;
+    constexpr float CANNON_TOP_Y = 208.0f;   ///< Top of the 8 px cannon; baseline is 216
+    constexpr float RESERVE_Y = 224.0f;
 
     /** Player ship sprite dimensions (raw pixels) */
-    constexpr int PLAYER_SPRITE_W = 11;
+    constexpr int PLAYER_SPRITE_W = 13;
     constexpr int PLAYER_SPRITE_H = 8;
-    /** Player collision dimensions (scaled, ceil) */
-    constexpr int PLAYER_WIDTH = (int)(PLAYER_SPRITE_W * SPRITE_SCALE + 0.99f);
-    constexpr int PLAYER_HEIGHT = (int)(PLAYER_SPRITE_H * SPRITE_SCALE + 0.99f);
+    /** Player collision dimensions (raw pixels at 1:1) */
+    constexpr int PLAYER_WIDTH = PLAYER_SPRITE_W;
+    constexpr int PLAYER_HEIGHT = PLAYER_SPRITE_H;
 
     constexpr float PLAYER_SPEED = 60.0f;
-    constexpr float PLAYER_START_X = (DISPLAY_WIDTH - PLAYER_WIDTH) / 2.0f;
-    constexpr float PLAYER_START_Y = DISPLAY_HEIGHT - PLAYER_HEIGHT - 4.0f;
+    /** Spawn centred in the playfield, resting on the cannon baseline */
+    constexpr float PLAYER_START_X = FIELD_X + (FIELD_W - PLAYER_WIDTH) * 0.5f;
+    constexpr float PLAYER_START_Y = CANNON_TOP_Y;
 
     /** Projectile dimensions and speed (pixels per second) */
     constexpr int PROJECTILE_WIDTH = 1;
@@ -40,7 +55,8 @@ namespace spaceinvaders {
     constexpr int BUNKER_COUNT = 4;
     constexpr int BUNKER_WIDTH = 24;
     constexpr int BUNKER_HEIGHT = 16;
-    constexpr float BUNKER_Y = DISPLAY_HEIGHT - PLAYER_HEIGHT - 40.0f;
+    /** Bottom line the scene subtracts BUNKER_HEIGHT from, so the shields start at SHIELD_TOP_Y */
+    constexpr float BUNKER_Y = SHIELD_TOP_Y + BUNKER_HEIGHT;
 
     /** Alien formation grid */
     constexpr int ALIEN_ROWS = 4;
@@ -49,27 +65,28 @@ namespace spaceinvaders {
     /** Squid (top row) dimensions */
     constexpr int ALIEN_SQUID_SPRITE_W = 8;
     constexpr int ALIEN_SQUID_SPRITE_H = 8;
-    constexpr int ALIEN_SQUID_W = (int)(ALIEN_SQUID_SPRITE_W * SPRITE_SCALE + 0.99f);
-    constexpr int ALIEN_SQUID_H = (int)(ALIEN_SQUID_SPRITE_H * SPRITE_SCALE + 0.99f);
+    constexpr int ALIEN_SQUID_W = ALIEN_SQUID_SPRITE_W;
+    constexpr int ALIEN_SQUID_H = ALIEN_SQUID_SPRITE_H;
 
     /** Crab (middle rows) dimensions */
     constexpr int ALIEN_CRAB_SPRITE_W = 11;
     constexpr int ALIEN_CRAB_SPRITE_H = 8;
-    constexpr int ALIEN_CRAB_W = (int)(ALIEN_CRAB_SPRITE_W * SPRITE_SCALE + 0.99f);
-    constexpr int ALIEN_CRAB_H = (int)(ALIEN_CRAB_SPRITE_H * SPRITE_SCALE + 0.99f);
+    constexpr int ALIEN_CRAB_W = ALIEN_CRAB_SPRITE_W;
+    constexpr int ALIEN_CRAB_H = ALIEN_CRAB_SPRITE_H;
 
     /** Octopus (bottom rows) dimensions */
     constexpr int ALIEN_OCTOPUS_SPRITE_W = 12;
     constexpr int ALIEN_OCTOPUS_SPRITE_H = 8;
-    constexpr int ALIEN_OCTOPUS_W = (int)(ALIEN_OCTOPUS_SPRITE_W * SPRITE_SCALE + 0.99f);
-    constexpr int ALIEN_OCTOPUS_H = (int)(ALIEN_OCTOPUS_SPRITE_H * SPRITE_SCALE + 0.99f);
+    constexpr int ALIEN_OCTOPUS_W = ALIEN_OCTOPUS_SPRITE_W;
+    constexpr int ALIEN_OCTOPUS_H = ALIEN_OCTOPUS_SPRITE_H;
 
     /** Alien grid spacing and starting position */
     constexpr float ALIEN_SPACING_X = 17.0f;
     constexpr float ALIEN_SPACING_Y = 18.0f;
     constexpr float ALIEN_GRID_WIDTH = (ALIEN_COLS - 1) * ALIEN_SPACING_X + ALIEN_OCTOPUS_W;
-    constexpr float ALIEN_START_X = (DISPLAY_WIDTH - ALIEN_GRID_WIDTH) * 0.5f;
-    constexpr float ALIEN_START_Y = 40.0f;
+    /** Rack top-left: 26 px into the playfield (S4), on the rack row */
+    constexpr float ALIEN_START_X = FIELD_X + 26.0f;
+    constexpr float ALIEN_START_Y = RACK_TOP_Y;
 
     /** Alien formation step timing (ms) and movement */
     constexpr unsigned long BASE_STEP_DELAY = 417;  ///< 72 BPM (eighth note)
@@ -80,7 +97,7 @@ namespace spaceinvaders {
 
     /** Music tempo scaling based on alien proximity (threat factor) */
     constexpr float GAME_OVER_Y = 200.0f;
-    constexpr float Y_RANGE = 160.0f;              ///< GAME_OVER_Y - ALIEN_START_Y
+    constexpr float Y_RANGE = 160.0f;              ///< Fixed tempo range, not derived from the layout
     constexpr float INV_Y_RANGE = 0.00625f;        ///< 1.0 / Y_RANGE
 
 }

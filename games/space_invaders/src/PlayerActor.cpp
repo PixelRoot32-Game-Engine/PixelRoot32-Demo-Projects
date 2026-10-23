@@ -154,11 +154,11 @@ void PlayerActor::draw(pr32::graphics::Renderer& renderer) {
     if (!isAlive) return;
     
     using Color = pr32::graphics::Color;
+    // 1:1 draw: the arcade screen model has no scale factor, so the sprite
+    // occupies exactly the collision box the physics uses.
     renderer.drawSprite(PLAYER_SHIP_SPRITE,
                         static_cast<int>(position.x),
                         static_cast<int>(position.y),
-                        SPRITE_SCALE,
-                        SPRITE_SCALE,
                         Color::Yellow);
 }
 
