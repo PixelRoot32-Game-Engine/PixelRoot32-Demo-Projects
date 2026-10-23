@@ -2,53 +2,75 @@
 
 namespace spaceinvaders::rules {
 
+namespace {
+
+/// Four HUD digits, so the counter saturates instead of rolling over (S12).
+constexpr uint16_t MaxScore = 9999;
+
+}  // namespace
+
 void Scoring::reset() {
-    // RED: implemented in T1.3
+    // The high score belongs to the session, so a new run leaves it alone.
+    scorePoints = 0;
+    shipLives = StartLives;
+    waveNumber = 1;
+    extraShipGiven = false;
 }
 
 void Scoring::add(uint16_t points) {
-    (void)points;
-    // RED: implemented in T1.3
+    const uint32_t total = static_cast<uint32_t>(scorePoints) + points;
+    scorePoints = total > MaxScore ? MaxScore : static_cast<uint16_t>(total);
 }
 
 uint16_t Scoring::score() const {
-    return 0;  // RED: implemented in T1.3
+    return scorePoints;
 }
 
 uint8_t Scoring::highByte() const {
-    return 0;  // RED: implemented in T1.3
+    return static_cast<uint8_t>(scorePoints >> 8);
 }
 
 uint8_t Scoring::lives() const {
-    return 0;  // RED: implemented in T1.3
+    return shipLives;
 }
 
 void Scoring::loseLife() {
-    // RED: implemented in T1.3
+    if (shipLives > 0) {
+        --shipLives;
+    }
 }
 
 bool Scoring::consumeExtraShip() {
-    return false;  // RED: implemented in T1.3
+    // One award per run: the latch is what makes later calls false even after
+    // the score crosses the threshold again.
+    if (extraShipGiven || scorePoints < ExtraShipScore) {
+        return false;
+    }
+    extraShipGiven = true;
+    ++shipLives;
+    return true;
 }
 
 bool Scoring::extraShipAwarded() const {
-    return false;  // RED: implemented in T1.3
+    return extraShipGiven;
 }
 
 uint16_t Scoring::wave() const {
-    return 0;  // RED: implemented in T1.3
+    return waveNumber;
 }
 
 void Scoring::nextWave() {
-    // RED: implemented in T1.3
+    ++waveNumber;
 }
 
 uint16_t Scoring::highScore() const {
-    return 0;  // RED: implemented in T1.3
+    return highScorePoints;
 }
 
 void Scoring::commitHighScore() {
-    // RED: implemented in T1.3
+    if (scorePoints > highScorePoints) {
+        highScorePoints = scorePoints;
+    }
 }
 
 }  // namespace spaceinvaders::rules

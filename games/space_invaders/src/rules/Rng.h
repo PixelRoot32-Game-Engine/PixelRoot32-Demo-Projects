@@ -34,7 +34,15 @@ public:
      * @return Next 32-bit value.
      */
     uint32_t next() {
-        return 0;  // RED: implemented in T1.3
+        // xorshift32: integer-only, so both device targets produce the same
+        // sequence, and its shifts mix every bit (an LCG's low bits are far
+        // too correlated for a bounded draw to look random).
+        uint32_t value = state;
+        value ^= value << 13;
+        value ^= value >> 17;
+        value ^= value << 5;
+        state = value;
+        return value;
     }
 
     /**
@@ -47,8 +55,20 @@ public:
      * @return Value below bound.
      */
     uint32_t below(uint32_t bound) {
-        (void)bound;
-        return 0;  // RED: implemented in T1.3
+        // The documented precondition is bound > 0; returning 0 rather than
+        // dividing by zero keeps a caller mistake from crashing a run.
+        if (bound == 0) {
+            return 0;
+        }
+        // Rejection sampling keeps every value equally likely; the rejection
+        // loop is bounded because `bound` is a small non-zero count and the
+        // generator is uniform over 32 bits.
+        const uint32_t limit = 0xFFFFFFFFu - (0xFFFFFFFFu % bound);
+        uint32_t value = next();
+        while (value >= limit) {
+            value = next();
+        }
+        return value % bound;
     }
 
     /**
@@ -57,7 +77,6 @@ public:
      */
     void reseed(uint32_t seed) {
         state = seed;
-        // RED: implemented in T1.3
     }
 
 private:

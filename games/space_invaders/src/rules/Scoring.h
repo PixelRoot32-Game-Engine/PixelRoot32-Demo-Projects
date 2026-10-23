@@ -48,7 +48,7 @@ public:
 
     /**
      * @brief Ships remaining.
-     * @return Lives, 0..StartLives.
+     * @return Lives remaining, `StartLives` plus one after the 1500 point award.
      */
     uint8_t lives() const;
 

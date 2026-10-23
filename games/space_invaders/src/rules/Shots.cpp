@@ -2,28 +2,43 @@
 
 namespace spaceinvaders::rules {
 
+namespace {
+
+/// Under nine aliens the reference tightens the enemy shot to its fast step.
+constexpr uint8_t FastFireAliveLimit = 9;
+
+}  // namespace
+
 int16_t advancePlayerShot(int16_t y) {
-    (void)y;
-    return 0;  // RED: implemented in T1.3
+    // Four pixels per tick is the reference speed (F10); the caller owns the
+    // off-screen test, so a position below zero is a legal result.
+    return static_cast<int16_t>(y - PlayerShotStepY);
 }
 
 bool enemyShotIsFast(uint8_t aliveCount) {
-    (void)aliveCount;
-    return false;  // RED: implemented in T1.3
+    return aliveCount < FastFireAliveLimit;
 }
 
 void EnemyShotMotion::reset(int16_t y) {
-    (void)y;
-    // RED: implemented in T1.3
+    position = y;
+    tickPhase = 0;
 }
 
 int16_t EnemyShotMotion::advance(bool fast) {
-    (void)fast;
-    return 0;  // RED: implemented in T1.3
+    // The step lands on every third call, which is what makes the enemy shot
+    // visibly slower than the player's without a separate timer (S9).
+    if (tickPhase + 1u >= EnemyShotTicksPerStep) {
+        tickPhase = 0;
+        position = static_cast<int16_t>(
+            position + (fast ? EnemyShotFastStepY : EnemyShotStepY));
+    } else {
+        ++tickPhase;
+    }
+    return position;
 }
 
 int16_t EnemyShotMotion::y() const {
-    return 0;  // RED: implemented in T1.3
+    return position;
 }
 
 }  // namespace spaceinvaders::rules
