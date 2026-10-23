@@ -5,7 +5,6 @@
 namespace spaceinvaders {
 
 using pixelroot32::graphics::Sprite;
-using pixelroot32::graphics::MultiSprite;
 using pixelroot32::graphics::SpriteAnimationFrame;
 
 static const SpriteAnimationFrame SQUID_ANIM_FRAMES[] = {
@@ -14,7 +13,8 @@ static const SpriteAnimationFrame SQUID_ANIM_FRAMES[] = {
 };
 
 static const SpriteAnimationFrame CRAB_ANIM_FRAMES[] = {
-    { nullptr, &CRAB_F1_MULTI }
+    { &CRAB_F1, nullptr },
+    { &CRAB_F2, nullptr }
 };
 
 static const SpriteAnimationFrame OCTOPUS_ANIM_FRAMES[] = {
@@ -66,21 +66,17 @@ void AlienActor::move(pixelroot32::math::Scalar dx, pixelroot32::math::Scalar dy
 void AlienActor::draw(pixelroot32::graphics::Renderer& renderer) {
     if (!active) return;
 
-    using Color       = pixelroot32::graphics::Color;
-    using Sprite      = pixelroot32::graphics::Sprite;
-    using MultiSprite = pixelroot32::graphics::MultiSprite;
+    using Color  = pixelroot32::graphics::Color;
+    using Sprite = pixelroot32::graphics::Sprite;
 
-    const Sprite*      sprite      = animation.getCurrentSprite();
-    const MultiSprite* multiSprite = animation.getCurrentMultiSprite();
+    const Sprite* sprite = animation.getCurrentSprite();
 
     const int drawX = static_cast<int>(position.x);
     const int drawY = static_cast<int>(position.y);
 
     // 1:1 draws: the arcade screen model has no scale factor, and a scaled draw
     // would make the sprite disagree with its collision box.
-    if (multiSprite) {
-        renderer.drawMultiSprite(*multiSprite, drawX, drawY);
-    } else if (sprite) {
+    if (sprite) {
         renderer.drawSprite(*sprite, drawX, drawY, Color::Orange);
     }
 }
