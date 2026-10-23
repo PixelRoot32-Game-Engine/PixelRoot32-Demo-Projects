@@ -316,8 +316,11 @@ Decouple the sound from the movement. Movement interval is the live alien
 count; the beat interval is its own table (S16). The two are allowed to drift.
 
 **D6 (proposed) - shields.**
-22x16 bitmasks, 3 bytes per row, erode on impact, rebuilt per wave, drawn with
-`Renderer::drawBitmap`.
+22x16 bitmasks, 3 bytes per row, erode on impact, rebuilt per wave. Drawn as
+per-row runs of set bits with `drawFilledRectangle`, not `drawBitmap`: the
+engine's `drawBitmap` reads bit 0 as the leftmost pixel on the SDL2 backend and
+bit 7 as the leftmost on TFT_eSPI, so the same bytes would mirror between the
+two targets. Sprite data uses `drawSprite`, which is MSB-first on both.
 
 **D7 (proposed) - enemy fire.**
 Three slots, the lowest alien of a live column, the score-indexed reload
@@ -342,7 +345,9 @@ HUD band y=0-15, saucer row y=24, rack top y=48, shields y=184, cannon
 baseline y=216, reserve icons y=224.
 
 **S2 - Sprites.** Exactly the inventory in the table above; every mask 1bpp,
-one bit per pixel, rows as `uint16_t` or `uint8_t`, no `MultiSprite`.
+one bit per pixel, rows as `uint16_t` or `uint8_t`. Sprite rows are MSB-first:
+bit (width-1) is the leftmost pixel, which is what `drawSprite` reads and what
+the existing ASCII row comments already draw. No `MultiSprite`.
 
 **S3 - Colour bands.** All masks draw white except by band: red for y < 32,
 green for y >= 184, white between. The HUD stays white.
@@ -374,7 +379,9 @@ score high byte against the ROM ladder (48, 16, 11, 8, 7 at thresholds
 
 **S10 - Shields.** Four masks, 22x16, at x=32, 77, 122, 167 and y=184. A hit
 erodes a small blast centred on the impact cell, clipped to the mask. A shield
-with no bits left is gone. Rebuilt at the start of each wave.
+with no bits left is gone. Rebuilt at the start of each wave. `draw()` emits
+one `drawFilledRectangle` per run of set bits in each row; `drawBitmap` is not
+used because its bit order differs between the SDL2 and TFT_eSPI backends.
 
 **S11 - Saucer.** 16x7, white, y=24. Spawns when at least 8 aliens are alive
 and the 1536-tick timer expires; enters from the left or right by shot-counter
@@ -448,7 +455,7 @@ Estimate: 450-600 lines, mostly tests.
 | # | Task | Spec | Route | Done when |
 |---|---|---|---|---|
 | T2.1 | Layout constants: field origin, rows, remove `SPRITE_SCALE` and the derived sizes | S1 | inline | the native build draws at 1:1 |
-| T2.2 | Masks from the reference sheet: squid, crab (both frames), octopus, saucer, cannon, both shots, explosion, shields, font | S2 | inline | every sprite matches the sheet's silhouette at 1x |
+| T2.2 | Masks from the reference sheet: squid, crab (both frames), octopus, saucer, cannon, both shots, explosion, shields, font. Sprite rows MSB-first | S2 | inline | every sprite matches the sheet's silhouette at 1x |
 | T2.3 | `Font` descriptor and HUD switch | S18 | inline | the HUD renders in 8x8 |
 | T2.4 | Band colouring | S3 | inline | a still shows red top, white middle, green bottom |
 | T2.5 | Remove the starfield and `Background` | S19 | inline | no star pixels in a still |
