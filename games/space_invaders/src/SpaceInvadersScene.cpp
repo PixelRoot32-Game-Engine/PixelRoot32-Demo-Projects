@@ -325,6 +325,16 @@ void SpaceInvadersScene::resetGame() {
     enemyShotStepTick = 0;
     rng.reseed(RUN_SEED);
 
+    // S11: the period, the score table, the mask and the entry parity all
+    // restart with the run, and the siren flag goes quiet because nothing is on
+    // screen. The counter feeds the parity, so it is part of the same reset.
+    saucerRules.reset();
+    saucer.reset();
+    shotsFired = 0;
+    saucerPopup.active = false;
+    saucerPopup.remainingTicks = 0;
+    stopSaucerSiren();
+
     for (int i = 0; i < MaxEnemyExplosions; ++i) {
         enemyExplosions[i].active = false;
         enemyExplosions[i].remainingMs = 0;
@@ -440,6 +450,11 @@ void SpaceInvadersScene::tick(unsigned long tickMs) {
                     if (!proj->isActive()) {
                         proj->reset(pr32::math::Vector2(px, py), ProjectileType::PLAYER_BULLET);
 
+                        // S11: the saucer's entry side is the parity of this
+                        // counter, so it advances when a bullet really exists —
+                        // not on a press and not while searching for a slot.
+                        ++shotsFired;
+
                         AudioEvent event{};
                         event.type = WaveType::PULSE;
                         event.frequency = 880.0f;
@@ -462,6 +477,12 @@ void SpaceInvadersScene::tick(unsigned long tickMs) {
 
     updateAliens();
     updateEnemyFire();
+
+    // S11: the saucer spawns and crosses on the tick clock. It runs before the
+    // hit tests so a shot that landed this tick is compared against the row the
+    // ship has just moved to, and before the popup ages so an award made by a
+    // hit keeps its whole lifetime.
+    updateSaucer();
 
     handleCollisions();
     updateEnemyExplosions(tickMs);
@@ -632,6 +653,33 @@ void SpaceInvadersScene::handleCollisions() {
                     }
                 }
             }
+
+            // S11: the saucer is above the rack, so a shot that reaches it has
+            // already passed every alien; the swept circle is the one the rack
+            // test just used, so a four-pixel step cannot skip the 7 px mask.
+            if (!alienHit && proj->isActive() && saucer.isActive()) {
+                pr32::math::Scalar tHitSaucer = pr32::math::toScalar(0);
+                pixelroot32::core::Rect saucerBox = saucer.getHitBox();
+                if (sweepCircleVsRect(startCircle, endCircle, saucerBox, tHitSaucer) ||
+                    proj->getHitBox().intersects(saucerBox)) {
+                    proj->deactivate();
+
+                    // The table, not a random draw, decides the award (S11), and
+                    // the popup shows it where the ship died. The hit removes the
+                    // saucer, so the siren stops with it.
+                    const uint16_t awarded = saucerRules.takeScore();
+                    score += awarded;
+                    spawnSaucerPopup(saucer.position, awarded);
+
+                    saucer.collect();
+                    stopSaucerSiren();
+
+                    // The shot is spent: proj->isActive() is now false, so the
+                    // shield test below short-circuits instead of eroding a
+                    // bunker with a bullet that already hit the saucer.
+                }
+            }
+
             if (!alienHit && proj->isActive() && hitShields(*proj)) {
                 continue;
             }
@@ -792,9 +840,96 @@ int SpaceInvadersScene::getActiveAlienCount() const {
     return rack.aliveCount();
 }
 
+void SpaceInvadersScene::updateSaucer() {
+    // The award is aged first so a popup spawned later in this tick (by the hit
+    // test) keeps its whole lifetime instead of losing a tick immediately.
+    if (saucerPopup.active) {
+        if (saucerPopup.remainingTicks > 0) {
+            --saucerPopup.remainingTicks;
+        }
+        if (saucerPopup.remainingTicks == 0) {
+            saucerPopup.active = false;
+        }
+    }
+
+    if (saucer.isActive()) {
+        saucer.update(rules::FixedStep::TickMs);
+
+        // Leaving the panel is one of the two moments the siren must stop; the
+        // other is a hit, which handleCollisions() reports directly.
+        if (!saucer.isActive()) {
+            stopSaucerSiren();
+        }
+        return;
+    }
+
+    // The period only advances while no saucer is on screen, so a long crossing
+    // never counts towards the next spawn (S11).
+    saucerRules.tick();
+
+    if (!saucerRules.spawnDue(static_cast<uint8_t>(rack.aliveCount()))) {
+        return;
+    }
+
+    // S11: the side comes from the run's shot parity, not from the generator, so
+    // the same input script reproduces every crossing (S20).
+    saucer.spawn(saucerRules.side(shotsFired));
+    saucerRules.onSpawned();
+    startSaucerSiren();
+}
+
+void SpaceInvadersScene::drawSaucer(pr32::graphics::Renderer& renderer) {
+    saucer.draw(renderer);
+
+    // A run that has ended stops ticking, so the award would otherwise freeze
+    // over the game-over text. Dropping it from the draw path is enough because
+    // the next reset clears the slot.
+    if (!saucerPopup.active || gameOver) {
+        return;
+    }
+
+    char buffer[8];
+    std::snprintf(buffer, sizeof(buffer), "%u", static_cast<unsigned>(saucerPopup.value));
+    renderer.drawText(buffer, static_cast<int16_t>(static_cast<int>(saucerPopup.position.x)),
+                      static_cast<int16_t>(static_cast<int>(saucerPopup.position.y)),
+                      pr32::graphics::Color::Red, 1, &ARCADE_FONT);
+}
+
+void SpaceInvadersScene::spawnSaucerPopup(pr32::math::Vector2 position, uint16_t value) {
+    saucerPopup.active = true;
+    saucerPopup.position = position;
+    saucerPopup.value = value;
+    saucerPopup.remainingTicks = SaucerPopupTicks;
+}
+
+void SpaceInvadersScene::startSaucerSiren() {
+    saucerSirenActive = true;
+
+    // S11/S17: the siren is a re-fired sweep with its own voice, which T5.2
+    // owns. Until then this one short pulse marks the entry in the same style as
+    // the existing shot and hit events, and the flag carries the state T5.2
+    // needs to start and stop the real sound on the same edges.
+    AudioEvent event{};
+    event.type = WaveType::PULSE;
+    event.frequency = 440.0f;
+    event.duration = 0.10f;
+    event.volume = 0.3f;
+    event.duty = 0.5f;
+    engine.getAudioEngine().playEvent(event);
+}
+
+void SpaceInvadersScene::stopSaucerSiren() {
+    saucerSirenActive = false;
+}
+
 void SpaceInvadersScene::draw(pr32::graphics::Renderer& renderer) {
     renderer.drawFilledRectangle(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, pr32::graphics::Color::Black);
     Scene::draw(renderer);
+
+    // S11: the saucer is a plain member, not an entity, so the scene draws it
+    // explicitly here; the popup rides with it because both belong to the ship.
+    drawSaucer(renderer);
+
     drawEnemyExplosions(renderer);
     playerExplosion.draw(renderer);
 

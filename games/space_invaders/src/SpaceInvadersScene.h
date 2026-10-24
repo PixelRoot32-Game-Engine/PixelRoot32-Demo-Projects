@@ -4,10 +4,12 @@
 #include <vector>
 #include <memory>
 #include "platforms/EngineConfig.h"
+#include "SaucerActor.h"
 #include "rules/FireTiming.h"
 #include "rules/FixedStep.h"
 #include "rules/Rack.h"
 #include "rules/Rng.h"
+#include "rules/Saucer.h"
 #include "rules/ShieldMask.h"
 
 namespace spaceinvaders {
@@ -153,6 +155,48 @@ namespace spaceinvaders {
          */
         rules::Rack rack;
 
+        /**
+         * The mystery-ship model (S11). The rules object owns the 1536-tick
+         * period, the shot-parity side and the 15-value table; the actor owns
+         * only the crossing. Both are plain members: a single object that
+         * respawns at most every 1536 ticks does not belong in the wave's
+         * entity list, and the arena never frees what it hands out.
+         */
+        rules::Saucer saucerRules;
+        SaucerActor saucer;
+
+        /**
+         * Player shots created this run. S11 picks the entry side from its
+         * parity, so it advances only when a bullet is actually created and
+         * never on a press that found a shot already in flight.
+         */
+        uint32_t shotsFired = 0;
+
+        /**
+         * One slot for the score shown where the saucer died (S11). A value and
+         * a position rather than an actor, so a hit costs neither an allocation
+         * nor an entity-list slot.
+         */
+        struct SaucerPopup {
+            bool active = false;                  ///< True while the value is shown
+            pixelroot32::math::Vector2 position;  ///< Top-left the saucer had at the hit
+            uint16_t value = 0;                   ///< Score the hit awarded
+            uint16_t remainingTicks = 0;          ///< Ticks left before the slot clears
+        };
+        SaucerPopup saucerPopup;
+
+        /// Ticks the award stays on screen: one second at 60 Hz, long enough to
+        /// read and short enough not to survive into the next crossing.
+        static constexpr uint16_t SaucerPopupTicks = 60;
+
+        /**
+         * True while a saucer is on screen and its siren should sound (S11,
+         * S17). The audio rewrite in T5.2 gives the siren its own voice and
+         * reads this flag; today only the start and stop edges are wired, so
+         * its meaning stays exactly "a saucer is on screen".
+         */
+        bool saucerSirenActive = false;
+
         int score;                                 ///< Current score
         int lives;                                 ///< Remaining lives
         bool gameOver;                             ///< True when game has ended
@@ -202,6 +246,55 @@ namespace spaceinvaders {
          * the march, and the fixed division keeps it off the frame delta.
          */
         void updateEnemyFire();
+
+        /**
+         * @brief Runs the mystery saucer and its score popup for one tick (S11).
+         *
+         * While nothing is on screen the spawn period advances; once it expires
+         * with enough aliens alive the saucer enters from the side the shot
+         * counter picks. While it is on screen the rules do not advance: the
+         * crossing only moves and leaves. The popup counts down on the same
+         * tick clock, so its lifetime is tick-accurate like every other rule
+         * (S20).
+         */
+        void updateSaucer();
+
+        /**
+         * @brief Draws the crossing saucer and the score popup (S11).
+         *
+         * The saucer is not an entity, so nothing else can draw it; this is the
+         * scene's explicit draw call for the one transient it owns.
+         *
+         * @param renderer Renderer to draw into.
+         */
+        void drawSaucer(pixelroot32::graphics::Renderer& renderer);
+
+        /**
+         * @brief Shows an awarded score where the saucer died.
+         *
+         * Writes the single popup slot in place, so a hit allocates nothing.
+         *
+         * @param position Top-left position the saucer had at the hit.
+         * @param value Score the hit awarded.
+         */
+        void spawnSaucerPopup(pixelroot32::math::Vector2 position, uint16_t value);
+
+        /**
+         * @brief Marks the siren as sounding and cues the entry sound.
+         *
+         * T5.2 gives the siren its own voice; until then this emits one short
+         * pulse in the same style as the shot and hit sounds, so the entry is
+         * audible and saucerSirenActive is accurate for T5.2 to build on.
+         */
+        void startSaucerSiren();
+
+        /**
+         * @brief Marks the siren as silent.
+         *
+         * Called when the saucer leaves the panel and when a hit removes it, so
+         * the flag never outlives the ship it describes.
+         */
+        void stopSaucerSiren();
 
         /**
          * @brief Copies the rack's cell positions onto the actors.

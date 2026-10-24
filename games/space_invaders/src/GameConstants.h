@@ -34,6 +34,14 @@ namespace spaceinvaders {
     constexpr float CANNON_TOP_Y = 208.0f;   ///< Top of the 8 px cannon; baseline is 216
     constexpr float RESERVE_Y = 224.0f;
 
+    /**
+     * Mystery saucer mask size (S11). The actor's body and the entry/exit
+     * bounds both need it, and the asset is already 16x7, so the numbers live
+     * here instead of being repeated as literals in the movement code.
+     */
+    constexpr int SAUCER_WIDTH = 16;
+    constexpr int SAUCER_HEIGHT = 7;
+
     /** Player ship sprite dimensions (raw pixels) */
     constexpr int PLAYER_SPRITE_W = 13;
     constexpr int PLAYER_SPRITE_H = 8;
