@@ -265,6 +265,8 @@ of their own.
   rack loop (one live alien per interrupt, the 8 px drop, the 3 px last alien),
   the march interval and four-voice tables, the reload ladder, the 15-entry
   saucer table, and the player task's two-image death, described as half a
-  second. <http://computerarcheology.com/Arcade/SpaceInvaders/>
-- walkofmind, *Space Invaders sound hardware* — the march's voice rotation:
-  <http://www.walkofmind.com/programming/space.htm>
+  second. <https://computerarcheology.com/Arcade/SpaceInvaders/>
+- walkofmind, *Space Invaders sound hardware* — the board's discrete sound
+  circuits, one per voice, which is why the four fleet pitches are circuit
+  values rather than a table:
+  <https://walkofmind.com/programming/side/soundboard.htm>
