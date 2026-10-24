@@ -95,6 +95,19 @@ namespace spaceinvaders {
         rules::ShieldField shieldField;
 
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
+        /**
+         * @brief Failed arenaNew() calls in the last wave build (S19).
+         *
+         * A failed allocation is otherwise silent: the spawn loops skip the
+         * actor and the wave comes out short, which looks like a layout bug
+         * instead of a memory one. Every arenaNew() call site increments this
+         * instead of swallowing the null, and init() asserts it is zero after
+         * the first full wave. It covers exactly one wave build: it is cleared
+         * where the arena is reset, so it always describes the actors the
+         * scene has just allocated.
+         */
+        uint16_t arenaFailures = 0;
+
         PlayerActor* player;
         std::vector<AlienActor*> aliens;
         std::vector<ProjectileActor*> projectiles;

@@ -7,6 +7,8 @@
 #include "platforms/EngineConfig.h"
 #include "core/Engine.h"
 #include "audio/AudioTypes.h"
+#include <cassert>
+#include <cstddef>
 #include <cstdio>
 #include "assets/FontData.h"
 #include "assets/PlayerExplosionSprites.h"
@@ -29,19 +31,113 @@ using pixelroot32::math::Vector2;
 using pixelroot32::core::SceneArena;
 using pixelroot32::core::arenaNew;
 
+/**
+ * Arena budget for one full wave (S19, T6.2).
+ *
+ * Measured from the native build (`pio run -e native`, PLATFORM_NATIVE, -O2)
+ * and checked by the static_asserts below:
+ *
+ *   actor              count   sizeof   bytes
+ *   PlayerActor            1      216      216
+ *   AlienActor            55       80     4400
+ *   BunkerActor            4      192      768
+ *   ProjectileActor       12      200     2400
+ *   ---------------------------------------------------
+ *   total arena bytes                      7784
+ *   arena buffer bytes                     8192
+ *   remaining arena headroom                408
+ *
+ *   entity list: 72 registered (1 + 55 + 4 + 12) against MAX_ENTITIES = 80,
+ *   so the entity list keeps 8 free slots.
+ *
+ * The arena never frees an individual actor, so the whole wave has to fit at
+ * once: one player, 55 aliens, four shields and twelve shots. The previous
+ * 4096 budget silently dropped every alien past the forty-eighth, all four
+ * shields and most shots, because arenaNew() returns null and the spawn loops
+ * skip the actor, which reads as a formation with holes and not as an
+ * out-of-memory bug. 8192 was measured to hold the wave with 408 bytes spare.
+ * S19 lets this buffer keep its size or grow with a measured number, never
+ * shrink silently, so every number is a named constant here and the compiler
+ * re-checks each actor's share: a future size change breaks the build instead
+ * of the game.
+ *
+ * The per-type byte constants are the measured ceilings. They are intentionally
+ * target-independent: the 32-bit ESP32 build lays these actors out no larger
+ * than the native one, so the same asserts hold there, and the byte count is
+ * what this game ships (S19) rather than a per-ABI figure.
+ */
+namespace arenaBudget {
+/// The cannon: exactly one instance.
+constexpr int PlayerCount = 1;
+/// The 5 x 11 rack (rules::RackRows x rules::RackCols).
+constexpr int AlienCount = rules::RackRows * rules::RackCols;
+/// The four shields; each actor only views the scene's shared shield mask.
+constexpr int BunkerCount = rules::ShieldCount;
+/// The fixed shot pool. init() asserts this equals MaxProjectiles.
+constexpr int ProjectileCount = 12;
+
+/// Measured sizeof() per actor type, used as the budgeted ceiling.
+constexpr std::size_t PlayerBytes = 216;
+constexpr std::size_t AlienBytes = 80;
+constexpr std::size_t BunkerBytes = 192;
+constexpr std::size_t ProjectileBytes = 200;
+
+/// Bytes reserved for the arena buffer.
+constexpr std::size_t BufferBytes = 8192;
+
+/// Sum of the four actor shares: the bytes one full wave consumes.
+constexpr std::size_t TotalBytes = PlayerBytes * PlayerCount +
+                                   AlienBytes * AlienCount +
+                                   BunkerBytes * BunkerCount +
+                                   ProjectileBytes * ProjectileCount;
+/// Bytes left in the buffer once the wave is allocated.
+constexpr std::size_t HeadroomBytes = 408;
+
+/// Actors registered with the scene: player, rack, shields and shot pool.
+constexpr int EntityCount =
+    PlayerCount + AlienCount + BunkerCount + ProjectileCount;
+}  // namespace arenaBudget
+
 /** Arena for all scene entities (player, aliens, bunkers, projectiles).
- *  The arena never frees an individual actor, so the whole wave has to fit at
- *  once: one player, 55 aliens, four shields and twelve shots. Measured on the
- *  64-bit native build that is 248 + 4400 + 736 + 2400 = 7784 bytes, and the
- *  previous 4096 budget silently dropped every alien past the forty-eighth,
- *  all four shields and most shots because arenaNew() returns null and the
- *  spawn loops skip the actor. 8192 leaves one spare actor of headroom, and
- *  the static_assert in init() turns a future size regression into a compile
- *  error instead of a formation with holes.
- *  If you need 2048 again (e.g. tight RAM), build this target without
- *  PIXELROOT32_ENABLE_SCENE_ARENA so the scene uses heap instead of this
- *  fixed buffer. */
-static unsigned char SPACE_INVADERS_SCENE_ARENA_BUFFER[8192];
+ *  Sized from arenaBudget::BufferBytes so the budget above and the storage cannot
+ *  disagree. If you need 2048 again (e.g. tight RAM), build this target
+ *  without PIXELROOT32_ENABLE_SCENE_ARENA so the scene uses heap instead of
+ *  this fixed buffer. */
+static unsigned char SPACE_INVADERS_SCENE_ARENA_BUFFER[arenaBudget::BufferBytes];
+
+static_assert(sizeof(SPACE_INVADERS_SCENE_ARENA_BUFFER) == arenaBudget::BufferBytes,
+              "arena buffer must be arenaBudget::BufferBytes long");
+
+// One check per actor type: the compiled sizeof() may not exceed the measured
+// ceiling recorded in the budget. A grown actor fails here, which is what keeps
+// the numbers in the comment block above honest.
+static_assert(sizeof(PlayerActor) <= arenaBudget::PlayerBytes,
+              "PlayerActor grew: re-measure the arena budget");
+static_assert(sizeof(AlienActor) <= arenaBudget::AlienBytes,
+              "AlienActor grew: re-measure the arena budget");
+static_assert(sizeof(BunkerActor) <= arenaBudget::BunkerBytes,
+              "BunkerActor grew: re-measure the arena budget");
+static_assert(sizeof(ProjectileActor) <= arenaBudget::ProjectileBytes,
+              "ProjectileActor grew: re-measure the arena budget");
+
+// A full wave must fit the buffer, and the stated headroom must still be the
+// buffer minus the wave, so changing one number forces the others to be
+// restated rather than left stale.
+static_assert(arenaBudget::PlayerBytes * arenaBudget::PlayerCount +
+                      arenaBudget::AlienBytes * arenaBudget::AlienCount +
+                      arenaBudget::BunkerBytes * arenaBudget::BunkerCount +
+                      arenaBudget::ProjectileBytes * arenaBudget::ProjectileCount ==
+                  arenaBudget::TotalBytes,
+              "arena total must equal the four actor shares");
+static_assert(arenaBudget::TotalBytes <= arenaBudget::BufferBytes,
+              "scene arena must hold one full wave");
+static_assert(arenaBudget::TotalBytes + arenaBudget::HeadroomBytes == arenaBudget::BufferBytes,
+              "arena headroom must be the buffer minus the wave");
+
+// The wave is registered in the scene's fixed entity list as well, and
+// addEntity() silently drops anything past MaxEntities.
+static_assert(arenaBudget::EntityCount <= pixelroot32::platforms::config::MaxEntities,
+              "a full wave must fit MAX_ENTITIES");
 #endif
 
 
@@ -103,18 +199,28 @@ void SpaceInvadersScene::init() {
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
     arena.init(SPACE_INVADERS_SCENE_ARENA_BUFFER, sizeof(SPACE_INVADERS_SCENE_ARENA_BUFFER));
 
-    // A failed arenaNew() is silent: the spawn loops skip the actor and the
-    // wave comes out short. Every actor the scene can own must fit together,
-    // so the bound is checked at compile time instead of hours into a run.
-    static_assert(sizeof(PlayerActor) +
-                      rules::RackRows * rules::RackCols * sizeof(AlienActor) +
-                      rules::ShieldCount * sizeof(BunkerActor) +
-                      MaxProjectiles * sizeof(ProjectileActor) <=
-                  sizeof(SPACE_INVADERS_SCENE_ARENA_BUFFER),
-                  "scene arena must hold one full wave");
+    // The compile-time half of S19 lives next to the buffer: every actor's
+    // share is a named constant checked by a static_assert, so a size
+    // regression is a build error. The shot pool count is the one number the
+    // scene also owns as MaxProjectiles, so pin the two declarations together.
+    static_assert(arenaBudget::ProjectileCount == MaxProjectiles,
+                  "the arena budget must cover the whole projectile pool");
 #endif
     pr32::graphics::setSpritePalette(pr32::graphics::PaletteType::NES);
+
+    // resetGame() holds every arenaNew() call site - the player, the rack, the
+    // shields and the shot pool - and it runs last, so this is the point where
+    // the count describes a complete wave.
     resetGame();
+
+#ifdef PIXELROOT32_ENABLE_SCENE_ARENA
+    // The runtime half of S19. This is a debug-build check: assert() compiles
+    // out under NDEBUG, so it can never fail a device run. The device build is
+    // protected by the static_asserts next to the buffer instead, which is why
+    // a shortfall shows up as a counted null here and as a compile error on
+    // hardware, never as a missing alien.
+    assert(arenaFailures == 0 && "scene arena could not hold a full wave");
+#endif
 }
 
 void SpaceInvadersScene::cleanup() {
@@ -144,11 +250,21 @@ void SpaceInvadersScene::resetGame() {
 
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
     arena.reset();
+    // The arena is empty again, so the failure count from here on can only
+    // describe the wave this build is about to allocate.
+    arenaFailures = 0;
 #endif
 
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
     player = arenaNew<PlayerActor>(arena, pr32::math::Vector2(PLAYER_START_X, PLAYER_START_Y));
-    addEntity(player);
+    if (!player) {
+        // Count the shortfall instead of registering a null actor: addEntity()
+        // asserts on null, and a null cannon has no owner to fall back to. The
+        // rest of the scene already tests `player`, so the run survives.
+        ++arenaFailures;
+    } else {
+        addEntity(player);
+    }
 #else
     player = std::make_unique<PlayerActor>(pr32::math::Vector2(PLAYER_START_X, PLAYER_START_Y));
     addEntity(player.get());
@@ -165,6 +281,8 @@ void SpaceInvadersScene::resetGame() {
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
         ProjectileActor* projectile = arenaNew<ProjectileActor>(arena, pr32::math::Vector2(0, -PROJECTILE_HEIGHT), ProjectileType::PLAYER_BULLET);
         if (!projectile) {
+            // A missing shot slot is a shortfall, not a design choice (S19).
+            ++arenaFailures;
             continue;
         }
         projectile->deactivate();
@@ -240,6 +358,9 @@ void SpaceInvadersScene::spawnAliens() {
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
             AlienActor* alien = arenaNew<AlienActor>(arena, pr32::math::Vector2(x, y), cell.type);
             if (!alien) {
+                // Counted, then skipped: alienGrid keeps this cell null and no
+                // later alien is shifted onto the wrong cell (S19).
+                ++arenaFailures;
                 continue;
             }
             aliens.push_back(alien);
@@ -264,6 +385,8 @@ void SpaceInvadersScene::spawnBunkers() {
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
         BunkerActor* bunker = arenaNew<BunkerActor>(arena, position, shieldField, i);
         if (!bunker) {
+            // Counted, then skipped: the shield simply stays absent (S19).
+            ++arenaFailures;
             continue;
         }
         bunkers.push_back(bunker);
