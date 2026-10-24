@@ -7,6 +7,7 @@
 #include "SaucerActor.h"
 #include "rules/FireTiming.h"
 #include "rules/FixedStep.h"
+#include "rules/MarchSound.h"
 #include "rules/Rack.h"
 #include "rules/Rng.h"
 #include "rules/Saucer.h"
@@ -78,7 +79,7 @@ namespace spaceinvaders {
          *
          * While the player-death hold is set this only ages the hold and the
          * enemy bursts: the rack, the enemy fire clock, the saucer, the shots
-         * and the music tempo all keep the state they had when the cannon died,
+         * and the march beat all keep the state they had when the cannon died,
          * which is what makes the wave resume exactly where it stopped (S14).
          *
          * @param tickMs Duration of one tick in milliseconds.
@@ -119,6 +120,16 @@ namespace spaceinvaders {
          * frame and the invasion check all read from it.
          */
         rules::Rack rack;
+
+        /**
+         * The march beat (S16). One short tone per beat from the rotating fleet
+         * voices, with the gap taken from the live count. It is a rules object
+         * rather than a music track because the reference's beat is its own
+         * clock, not the formation's sweep: the two are keyed on the same count
+         * but run at different rates (D5). The scene only turns a due beat into
+         * an AudioEvent.
+         */
+        rules::MarchSound marchSound;
 
         /**
          * The mystery-ship model (S11). The rules object owns the 1536-tick
@@ -209,7 +220,6 @@ namespace spaceinvaders {
         static constexpr int MaxProjectiles = 12;
 
         bool fireInputReady;                        ///< Fire rate limiting state
-        float currentMusicTempoFactor;              ///< BGM tempo based on alien proximity
 
         /**
          * @brief Advances the rack one tick and mirrors it onto the actors.
@@ -327,7 +337,17 @@ namespace spaceinvaders {
          */
         void enemyShoot();
         int getActiveAlienCount() const;
-        void updateMusicTempo();
+
+        /**
+         * @brief Advances the march beat and plays its tone when one is due (S16).
+         *
+         * The rules object owns the countdown, the interval table and the
+         * four-voice rotation; this method only reads the live count, asks for
+         * a beat, and emits one short pulse on the voice the beat selected.
+         * There is no music track and no loop: the APU stops the voice after
+         * the documented four-tick hold on its own.
+         */
+        void updateMarchSound();
 
         void updateEnemyExplosions(unsigned long deltaTime);
         void drawEnemyExplosions(pixelroot32::graphics::Renderer& renderer);

@@ -50,65 +50,9 @@ static unsigned char SPACE_INVADERS_SCENE_ARENA_BUFFER[8192];
 #endif
 
 
-// Base four-note bass pattern: "tu tu tu tu"
+// Voice for the game-over track below. The march does not use a track at all
+// (S16); T5.3 removes the jingle, but it is not part of T5.1.
 static const InstrumentPreset BASS_INSTRUMENT = INSTR_PULSE_BASS;
-
-static const MusicNote BGM_SLOW_NOTES[] = {
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.21f),
-    pixelroot32::audio::makeRest(0.207f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.21f),
-    pixelroot32::audio::makeRest(0.207f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.21f),
-    pixelroot32::audio::makeRest(0.207f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.21f),
-    pixelroot32::audio::makeRest(0.207f),
-};
-
-static const MusicNote BGM_MEDIUM_NOTES[] = {
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.12f),
-    pixelroot32::audio::makeRest(0.06f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.12f),
-    pixelroot32::audio::makeRest(0.06f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.12f),
-    pixelroot32::audio::makeRest(0.06f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.12f),
-    pixelroot32::audio::makeRest(0.06f),
-};
-
-static const MusicNote BGM_FAST_NOTES[] = {
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.08f),
-    pixelroot32::audio::makeRest(0.04f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.08f),
-    pixelroot32::audio::makeRest(0.04f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.08f),
-    pixelroot32::audio::makeRest(0.04f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.08f),
-    pixelroot32::audio::makeRest(0.04f),
-};
-
-static const MusicTrack BGM_SLOW_TRACK = {
-    BGM_SLOW_NOTES,
-    sizeof(BGM_SLOW_NOTES) / sizeof(MusicNote),
-    true,
-    WaveType::PULSE,
-    BASS_INSTRUMENT.duty
-};
-
-static const MusicTrack BGM_MEDIUM_TRACK = {
-    BGM_MEDIUM_NOTES,
-    sizeof(BGM_MEDIUM_NOTES) / sizeof(MusicNote),
-    true,
-    WaveType::PULSE,
-    BASS_INSTRUMENT.duty
-};
-
-static const MusicTrack BGM_FAST_TRACK = {
-    BGM_FAST_NOTES,
-    sizeof(BGM_FAST_NOTES) / sizeof(MusicNote),
-    true,
-    WaveType::PULSE,
-    BASS_INSTRUMENT.duty
-};
 
 // --- GAME OVER MUSIC ---
 //
@@ -134,8 +78,7 @@ static const MusicTrack GAME_OVER_TRACK = {
 SpaceInvadersScene::SpaceInvadersScene()
     : player(nullptr),
       gameOver(false),
-      fireInputReady(false),
-      currentMusicTempoFactor(1.0f) {
+      fireInputReady(false) {
 
     // Null grid entries mean "no actor for this cell"; spawnAliens() fills it
     // after the rack allocates the wave, and cleanup() clears it again.
@@ -172,10 +115,6 @@ void SpaceInvadersScene::init() {
 #endif
     pr32::graphics::setSpritePalette(pr32::graphics::PaletteType::NES);
     resetGame();
-
-    engine.getMusicPlayer().play(BGM_SLOW_TRACK);
-    currentMusicTempoFactor = 1.0f;
-    engine.getMusicPlayer().setTempoFactor(currentMusicTempoFactor);
 }
 
 void SpaceInvadersScene::cleanup() {
@@ -244,6 +183,10 @@ void SpaceInvadersScene::resetGame() {
     scoring.reset();
     gameOver = false;
     fireInputReady = false;
+
+    // S16: a run opens on the first fleet voice and the full-rack interval, so
+    // the march never inherits a tone or a gap from the previous run.
+    marchSound.reset();
 
     // S14: a reset ends any death in progress, so the hold and the position it
     // recorded start empty and a run never opens on a burst left over from the
@@ -346,9 +289,6 @@ void SpaceInvadersScene::tick(unsigned long tickMs) {
     if (gameOver) {
         if (engine.getInputManager().isButtonPressed(BTN_FIRE)) {
             resetGame();
-            engine.getMusicPlayer().play(BGM_SLOW_TRACK);
-            currentMusicTempoFactor = 1.0f;
-            engine.getMusicPlayer().setTempoFactor(currentMusicTempoFactor);
         }
         return;
     }
@@ -432,7 +372,10 @@ void SpaceInvadersScene::tick(unsigned long tickMs) {
     handleCollisions();
     updateEnemyExplosions(tickMs);
 
-    updateMusicTempo();
+    // S16: the beat is its own clock. It runs last so it reads the live count
+    // after this tick's kills and after a wave rebuild, and it never borrows the
+    // rack's sweep length (D5).
+    updateMarchSound();
 }
 
 void SpaceInvadersScene::updateAliens() {
@@ -466,7 +409,6 @@ void SpaceInvadersScene::updateAliens() {
         const int cannonBaseline = static_cast<int>(CANNON_TOP_Y) + PLAYER_HEIGHT;
         if (rack.lowestAlienBottom() >= cannonBaseline) {
             gameOver = true;
-            engine.getMusicPlayer().setTempoFactor(1.0f);
             engine.getMusicPlayer().play(GAME_OVER_TRACK);
         }
     }
@@ -538,6 +480,10 @@ void SpaceInvadersScene::advanceWave() {
     // the cleared rack survives into the new formation.
     scoring.nextWave();
     rack.spawn(rules::RackOriginX, rules::rackOriginYForWave(scoring.wave()));
+
+    // S16: the new formation opens on the first fleet voice and the first band's
+    // interval, so no tone or countdown from the cleared rack carries over.
+    marchSound.reset();
 
     // The actors are views of the rack: every cell is alive again, back on frame
     // 0, and the positions are copied by the same helper a march tick uses.
@@ -997,20 +943,27 @@ void SpaceInvadersScene::draw(pr32::graphics::Renderer& renderer) {
     }
 }
 
-void SpaceInvadersScene::updateMusicTempo() {
-    if (gameOver) return;
-    if (!rack.anyAlive()) return;
+void SpaceInvadersScene::updateMarchSound() {
+    // The run is over: no beat can start, and any tone already playing stops on
+    // its four-tick duration without the scene sending a stop command.
+    if (gameOver) {
+        return;
+    }
 
-    // The rack's lowest bottom is the same number the invasion check reads, so
-    // the soundtrack can never disagree with where the formation actually is.
-    const float lowestY = static_cast<float>(rack.lowestAlienBottom());
-    float threatFactor = (lowestY - static_cast<float>(rules::RackOriginY)) * INV_Y_RANGE;
-    if (threatFactor < 0.0f) threatFactor = 0.0f;
-    if (threatFactor > 1.0f) threatFactor = 1.0f;
+    if (!marchSound.tick(static_cast<uint8_t>(getActiveAlienCount()))) {
+        return;
+    }
 
-    float targetTempo = 1.0f + (threatFactor * 0.9f);
-    currentMusicTempoFactor += (targetTempo - currentMusicTempoFactor) * 0.05f;
-    engine.getMusicPlayer().setTempoFactor(currentMusicTempoFactor);
+    // S16: one short pulse per beat. The documented fleet hold is four ticks, so
+    // the duration is 4/60 s at the rules clock; the APU disables the voice
+    // itself when it expires, and nothing loops.
+    AudioEvent event{};
+    event.type = WaveType::PULSE;
+    event.frequency = rules::MarchToneHz[marchSound.toneIndex()];
+    event.duration = static_cast<float>(rules::MarchHoldTicks) / 60.0f;
+    event.volume = 0.35f;
+    event.duty = 0.5f;
+    engine.getAudioEngine().playEvent(event);
 }
 
 void SpaceInvadersScene::updateEnemyExplosions(unsigned long deltaTime) {
@@ -1124,7 +1077,6 @@ void SpaceInvadersScene::handlePlayerHit() {
 
     if (scoring.lives() == 0) {
         gameOver = true;
-        engine.getMusicPlayer().setTempoFactor(1.0f);
         engine.getMusicPlayer().play(GAME_OVER_TRACK);
         return;
     }
