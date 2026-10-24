@@ -27,7 +27,7 @@ runs without a runtime allocation.
 
 Language: C++17  
 Engine: `gperez88/PixelRoot32-Game-Engine@^1.9.0`  
-Environments: `native`, `esp32dev`  
+Environments: `native`, `esp32dev_ST7789`  
 Category: Games
 
 ![Space Invaders](screenshots/screenshot.png)
@@ -58,13 +58,13 @@ and [`src/rules/RulesConstants.h`](src/rules/RulesConstants.h).
 | Environment | Display | Audio backend |
 |-------------|---------|----------------|
 | **`native`** | SDL2, 240×240 | `SDL2_AudioBackend` in [`src/platforms/native.h`](src/platforms/native.h) |
-| **`esp32dev`** | **ST7789** 240×240 | `ESP32_I2S_AudioBackend` in [`src/platforms/esp32_dev.h`](src/platforms/esp32_dev.h) |
+| **`esp32dev_ST7789`** | **ST7789** 240×240 | `ESP32_I2S_AudioBackend` in [`src/platforms/esp32_dev_ST7789.h`](src/platforms/esp32_dev_ST7789.h) |
 
-Pins for ST7789, I2S and the D-pad are in `src/platforms/esp32_dev.h`.
+Pins for ST7789, I2S and the D-pad are in `src/platforms/esp32_dev_ST7789.h`.
 
 ## Controls
 
-| Action | `native` (keyboard) | `esp32dev` (GPIO) |
+| Action | `native` (keyboard) | `esp32dev_ST7789` (GPIO) |
 |--------|----------------------|--------------------|
 | Move ship | Left / Right arrows | D-pad Left / Right (33 / 14) |
 | Fire | Space | Button A (13) |
@@ -195,7 +195,7 @@ src/
 ├── scenes/                        SpaceInvadersScene.h/.cpp — arena, tick loop, collisions, HUD, audio
 ├── rules/                         engine-free: Rack, RulesConstants, FixedStep, FireTiming,
 │                                  Shots, ShieldMask, Saucer, MarchSound, Scoring, Rng
-├── platforms/                     native.h, esp32_dev.h — backend wiring
+├── platforms/                     native.h, esp32_dev_ST7789.h — backend wiring
 ├── GameConstants.h                screen model, input IDs
 └── main.cpp                       platform selector
 
@@ -216,7 +216,7 @@ From **`games/space_invaders`**:
 
 ```bash
 pio run -e native
-pio run -e esp32dev
+pio run -e esp32dev_ST7789
 ```
 
 ## Verification
@@ -225,7 +225,7 @@ pio run -e esp32dev
 |---------|----------------|
 | `pio test -e host_test` | The rules layer alone: 55 cells, sweep length from the live count, the 3 px last alien and 8 px drop, the reload ladder, the 15-value saucer sequence, shield erosion and the pass-through hole, the 1500-point ship, the wave offset, the march intervals, and a scripted-run replay. No display, no SDL. |
 | `pio run -e native` | The whole game links and builds for SDL2 at 1:1, and every arena-budget assertion holds. |
-| `pio run -e esp32dev` | The device target with the ST7789 and I2S wiring compiles. |
+| `pio run -e esp32dev_ST7789` | The device target with the ST7789 and I2S wiring compiles. |
 
 Still pending: a full run on the panel, and the capture comparison at fixed
 ticks against a reference recording — what the provisional figures wait on.
@@ -233,7 +233,7 @@ ticks against a reference recording — what the provisional figures wait on.
 ## Upload (ESP32)
 
 ```bash
-pio run -e esp32dev --target upload
+pio run -e esp32dev_ST7789 --target upload
 ```
 
 ## License
