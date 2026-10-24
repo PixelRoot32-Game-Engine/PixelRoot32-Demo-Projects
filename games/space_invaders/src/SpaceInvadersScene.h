@@ -192,7 +192,17 @@ namespace spaceinvaders {
         void spawnEnemyExplosion(pixelroot32::math::Scalar x, pixelroot32::math::Scalar y);
 
         void handlePlayerHit();
-        void respawnPlayerUnderBunker();
+
+        /**
+         * @brief Returns the cannon to the left edge of the playfield (S14).
+         *
+         * The cannon is continuous, so a respawn is a single coordinate: the
+         * actor stores screen columns, so it is placed at FIELD_X, the left
+         * edge of the playfield. The old version centred the ship under the
+         * first intact shield and left the grid state stale, which is the
+         * respawn bug F2 by construction.
+         */
+        void respawnPlayer();
     };
 
 }

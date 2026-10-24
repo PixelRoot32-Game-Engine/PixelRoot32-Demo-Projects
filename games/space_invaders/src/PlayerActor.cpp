@@ -3,6 +3,7 @@
 #include "BandColor.h"
 #include "GameConstants.h"
 #include "core/Engine.h"
+#include "rules/RulesConstants.h"
 #include "assets/PlayerSprites.h"
 
 namespace pr32 = pixelroot32;
@@ -10,135 +11,42 @@ extern pr32::core::Engine engine;
 
 namespace spaceinvaders {
 
-using Sprite = pr32::graphics::Sprite;
-
-
 PlayerActor::PlayerActor(pixelroot32::math::Vector2 position)
-    : KinematicActor(position, static_cast<int>(PLAYER_WIDTH), static_cast<int>(PLAYER_HEIGHT)), 
-      isAlive(true),
-      currentPosition(0),
-      targetPosition(0),
-      isMoving(false),
-      moveTimer(0),
-      startX(pr32::math::toScalar(0)),
-      targetX(pr32::math::toScalar(0)),
-      leftButtonPressed(false),
-      rightButtonPressed(false),
-      autoRepeatTimer(0),
-      autoRepeatActive(false) {
-    
+    : KinematicActor(position, static_cast<int>(PLAYER_WIDTH), static_cast<int>(PLAYER_HEIGHT)),
+      isAlive(true) {
+
     setShape(pr32::core::CollisionShape::AABB);
 
-    currentPosition = calculatePositionFromX(position.x);
-    targetPosition = currentPosition;
-    position.x = calculateXFromPosition(currentPosition);
-}
-
-int PlayerActor::calculatePositionFromX(pixelroot32::math::Scalar x) const {
-    float xFloat = static_cast<float>(x);
-    float usableWidth = DISPLAY_WIDTH - PLAYER_WIDTH;
-    float step = usableWidth / (NUM_POSITIONS - 1);
-    
-    int pos = static_cast<int>((xFloat / step) + 0.5f);
-    if (pos < 0) pos = 0;
-    if (pos >= NUM_POSITIONS) pos = NUM_POSITIONS - 1;
-    
-    return pos;
-}
-
-pr32::math::Scalar PlayerActor::calculateXFromPosition(int pos) const {
-    float usableWidth = DISPLAY_WIDTH - PLAYER_WIDTH;
-    float step = usableWidth / (NUM_POSITIONS - 1);
-    float x = pos * step;
-    
-    return pr32::math::toScalar(x);
-}
-
-void PlayerActor::moveToPosition(int newPosition) {
-    if (newPosition < 0) newPosition = 0;
-    if (newPosition >= NUM_POSITIONS) newPosition = NUM_POSITIONS - 1;
-    
-    if (newPosition != targetPosition) {
-        targetPosition = newPosition;
-        isMoving = true;
-        moveTimer = 0;
-        startX = position.x;
-        targetX = calculateXFromPosition(targetPosition);
-    }
+    // S7: the field edge is the only limit, so a spawn is clamped and nothing
+    // else. Snapping to a lane here is what made respawns land somewhere the
+    // old grid could not describe (F2). The actor keeps screen coordinates like
+    // every other entity, so the clamp is applied in playfield space and the
+    // origin is added back before storing it.
+    const int startX = FIELD_X + rules::clampCannonX(static_cast<int>(position.x) - FIELD_X);
+    setPosition(pr32::math::Vector2(pr32::math::toScalar(startX), position.y));
 }
 
 void PlayerActor::update(unsigned long deltaTime) {
-    handleInput(deltaTime);
-    
-    if (isMoving) {
-        updatePositionMovement(deltaTime);
-    }
-}
+    // S20: the tick is the clock. The scene calls this exactly once per fixed
+    // rules tick, so one tick is one pixel and no frame rate can stretch it.
+    (void)deltaTime;
 
-void PlayerActor::updatePositionMovement(unsigned long deltaTime) {
-    moveTimer += deltaTime;
-
-    if (moveTimer >= MOVE_DURATION_MS) {
-        position.x = targetX;
-        currentPosition = targetPosition;
-        isMoving = false;
-    } else {
-        float t = static_cast<float>(moveTimer) / static_cast<float>(MOVE_DURATION_MS);
-        t = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);  // Ease-out-cubic
-        
-        float currentX = static_cast<float>(startX) + (static_cast<float>(targetX) - static_cast<float>(startX)) * t;
-        position.x = pr32::math::toScalar(currentX);
-    }
-}
-
-void PlayerActor::handleInput(unsigned long deltaTime) {
     auto& input = engine.getInputManager();
-    
-    bool leftDown = input.isButtonDown(BTN_LEFT);
-    bool rightDown = input.isButtonDown(BTN_RIGHT);
-    bool leftPressed = leftDown && !leftButtonPressed;
-    bool rightPressed = rightDown && !rightButtonPressed;
-    
-    if (leftPressed && !rightDown) {
-        moveToPosition(targetPosition - 1);
-        autoRepeatActive = false;
-        autoRepeatTimer = 0;
-    } else if (rightPressed && !leftDown) {
-        moveToPosition(targetPosition + 1);
-        autoRepeatActive = false;
-        autoRepeatTimer = 0;
+    const bool leftDown = input.isButtonDown(BTN_LEFT);
+    const bool rightDown = input.isButtonDown(BTN_RIGHT);
+
+    // Holding both cancels out instead of letting the last sampled button win:
+    // a two-button press must never move the cannon by accident.
+    if (leftDown == rightDown) {
+        return;
     }
 
-    if ((leftDown && !rightDown) || (rightDown && !leftDown)) {
-        autoRepeatTimer += deltaTime;
-        
-        if (!autoRepeatActive) {
-            if (autoRepeatTimer >= AUTO_REPEAT_DELAY_MS) {
-                autoRepeatActive = true;
-                autoRepeatTimer = 0;
-                if (leftDown) {
-                    moveToPosition(targetPosition - 1);
-                } else {
-                    moveToPosition(targetPosition + 1);
-                }
-            }
-        } else {
-            if (autoRepeatTimer >= AUTO_REPEAT_INTERVAL_MS) {
-                autoRepeatTimer = 0;
-                if (leftDown) {
-                    moveToPosition(targetPosition - 1);
-                } else {
-                    moveToPosition(targetPosition + 1);
-                }
-            }
-        }
-    } else {
-        autoRepeatActive = false;
-        autoRepeatTimer = 0;
-    }
-
-    leftButtonPressed = leftDown;
-    rightButtonPressed = rightDown;
+    // The clamp lives in playfield pixels (0..CannonMaxX) because that is the
+    // rule; the actor stores the screen column every other entity uses, so the
+    // origin is subtracted, clamped and added back in one place.
+    const int step = rightDown ? rules::CannonStepX : -rules::CannonStepX;
+    const int fieldX = rules::clampCannonX(static_cast<int>(position.x) - FIELD_X + step);
+    setPosition(pr32::math::Vector2(pr32::math::toScalar(FIELD_X + fieldX), position.y));
 }
 
 bool PlayerActor::isFireDown() const {
@@ -154,12 +62,13 @@ bool PlayerActor::wantsToShoot() const {
 void PlayerActor::draw(pr32::graphics::Renderer& renderer) {
     if (!isAlive) return;
 
+    // Screen column, like every other entity the scene collides with.
     const int drawX = static_cast<int>(position.x);
     const int drawY = static_cast<int>(position.y);
 
-    // 1:1 draw: the arcade screen model has no scale factor, so the sprite
-    // occupies exactly the collision box the physics uses. The cannon sits in
-    // the green band under the overlay, so its white mask reads green (S3).
+    // 1:1 draw: the arcade screen model has no scale factor, so the sprite is
+    // the same 13x8 the rules talk about. The cannon sits in the green band
+    // under the overlay, so its white mask reads green (S3).
     renderer.drawSprite(PLAYER_SHIP_SPRITE,
                         drawX,
                         drawY,
@@ -170,4 +79,4 @@ void PlayerActor::onCollision(pr32::core::Actor* other) {
     (void)other;
 }
 
-}
+}  // namespace spaceinvaders

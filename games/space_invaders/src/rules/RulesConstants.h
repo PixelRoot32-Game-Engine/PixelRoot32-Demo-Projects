@@ -69,6 +69,20 @@ constexpr int ExtraShipScore = 1500;
 constexpr int StartLives = 3;
 
 /**
+ * @brief Clamp a cannon x to the playfield (S7).
+ *
+ * The cannon is continuous and steps one pixel per tick, so the field edge is
+ * the only thing that limits it. Keeping the bound here means the actor has no
+ * geometry of its own and a wrong limit fails a host test instead of walking
+ * the cannon off the panel.
+ *
+ * @param x Cannon left edge in playfield coordinates.
+ * @return 0 when x is negative, CannonMaxX when it is past the right edge,
+ *         otherwise x unchanged.
+ */
+int clampCannonX(int x);
+
+/**
  * @enum AlienType
  * @brief Rack variant; the type selects the sprite size and the score value.
  */

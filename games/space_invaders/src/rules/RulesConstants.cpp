@@ -2,6 +2,17 @@
 
 namespace spaceinvaders::rules {
 
+int clampCannonX(int x) {
+    // S7: the cannon is continuous and the playfield edge is its only stop.
+    if (x < 0) {
+        return 0;
+    }
+    if (x > CannonMaxX) {
+        return CannonMaxX;
+    }
+    return x;
+}
+
 int8_t alienWidth(AlienType t) {
     // The three reference masks are 8, 11 and 12 pixels wide (S2); the edge
     // check needs the true width, so it must never be a single shared value.

@@ -41,7 +41,6 @@ namespace spaceinvaders {
     constexpr int PLAYER_WIDTH = PLAYER_SPRITE_W;
     constexpr int PLAYER_HEIGHT = PLAYER_SPRITE_H;
 
-    constexpr float PLAYER_SPEED = 60.0f;
     /** Spawn centred in the playfield, resting on the cannon baseline */
     constexpr float PLAYER_START_X = FIELD_X + (FIELD_W - PLAYER_WIDTH) * 0.5f;
     constexpr float PLAYER_START_Y = CANNON_TOP_Y;

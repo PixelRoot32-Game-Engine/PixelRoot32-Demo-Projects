@@ -410,7 +410,7 @@ void SpaceInvadersScene::tick(unsigned long tickMs) {
         updateEnemyExplosions(tickMs);
 
         if (!playerExplosion.isActive()) {
-            respawnPlayerUnderBunker();
+            respawnPlayer();
             isPaused = false;
         }
         return;
@@ -855,26 +855,14 @@ void SpaceInvadersScene::handlePlayerHit() {
     isPaused = true;
 }
 
-void SpaceInvadersScene::respawnPlayerUnderBunker() {
+void SpaceInvadersScene::respawnPlayer() {
     if (!player) {
         return;
     }
 
-    BunkerActor* targetBunker = nullptr;
-    for (const auto& bunker : bunkers) {
-        if (!bunker->isDestroyed()) {
-            targetBunker = &*bunker;
-            break;
-        }
-    }
-
-    pr32::math::Scalar newX = pr32::math::toScalar(PLAYER_START_X);
-
-    if (targetBunker) {
-        newX = targetBunker->position.x + (pr32::math::toScalar(targetBunker->width - PLAYER_WIDTH) * pr32::math::toScalar(0.5f));
-    }
-
-    player->position.x = newX;
+    // S14: the cannon returns at the left edge of the playfield, which is
+    // FIELD_X in the screen coordinates the actor shares with everything else.
+    player->setPosition(pr32::math::Vector2(pr32::math::toScalar(FIELD_X), player->position.y));
     player->setVisible(true);
 }
 
