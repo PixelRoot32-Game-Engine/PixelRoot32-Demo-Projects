@@ -17,70 +17,104 @@ namespace spaceinvaders {
     constexpr uint8_t BTN_RIGHT = 3;
     constexpr uint8_t BTN_FIRE = 4;
 
-    /** Scale factor for all sprites (ceil for collision dimensions) */
-    constexpr float SPRITE_SCALE = 1.25f;
+    /**
+     * Screen model (S1). The playfield is 224 px wide and runs the full screen
+     * height; every sprite is drawn 1:1, so there is no scale factor left to
+     * derive sizes from.
+     *
+     * The build picks the origin, because the field is centred on the logical
+     * canvas: 8 px on the 240 px square panel, 48 px on the 320 px landscape
+     * CYD. Every playfield-derived position -- rack, shields, HUD, reserve
+     * ships, respawn column, saucer bounds -- reads FIELD_X, so the whole
+     * layout moves with this one value and nothing else has to know.
+     */
+#ifndef SPACE_INVADERS_FIELD_X
+#define SPACE_INVADERS_FIELD_X 8
+#endif
+    constexpr int FIELD_X = SPACE_INVADERS_FIELD_X;
+    constexpr int FIELD_W = 224;
+    constexpr int FIELD_H = 240;
+    constexpr int HUD_HEIGHT = 16;
+
+    /**
+     * @brief The logical canvas, measured after the engine's rotation.
+     *
+     * DisplayConfig swaps the logical width and height for a quarter turn, so
+     * LOGICAL_WIDTH/LOGICAL_HEIGHT describe the panel as mounted, not the
+     * framebuffer the scene draws into: the 240x320 CYD at DISPLAY_ROTATION=3
+     * renders into 320x240. Rotation also arrives as 0..3 or as degrees, hence
+     * the normalisation to a turn count.
+     */
+    constexpr int QUARTER_TURNS =
+        (DISPLAY_ROTATION >= 4 ? DISPLAY_ROTATION / 90 : DISPLAY_ROTATION) % 4;
+    constexpr int CANVAS_WIDTH = (QUARTER_TURNS % 2 == 0) ? LOGICAL_WIDTH : LOGICAL_HEIGHT;
+    constexpr int CANVAS_HEIGHT = (QUARTER_TURNS % 2 == 0) ? LOGICAL_HEIGHT : LOGICAL_WIDTH;
+
+    // A field that does not fit would draw off-panel instead of failing loudly,
+    // so the two numbers that place it are checked against the real canvas.
+    static_assert(FIELD_X + FIELD_W <= CANVAS_WIDTH,
+                  "Space Invaders: the 224 px playfield must fit the logical canvas width");
+    static_assert(FIELD_H <= CANVAS_HEIGHT,
+                  "Space Invaders: the 240 px playfield must fit the logical canvas height");
+
+    /** Vertical band origins, in screen pixels (S1) */
+    constexpr float SAUCER_Y = 24.0f;
+    constexpr float RACK_TOP_Y = 48.0f;
+    constexpr float SHIELD_TOP_Y = 184.0f;
+    constexpr float CANNON_TOP_Y = 208.0f;   ///< Top of the 8 px cannon; baseline is 216
+    constexpr float RESERVE_Y = 224.0f;
+
+    /**
+     * Mystery saucer mask size (S11). The actor's body and the entry/exit
+     * bounds both need it, and the asset is already 16x7, so the numbers live
+     * here instead of being repeated as literals in the movement code.
+     */
+    constexpr int SAUCER_WIDTH = 16;
+    constexpr int SAUCER_HEIGHT = 7;
 
     /** Player ship sprite dimensions (raw pixels) */
-    constexpr int PLAYER_SPRITE_W = 11;
+    constexpr int PLAYER_SPRITE_W = 13;
     constexpr int PLAYER_SPRITE_H = 8;
-    /** Player collision dimensions (scaled, ceil) */
-    constexpr int PLAYER_WIDTH = (int)(PLAYER_SPRITE_W * SPRITE_SCALE + 0.99f);
-    constexpr int PLAYER_HEIGHT = (int)(PLAYER_SPRITE_H * SPRITE_SCALE + 0.99f);
+    /** Player collision dimensions (raw pixels at 1:1) */
+    constexpr int PLAYER_WIDTH = PLAYER_SPRITE_W;
+    constexpr int PLAYER_HEIGHT = PLAYER_SPRITE_H;
 
-    constexpr float PLAYER_SPEED = 60.0f;
-    constexpr float PLAYER_START_X = (DISPLAY_WIDTH - PLAYER_WIDTH) / 2.0f;
-    constexpr float PLAYER_START_Y = DISPLAY_HEIGHT - PLAYER_HEIGHT - 4.0f;
+    /** Spawn centred in the playfield, resting on the cannon baseline */
+    constexpr float PLAYER_START_X = FIELD_X + (FIELD_W - PLAYER_WIDTH) * 0.5f;
+    constexpr float PLAYER_START_Y = CANNON_TOP_Y;
 
-    /** Projectile dimensions and speed (pixels per second) */
+    /**
+     * Projectile collision dimensions (1 px wide, 4 px tall). The enemy bolt is
+     * its own 3x7 mask (S9) and carries no velocity at all: the scene steps it.
+     */
     constexpr int PROJECTILE_WIDTH = 1;
     constexpr int PROJECTILE_HEIGHT = 4;
-    constexpr float PROJECTILE_SPEED = 80.0f;
 
-    /** Bunker layout and dimensions */
-    constexpr int BUNKER_COUNT = 4;
-    constexpr int BUNKER_WIDTH = 24;
-    constexpr int BUNKER_HEIGHT = 16;
-    constexpr float BUNKER_Y = DISPLAY_HEIGHT - PLAYER_HEIGHT - 40.0f;
+    /**
+     * Enemy shot mask and collision box (S9). It is a 3x7 zigzag with two
+     * frames, not the player's 1x4 bar, so it cannot share the numbers above.
+     */
+    constexpr int ENEMY_SHOT_WIDTH = 3;
+    constexpr int ENEMY_SHOT_HEIGHT = 7;
 
-    /** Alien formation grid */
-    constexpr int ALIEN_ROWS = 4;
-    constexpr int ALIEN_COLS = 8;
+    /**
+     * Seed for the run's enemy-fire generator (S20). A run reseeds to this
+     * value, so the same input script always draws the same shooter columns
+     * instead of following whatever std::rand() happened to hold.
+     */
+    constexpr uint32_t RUN_SEED = 0x1978u;
 
-    /** Squid (top row) dimensions */
+    /**
+     * Alien mask dimensions used by the sprite descriptors in
+     * assets/AlienSprites.h. The rules layer owns the formation geometry, the
+     * hit box and the score; these stay because a Sprite descriptor is a
+     * compile-time aggregate that cannot call rules::alienWidth().
+     */
     constexpr int ALIEN_SQUID_SPRITE_W = 8;
     constexpr int ALIEN_SQUID_SPRITE_H = 8;
-    constexpr int ALIEN_SQUID_W = (int)(ALIEN_SQUID_SPRITE_W * SPRITE_SCALE + 0.99f);
-    constexpr int ALIEN_SQUID_H = (int)(ALIEN_SQUID_SPRITE_H * SPRITE_SCALE + 0.99f);
-
-    /** Crab (middle rows) dimensions */
     constexpr int ALIEN_CRAB_SPRITE_W = 11;
     constexpr int ALIEN_CRAB_SPRITE_H = 8;
-    constexpr int ALIEN_CRAB_W = (int)(ALIEN_CRAB_SPRITE_W * SPRITE_SCALE + 0.99f);
-    constexpr int ALIEN_CRAB_H = (int)(ALIEN_CRAB_SPRITE_H * SPRITE_SCALE + 0.99f);
-
-    /** Octopus (bottom rows) dimensions */
     constexpr int ALIEN_OCTOPUS_SPRITE_W = 12;
     constexpr int ALIEN_OCTOPUS_SPRITE_H = 8;
-    constexpr int ALIEN_OCTOPUS_W = (int)(ALIEN_OCTOPUS_SPRITE_W * SPRITE_SCALE + 0.99f);
-    constexpr int ALIEN_OCTOPUS_H = (int)(ALIEN_OCTOPUS_SPRITE_H * SPRITE_SCALE + 0.99f);
-
-    /** Alien grid spacing and starting position */
-    constexpr float ALIEN_SPACING_X = 17.0f;
-    constexpr float ALIEN_SPACING_Y = 18.0f;
-    constexpr float ALIEN_GRID_WIDTH = (ALIEN_COLS - 1) * ALIEN_SPACING_X + ALIEN_OCTOPUS_W;
-    constexpr float ALIEN_START_X = (DISPLAY_WIDTH - ALIEN_GRID_WIDTH) * 0.5f;
-    constexpr float ALIEN_START_Y = 40.0f;
-
-    /** Alien formation step timing (ms) and movement */
-    constexpr unsigned long BASE_STEP_DELAY = 417;  ///< 72 BPM (eighth note)
-    constexpr unsigned long INITIAL_STEP_DELAY = 380;
-    constexpr unsigned long MIN_STEP_DELAY = 150;
-    constexpr float ALIEN_DROP_AMOUNT = 7.0f;
-    constexpr float ALIEN_STEP_AMOUNT_X = 2.5f;
-
-    /** Music tempo scaling based on alien proximity (threat factor) */
-    constexpr float GAME_OVER_Y = 200.0f;
-    constexpr float Y_RANGE = 160.0f;              ///< GAME_OVER_Y - ALIEN_START_Y
-    constexpr float INV_Y_RANGE = 0.00625f;        ///< 1.0 / Y_RANGE
 
 }
