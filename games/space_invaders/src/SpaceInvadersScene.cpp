@@ -8,7 +8,6 @@
 #include "core/Engine.h"
 #include "audio/AudioTypes.h"
 #include "audio/AudioMusicTypes.h"
-#include <cstdlib>
 #include <cstdio>
 #include "assets/FontData.h"
 #include "assets/PlayerExplosionSprites.h"
@@ -315,6 +314,14 @@ void SpaceInvadersScene::resetGame() {
     isPaused = false;
     fireInputReady = false;
 
+    // S9: a new run starts in the ladder's first band with a full budget, on a
+    // fresh shot-step clock. S20: the column draws start from the run seed, so
+    // the same input script always produces the same shooters.
+    enemyFireBand = 0;
+    enemyFireTimer.reset(enemyFireBand);
+    enemyShotStepTick = 0;
+    rng.reseed(RUN_SEED);
+
     for (int i = 0; i < MaxEnemyExplosions; ++i) {
         enemyExplosions[i].active = false;
         enemyExplosions[i].remainingMs = 0;
@@ -456,6 +463,7 @@ void SpaceInvadersScene::tick(unsigned long tickMs) {
     }
 
     updateAliens();
+    updateEnemyFire();
 
     handleCollisions();
     updateEnemyExplosions(tickMs);
@@ -481,10 +489,9 @@ void SpaceInvadersScene::updateAliens() {
         }
     }
 
-    // P4 replaces the cadence, not this hook: firing is still once per sweep.
-    if (result.sweepCompleted) {
-        enemyShoot();
-    }
+    // Enemy fire is not keyed off the sweep any more: the sweep is the march
+    // clock, and hanging the shots on it made the fire rate follow the rack
+    // speed instead of the reload ladder (S9). updateEnemyFire() owns that.
 
     if (!gameOver && player) {
         // S13: the run ends when any alien bottom reaches the cannon baseline.
@@ -498,6 +505,45 @@ void SpaceInvadersScene::updateAliens() {
             engine.getMusicPlayer().play(GAME_OVER_TRACK);
         }
     }
+}
+
+void SpaceInvadersScene::updateEnemyFire() {
+    // S9: the cadence is the scene's own three-tick clock. The rack sweep cannot
+    // be that clock because its length is the live count and it stops while an
+    // explosion holds the formation, so the shots would speed up with the march
+    // and pause with the kills instead of obeying the reload ladder.
+    if (++enemyShotStepTick < rules::EnemyShotTicksPerStep) {
+        return;
+    }
+    enemyShotStepTick = 0;
+
+    // Every bolt steps on the same tick, so the three slots stay in lockstep and
+    // their two animation frames flip together (S9).
+    const bool fast = rules::enemyShotIsFast(static_cast<uint8_t>(rack.aliveCount()));
+    for (auto& projectile : projectiles) {
+        if (projectile->isActive() && projectile->getType() == ProjectileType::ENEMY_BULLET) {
+            projectile->stepEnemyShot(fast);
+        }
+    }
+
+    // The budget is indexed by the score high byte, so a band change adopts the
+    // tighter reload from this step on instead of waiting for the next run. The
+    // countdown restarts, which is the same reload the timer just performed: a
+    // full gap still has to pass before the next shot leaves.
+    const uint16_t band = static_cast<uint16_t>(score >> 8);
+    if (rules::enemyReloadTicks(band) != rules::enemyReloadTicks(enemyFireBand)) {
+        enemyFireBand = band;
+        enemyFireTimer.reset(band);
+    }
+
+    // One step of budget per shot step, whether or not a slot is free: the
+    // reference keeps charging while the three slots are occupied, so a full
+    // rack of bolts must not stall the countdown.
+    if (!enemyFireTimer.step()) {
+        return;
+    }
+
+    enemyShoot();
 }
 
 void SpaceInvadersScene::syncAliensToRack() {
@@ -616,8 +662,10 @@ void SpaceInvadersScene::handleCollisions() {
             continue;
         }
         if (proj->getType() == ProjectileType::ENEMY_BULLET) {
-            pr32::math::Scalar radius = pr32::math::toScalar(PROJECTILE_WIDTH * 0.5f);
-            pr32::math::Scalar halfHeight = pr32::math::toScalar(PROJECTILE_HEIGHT * 0.5f);
+            // The bolt now collides as the 3x7 body it draws (S9), not as the
+            // player shot's 1x4, so the swept circle is centred in its own box.
+            pr32::math::Scalar radius = proj->width * pr32::math::toScalar(0.5f);
+            pr32::math::Scalar halfHeight = proj->height * pr32::math::toScalar(0.5f);
 
             using pixelroot32::physics::Circle;
             Circle startCircle;
@@ -661,35 +709,66 @@ void SpaceInvadersScene::handleCollisions() {
 }
 
 void SpaceInvadersScene::enemyShoot() {
+    // S9: three bolts at most share the pool with the player's shot, so the cap
+    // lives with the firing rather than with each caller.
+    int enemyShots = 0;
+    for (const auto& projectile : projectiles) {
+        if (projectile->isActive() && projectile->getType() == ProjectileType::ENEMY_BULLET) {
+            ++enemyShots;
+        }
+    }
+    if (enemyShots >= rules::EnemyShotMax) {
+        return;
+    }
+
     // Fixed-size candidate list: at most one shooter per rack column, so the
     // array is sized by the formation and this runs without allocating.
-    AlienActor* potentialShooters[rules::RackCols];
-    int shooterCount = 0;
+    uint8_t liveColumns[rules::RackCols];
+    int columnCount = 0;
 
     for (int col = 0; col < rules::RackCols; ++col) {
         // Column identity comes from the rack grid, not from a float comparison
         // against where the formation started: the old match aliased to the
         // neighbouring column once the rack had stepped (F1).
         for (int row = rules::RackRows - 1; row >= 0; --row) {
-            AlienActor* alien = alienGrid[row][col];
-            if (!alien || !rack.cell(row, col).alive) {
-                continue;
+            if (rack.cell(row, col).alive) {
+                liveColumns[columnCount++] = static_cast<uint8_t>(col);
+                break;
             }
-            potentialShooters[shooterCount++] = alien;
+        }
+    }
+
+    if (columnCount == 0) {
+        return;
+    }
+
+    // S20: the run's own generator replaces std::rand(), so the same seed and
+    // input script reproduce the same shot columns.
+    const int column = static_cast<int>(rng.below(static_cast<uint32_t>(columnCount)));
+
+    // The shooter is the lowest alien of that column: the one closest to the
+    // cannon, which is why the shot appears to come from the bottom row (S9).
+    AlienActor* shooter = nullptr;
+    for (int row = rules::RackRows - 1; row >= 0; --row) {
+        AlienActor* alien = alienGrid[row][liveColumns[column]];
+        if (alien && rack.cell(row, liveColumns[column]).alive) {
+            shooter = alien;
             break;
         }
     }
 
-    if (shooterCount == 0) return;
+    if (!shooter) {
+        return;
+    }
 
-    int idx = std::rand() % shooterCount;
-    AlienActor* shooter = potentialShooters[idx];
+    // Centre the 3 px bolt on the alien instead of using the centre as its left
+    // edge, the same way the player shot is centred on the cannon.
+    const Scalar sx = shooter->position.x +
+                      pr32::math::toScalar(shooter->width - ENEMY_SHOT_WIDTH) * pr32::math::toScalar(0.5f);
+    const Scalar sy = shooter->position.y + pr32::math::toScalar(shooter->height);
 
     for (auto& proj : projectiles) {
         if (!proj->isActive()) {
-            pr32::math::Scalar sx = shooter->position.x + pr32::math::toScalar(shooter->width) * pr32::math::toScalar(0.5f);
-            pr32::math::Scalar sy = shooter->position.y + pr32::math::toScalar(shooter->height);
-            
             proj->reset(Vector2(sx, sy), ProjectileType::ENEMY_BULLET);
             break;
         }

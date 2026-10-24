@@ -2,6 +2,7 @@
 #include "physics/RigidActor.h"
 #include "graphics/Renderer.h"
 #include "math/Scalar.h"
+#include "rules/Shots.h"
 
 namespace spaceinvaders {
 
@@ -32,8 +33,14 @@ enum class ProjectileType {
  * rules tick, because the arcade advances it on the tick and a velocity would
  * make its speed depend on whatever delta the physics scheduler happened to
  * hand out. Its rigid body velocity stays zero so the solver cannot add a
- * second, different motion on top of the step. Enemy shots keep their velocity
- * until P4 replaces their cadence.
+ * second, different motion on top of the step.
+ *
+ * Enemy shot motion (S9):
+ * The enemy bolt carries no velocity either. The scene owns the three-tick
+ * clock, and every third tick it calls stepEnemyShot() on all live bolts, so
+ * they all fall one step (four pixels, five once fewer than nine aliens
+ * remain) together and flip their animation frame together. Keeping the clock
+ * in the scene is what stops the fire rate from following the rack sweep.
  *
  * Continuous Collision Detection (CCD):
  * A four-pixel tick can carry the shot across a small alien between two frames,
@@ -47,11 +54,11 @@ enum class ProjectileType {
  * 
  * Physics Configuration:
  * - Restitution: 0 (no bounce, projectiles should not ricochet)
- * - Friction: 0 (no air resistance; enemy shots keep a constant velocity)
+ * - Friction: 0 (no air resistance)
  * - Gravity: 0 (no vertical acceleration, straight-line movement)
  * - Shape: Circle (accurate for bullet-like projectiles)
  * - CCD: the scene sweeps previousPosition against the rack and the shields;
- *   a player shot's zero velocity keeps the solver from adding its own motion
+ *   a zero velocity keeps the solver from adding its own motion
  */
 class ProjectileActor : public pixelroot32::physics::RigidActor {
 public:
@@ -67,21 +74,35 @@ public:
      *
      * System Flow:
      * 1. Store previous position, before the move, for swept collision tests
-     * 2. Player shots step rules::PlayerShotStepY on the tick; enemy shots are
-     *    still integrated by the solver until P4 owns their motion
+     * 2. Player shots step rules::PlayerShotStepY on the tick; enemy shots do
+     *    not move here, because the scene hands them one whole shot step every
+     *    third tick through stepEnemyShot() (S9)
      * 3. Deactivate if off-screen (object pool lifecycle)
      *
      * @param deltaTime Frame delta in ms. Unused: the tick is the clock (S20),
      *        so the caller must invoke this exactly once per rules tick.
      */
     void update(unsigned long deltaTime) override;
+
+    /**
+     * @brief Lands one enemy shot step: motion, position and animation frame.
+     *
+     * Records nothing itself. The pre-step position the swept tests need was
+     * already captured by update() at the top of the tick, so this can run
+     * after the rest of the tick's rules without losing the segment.
+     *
+     * A player shot ignores the call: its motion belongs to update().
+     *
+     * @param fast true to use the five-pixel step (fewer than nine aliens).
+     */
+    void stepEnemyShot(bool fast);
     
     /**
-     * @brief Draws the player shot mask, or the enemy placeholder rectangle.
+     * @brief Draws the player shot mask, or the enemy bolt's current frame.
      *
-     * The player shot is the 1x4 arcade missile (S2) tinted by the row it
-     * enters (S3). The enemy shot is still a filled rectangle until P4 swaps in
-     * the 3x7 two-frame bolt.
+     * Both masks are tinted by the row they enter (S3): the player shot is the
+     * 1x4 arcade missile (S2), and the enemy bolt is the 3x7 zigzag whose two
+     * frames alternate on every shot step (S9).
      *
      * @param renderer Renderer to draw into.
      */
@@ -93,7 +114,8 @@ public:
      * Design Pattern: Object Pooling
      * Instead of constructing/destructing projectiles (expensive), the Scene
      * maintains a fixed pool. reset() prepares a pooled projectile for reuse
-     * with new position and type.
+     * with new position and type, including the enemy bolt's descent phase and
+     * animation frame, so a recycled slot cannot inherit the previous life.
      */
     void reset(pixelroot32::math::Vector2 position, ProjectileType type);
     
@@ -140,6 +162,18 @@ public:
 private:
     ProjectileType type;             // Player or enemy projectile
     bool active;                     // Pool lifecycle state
+    rules::EnemyShotMotion enemyMotion; ///< Enemy descent: one call per shot step
+    uint8_t enemyFrame = 0;          ///< Which of the two 3x7 enemy frames to draw
+
+    /**
+     * @brief Applies the body box a projectile type needs.
+     *
+     * The enemy bolt's box is its whole 3x7 mask (S9), so a hit is judged on
+     * the shape the player sees. The player shot keeps the 1x1 box the
+     * constructor's radius derived, so its swept test stays what it was.
+     */
+    void applyTypeBody();
+
     /**
      * Pre-step position for the swept tests in SpaceInvadersScene.
      *

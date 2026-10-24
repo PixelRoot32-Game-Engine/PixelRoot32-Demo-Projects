@@ -4,8 +4,10 @@
 #include <vector>
 #include <memory>
 #include "platforms/EngineConfig.h"
+#include "rules/FireTiming.h"
 #include "rules/FixedStep.h"
 #include "rules/Rack.h"
+#include "rules/Rng.h"
 
 namespace spaceinvaders {
 
@@ -149,6 +151,17 @@ namespace spaceinvaders {
 
         rules::FixedStep fixedStep;                ///< 60 Hz rules clock (S15)
 
+        /**
+         * Enemy fire model (S9). The reload ladder and every live bolt share
+         * one shot-step clock that belongs to the scene: the rack sweep is not
+         * a clock, because it changes length with the live count and stops
+         * while an explosion holds the formation.
+         */
+        rules::EnemyFireTimer enemyFireTimer;
+        uint16_t enemyShotStepTick = 0;            ///< Ticks into the current three-tick step
+        uint16_t enemyFireBand = 0;                ///< Score high byte the ladder is latched for
+        rules::Rng rng;                            ///< Run's own generator, seeded per run (S20)
+
         static constexpr int MaxEnemyExplosions = 8;
         EnemyExplosion enemyExplosions[MaxEnemyExplosions];
         ExplosionAnimation playerExplosion;
@@ -164,10 +177,22 @@ namespace spaceinvaders {
          *
          * Runs once per 60 Hz tick: rules::Rack::tick() moves exactly one live
          * cell, the moved cell is copied onto its actor, the shared animation
-         * frame is applied when the sweep closes, and enemyShoot() fires on the
-         * completed sweep. The rack's own hold covers explosion pauses.
+         * frame is applied when the sweep closes, and the invasion check reads
+         * the rack's lowest bottom. The rack's own hold covers explosion
+         * pauses. Enemy fire does not hang off the sweep: updateEnemyFire()
+         * owns that clock.
          */
         void updateAliens();
+
+        /**
+         * @brief Runs the enemy shot-step clock and the reload ladder (S9).
+         *
+         * Every third tick all live bolts step together, then the reload timer
+         * spends one step and a shot leaves when it says so and a slot is free.
+         * Keeping this off the rack sweep is what decouples the fire rate from
+         * the march, and the fixed division keeps it off the frame delta.
+         */
+        void updateEnemyFire();
 
         /**
          * @brief Copies the rack's cell positions onto the actors.
@@ -179,6 +204,13 @@ namespace spaceinvaders {
         void syncAliensToRack();
 
         void handleCollisions();
+
+        /**
+         * @brief Fires one enemy bolt from the lowest alien of a live column.
+         *
+         * Enforces the three-shot cap, draws the column with the scene's seeded
+         * generator, and reuses a free pool slot: no allocation on the tick.
+         */
         void enemyShoot();
         int getActiveAlienCount() const;
         void updateMusicTempo();

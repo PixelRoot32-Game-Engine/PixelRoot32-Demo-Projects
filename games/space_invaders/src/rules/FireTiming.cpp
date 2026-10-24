@@ -21,4 +21,23 @@ uint8_t enemyReloadTicks(uint16_t scoreHighByte) {
     return 48;
 }
 
+void EnemyFireTimer::reset(uint16_t scoreHighByte) {
+    band = scoreHighByte;
+    budget = enemyReloadTicks(scoreHighByte);
+}
+
+bool EnemyFireTimer::step() {
+    // The budget counts down to zero, so the step that reaches it carries the
+    // shot. Reloading on that same step keeps the following gap a full budget
+    // instead of one step short (S9).
+    if (budget > 0) {
+        --budget;
+    }
+    if (budget != 0) {
+        return false;
+    }
+    budget = enemyReloadTicks(band);
+    return true;
+}
+
 }  // namespace spaceinvaders::rules

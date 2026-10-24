@@ -37,6 +37,16 @@ int16_t EnemyShotMotion::advance(bool fast) {
     return position;
 }
 
+int16_t EnemyShotMotion::step(bool fast) {
+    // One whole shot step: the three per-tick advances the old caller had to
+    // make now collapse into one call, so the scene can step every third tick
+    // without the object introducing a second divisor on top of that.
+    tickPhase = 0;
+    position = static_cast<int16_t>(
+        position + (fast ? EnemyShotFastStepY : EnemyShotStepY));
+    return position;
+}
+
 int16_t EnemyShotMotion::y() const {
     return position;
 }

@@ -45,15 +45,26 @@ namespace spaceinvaders {
     constexpr float PLAYER_START_X = FIELD_X + (FIELD_W - PLAYER_WIDTH) * 0.5f;
     constexpr float PLAYER_START_Y = CANNON_TOP_Y;
 
-    /** Projectile collision dimensions (1 px wide, 4 px tall) */
+    /**
+     * Projectile collision dimensions (1 px wide, 4 px tall). The enemy bolt is
+     * its own 3x7 mask (S9) and carries no velocity at all: the scene steps it.
+     */
     constexpr int PROJECTILE_WIDTH = 1;
     constexpr int PROJECTILE_HEIGHT = 4;
+
     /**
-     * Enemy-shot speed in pixels per second. The player shot no longer uses it:
-     * it steps rules::PlayerShotStepY per tick (S8). Kept until P4 replaces the
-     * enemy cadence.
+     * Enemy shot mask and collision box (S9). It is a 3x7 zigzag with two
+     * frames, not the player's 1x4 bar, so it cannot share the numbers above.
      */
-    constexpr float PROJECTILE_SPEED = 80.0f;
+    constexpr int ENEMY_SHOT_WIDTH = 3;
+    constexpr int ENEMY_SHOT_HEIGHT = 7;
+
+    /**
+     * Seed for the run's enemy-fire generator (S20). A run reseeds to this
+     * value, so the same input script always draws the same shooter columns
+     * instead of following whatever std::rand() happened to hold.
+     */
+    constexpr uint32_t RUN_SEED = 0x1978u;
 
     /** Bunker layout and dimensions */
     constexpr int BUNKER_COUNT = 4;

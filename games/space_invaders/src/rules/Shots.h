@@ -57,6 +57,19 @@ public:
     int16_t advance(bool fast);
 
     /**
+     * @brief Lands one whole shot step immediately.
+     *
+     * The scene owns the three-tick clock now (S9), so it hands the motion one
+     * call per shot step instead of one per tick. The step size stays in this
+     * class, and the phase restarts at zero so a later advance() caller still
+     * sees the same cadence it always had.
+     *
+     * @param fast true to use the five-pixel step.
+     * @return New top edge after the step.
+     */
+    int16_t step(bool fast);
+
+    /**
      * @brief Current top edge.
      * @return Top edge in playfield pixels.
      */
