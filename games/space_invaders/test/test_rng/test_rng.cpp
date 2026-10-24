@@ -89,6 +89,72 @@ void test_rng_reseed_reproduces_a_non_constant_sequence(void) {
     TEST_ASSERT_TRUE(sawDifferentValue);
 }
 
+void test_rng_zero_seed_produces_a_non_constant_sequence(void) {
+    // xorshift32 maps 0 to 0 forever, so an unguarded zero state returns 0
+    // from every draw while still looking seeded.
+    Rng rng(0u);
+
+    const uint32_t head = rng.next();
+    bool sawDifferentValue = false;
+    bool sawNonZeroValue = (head != 0u);
+    for (int draw = 0; draw < 15; ++draw) {
+        const uint32_t value = rng.next();
+        if (value != head) {
+            sawDifferentValue = true;
+        }
+        if (value != 0u) {
+            sawNonZeroValue = true;
+        }
+    }
+
+    TEST_ASSERT_TRUE(sawNonZeroValue);
+    TEST_ASSERT_TRUE(sawDifferentValue);
+}
+
+void test_rng_reseed_to_zero_after_a_valid_run_produces_a_non_constant_sequence(void) {
+    Rng rng(0x1978u);
+    for (int draw = 0; draw < 8; ++draw) {
+        rng.next();
+    }
+
+    rng.reseed(0u);
+
+    const uint32_t head = rng.next();
+    bool sawDifferentValue = false;
+    bool sawNonZeroValue = (head != 0u);
+    for (int draw = 0; draw < 15; ++draw) {
+        const uint32_t value = rng.next();
+        if (value != head) {
+            sawDifferentValue = true;
+        }
+        if (value != 0u) {
+            sawNonZeroValue = true;
+        }
+    }
+
+    TEST_ASSERT_TRUE(sawNonZeroValue);
+    TEST_ASSERT_TRUE(sawDifferentValue);
+}
+
+void test_rng_below_from_a_zero_seed_spreads_across_the_bound(void) {
+    Rng rng(0u);
+    const uint32_t bound = 11;
+
+    bool seen[bound] = {};
+    int distinct = 0;
+    for (int draw = 0; draw < 1000; ++draw) {
+        const uint32_t value = rng.below(bound);
+        TEST_ASSERT_LESS_THAN_UINT32(bound, value);
+        if (!seen[value]) {
+            seen[value] = true;
+            ++distinct;
+        }
+    }
+
+    // A pinned generator satisfies "value < bound" but never reaches this.
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(5, distinct);
+}
+
 int main(void) {
     UNITY_BEGIN();
 
@@ -96,6 +162,9 @@ int main(void) {
     RUN_TEST(test_rng_different_seeds_produce_different_sequences);
     RUN_TEST(test_rng_below_stays_inside_the_bound);
     RUN_TEST(test_rng_reseed_reproduces_a_non_constant_sequence);
+    RUN_TEST(test_rng_zero_seed_produces_a_non_constant_sequence);
+    RUN_TEST(test_rng_reseed_to_zero_after_a_valid_run_produces_a_non_constant_sequence);
+    RUN_TEST(test_rng_below_from_a_zero_seed_spreads_across_the_bound);
 
     return UNITY_END();
 }
