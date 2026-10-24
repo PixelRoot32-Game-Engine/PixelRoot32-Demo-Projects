@@ -1,5 +1,6 @@
 #pragma once
 #include "platforms/EngineConfig.h"
+#include "rules/RulesConstants.h"
 #include <cstdint>
 
 namespace spaceinvaders {
@@ -56,6 +57,14 @@ namespace spaceinvaders {
                   "Space Invaders: the 224 px playfield must fit the logical canvas width");
     static_assert(FIELD_H <= CANVAS_HEIGHT,
                   "Space Invaders: the 240 px playfield must fit the logical canvas height");
+
+    // The shield row is playfield geometry too (the scene draws it at FIELD_X +
+    // ShieldX), so it has to fit the same field as the rack. A layout change
+    // that pushed the last shield past the field edge fails here instead of
+    // drawing a shield half outside the playfield.
+    static_assert(rules::ShieldX[0] >= 0 &&
+                      rules::ShieldX[rules::ShieldCount - 1] + rules::ShieldWidth <= FIELD_W,
+                  "Space Invaders: the four shields must fit inside the playfield");
 
     /** Vertical band origins, in screen pixels (S1) */
     constexpr float SAUCER_Y = 24.0f;

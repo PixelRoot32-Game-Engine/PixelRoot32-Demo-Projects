@@ -92,11 +92,19 @@ constexpr int SaucerScoreCount = 15;
 /// sweep is still audible when the next one replaces it.
 constexpr uint16_t SaucerSirenPeriodTicks = 12;
 
-/// Shield geometry: four 22x16 masks at fixed x offsets, one shared y.
+/**
+ * @brief Shield geometry: four 22x16 masks at fixed columns, one shared row.
+ *
+ * The columns are the arcade's own, measured in playfield pixels, so the scene
+ * draws each shield at FIELD_X + ShieldX and the row stays inside the field on
+ * any panel width. They are deliberately not centred in the field: the cabinet
+ * leaves 24 px on the left and 43 px on the right, and that asymmetry is part
+ * of the layout.
+ */
 constexpr int ShieldCount = 4;
 constexpr int ShieldWidth = 22;
 constexpr int ShieldHeight = 16;
-constexpr int16_t ShieldX[ShieldCount] = {32, 77, 122, 167};
+constexpr int16_t ShieldX[ShieldCount] = {24, 69, 114, 159};
 constexpr int16_t ShieldY = 184;
 
 /// One extra ship at 1500 points; three ships at the start of a run.
