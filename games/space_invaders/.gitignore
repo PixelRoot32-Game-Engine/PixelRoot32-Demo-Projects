@@ -4,6 +4,13 @@
 .vscode/launch.json
 .vscode/ipch
 
-# Local working material: the fidelity plan and the reference art
+# Local working material: the fidelity plan and the reference art.
+# Neither is part of the project's source and neither may be committed.
 ROADMAP.md
 Arcade - Space Invaders - Miscellaneous - Game Graphics and Color Overlays.png
+# Any copy or rename of the reference sheet, and any other reference image
+# dropped beside the project files. Only screenshots/ is meant to be versioned.
+/Arcade - Space Invaders*.png
+/*.png
+/*.jpg
+/*.jpeg
