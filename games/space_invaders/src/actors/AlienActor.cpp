@@ -1,6 +1,6 @@
-#include "AlienActor.h"
-#include "BandColor.h"
-#include "assets/AlienSprites.h"
+#include "actors/AlienActor.h"
+#include "assets/BandColor.h"
+#include "assets/sprites/AlienSprites.h"
 
 namespace spaceinvaders {
 

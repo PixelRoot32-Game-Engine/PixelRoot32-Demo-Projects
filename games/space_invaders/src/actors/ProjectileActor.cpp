@@ -1,7 +1,7 @@
-#include "ProjectileActor.h"
-#include "BandColor.h"
+#include "actors/ProjectileActor.h"
+#include "assets/BandColor.h"
 #include "GameConstants.h"
-#include "assets/ShotSprites.h"
+#include "assets/sprites/ShotSprites.h"
 #include "physics/CollisionSystem.h"
 #include "rules/RulesConstants.h"
 

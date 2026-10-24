@@ -1,8 +1,8 @@
-#include "SpaceInvadersScene.h"
-#include "PlayerActor.h"
-#include "AlienActor.h"
-#include "ProjectileActor.h"
-#include "BunkerActor.h"
+#include "scenes/SpaceInvadersScene.h"
+#include "actors/PlayerActor.h"
+#include "actors/AlienActor.h"
+#include "actors/ProjectileActor.h"
+#include "actors/BunkerActor.h"
 #include "GameConstants.h"
 #include "platforms/EngineConfig.h"
 #include "core/Engine.h"
@@ -11,8 +11,8 @@
 #include <cstddef>
 #include <cstdio>
 #include "assets/FontData.h"
-#include "assets/PlayerExplosionSprites.h"
-#include "assets/PlayerSprites.h"
+#include "assets/sprites/PlayerExplosionSprites.h"
+#include "assets/sprites/PlayerSprites.h"
 
 namespace pr32 = pixelroot32;
 extern pr32::core::Engine engine;

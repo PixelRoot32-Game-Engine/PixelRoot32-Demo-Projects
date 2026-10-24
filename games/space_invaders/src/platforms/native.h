@@ -7,7 +7,7 @@
 #include <core/Engine.h>
 #include <platforms/EngineConfig.h>
 
-#include "SpaceInvadersScene.h"
+#include "scenes/SpaceInvadersScene.h"
 
 namespace pr32 = pixelroot32;
 

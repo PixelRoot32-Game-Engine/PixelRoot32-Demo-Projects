@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 #include "graphics/Renderer.h"
-#include "../GameConstants.h"
+#include "GameConstants.h"
 
 namespace spaceinvaders {
 

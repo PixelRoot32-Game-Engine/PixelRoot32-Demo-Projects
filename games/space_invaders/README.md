@@ -39,7 +39,7 @@ All set in [`lib/platformio.ini`](lib/platformio.ini)'s `[base]` template:
 - **`PIXELROOT32_ENABLE_SCENE_ARENA`** — entities come from `arenaNew` into the
   8 KB `SPACE_INVADERS_SCENE_ARENA_BUFFER`, or from `std::unique_ptr` and the
   heap when the flag is off; both branches sit behind `#ifdef` in
-  [`src/SpaceInvadersScene.cpp`](src/SpaceInvadersScene.cpp).
+  [`src/scenes/SpaceInvadersScene.cpp`](src/scenes/SpaceInvadersScene.cpp).
 - **`PIXELROOT32_ENABLE_PHYSICS=1`** — required: `RigidActor` (shots),
   `KinematicActor` (ship), `StaticActor` (shields, saucer) and the swept helpers
   in `physics/CollisionSystem.h` live behind it.
@@ -180,7 +180,7 @@ reuses the same actors, so nothing in a run reaches the allocator.
 - **A budget the compiler defends.** Arena, pool and effect slots are sized once
   and the assertions proving they still fit are part of the build.
 - **An engine-free rules layer.** [`src/rules/`](src/rules) includes `<cstdint>`
-  and nothing else, so the panel code is tested on the host: 13 suites, 89
+  and nothing else, so the panel code is tested on the host: 13 suites, 92
   cases, including a scripted-run replay that a fixed tick and a seeded
   generator make reproducible.
 
@@ -188,17 +188,18 @@ reuses the same actors, so nothing in a run reaches the allocator.
 
 ```
 src/
-├── GameConstants.h, BandColor.h   screen model, input IDs, overlay band
-├── PlayerActor, AlienActor, ProjectileActor, BunkerActor, SaucerActor
-├── SpaceInvadersScene.h/.cpp      arena, tick loop, collisions, HUD, audio
+├── assets/                        BandColor (overlay band), FontData
+│   └── sprites/                   AlienSprites, PlayerSprites, SaucerSprites,
+│                                  PlayerExplosionSprites (two frames), ShotSprites
+├── actors/                        AlienActor, BunkerActor, PlayerActor, ProjectileActor, SaucerActor
+├── scenes/                        SpaceInvadersScene.h/.cpp — arena, tick loop, collisions, HUD, audio
 ├── rules/                         engine-free: Rack, RulesConstants, FixedStep, FireTiming,
 │                                  Shots, ShieldMask, Saucer, MarchSound, Scoring, Rng
-├── assets/                        AlienSprites, PlayerSprites, SaucerSprites,
-│                                  PlayerExplosionSprites (two frames), ShotSprites, FontData
-├── main.cpp                       platform selector
-└── platforms/                     native.h, esp32_dev.h — backend wiring
+├── platforms/                     native.h, esp32_dev.h — backend wiring
+├── GameConstants.h                screen model, input IDs
+└── main.cpp                       platform selector
 
-test/                              13 suites, 89 cases: rules/smoke, rack, march, cannon,
+test/                              13 suites, 92 cases: rules/smoke, rack, march, cannon,
                                    shots, fire, shields, saucer, scoring, fixed step, rng, replay
 ```
 

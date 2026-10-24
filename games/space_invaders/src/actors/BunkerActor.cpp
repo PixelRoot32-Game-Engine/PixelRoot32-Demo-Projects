@@ -1,5 +1,5 @@
-#include "BunkerActor.h"
-#include "BandColor.h"
+#include "actors/BunkerActor.h"
+#include "assets/BandColor.h"
 
 namespace spaceinvaders {
 

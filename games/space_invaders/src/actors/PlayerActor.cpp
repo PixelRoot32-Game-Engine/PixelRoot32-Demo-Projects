@@ -1,10 +1,10 @@
-#include "PlayerActor.h"
+#include "actors/PlayerActor.h"
 #include "platforms/EngineConfig.h"
-#include "BandColor.h"
+#include "assets/BandColor.h"
 #include "GameConstants.h"
 #include "core/Engine.h"
 #include "rules/RulesConstants.h"
-#include "assets/PlayerSprites.h"
+#include "assets/sprites/PlayerSprites.h"
 
 namespace pr32 = pixelroot32;
 extern pr32::core::Engine engine;

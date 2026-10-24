@@ -1,7 +1,7 @@
-#include "SaucerActor.h"
+#include "actors/SaucerActor.h"
 
 #include "GameConstants.h"
-#include "assets/SaucerSprites.h"
+#include "assets/sprites/SaucerSprites.h"
 #include "rules/RulesConstants.h"
 
 namespace pr32 = pixelroot32;
