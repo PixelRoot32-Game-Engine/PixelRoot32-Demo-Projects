@@ -11,7 +11,6 @@ namespace spaceinvaders {
     class AlienActor;
     class ProjectileActor;
     class BunkerActor;
-    class StarfieldBackground;
 
     /**
      * @struct EnemyExplosion
@@ -104,13 +103,11 @@ namespace spaceinvaders {
         void cleanup();
 
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
-        StarfieldBackground* background;
         PlayerActor* player;
         std::vector<AlienActor*> aliens;
         std::vector<ProjectileActor*> projectiles;
         std::vector<BunkerActor*> bunkers;
 #else
-        std::unique_ptr<StarfieldBackground> background;
         std::unique_ptr<PlayerActor> player;
         std::vector<std::unique_ptr<AlienActor>> aliens;
         std::vector<std::unique_ptr<ProjectileActor>> projectiles;

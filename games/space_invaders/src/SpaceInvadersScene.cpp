@@ -10,7 +10,6 @@
 #include "audio/AudioMusicTypes.h"
 #include <cstdlib>
 #include <cstdio>
-#include "assets/Background.h"
 #include "assets/FontData.h"
 #include "assets/PlayerExplosionSprites.h"
 
@@ -35,7 +34,7 @@ using pixelroot32::math::Vector2;
 using pixelroot32::core::SceneArena;
 using pixelroot32::core::arenaNew;
 
-/** Arena for all scene entities (background, player, aliens, bunkers, projectiles).
+/** Arena for all scene entities (player, aliens, bunkers, projectiles).
  *  Before the tile-attributes changes, PhysicsActor was smaller (no userData, sensor, oneWay, etc.),
  *  so 2048 bytes were enough. With the current engine, each actor is larger and ~50 entities need
  *  more space; 4096 is safe. If you need 2048 again (e.g. tight RAM), build this target without
@@ -43,26 +42,6 @@ using pixelroot32::core::arenaNew;
 static unsigned char SPACE_INVADERS_SCENE_ARENA_BUFFER[4096];
 #endif
 
-
-class StarfieldBackground : public pr32::core::Entity {
-public:
-    StarfieldBackground()
-        : pr32::core::Entity(Vector2::ZERO(), DISPLAY_WIDTH, DISPLAY_HEIGHT, pr32::core::EntityType::GENERIC) {
-        setRenderLayer(0);
-    }
-
-    void update(unsigned long) override {
-    }
-
-    void draw(pr32::graphics::Renderer& renderer) override {
-        renderer.drawFilledRectangle(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, pr32::graphics::Color::Black);
-        for (int i = 0; i < background_assets::STAR_COUNT; ++i) {
-            renderer.drawPixel(static_cast<int>(background_assets::STAR_X[i]),
-                               static_cast<int>(background_assets::STAR_Y[i]),
-                               pr32::graphics::Color::White);
-        }
-    }
-};
 
 // Base four-note bass pattern: "tu tu tu tu"
 static const InstrumentPreset BASS_INSTRUMENT = INSTR_PULSE_BASS;
@@ -214,8 +193,7 @@ bool ExplosionAnimation::isActive() const {
 }
 
 SpaceInvadersScene::SpaceInvadersScene()
-    : background(nullptr),
-      player(nullptr),
+    : player(nullptr),
       score(0),
       lives(3),
       gameOver(false),
@@ -227,13 +205,6 @@ SpaceInvadersScene::SpaceInvadersScene()
       fireInputReady(false),
       currentMusicTempoFactor(1.0f) {
 
-#ifdef PIXELROOT32_ENABLE_SCENE_ARENA
-    background = nullptr;
-#else
-    background = std::make_unique<StarfieldBackground>();
-    addEntity(background.get());
-#endif
-
     for (int i = 0; i < MaxEnemyExplosions; ++i) {
         enemyExplosions[i].active = false;
         enemyExplosions[i].position = pr32::math::Vector2(0, 0);
@@ -243,9 +214,6 @@ SpaceInvadersScene::SpaceInvadersScene()
 
 SpaceInvadersScene::~SpaceInvadersScene() {
     cleanup();
-#ifdef PIXELROOT32_ENABLE_SCENE_ARENA
-    background = nullptr;
-#endif
 }
 
 void SpaceInvadersScene::init() {
@@ -253,7 +221,6 @@ void SpaceInvadersScene::init() {
     arena.init(SPACE_INVADERS_SCENE_ARENA_BUFFER, sizeof(SPACE_INVADERS_SCENE_ARENA_BUFFER));
 #endif
     pr32::graphics::setSpritePalette(pr32::graphics::PaletteType::NES);
-    background_assets::init();
     resetGame();
 
     engine.getMusicPlayer().play(BGM_SLOW_TRACK);
@@ -285,15 +252,9 @@ void SpaceInvadersScene::resetGame() {
 #endif
 
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
-    background = arenaNew<StarfieldBackground>(arena);
-    addEntity(background);
-
     player = arenaNew<PlayerActor>(arena, pr32::math::Vector2(PLAYER_START_X, PLAYER_START_Y));
     addEntity(player);
 #else
-    if (background) {
-        addEntity(background.get());
-    }
     player = std::make_unique<PlayerActor>(pr32::math::Vector2(PLAYER_START_X, PLAYER_START_Y));
     addEntity(player.get());
 #endif
