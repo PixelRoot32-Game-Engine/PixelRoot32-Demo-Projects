@@ -44,8 +44,11 @@ constexpr int CannonHeight = 8;
 constexpr int CannonStepX = 1;
 constexpr int CannonMaxX = FieldWidth - CannonWidth;
 
-/// Projectile step sizes and the enemy-shot cadence.
+/// Player shot travel in pixels per tick (S8). It is a per-tick step rather than
+/// a velocity, so the shot covers the field in a fixed number of ticks.
 constexpr int PlayerShotStepY = 4;
+
+/// Enemy-shot step sizes and cadence.
 constexpr int EnemyShotStepY = 4;
 constexpr int EnemyShotFastStepY = 5;
 constexpr int EnemyShotTicksPerStep = 3;

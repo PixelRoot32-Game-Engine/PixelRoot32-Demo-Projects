@@ -22,16 +22,23 @@ enum class ProjectileType {
  * @brief High-speed projectile with Continuous Collision Detection (CCD)
  * 
  * Architecture Pattern:
- * Demonstrates the RigidActor usage pattern for physics-simulated entities.
- * Unlike KinematicActor, RigidActor integrates position automatically through
- * the physics system, making it ideal for fast-moving objects where frame-rate
- * independent movement is critical.
+ * Demonstrates the RigidActor usage pattern for physics-simulated entities: it
+ * keeps a rigid body (velocity, friction, bounce, collision layers) so the
+ * solver and the scene's swept tests still find it, while the rules tick owns
+ * the motion that S8 fixes in pixels.
  * 
+ * Player shot motion (S8):
+ * The player shot does not ride the solver. It steps a fixed four pixels per
+ * rules tick, because the arcade advances it on the tick and a velocity would
+ * make its speed depend on whatever delta the physics scheduler happened to
+ * hand out. Its rigid body velocity stays zero so the solver cannot add a
+ * second, different motion on top of the step. Enemy shots keep their velocity
+ * until P4 replaces their cadence.
+ *
  * Continuous Collision Detection (CCD):
- * Projectiles move at 120px/s, which means at 60 FPS they travel 2px per frame.
- * For accurate collision against small targets (aliens), we need swept collision
- * tests. This class maintains previousPosition to enable swept-circle tests
- * against AlienActors, which provides superior accuracy to discrete collision.
+ * A four-pixel tick can carry the shot across a small alien between two frames,
+ * so collision needs swept tests. This class records previousPosition before
+ * the step to feed swept-circle tests against AlienActors.
  * 
  * Pooling Pattern:
  * Projectiles use object pooling (managed by SpaceInvadersScene) rather than
@@ -40,10 +47,11 @@ enum class ProjectileType {
  * 
  * Physics Configuration:
  * - Restitution: 0 (no bounce, projectiles should not ricochet)
- * - Friction: 0 (no air resistance, constant velocity)
+ * - Friction: 0 (no air resistance; enemy shots keep a constant velocity)
  * - Gravity: 0 (no vertical acceleration, straight-line movement)
  * - Shape: Circle (accurate for bullet-like projectiles)
- * - CCD: Automatic via Flat Solver when velocity * dt > radius * 3
+ * - CCD: the scene sweeps previousPosition against the rack and the shields;
+ *   a player shot's zero velocity keeps the solver from adding its own motion
  */
 class ProjectileActor : public pixelroot32::physics::RigidActor {
 public:
@@ -55,19 +63,27 @@ public:
     ProjectileActor(pixelroot32::math::Vector2 position, ProjectileType type);
     
     /**
-     * @brief Main update - delegates movement to physics system
-     * 
+     * @brief Advances the projectile by one fixed rules tick.
+     *
      * System Flow:
-     * 1. Store previous position for swept collision tests
-     * 2. RigidActor::update() handles physics integration
-     * 3. CCD activates automatically if moving fast enough
-     * 4. Deactivate if off-screen (object pool lifecycle)
+     * 1. Store previous position, before the move, for swept collision tests
+     * 2. Player shots step rules::PlayerShotStepY on the tick; enemy shots are
+     *    still integrated by the solver until P4 owns their motion
+     * 3. Deactivate if off-screen (object pool lifecycle)
+     *
+     * @param deltaTime Frame delta in ms. Unused: the tick is the clock (S20),
+     *        so the caller must invoke this exactly once per rules tick.
      */
     void update(unsigned long deltaTime) override;
     
     /**
-     * @brief Renders projectile as colored rectangle
-     * White for player bullets, red for enemy bullets
+     * @brief Draws the player shot mask, or the enemy placeholder rectangle.
+     *
+     * The player shot is the 1x4 arcade missile (S2) tinted by the row it
+     * enters (S3). The enemy shot is still a filled rectangle until P4 swaps in
+     * the 3x7 two-frame bolt.
+     *
+     * @param renderer Renderer to draw into.
      */
     void draw(pixelroot32::graphics::Renderer& renderer);
     
@@ -124,7 +140,14 @@ public:
 private:
     ProjectileType type;             // Player or enemy projectile
     bool active;                     // Pool lifecycle state
-    pixelroot32::math::Vector2 previousPosition;  // For swept collision tests
+    /**
+     * Pre-step position for the swept tests in SpaceInvadersScene.
+     *
+     * This deliberately shadows PhysicsActor::previousPosition: the collision
+     * system rewrites the base field after the entity updates, which would
+     * erase the pre-step point a player shot needs after moving itself.
+     */
+    pixelroot32::math::Vector2 previousPosition;
 };
 
 }

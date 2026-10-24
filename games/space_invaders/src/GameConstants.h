@@ -45,9 +45,14 @@ namespace spaceinvaders {
     constexpr float PLAYER_START_X = FIELD_X + (FIELD_W - PLAYER_WIDTH) * 0.5f;
     constexpr float PLAYER_START_Y = CANNON_TOP_Y;
 
-    /** Projectile dimensions and speed (pixels per second) */
+    /** Projectile collision dimensions (1 px wide, 4 px tall) */
     constexpr int PROJECTILE_WIDTH = 1;
     constexpr int PROJECTILE_HEIGHT = 4;
+    /**
+     * Enemy-shot speed in pixels per second. The player shot no longer uses it:
+     * it steps rules::PlayerShotStepY per tick (S8). Kept until P4 replaces the
+     * enemy cadence.
+     */
     constexpr float PROJECTILE_SPEED = 80.0f;
 
     /** Bunker layout and dimensions */

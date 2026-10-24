@@ -451,6 +451,12 @@ void SpaceInvadersScene::tick(unsigned long tickMs) {
                         break;
                     }
                 }
+            } else {
+                // S8: a press made while a shot is still in flight does not
+                // count. A frame that runs several rules ticks keeps the same
+                // press edge, so without this the edge could fire again on the
+                // tick the old shot left the panel, with no fresh press.
+                fireInputReady = false;
             }
         }
     }
