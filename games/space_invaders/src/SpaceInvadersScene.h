@@ -167,11 +167,24 @@ namespace spaceinvaders {
 
         /**
          * True while a saucer is on screen and its siren should sound (S11,
-         * S17). The audio rewrite in T5.2 gives the siren its own voice and
-         * reads this flag; today only the start and stop edges are wired, so
-         * its meaning stays exactly "a saucer is on screen".
+         * S17). It is the siren's entire on/off control: the cadence below only
+         * advances while it is set, so clearing it is what stops the sweeps when
+         * the ship leaves or dies.
          */
         bool saucerSirenActive = false;
+
+        /**
+         * Ticks left before the next siren sweep (S17), or zero when one is due.
+         *
+         * The siren is re-fired short sweeps rather than one looping voice
+         * because an event cannot pin a slot: a looped siren would have to be
+         * stopped by a slot index the scene never learns, and the pool could
+         * steal it instead. One-shots that expire on their own need no cleanup,
+         * so when this counter reaches zero the scene plays the next sweep and
+         * reloads it from rules::SaucerSirenPeriodTicks. Zero doubles as the
+         * start state, which is what makes the entry audible on the spawn tick.
+         */
+        uint16_t saucerSirenTicks = 0;
 
         /**
          * Score, ships, wave counter and the session high score (S12). One
@@ -287,21 +300,30 @@ namespace spaceinvaders {
         void spawnSaucerPopup(pixelroot32::math::Vector2 position, uint16_t value);
 
         /**
-         * @brief Marks the siren as sounding and cues the entry sound.
+         * @brief Starts the siren and sounds its first sweep (S11, S17).
          *
-         * T5.2 gives the siren its own voice; until then this emits one short
-         * pulse in the same style as the shot and hit sounds, so the entry is
-         * audible and saucerSirenActive is accurate for T5.2 to build on.
+         * Sets the flag, clears the cadence and lets advanceSaucerSiren() fire
+         * on the same tick, so the entry never waits a tick to be heard.
          */
         void startSaucerSiren();
 
         /**
-         * @brief Marks the siren as silent.
+         * @brief Marks the siren as silent and drops the cadence.
          *
          * Called when the saucer leaves the panel and when a hit removes it, so
-         * the flag never outlives the ship it describes.
+         * the flag never outlives the ship it describes and no later tick can
+         * find a due sweep for a ship that is gone.
          */
         void stopSaucerSiren();
+
+        /**
+         * @brief Advances the siren cadence and plays a sweep when one is due.
+         *
+         * Runs once per active saucer tick. It is guarded by
+         * saucerSirenActive, so a stopped siren cannot fire even if a caller
+         * reaches it: the sweep only leaves the scene through this method.
+         */
+        void advanceSaucerSiren();
 
         /**
          * @brief Copies the rack's cell positions onto the actors.

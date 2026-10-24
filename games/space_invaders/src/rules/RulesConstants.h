@@ -82,6 +82,15 @@ constexpr int SaucerPeriodTicks = 1536;
 constexpr int SaucerMinAliens = 8;
 constexpr int SaucerStepX = 2;
 constexpr int SaucerScoreCount = 15;
+/// Ticks between the siren's sweeps while a saucer is on screen (S11, S17).
+///
+/// The reference siren is a warble, not one held tone, and the APU gives a
+/// game no way to say "this voice belongs to the siren": a looping event would
+/// have to be stopped by slot index, which the scene never learns. Re-firing a
+/// short sweep this often produces the warble out of ordinary one-shots that
+/// expire on their own. Twelve ticks is 0.2 s at the 60 Hz rules clock, so each
+/// sweep is still audible when the next one replaces it.
+constexpr uint16_t SaucerSirenPeriodTicks = 12;
 
 /// Shield geometry: four 22x16 masks at fixed x offsets, one shared y.
 constexpr int ShieldCount = 4;

@@ -22,6 +22,7 @@ using pixelroot32::graphics::Sprite;
 using pixelroot32::graphics::SpriteAnimationFrame;
 using pixelroot32::audio::AudioEvent;
 using pixelroot32::audio::WaveType;
+using pixelroot32::audio::SweepCurve;
 using pixelroot32::audio::MusicNote;
 using pixelroot32::audio::MusicTrack;
 using pixelroot32::audio::InstrumentPreset;
@@ -73,6 +74,27 @@ static const MusicTrack GAME_OVER_TRACK = {
     WaveType::PULSE,
     BASS_INSTRUMENT.duty
 };
+
+// --- EFFECT VOICES (S17) ---
+//
+// The shot, the kill, the death, the siren and the saucer hit are five one-shot
+// events competing with the march beat for the APU's four SFX voices (slots
+// 4-7). No event can name a slot: ApuCore picks the first idle voice of the same
+// waveform, then the first idle voice of any waveform, and only when all four
+// are busy steals the voice with the fewest samples left (a looping voice
+// counts as zero). That is a preference, not a reservation.
+//
+// The split below works with that policy: the shot and the siren are pulses
+// because that is the timbre they want, both bursts are noise, and the saucer
+// hit is a triangle because no other effect uses that waveform, so its long
+// ring-out prefers a voice none of them is shaping. Durations keep every effect
+// but the death short, which keeps a mid-effect steal cheap.
+//
+// What this cannot do is protect the march. Four concurrent effects fill the
+// subpool, and the march's four-tick tone is then the shortest voice in it, so
+// a fifth sound on that tick is entitled to take the beat's voice. The scene
+// therefore fires the siren once per period instead of layering sweeps, and
+// leaves the rest to the pool's own ordering.
 
 
 SpaceInvadersScene::SpaceInvadersScene()
@@ -340,12 +362,19 @@ void SpaceInvadersScene::tick(unsigned long tickMs) {
                         // not on a press and not while searching for a slot.
                         ++shotsFired;
 
+                        // S17: a short bright pulse that falls, so the shot
+                        // reads as a laser and not a click. Duration equals the
+                        // sweep so the voice frees itself in 0.09 s: it is the
+                        // shortest of the five effects, so a mid-shot steal
+                        // costs little and nothing has to stop it.
                         AudioEvent event{};
                         event.type = WaveType::PULSE;
-                        event.frequency = 880.0f;
-                        event.duration = 0.08f;
-                        event.volume = 0.4f;
+                        event.frequency = 1200.0f;
+                        event.duration = 0.09f;
+                        event.volume = 0.35f;
                         event.duty = 0.5f;
+                        event.sweepEndHz = 500.0f;
+                        event.sweepDurationSec = 0.09f;
                         engine.getAudioEngine().playEvent(event);
                         break;
                     }
@@ -599,12 +628,17 @@ void SpaceInvadersScene::handleCollisions() {
                         pr32::math::Scalar ey = alien->position.y + pr32::math::toScalar(alien->height) * pr32::math::toScalar(0.5f);
                         spawnEnemyExplosion(ex, ey);
 
+                        // S17: the kill is its own noise voice - a short bright
+                        // burst (period 12 at the 22050 Hz device rate is about
+                        // 1.8 kHz) deliberately unlike the death's low, long
+                        // rumble. One-shot, so the pool can take it back.
                         AudioEvent event{};
                         event.type = WaveType::NOISE;
-                        event.frequency = 600.0f;
-                        event.duration = 0.12f;
-                        event.volume = 0.6f;
-                        event.duty = 0.5f;
+                        event.frequency = 1800.0f;
+                        event.duration = 0.11f;
+                        event.volume = 0.55f;
+                        event.duty = 0.0f;
+                        event.noisePeriod = 12;
                         engine.getAudioEngine().playEvent(event);
 
                         if (getActiveAlienCount() == 0) {
@@ -639,6 +673,22 @@ void SpaceInvadersScene::handleCollisions() {
                     scoring.commitHighScore();
                     scoring.consumeExtraShip();
                     spawnSaucerPopup(saucer.position, awarded);
+
+                    // S17: the hit is the fifth voice, played where the award
+                    // and the popup already happen. A triangle sweep is the one
+                    // waveform none of the other four uses, so this widest and
+                    // longest ring-out asks the pool for a voice the shot, the
+                    // siren and the march are not already shaping.
+                    AudioEvent hitEvent{};
+                    hitEvent.type = WaveType::TRIANGLE;
+                    hitEvent.frequency = 1600.0f;
+                    hitEvent.duration = 0.35f;
+                    hitEvent.volume = 0.6f;
+                    hitEvent.duty = 0.5f;
+                    hitEvent.sweepEndHz = 300.0f;
+                    hitEvent.sweepDurationSec = 0.35f;
+                    hitEvent.sweepCurve = SweepCurve::Exponential;
+                    engine.getAudioEngine().playEvent(hitEvent);
 
                     saucer.collect();
                     stopSaucerSiren();
@@ -828,7 +878,13 @@ void SpaceInvadersScene::updateSaucer() {
         // other is a hit, which handleCollisions() reports directly.
         if (!saucer.isActive()) {
             stopSaucerSiren();
+            return;
         }
+
+        // S17: the cadence only runs while the ship is on screen. The exit
+        // branch above returns first, so the tick that reports the crossing's
+        // end cannot fire a sweep for a saucer that is already gone.
+        advanceSaucerSiren();
         return;
     }
 
@@ -874,21 +930,53 @@ void SpaceInvadersScene::spawnSaucerPopup(pr32::math::Vector2 position, uint16_t
 void SpaceInvadersScene::startSaucerSiren() {
     saucerSirenActive = true;
 
-    // S11/S17: the siren is a re-fired sweep with its own voice, which T5.2
-    // owns. Until then this one short pulse marks the entry in the same style as
-    // the existing shot and hit events, and the flag carries the state T5.2
-    // needs to start and stop the real sound on the same edges.
-    AudioEvent event{};
-    event.type = WaveType::PULSE;
-    event.frequency = 440.0f;
-    event.duration = 0.10f;
-    event.volume = 0.3f;
-    event.duty = 0.5f;
-    engine.getAudioEngine().playEvent(event);
+    // S11/S17: the entry is the first sweep of the warble, not a separate blip.
+    // Clearing the cadence makes advanceSaucerSiren() fire on this tick and
+    // reload the period, so entry and repeats come from the same code path.
+    saucerSirenTicks = 0;
+    advanceSaucerSiren();
 }
 
 void SpaceInvadersScene::stopSaucerSiren() {
+    // The flag is what a later tick reads, and the cadence is dropped with it:
+    // leaving a part-spent count behind would let the next crossing open on a
+    // sweep that the previous crossing had already earned.
     saucerSirenActive = false;
+    saucerSirenTicks = 0;
+}
+
+void SpaceInvadersScene::advanceSaucerSiren() {
+    // A stopped siren owns no sound. Checking the flag here rather than relying
+    // on the caller is what makes "no sweep after the saucer leaves or dies"
+    // structural instead of a promise about call order.
+    if (!saucerSirenActive) {
+        return;
+    }
+
+    if (saucerSirenTicks > 0) {
+        --saucerSirenTicks;
+    }
+    if (saucerSirenTicks > 0) {
+        return;
+    }
+
+    // S17: one low-to-high pulse sweep per period. It is a one-shot of exactly
+    // one period, so the next sweep replaces it as the warble the reference
+    // plays, and nothing has to be stopped by slot index. The pulse is the
+    // siren's own timbre and keeps it out of the noise family the two bursts
+    // use, and the 0.28 volume sits under the effects so it masks neither a
+    // shot nor a kill.
+    AudioEvent event{};
+    event.type = WaveType::PULSE;
+    event.frequency = 200.0f;
+    event.duration = 0.2f;
+    event.volume = 0.28f;
+    event.duty = 0.5f;
+    event.sweepEndHz = 800.0f;
+    event.sweepDurationSec = 0.2f;
+    engine.getAudioEngine().playEvent(event);
+
+    saucerSirenTicks = rules::SaucerSirenPeriodTicks;
 }
 
 void SpaceInvadersScene::draw(pr32::graphics::Renderer& renderer) {
@@ -1067,12 +1155,17 @@ void SpaceInvadersScene::handlePlayerHit() {
     // ship, and the run ends when that was the last one.
     scoring.loseLife();
 
+    // S17: the heaviest of the five and the only long one. It runs for exactly
+    // the death hold, so it dies with the pause instead of ringing into the
+    // respawn, and it is low (period 70 is about 315 Hz at the device rate) so
+    // it cannot be mistaken for the kill burst.
     AudioEvent event{};
     event.type = WaveType::NOISE;
-    event.frequency = 400.0f;
-    event.duration = 0.18f;
+    event.frequency = 315.0f;
+    event.duration = static_cast<float>(rules::PlayerDeathHoldTicks) / 60.0f;
     event.volume = 0.7f;
-    event.duty = 0.5f;
+    event.duty = 0.0f;
+    event.noisePeriod = 70;
     engine.getAudioEngine().playEvent(event);
 
     if (scoring.lives() == 0) {
