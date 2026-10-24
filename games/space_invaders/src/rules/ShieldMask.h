@@ -6,6 +6,27 @@
 
 namespace spaceinvaders::rules {
 
+class ShieldField;
+
+/**
+ * @brief Erodes the first solid pixel a shot crosses on its way through a shield.
+ *
+ * A shot advances several pixels per tick, so testing only where it ended can
+ * skip a row and let it pass through an intact wall. Walking the straight
+ * segment from the previous position one pixel at a time finds the cell the
+ * shot actually entered, and that cell is eroded through ShieldField::carve()
+ * (S10). Coordinates are shield-local: the caller owns the world conversion.
+ *
+ * @param field The shield set to erode.
+ * @param shield Shield index, 0..ShieldCount-1.
+ * @param fromX Column the shot occupied on the previous tick.
+ * @param fromY Row the shot occupied on the previous tick.
+ * @param toX Current shot column.
+ * @param toY Current shot row.
+ * @return true when the segment crossed a solid pixel; the blast is applied.
+ */
+bool carveSwept(ShieldField& field, int shield, int fromX, int fromY, int toX, int toY);
+
 /**
  * @class ShieldField
  * @brief The four destructible 22x16 bitmasks and their erosion (S10).

@@ -236,7 +236,7 @@ void SpaceInvadersScene::init() {
     // so the bound is checked at compile time instead of hours into a run.
     static_assert(sizeof(PlayerActor) +
                       rules::RackRows * rules::RackCols * sizeof(AlienActor) +
-                      BUNKER_COUNT * sizeof(BunkerActor) +
+                      rules::ShieldCount * sizeof(BunkerActor) +
                       MaxProjectiles * sizeof(ProjectileActor) <=
                   sizeof(SPACE_INVADERS_SCENE_ARENA_BUFFER),
                   "scene arena must hold one full wave");
@@ -287,6 +287,9 @@ void SpaceInvadersScene::resetGame() {
 #endif
 
     spawnAliens();
+    // S10: the masks are pristine at the start of a wave, so a run or a wave
+    // rebuild starts from the intact shape instead of last wave's damage.
+    shieldField.reset();
     spawnBunkers();
 
     projectiles.reserve(MaxProjectiles);
@@ -361,25 +364,20 @@ void SpaceInvadersScene::spawnAliens() {
 }
 
 void SpaceInvadersScene::spawnBunkers() {
-    if (BUNKER_COUNT <= 0) {
-        return;
-    }
-
-    float totalBunkersWidth = BUNKER_COUNT * BUNKER_WIDTH;
-    float gap = (DISPLAY_WIDTH - totalBunkersWidth) / (BUNKER_COUNT + 1);
-
-    for (int i = 0; i < BUNKER_COUNT; ++i) {
-        float x = gap + i * (BUNKER_WIDTH + gap);
-        float y = BUNKER_Y - BUNKER_HEIGHT;
+    // S10 fixes the four shields at absolute panel columns rather than spacing
+    // them by a computed gap: the arcade positions are part of the reference
+    // layout, and the rules layer owns them next to ShieldWidth/ShieldHeight.
+    for (int i = 0; i < rules::ShieldCount; ++i) {
+        const pr32::math::Vector2 position(rules::ShieldX[i], rules::ShieldY);
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
-        BunkerActor* bunker = arenaNew<BunkerActor>(arena, pr32::math::Vector2(x, y), BUNKER_WIDTH, BUNKER_HEIGHT, 4);
+        BunkerActor* bunker = arenaNew<BunkerActor>(arena, position, shieldField, i);
         if (!bunker) {
             continue;
         }
         bunkers.push_back(bunker);
         addEntity(bunker);
 #else
-        auto bunker = std::make_unique<BunkerActor>(pr32::math::Vector2(x, y), BUNKER_WIDTH, BUNKER_HEIGHT, 4);
+        auto bunker = std::make_unique<BunkerActor>(position, shieldField, i);
         addEntity(bunker.get());
         bunkers.push_back(std::move(bunker));
 #endif
@@ -634,20 +632,8 @@ void SpaceInvadersScene::handleCollisions() {
                     }
                 }
             }
-            if (!alienHit && proj->isActive()) {
-                for (auto& bunker : bunkers) {
-                    if (bunker->isDestroyed()) {
-                        continue;
-                    }
-                    pr32::math::Scalar tHit = pr32::math::toScalar(0);
-                    pixelroot32::core::Rect bunkerBox = bunker->getHitBox();
-                    if (sweepCircleVsRect(startCircle, endCircle, bunkerBox, tHit) ||
-                        proj->getHitBox().intersects(bunkerBox)) {
-                        proj->deactivate();
-                        bunker->applyDamage(1);
-                        break;
-                    }
-                }
+            if (!alienHit && proj->isActive() && hitShields(*proj)) {
+                continue;
             }
         }
     }
@@ -679,22 +665,7 @@ void SpaceInvadersScene::handleCollisions() {
             endCircle.radius = radius;
 
             pixelroot32::core::Rect eBox = proj->getHitBox();
-            bool handled = false;
-            for (auto& bunker : bunkers) {
-                if (bunker->isDestroyed()) {
-                    continue;
-                }
-                pixelroot32::core::Rect bunkerBox = bunker->getHitBox();
-                pr32::math::Scalar tHit = pr32::math::toScalar(0);
-                if (sweepCircleVsRect(startCircle, endCircle, bunkerBox, tHit) ||
-                    eBox.intersects(bunkerBox)) {
-                    proj->deactivate();
-                    bunker->applyDamage(1);
-                    handled = true;
-                    break;
-                }
-            }
-            if (handled) {
+            if (hitShields(*proj)) {
                 continue;
             }
             pr32::math::Scalar tHitPlayer = pr32::math::toScalar(0);
@@ -706,6 +677,46 @@ void SpaceInvadersScene::handleCollisions() {
             }
         }
     }
+}
+
+bool SpaceInvadersScene::hitShields(ProjectileActor& projectile) {
+    // The swept path runs centre to centre: the shot's own width is not part of
+    // the mask, and the centre is the point the pixel walk follows. Starting
+    // from the previous tick's centre is what stops a four-pixel step from
+    // stepping over a shield row between frames (S10).
+    const int halfWidth = static_cast<int>(projectile.width) / 2;
+    const int halfHeight = static_cast<int>(projectile.height) / 2;
+    const int fromX = static_cast<int>(projectile.getPreviousX()) + halfWidth;
+    const int fromY = static_cast<int>(projectile.getPreviousY()) + halfHeight;
+    const int toX = static_cast<int>(projectile.position.x) + halfWidth;
+    const int toY = static_cast<int>(projectile.position.y) + halfHeight;
+
+    // Broad phase only: a box that the segment's bounds miss cannot hide a
+    // solid pixel, so the mask walk is skipped for the other shields. A box
+    // the bounds touch is still decided by the mask below.
+    const int minX = fromX < toX ? fromX : toX;
+    const int minY = fromY < toY ? fromY : toY;
+    const int maxX = fromX > toX ? fromX : toX;
+    const int maxY = fromY > toY ? fromY : toY;
+    const pixelroot32::core::Rect sweepBounds{
+        pr32::math::Vector2(minX, minY), maxX - minX + 1, maxY - minY + 1};
+
+    for (auto& bunker : bunkers) {
+        if (!bunker || bunker->isDestroyed()) {
+            continue;
+        }
+        if (!sweepBounds.intersects(bunker->getHitBox())) {
+            continue;
+        }
+        // Only a solid pixel ends the shot. A path through a hole this shield
+        // already lost carves nothing, so the shot keeps its flight and can
+        // still hit the next shield or leave the panel.
+        if (bunker->carveSweptWorld(fromX, fromY, toX, toY)) {
+            projectile.deactivate();
+            return true;
+        }
+    }
+    return false;
 }
 
 void SpaceInvadersScene::enemyShoot() {

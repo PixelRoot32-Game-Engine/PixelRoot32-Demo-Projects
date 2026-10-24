@@ -8,6 +8,7 @@
 #include "rules/FixedStep.h"
 #include "rules/Rack.h"
 #include "rules/Rng.h"
+#include "rules/ShieldMask.h"
 
 namespace spaceinvaders {
 
@@ -117,6 +118,14 @@ namespace spaceinvaders {
          */
         void tick(unsigned long tickMs);
 
+        /**
+         * The four shields' pixels. One field, not four actors' state, so a
+         * wave rebuild is a single reset() and no actor can hold a stale copy
+         * of a mask another actor just eroded (S10). It is declared before the
+         * actors so it outlives every BunkerActor that references it.
+         */
+        rules::ShieldField shieldField;
+
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
         PlayerActor* player;
         std::vector<AlienActor*> aliens;
@@ -204,6 +213,21 @@ namespace spaceinvaders {
         void syncAliensToRack();
 
         void handleCollisions();
+
+        /**
+         * @brief Resolves a shot against the shields along the segment it swept (S10).
+         *
+         * The shield boxes are a broad-phase filter only. The path runs between
+         * the shot's centre on the previous tick and its centre now, so a
+         * four-pixel step cannot skip a row, and the mask decides whether the
+         * cell the path entered is still solid. A path through an existing hole
+         * carves nothing, leaves the shot alive and reports false, which is what
+         * lets it reach the next shield or leave the panel.
+         *
+         * @param projectile The live shot to test.
+         * @return true when a solid shield pixel was hit; the shot is deactivated.
+         */
+        bool hitShields(ProjectileActor& projectile);
 
         /**
          * @brief Fires one enemy bolt from the lowest alien of a live column.

@@ -1,11 +1,26 @@
 #include "BunkerActor.h"
 #include "BandColor.h"
-#include "GameConstants.h"
 
 namespace spaceinvaders {
 
-BunkerActor::BunkerActor(pixelroot32::math::Vector2 position, int w, int h, int maxHealth)
-    : StaticActor(position, w, h), health(maxHealth), maxHealth(maxHealth) {
+namespace {
+
+/// Origin of the mask in world pixels; actor positions are integral by design.
+inline int originX(const pixelroot32::math::Vector2& position) {
+    return static_cast<int>(position.x);
+}
+
+inline int originY(const pixelroot32::math::Vector2& position) {
+    return static_cast<int>(position.y);
+}
+
+}  // namespace
+
+BunkerActor::BunkerActor(pixelroot32::math::Vector2 position, rules::ShieldField& field,
+                         int shieldIndex)
+    : StaticActor(position, rules::ShieldWidth, rules::ShieldHeight),
+      field(field),
+      shieldIndex(shieldIndex) {
     setShape(pixelroot32::core::CollisionShape::AABB);
 }
 
@@ -14,36 +29,60 @@ void BunkerActor::update(unsigned long deltaTime) {
 }
 
 void BunkerActor::draw(pixelroot32::graphics::Renderer& renderer) {
-    if (health <= 0) return;
+    if (isDestroyed()) {
+        return;
+    }
 
-    float ratio = (maxHealth > 0) ? (float)health / (float)maxHealth : 0.0f;
-    if (ratio <= 0.0f) return;
+    const int left = originX(position);
+    const int top = originY(position);
 
-    int visibleHeight = (int)(height * ratio);
-    if (visibleHeight <= 0) return;
+    for (int y = 0; y < rules::ShieldHeight; ++y) {
+        const uint32_t bits = field.rowBits(shieldIndex, y);
+        if (bits == 0u) {
+            continue;
+        }
 
-    int drawY = (int)(position.y + (height - visibleHeight));
+        // The band is resolved from the screen row, so the whole mask keeps the
+        // single colour the cabinet overlay gives it (S3).
+        const pixelroot32::graphics::Color color = bandColorFor(top + y);
 
-    // The overlay's band decides the tint (S3), not the damage ratio: a shield
-    // sits in the green band from its first row down, so the old green/yellow/red
-    // health cue is gone -- the mask erosion in the shield rework replaces it.
-    renderer.drawFilledRectangle((int)position.x, drawY, width, visibleHeight,
-                                 bandColorFor(drawY));
+        int x = 0;
+        while (x < rules::ShieldWidth) {
+            if ((bits & (1u << x)) == 0u) {
+                ++x;
+                continue;
+            }
+            const int runStart = x;
+            while (x < rules::ShieldWidth && (bits & (1u << x)) != 0u) {
+                ++x;
+            }
+            renderer.drawFilledRectangle(left + runStart, top + y, x - runStart, 1, color);
+        }
+    }
 }
 
 void BunkerActor::onCollision(pixelroot32::core::Actor* other) {
     (void)other;
 }
 
-void BunkerActor::applyDamage(int amount) {
-    health -= amount;
-    if (health < 0) {
-        health = 0;
-    }
+bool BunkerActor::isDestroyed() const {
+    return field.destroyed(shieldIndex);
 }
 
-bool BunkerActor::isDestroyed() const {
-    return health <= 0;
+bool BunkerActor::solidAtWorld(int worldX, int worldY) const {
+    const int localX = worldX - originX(position);
+    const int localY = worldY - originY(position);
+    if (localX < 0 || localX >= rules::ShieldWidth || localY < 0 ||
+        localY >= rules::ShieldHeight) {
+        return false;
+    }
+    return field.solid(shieldIndex, localX, localY);
+}
+
+bool BunkerActor::carveSweptWorld(int fromWorldX, int fromWorldY, int toWorldX, int toWorldY) {
+    return rules::carveSwept(field, shieldIndex, fromWorldX - originX(position),
+                             fromWorldY - originY(position), toWorldX - originX(position),
+                             toWorldY - originY(position));
 }
 
 }

@@ -66,13 +66,6 @@ namespace spaceinvaders {
      */
     constexpr uint32_t RUN_SEED = 0x1978u;
 
-    /** Bunker layout and dimensions */
-    constexpr int BUNKER_COUNT = 4;
-    constexpr int BUNKER_WIDTH = 24;
-    constexpr int BUNKER_HEIGHT = 16;
-    /** Bottom line the scene subtracts BUNKER_HEIGHT from, so the shields start at SHIELD_TOP_Y */
-    constexpr float BUNKER_Y = SHIELD_TOP_Y + BUNKER_HEIGHT;
-
     /**
      * Alien mask dimensions used by the sprite descriptors in
      * assets/AlienSprites.h. The rules layer owns the formation geometry, the

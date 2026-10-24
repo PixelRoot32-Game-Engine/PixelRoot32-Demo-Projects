@@ -16,7 +16,49 @@ constexpr uint32_t clearRange(uint32_t bits, int start, int count) {
     return bits & ~(range << start);
 }
 
+/**
+ * @brief Nearest-pixel offset `delta * step / steps`, rounded away from zero.
+ *
+ * Integer-only on purpose: the rules layer also builds for targets without an
+ * FPU, and the walk must land on the same cells there as in the host tests.
+ */
+constexpr int roundedOffset(int delta, int step, int steps) {
+    if (steps <= 0) {
+        return 0;
+    }
+    const int numerator = delta * step;
+    if (numerator >= 0) {
+        return (numerator + steps / 2) / steps;
+    }
+    return -((-numerator + steps / 2) / steps);
+}
+
 }  // namespace
+
+bool carveSwept(ShieldField& field, int shield, int fromX, int fromY, int toX, int toY) {
+    const int dx = toX - fromX;
+    const int dy = toY - fromY;
+    const int absDx = dx < 0 ? -dx : dx;
+    const int absDy = dy < 0 ? -dy : dy;
+    const int steps = absDx > absDy ? absDx : absDy;
+
+    // One sample per pixel along the longer axis: no cell on the path can be
+    // stepped over, and every sample is a real mask coordinate. Samples that
+    // fall outside the mask report empty, so the walk clips instead of
+    // wrapping a negative row onto the bottom of the shield.
+    for (int step = 0; step <= steps; ++step) {
+        const int x = fromX + roundedOffset(dx, step, steps);
+        const int y = fromY + roundedOffset(dy, step, steps);
+        if (!field.solid(shield, x, y)) {
+            continue;
+        }
+        // The impact cell is where the shot entered the wall, so the blast is
+        // centred on it rather than on the end-of-tick position (S10).
+        field.carve(shield, x, y);
+        return true;
+    }
+    return false;
+}
 
 void ShieldField::reset() {
     // The intact shape: cut top corners, eleven full rows and the bottom arch
