@@ -1,39 +1,29 @@
 # Space Invaders
 
-> **Demonstration project** — provided as an example of what the PixelRoot32
-> Game Engine can do. It is not a product: parts may be incomplete,
-> experimental, or deliberately simplified to keep one idea in focus.
-
 > **⚠️ UNOFFICIAL CLONE — DEMONSTRATION ONLY**
 >
-> This is a **clone of the original 1978 arcade game**, written from scratch
-> and shipped **for demonstration purposes only**: its job is to show how the
-> PixelRoot32 engine's APIs fit together in a complete game, not to
-> redistribute or replace anyone's product.
->
-> *Space Invaders* is a trademark of **Taito Corporation**. This demo is
-> **not affiliated with, endorsed by, or licensed by Taito**, and reproduces
-> none of the original's code, data, or artwork — only the rules of a genre
-> that has been reimplemented as a teaching exercise for four decades. The
-> name is used descriptively, to say what the demo clones.
+> A **clone of the original 1978 arcade game**, written from scratch and shipped
+> **for demonstration purposes only**: a teaching piece showing how the
+> PixelRoot32 engine's APIs fit together, not a product. *Space Invaders* is a
+> trademark of **Taito Corporation**; this demo is not affiliated with, endorsed
+> by, or licensed by Taito, and reproduces none of the original's code or data,
+> only the rules of a genre reimplemented for four decades.
 
 > **ARTWORK PROVENANCE**
 >
-> The sprites in [`src/assets/`](src/assets) - the cannon, the three alien
-> types, the saucer, both shots, the explosion, the shields and the 8x8 font -
-> were **redrawn for this repository** against a reference arcade sprite sheet,
-> at the arcade's own sizes, as `uint16_t` row data in the source itself. No
-> third-party image file ships with the project. The code remains MIT. The
-> artwork is a visual reimplementation of the arcade's designs, published for
-> demonstration, and is **not offered under a public-domain dedication**.
+> The masks in [`src/assets/`](src/assets) - cannon, aliens, saucer, shots, death
+> frames, shields - were **drawn by hand in this repository** against a reference
+> arcade sprite sheet: same silhouettes and frame counts, typed in as `uint16_t`
+> rows, never traced or sampled. The 8x8 font is transcribed glyph by glyph from
+> the sheet's character table. The sheet is local working material, not tracked
+> here, so no third-party image ships; the code is MIT and the artwork is a
+> visual reimplementation, **not offered under a public-domain dedication**.
 
-A clone of the classic fixed-shooter, rebuilt on this engine as a teaching
-demo: four rows of aliens marching down toward four degradable bunkers, one
-bullet on screen at a time, three lives, and a bass line that speeds up as the
-formation gets closer. The single idea it is about is **a fixed memory
-budget**: the scene arena, the projectile pool, and the explosion slots are
-all sized once at compile time, so a full game runs without a single runtime
-allocation.
+A clone of the 1978 fixed-shooter: a 5 x 11 rack marching down on four shields
+that erode pixel by pixel, a mystery saucer, three ships, and a march beat that
+tightens as the formation thins. Its idea is **a fixed memory budget** — arena,
+projectile pool and explosion slots sized once at compile time, so a full wave
+runs without a runtime allocation.
 
 Language: C++17  
 Engine: `gperez88/PixelRoot32-Game-Engine@^1.9.0`  
@@ -44,36 +34,24 @@ Category: Games
 
 ## Requirements (build flags)
 
-Set in [`lib/platformio.ini`](lib/platformio.ini)'s `[base]` template, so
-every environment inherits them:
+All set in [`lib/platformio.ini`](lib/platformio.ini)'s `[base]` template:
 
-- **`PIXELROOT32_ENABLE_SCENE_ARENA`** — selects the arena path. With the flag
-  set, every entity is placed with `arenaNew` into the scene's
-  `SPACE_INVADERS_SCENE_ARENA_BUFFER` (4 KB, a file-scope array); without it
-  the same code compiles to `std::unique_ptr` and the heap. Both branches are
-  in [`src/SpaceInvadersScene.cpp`](src/SpaceInvadersScene.cpp), guarded by
-  `#ifdef`, so the demo is also a side-by-side of the two ownership models.
-  If the buffer runs out, `arenaNew` returns `nullptr` and the scene skips
-  that entity rather than crashing.
-- **`PIXELROOT32_ENABLE_PHYSICS=1`** — required, not optional. `RigidActor`
-  (projectiles), `KinematicActor` (the ship), `StaticActor` (bunkers) and the
-  swept-collision helpers in `physics/CollisionSystem.h` all live behind this
-  flag, so the demo does not compile without it.
-- **`PIXELROOT32_ENABLE_AUDIO=1`** — needed for the three-speed bass loop, the
-  win/lose fanfares, and the shot/hit cues. Building without it is not a
-  compile error — it is silence, and the tempo ramp that carries most of the
-  tension disappears with it.
-- **`PIXELROOT32_ENABLE_PARTICLES=0`** — not used. Enemy hits are four
-  one-pixel-wide bars drawn straight by the scene, and the player death is a
-  three-frame sprite animation.
-- **`PIXELROOT32_ENABLE_UI_SYSTEM=0`** — the score and lives readouts are
-  `Renderer::drawText` calls, not UI widgets.
+- **`PIXELROOT32_ENABLE_SCENE_ARENA`** — entities come from `arenaNew` into the
+  8 KB `SPACE_INVADERS_SCENE_ARENA_BUFFER`, or from `std::unique_ptr` and the
+  heap when the flag is off; both branches sit behind `#ifdef` in
+  [`src/SpaceInvadersScene.cpp`](src/SpaceInvadersScene.cpp).
+- **`PIXELROOT32_ENABLE_PHYSICS=1`** — required: `RigidActor` (shots),
+  `KinematicActor` (ship), `StaticActor` (shields, saucer) and the swept helpers
+  in `physics/CollisionSystem.h` live behind it.
+- **`PIXELROOT32_ENABLE_AUDIO=1`** — the march beat and the five effects; without
+  it the build succeeds and plays nothing.
+- **`PIXELROOT32_ENABLE_PARTICLES=0`, `PIXELROOT32_ENABLE_UI_SYSTEM=0`** — a kill
+  is two five-pixel bars drawn by the scene and the death a two-frame 13x8 mask;
+  the HUD is `Renderer::drawText` in the 8x8 arcade font, not UI widgets.
 
-Display size is **240×240** in the project `platformio.ini` (see
-`PHYSICAL_DISPLAY_*`). Formation width, bunker spacing, and the ship's start
-position are all derived from `DISPLAY_WIDTH` / `DISPLAY_HEIGHT` in
-[`src/GameConstants.h`](src/GameConstants.h), so a different resolution
-re-lays-out the screen instead of clipping it.
+Display is **240×240**, playfield 224 px wide at `x=8`, drawn 1:1; every row,
+pitch and spawn position derives from it in [`src/GameConstants.h`](src/GameConstants.h)
+and [`src/rules/RulesConstants.h`](src/rules/RulesConstants.h).
 
 ## Platforms
 
@@ -82,77 +60,146 @@ re-lays-out the screen instead of clipping it.
 | **`native`** | SDL2, 240×240 | `SDL2_AudioBackend` in [`src/platforms/native.h`](src/platforms/native.h) |
 | **`esp32dev`** | **ST7789** 240×240 | `ESP32_I2S_AudioBackend` in [`src/platforms/esp32_dev.h`](src/platforms/esp32_dev.h) |
 
-Pin choices (ST7789 SPI, I2S audio, D-pad + two buttons) are in
-`src/platforms/esp32_dev.h` — edit there if your wiring differs.
+Pins for ST7789, I2S and the D-pad are in `src/platforms/esp32_dev.h`.
 
 ## Controls
 
 | Action | `native` (keyboard) | `esp32dev` (GPIO) |
 |--------|----------------------|--------------------|
-| Move ship | Left / Right arrows | D-pad Left / Right |
-| Fire | Space | Button A |
+| Move ship | Left / Right arrows | D-pad Left / Right (33 / 14) |
+| Fire | Space | Button A (13) |
 | Restart (from Game Over) | Space | Button A |
 
-The ship moves between **nine discrete lanes**, not freely: a tap steps one
-lane, holding for 300 ms starts an arcade-style auto-repeat every 150 ms, and
-each step is interpolated over 100 ms with an ease-out-cubic curve. Only one
-player bullet may be in flight at a time, which is what makes aiming a
-decision.
+The cannon is **continuous**: one pixel per rules tick while a direction is
+held, clamped to the playfield edge; no lanes, no easing, and both or neither
+button held moves nothing. Fire is one shot at a time: a press fires only when
+no player shot is in flight **and** the button was released since the previous
+shot, so holding does not auto-repeat and a mid-flight press is ignored.
+
+## Rules as implemented
+
+**The clock.** Everything runs on a fixed 60 Hz step of 16.667 ms, at most five
+ticks per frame with the surplus dropped, so a stalled frame cannot teleport the
+rack; the frame draws after its last tick.
+
+**The rack.** 5 x 11 = 55 aliens on a 16 px pitch — squid 30 points on row 1,
+crab 20 on rows 2-3, octopus 10 on rows 4-5 — top-left 26 px into the field at
+y=48. One live alien moves per tick, so a sweep takes as many ticks as there are
+live aliens and the march accelerates as it thins; the frame flips once per
+completed sweep, the only animation clock. A sweep shifts 2 px, or 3 px with one
+alien left; on the edge it reverses and drops 8 px against the outermost live
+sprite (left 2, right 222). A kill freezes it 10 ticks; the sweep resumes where
+it stopped. A cleared rack restarts 8 px lower, to the deepest origin it fits.
+
+**Enemy fire.** Three bolts at most, a 3x7 mask with two frames. Every third
+tick each live bolt steps 4 px, or 5 px under nine aliens, and flips its frame;
+the shooter is the lowest alien of a randomly chosen live column, read from the
+rack grid. The reload is a budget in shot steps, indexed by the score's high
+byte: 48, then 16, 11, 8, 7 past `0x02`, `0x10`, `0x20`, `0x30`. It charges even
+with all three slots full, and a band change re-arms it; columns come from the
+run's xorshift32 generator, reseeded to `0x1978`.
+
+**Shields.** Four 22x16 masks at `x=32, 77, 122, 167`, `y=184`, with two pixels
+cut from each top corner and a widening arch through the bottom four rows. A hit
+walks the shot's segment from the previous tick one pixel at a time and erodes a
+3x3 blast at the first solid pixel; a path through a hole the shield already
+lost erodes nothing, so that shot flies on. There is no health counter and no
+shrinking height: a shield that loses every bit is gone, and all four are rebuilt
+per wave.
+
+**The saucer.** A 16x7 mask crossing `y=24` at 2 px per tick, entering fully
+outside the field when a 1536-tick period expires (only while nothing is on
+screen) and at least eight aliens are alive. Its side is the parity of the
+player's shot counter (even enters left, odd right), and its value cycles a
+15-entry table: 100, 50, 50, 100, 150, 100, 100, 50, 300, 100, 100, 100, 50,
+150, 100. A hit shows that number where it died for a second, and a siren plays
+while it crosses.
+
+**Score, ships, waves.** Four digits clamping at 9999, a session high score
+surviving a restart, three ships, one extra ship at 1500 (once per run, silent),
+reserve ships as cannon icons. Clearing the rack advances the wave: shields
+restored, formation 8 px lower, shots and bursts cleared, score and ships kept.
+There is no win state.
+
+**How a run ends.** **Invasion**: an alien's bottom reaches the cannon baseline
+at `y=216` and the run ends on that tick; the ship was never hit. **Last ship**:
+a bolt hits with no reserve left. Both show `GAME OVER` / `PRESS FIRE`.
+
+**The death sequence.** A surviving hit spends a ship: the cannon vanishes, all
+shots in flight clear, and the two-frame 13x8 burst alternates once per tick
+where the ship died. Every other rules step is skipped for a fixed 30 ticks, so
+the wave resumes where it stopped; then the cannon returns at the left edge,
+fire gated until release. The last ship ends the run immediately, with no hold.
+
+## Audio
+
+There is no music track. The march is **one short tone per beat**: a four-tick
+pulse rotated through four voices, with the gap from a live-count table (52, 46,
+39, 34, 28, 24, 21, 19, 16, 14, 13, 12, 11, 9, 7, 5 ticks for 50, 43, 36, 28,
+22, 17, 13, 10, 8, 7, 6, 5, 4, 3, 2, 1 aliens, and 52 above that). The beat
+keeps its own clock: the sweep length *is* the live count while the beat reads
+the table, so the two deliberately drift, as on the original board.
+
+Five effects fire as one-shots: the shot (0.09 s pulse sweep), the kill (0.11 s
+bright noise), the player death (low noise held for exactly the 30-tick pause),
+the saucer siren (0.2 s pulse sweep re-fired every 12 ticks while it is on
+screen) and the saucer hit (0.35 s triangle sweep). They share the four SFX
+voices with the march, and nothing reserves a slot.
+
+Two figures are **provisional, not transcribed**: the four march pitches (110,
+104, 98, 92 Hz) are a stated placeholder, because the documentation gives the
+rotation, the interval table and the four-tick hold but not the pitch of each
+analog voice; and the 30-tick death hold is the disassembly's "flips between two
+images for half a second" at 60 Hz, its cadence undocumented. Both wait on the
+capture comparison in [Verification](#verification).
+
+## Memory
+
+| Item | Value |
+|------|-------|
+| Arena buffer | 8192 bytes |
+| One full wave | 7784 bytes (216 player + 55 x 80 aliens + 4 x 192 shields + 12 x 200 shots), 408 free |
+| Entities | 72 registered against `MAX_ENTITIES=80` |
+
+Measured from the native build and re-checked by the compiler: per-actor
+`static_assert`s, the total, the headroom and the entity count all fail the
+build if the wave stops fitting, and failed `arenaNew` calls are counted and
+asserted zero after the first wave in a debug build. The 12-slot pool is shared
+by the player's shot and the enemy's three; the eight explosion slots hold
+200 ms bursts. The wave is allocated once in `resetGame()` and `advanceWave()`
+reuses the same actors, so nothing in a run reaches the allocator.
 
 ## What it demonstrates
-- **Everything allocated once.** Twelve `ProjectileActor`s are constructed
-  deactivated at reset and recycled by `reset()` for the rest of the game;
-  enemy hit effects use eight fixed `EnemyExplosion` slots; the shooter
-  candidate list in `enemyShoot()` is a stack array sized by `ALIEN_COLS`.
-  Combined with the arena, nothing in `update()` reaches the allocator.
-- **Swept-circle collision for fast, small targets.** A projectile at 80 px/s
-  can pass through an 8-pixel alien between two frames. `ProjectileActor`
-  keeps its `previousPosition`, and `handleCollisions()` runs
-  `sweepCircleVsRect` from the previous position to the current one, falling
-  back to a plain overlap test. Discrete tests alone would drop hits.
-- **Animation driven by the game clock, not a frame timer.** Aliens never
-  animate themselves: `AlienActor::update()` is empty, and the scene calls
-  `move()` on every alien on each formation step, which advances position and
-  `SpriteAnimation::step()` together. The whole formation therefore flips
-  frames in perfect lockstep, which is the effect the original arcade cabinets
-  got for free by redrawing one alien per step.
-- **The music is the difficulty readout.** `updateMusicTempo()` maps the
-  lowest living alien's Y to a tempo factor between 1.0 and 1.9, eased toward
-  the target at 5 % per frame, and that same factor scales the formation's
-  step timer. Sound and speed cannot drift apart because they read one number.
-- **All three aliens own two frames, as plain sprites.** Squid, Crab and
-  Octopus each ship two single-colour `Sprite` frames, which the formation
-  advances in lockstep. There is one draw path: `AlienActor::draw()` calls
-  `drawSprite` once, and the colour comes from the band the alien occupies
-  rather than from a per-sprite palette.
-- **Colour from the overlay band, not from damage.** A bunker is drawn in the
-  band colour it occupies - green, because the shields sit low on the overlay -
-  with no damage tint: the old green-yellow-red health fade is gone. Its block
-  still shrinks with its remaining health until the mask rewrite lands.
-- **A death that pauses the world.** A player hit shows the explosion burst
-  and sets `isPaused`, which short-circuits `Scene::update()` entirely -
-  aliens stop marching while it plays - then respawns the ship centred under
-  the first surviving bunker.
+
+- **Swept-circle collision from a shadowed previous position.** A four-pixel
+  step can cross an eight-pixel alien between two frames, so `ProjectileActor`
+  records where the tick started — shadowing the base class field on purpose —
+  and the scene sweeps a circle from there, falling back to a plain overlap.
+- **One animation clock.** `AlienActor::update()` is empty and the rack owns the
+  frame, so the whole formation flips in lockstep.
+- **A budget the compiler defends.** Arena, pool and effect slots are sized once
+  and the assertions proving they still fit are part of the build.
+- **An engine-free rules layer.** [`src/rules/`](src/rules) includes `<cstdint>`
+  and nothing else, so the panel code is tested on the host: 13 suites, 89
+  cases, including a scripted-run replay that a fixed tick and a seeded
+  generator make reproducible.
 
 ## Project layout
 
 ```
 src/
-├── GameConstants.h              layout, timing, button IDs
-├── PlayerActor.h/.cpp           nine-lane ship: auto-repeat input, eased motion
-├── AlienActor.h/.cpp            one alien: type, score value, stepped animation
-├── ProjectileActor.h/.cpp       pooled bullet with previous-position tracking
-├── BunkerActor.h/.cpp           StaticActor barrier with health-as-height
-├── SpaceInvadersScene.h/.cpp    arena, formation march, collisions, music tempo
-├── assets/
-│   ├── AlienSprites.h           squid/crab/octopus bitmaps, two frames each
-│   ├── PlayerSprites.h          cannon bitmap
-│   ├── PlayerExplosionSprites.h explosion burst bitmap
-│   ├── SaucerSprites.h          saucer bitmap
-│   ├── ShotSprites.h            player and enemy shot bitmaps
-│   └── FontData.h               8x8 arcade font glyphs and descriptor
-├── main.cpp                     platform selector
-└── platforms/                   native.h, esp32_dev.h — backend wiring per target
+├── GameConstants.h, BandColor.h   screen model, input IDs, overlay band
+├── PlayerActor, AlienActor, ProjectileActor, BunkerActor, SaucerActor
+├── SpaceInvadersScene.h/.cpp      arena, tick loop, collisions, HUD, audio
+├── rules/                         engine-free: Rack, RulesConstants, FixedStep, FireTiming,
+│                                  Shots, ShieldMask, Saucer, MarchSound, Scoring, Rng
+├── assets/                        AlienSprites, PlayerSprites, SaucerSprites,
+│                                  PlayerExplosionSprites (two frames), ShotSprites, FontData
+├── main.cpp                       platform selector
+└── platforms/                     native.h, esp32_dev.h — backend wiring
+
+test/                              13 suites, 89 cases: rules/smoke, rack, march, cannon,
+                                   shots, fire, shields, saucer, scoring, fixed step, rng, replay
 ```
 
 ## Engine documentation
@@ -171,6 +218,17 @@ pio run -e native
 pio run -e esp32dev
 ```
 
+## Verification
+
+| Command | What it proves |
+|---------|----------------|
+| `pio test -e host_test` | The rules layer alone: 55 cells, sweep length from the live count, the 3 px last alien and 8 px drop, the reload ladder, the 15-value saucer sequence, shield erosion and the pass-through hole, the 1500-point ship, the wave offset, the march intervals, and a scripted-run replay. No display, no SDL. |
+| `pio run -e native` | The whole game links and builds for SDL2 at 1:1, and every arena-budget assertion holds. |
+| `pio run -e esp32dev` | The device target with the ST7789 and I2S wiring compiles. |
+
+Still pending: a full run on the panel, and the capture comparison at fixed
+ticks against a reference recording — what the provisional figures wait on.
+
 ## Upload (ESP32)
 
 ```bash
@@ -183,15 +241,20 @@ Source code: [MIT](../../LICENSE).
 
 | Asset | Author | License | Source |
 |-------|--------|---------|--------|
-| Cannon, alien, saucer, shot, explosion, font and shield masks | This repository | Not CC0: a visual reimplementation, published for demonstration only | Redrawn against a reference arcade sprite sheet, as `uint16_t` row data in [`src/assets/`](src/assets) |
-| All audio cues and music tracks | This repository | CC0 1.0 (public domain) | Original work, synthesised at runtime from `AudioEvent` / `MusicTrack` definitions in `src/` |
+| Cannon, alien, saucer, shot, death frames, shields | This repository | Not CC0: a visual reimplementation, published for demonstration only | Hand-drawn against a reference arcade sprite sheet, as `uint16_t` rows in [`src/assets/`](src/assets) |
+| 8x8 arcade font | This repository | Not CC0: a visual reimplementation, published for demonstration only | Transcribed glyph by glyph from the same sheet, in [`src/assets/FontData.h`](src/assets/FontData.h) |
+| March beat and the five effects | This repository | CC0 1.0 (public domain) | Original work, synthesised at runtime from `AudioEvent` data in `src/` |
 
-The masks are hand-drawn in this repository and no third-party image file ships
-with it, but they depict the arcade's sprites, so they carry no public-domain
-dedication of their own.
+The masks are hand-drawn here and no third-party image ships with the project,
+but they depict the arcade's sprites, so they carry no public-domain dedication
+of their own.
 
-**Trademark.** *Space Invaders* is a trademark of Taito Corporation. This
-demo is an unofficial clone published for demonstration purposes only, is not
-affiliated with or endorsed by Taito, and contains none of the original
-game's code, data, or assets. The name appears here descriptively — to say
-which game the demo clones — and no claim to it is made.
+## Sources
+
+- Computer Archaeology, *Space Invaders* — code walkthrough and disassembly: the
+  rack loop (one live alien per interrupt, the 8 px drop, the 3 px last alien),
+  the march interval and four-voice tables, the reload ladder, the 15-entry
+  saucer table, and the player task's two-image death, described as half a
+  second. <http://computerarcheology.com/Arcade/SpaceInvaders/>
+- walkofmind, *Space Invaders sound hardware* — the march's voice rotation:
+  <http://www.walkofmind.com/programming/space.htm>
