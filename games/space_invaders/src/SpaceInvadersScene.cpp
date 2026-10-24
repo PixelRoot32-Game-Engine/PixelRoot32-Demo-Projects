@@ -7,7 +7,6 @@
 #include "platforms/EngineConfig.h"
 #include "core/Engine.h"
 #include "audio/AudioTypes.h"
-#include "audio/AudioMusicTypes.h"
 #include <cstdio>
 #include "assets/FontData.h"
 #include "assets/PlayerExplosionSprites.h"
@@ -23,11 +22,6 @@ using pixelroot32::graphics::SpriteAnimationFrame;
 using pixelroot32::audio::AudioEvent;
 using pixelroot32::audio::WaveType;
 using pixelroot32::audio::SweepCurve;
-using pixelroot32::audio::MusicNote;
-using pixelroot32::audio::MusicTrack;
-using pixelroot32::audio::InstrumentPreset;
-using pixelroot32::audio::INSTR_PULSE_BASS;
-using pixelroot32::audio::Note;
 using pixelroot32::math::Scalar;
 using pixelroot32::math::Vector2;
 
@@ -51,29 +45,13 @@ static unsigned char SPACE_INVADERS_SCENE_ARENA_BUFFER[8192];
 #endif
 
 
-// Voice for the game-over track below. The march does not use a track at all
-// (S16); T5.3 removes the jingle, but it is not part of T5.1.
-static const InstrumentPreset BASS_INSTRUMENT = INSTR_PULSE_BASS;
-
-// --- GAME OVER MUSIC ---
+// --- NO MUSIC ---
 //
-// There is deliberately no win track: S12/S13 have no win state, because a
-// cleared rack advances the wave instead of ending the run (F5).
-
-static const MusicNote GAME_OVER_NOTES[] = {
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::G, 0.2f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::E, 0.2f), // Using E instead of Eb if Eb undefined, checking later
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.4f),
-    pixelroot32::audio::makeRest(0.1f)
-};
-
-static const MusicTrack GAME_OVER_TRACK = {
-    GAME_OVER_NOTES,
-    sizeof(GAME_OVER_NOTES) / sizeof(MusicNote),
-    false, // No loop
-    WaveType::PULSE,
-    BASS_INSTRUMENT.duty
-};
+// S17: this game plays no win, game-over or extra-ship sound. The death and the
+// invasion already fire their own effect voices, so a jingle would only compete
+// with them for the APU's four SFX voices. There is deliberately no win track
+// either: S12/S13 have no win state, because a cleared rack advances the wave
+// instead of ending the run (F5).
 
 // --- EFFECT VOICES (S17) ---
 //
@@ -438,7 +416,6 @@ void SpaceInvadersScene::updateAliens() {
         const int cannonBaseline = static_cast<int>(CANNON_TOP_Y) + PLAYER_HEIGHT;
         if (rack.lowestAlienBottom() >= cannonBaseline) {
             gameOver = true;
-            engine.getMusicPlayer().play(GAME_OVER_TRACK);
         }
     }
 }
@@ -1170,7 +1147,6 @@ void SpaceInvadersScene::handlePlayerHit() {
 
     if (scoring.lives() == 0) {
         gameOver = true;
-        engine.getMusicPlayer().play(GAME_OVER_TRACK);
         return;
     }
 

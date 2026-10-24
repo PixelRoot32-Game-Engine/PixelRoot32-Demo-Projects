@@ -87,8 +87,4 @@ namespace spaceinvaders {
     constexpr int ALIEN_OCTOPUS_SPRITE_W = 12;
     constexpr int ALIEN_OCTOPUS_SPRITE_H = 8;
 
-    /** Music tempo scaling based on alien proximity (threat factor) */
-    constexpr float Y_RANGE = 160.0f;              ///< Fixed tempo range, not derived from the layout
-    constexpr float INV_Y_RANGE = 1.0f / Y_RANGE;  ///< Reciprocal, precomputed for the per-tick scale
-
 }
