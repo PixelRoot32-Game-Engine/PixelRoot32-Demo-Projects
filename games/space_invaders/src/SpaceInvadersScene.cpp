@@ -11,6 +11,7 @@
 #include <cstdio>
 #include "assets/FontData.h"
 #include "assets/PlayerExplosionSprites.h"
+#include "assets/PlayerSprites.h"
 
 namespace pr32 = pixelroot32;
 extern pr32::core::Engine engine;
@@ -109,23 +110,10 @@ static const MusicTrack BGM_FAST_TRACK = {
     BASS_INSTRUMENT.duty
 };
 
-// --- WIN / GAME OVER MUSIC ---
-
-static const MusicNote WIN_NOTES[] = {
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.15f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::E, 0.15f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::G, 0.15f),
-    pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::C, 0.4f), // C High ideally, but using C for safety if C_High undefined
-    pixelroot32::audio::makeRest(0.1f)
-};
-
-static const MusicTrack WIN_TRACK = {
-    WIN_NOTES,
-    sizeof(WIN_NOTES) / sizeof(MusicNote),
-    false, // No loop
-    WaveType::PULSE,
-    BASS_INSTRUMENT.duty
-};
+// --- GAME OVER MUSIC ---
+//
+// There is deliberately no win track: S12/S13 have no win state, because a
+// cleared rack advances the wave instead of ending the run (F5).
 
 static const MusicNote GAME_OVER_NOTES[] = {
     pixelroot32::audio::makeNote(BASS_INSTRUMENT, Note::G, 0.2f),
@@ -200,10 +188,7 @@ bool ExplosionAnimation::isActive() const {
 
 SpaceInvadersScene::SpaceInvadersScene()
     : player(nullptr),
-      score(0),
-      lives(3),
       gameOver(false),
-      gameWon(false),
       isPaused(false),
       fireInputReady(false),
       currentMusicTempoFactor(1.0f) {
@@ -310,10 +295,10 @@ void SpaceInvadersScene::resetGame() {
 #endif
     }
 
-    score = 0;
-    lives = 3;
+    // S12: score, ships and the wave counter return to the start of a run. The
+    // high score belongs to the session, so reset() leaves it alone by design.
+    scoring.reset();
     gameOver = false;
-    gameWon = false;
     isPaused = false;
     fireInputReady = false;
 
@@ -515,10 +500,11 @@ void SpaceInvadersScene::updateAliens() {
     if (!gameOver && player) {
         // S13: the run ends when any alien bottom reaches the cannon baseline.
         // The rack reports the lowest live bottom, so a cleared bottom row stops
-        // holding the check at its old height.
+        // holding the check at its old height. An invasion is the end of the
+        // run, not a lost ship: nothing decrements the ship count here, because
+        // the cannon was still on the field when the formation arrived.
         const int cannonBaseline = static_cast<int>(CANNON_TOP_Y) + PLAYER_HEIGHT;
         if (rack.lowestAlienBottom() >= cannonBaseline) {
-            lives = 0;
             gameOver = true;
             engine.getMusicPlayer().setTempoFactor(1.0f);
             engine.getMusicPlayer().play(GAME_OVER_TRACK);
@@ -549,7 +535,7 @@ void SpaceInvadersScene::updateEnemyFire() {
     // tighter reload from this step on instead of waiting for the next run. The
     // countdown restarts, which is the same reload the timer just performed: a
     // full gap still has to pass before the next shot leaves.
-    const uint16_t band = static_cast<uint16_t>(score >> 8);
+    const uint16_t band = scoring.scoreBand();
     if (rules::enemyReloadTicks(band) != rules::enemyReloadTicks(enemyFireBand)) {
         enemyFireBand = band;
         enemyFireTimer.reset(band);
@@ -583,6 +569,71 @@ void SpaceInvadersScene::syncAliensToRack() {
             alien->move(targetX - alien->position.x, targetY - alien->position.y);
         }
     }
+}
+
+void SpaceInvadersScene::advanceWave() {
+    // S12: the wave counter moves first, because the origin is derived from it,
+    // and spawn() also returns the sweep to its start-of-wave state (direction,
+    // animation frame, cursor and the explosion hold), so no march state from
+    // the cleared rack survives into the new formation.
+    scoring.nextWave();
+    rack.spawn(rules::RackOriginX, rules::rackOriginYForWave(scoring.wave()));
+
+    // The actors are views of the rack: every cell is alive again, back on frame
+    // 0, and the positions are copied by the same helper a march tick uses.
+    // Nothing is rebuilt, so a wave costs no arena allocation (S19) and a cell
+    // whose actor failed to allocate stays null exactly as it was.
+    for (int row = 0; row < rules::RackRows; ++row) {
+        for (int col = 0; col < rules::RackCols; ++col) {
+            AlienActor* alien = alienGrid[row][col];
+            if (!alien) {
+                continue;
+            }
+            alien->setAlive(true);
+            alien->setAnimationFrame(0);
+        }
+    }
+    syncAliensToRack();
+
+    // S10: shields are rebuilt at the start of every wave. The BunkerActors are
+    // views over the scene's mask set, so resetting the field restores all four
+    // without an actor rebuild or a re-added entity.
+    shieldField.reset();
+
+    // Shots in flight belong to the wave that fired them. Clearing them also
+    // stops an enemy bolt that would otherwise arrive before the new formation
+    // has drawn its first frame.
+    for (auto& projectile : projectiles) {
+        projectile->deactivate();
+    }
+
+    // The burst of the kill that cleared the rack belongs to the wave it ended;
+    // letting it run would draw a stale explosion over the new formation for the
+    // rest of its 200 ms.
+    for (int i = 0; i < MaxEnemyExplosions; ++i) {
+        enemyExplosions[i].active = false;
+        enemyExplosions[i].remainingMs = 0;
+    }
+
+    // S11: the saucer and its whole support state restart with the wave - the
+    // crossing, the 1536-tick period, the score table, the entry parity it reads
+    // from the shot counter, the popup and the siren. The new wave starts with
+    // an empty sky, so no crossing straddles two formations.
+    saucer.reset();
+    saucerRules.reset();
+    shotsFired = 0;
+    saucerPopup.active = false;
+    saucerPopup.remainingTicks = 0;
+    stopSaucerSiren();
+
+    // S9: the reload ladder is indexed by the carried-over score, so the band is
+    // re-latched to it and the shot-step clock restarts with the formation.
+    enemyShotStepTick = 0;
+    enemyFireBand = scoring.scoreBand();
+    enemyFireTimer.reset(enemyFireBand);
+
+    // Score, ships and the high score are deliberately untouched: they belong to
+    // the run, and only resetGame() starts a new one.
 }
 
 void SpaceInvadersScene::handleCollisions() {
@@ -627,7 +678,16 @@ void SpaceInvadersScene::handleCollisions() {
                         rack.kill(row, col);
                         rack.hold(rules::RackHoldTicks);
                         alien->setAlive(false);
-                        score += alien->getScoreValue();
+
+                        // S12: the award is written by the rules object, and the
+                        // high score follows it on the same tick so the HUD never
+                        // shows a run score above its own best. The 1500-point
+                        // ship is claimed right after the award that may have
+                        // crossed it, and it is a ship only: S17 gives the extra
+                        // ship no sound.
+                        scoring.add(static_cast<uint16_t>(alien->getScoreValue()));
+                        scoring.commitHighScore();
+                        scoring.consumeExtraShip();
 
                         pr32::math::Scalar ex = alien->position.x + pr32::math::toScalar(alien->width) * pr32::math::toScalar(0.5f);
                         pr32::math::Scalar ey = alien->position.y + pr32::math::toScalar(alien->height) * pr32::math::toScalar(0.5f);
@@ -642,10 +702,11 @@ void SpaceInvadersScene::handleCollisions() {
                         engine.getAudioEngine().playEvent(event);
 
                         if (getActiveAlienCount() == 0) {
-                            gameOver = true;
-                            gameWon = true;
-                            engine.getMusicPlayer().setTempoFactor(1.0f);
-                            engine.getMusicPlayer().play(WIN_TRACK);
+                            // S12/S13: a cleared rack is not a win. The next wave
+                            // rebuilds the formation one drop lower and the run
+                            // continues with the score, the ships and the high
+                            // score it already has (F5).
+                            advanceWave();
                         }
 
                         alienHit = true;
@@ -668,7 +729,9 @@ void SpaceInvadersScene::handleCollisions() {
                     // the popup shows it where the ship died. The hit removes the
                     // saucer, so the siren stops with it.
                     const uint16_t awarded = saucerRules.takeScore();
-                    score += awarded;
+                    scoring.add(awarded);
+                    scoring.commitHighScore();
+                    scoring.consumeExtraShip();
                     spawnSaucerPopup(saucer.position, awarded);
 
                     saucer.collect();
@@ -935,25 +998,38 @@ void SpaceInvadersScene::draw(pr32::graphics::Renderer& renderer) {
 
     char buffer[32];
 
-    std::snprintf(buffer, sizeof(buffer), "SCORE %04d", score);
-    renderer.drawText(buffer, 4, 4, pr32::graphics::Color::White, 1, &ARCADE_FONT);
+    // S12: the arcade's one-player header, drawn in the 8x8 font inside the
+    // 16 px score band. SCORE<1> sits over the four-digit score at the left edge
+    // of the field and HI-SCORE is centred over its own value.
+    //
+    // There is deliberately no SCORE<2> slot: this demo has one player, and a
+    // permanently empty second slot would claim a mode that does not exist. The
+    // arcade's one-player screen shows only these two headers.
+    renderer.drawText("SCORE<1>", FIELD_X, 0, pr32::graphics::Color::White, 1, &ARCADE_FONT);
+    std::snprintf(buffer, sizeof(buffer), "%04u", static_cast<unsigned>(scoring.score()));
+    renderer.drawText(buffer, FIELD_X, 8, pr32::graphics::Color::White, 1, &ARCADE_FONT);
 
-    std::snprintf(buffer, sizeof(buffer), "LIVES %d", lives);
-    renderer.drawText(buffer, DISPLAY_WIDTH - 70, 4, pr32::graphics::Color::White, 1, &ARCADE_FONT);
+    renderer.drawTextCentered("HI-SCORE", 0, pr32::graphics::Color::White, 1, &ARCADE_FONT);
+    std::snprintf(buffer, sizeof(buffer), "%04u", static_cast<unsigned>(scoring.highScore()));
+    renderer.drawTextCentered(buffer, 8, pr32::graphics::Color::White, 1, &ARCADE_FONT);
+
+    // S12: the reserve ships are cannon icons, not a number. The ship on the
+    // field is not a reserve, so the row holds lives - 1 of them, 16 px apart
+    // from the field's left edge.
+    const int reserves = static_cast<int>(scoring.lives()) - 1;
+    for (int index = 0; index < reserves; ++index) {
+        renderer.drawSprite(PLAYER_SHIP_SPRITE, FIELD_X + index * 16, static_cast<int>(RESERVE_Y),
+                            pr32::graphics::Color::White);
+    }
 
     if (gameOver) {
-        if (gameWon) {
-            std::snprintf(buffer, sizeof(buffer), "YOU WIN!");
-            int textY = DISPLAY_HEIGHT / 2 - 8;
-            renderer.drawTextCentered(buffer, textY, pr32::graphics::Color::Green, 1, &ARCADE_FONT);
-        } else {
-            std::snprintf(buffer, sizeof(buffer), "GAME OVER");
-            int textY = DISPLAY_HEIGHT / 2 - 8;
-            renderer.drawTextCentered(buffer, textY, pr32::graphics::Color::Red, 1, &ARCADE_FONT);
-        }
+        // S12/S13: there is one ending. A cleared rack starts the next wave, so
+        // the only game-over state left is the last ship lost or an invasion.
+        std::snprintf(buffer, sizeof(buffer), "GAME OVER");
+        int textY = DISPLAY_HEIGHT / 2 - 8;
+        renderer.drawTextCentered(buffer, textY, pr32::graphics::Color::Red, 1, &ARCADE_FONT);
 
         std::snprintf(buffer, sizeof(buffer), "PRESS FIRE");
-        int textY = DISPLAY_HEIGHT / 2 - 8;
         renderer.drawTextCentered(buffer, textY + 20, pr32::graphics::Color::White, 1, &ARCADE_FONT);
     }
 }
@@ -1052,9 +1128,9 @@ void SpaceInvadersScene::spawnEnemyExplosion(pr32::math::Scalar x, pr32::math::S
 }
 
 void SpaceInvadersScene::handlePlayerHit() {
-    if (lives > 0) {
-        lives -= 1;
-    }
+    // S12: the ship count belongs to the rules object. A hit spends exactly one
+    // ship, and the run ends when that was the last one.
+    scoring.loseLife();
 
     AudioEvent event{};
     event.type = WaveType::NOISE;
@@ -1064,7 +1140,7 @@ void SpaceInvadersScene::handlePlayerHit() {
     event.duty = 0.5f;
     engine.getAudioEngine().playEvent(event);
 
-    if (lives <= 0) {
+    if (scoring.lives() == 0) {
         gameOver = true;
         engine.getMusicPlayer().setTempoFactor(1.0f);
         engine.getMusicPlayer().play(GAME_OVER_TRACK);

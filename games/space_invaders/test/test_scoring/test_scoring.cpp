@@ -48,7 +48,7 @@ void test_scoring_high_byte_indexes_the_reload_ladder(void) {
     scoring.add(0x1234);
 
     TEST_ASSERT_EQUAL_INT(0x1234, static_cast<int>(scoring.score()));
-    TEST_ASSERT_EQUAL_INT(0x12, static_cast<int>(scoring.highByte()));
+    TEST_ASSERT_EQUAL_INT(0x12, static_cast<int>(scoring.scoreBand()));
 }
 
 void test_scoring_awards_the_extra_ship_at_1500_once(void) {

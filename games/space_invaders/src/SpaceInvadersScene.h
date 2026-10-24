@@ -10,6 +10,7 @@
 #include "rules/Rack.h"
 #include "rules/Rng.h"
 #include "rules/Saucer.h"
+#include "rules/Scoring.h"
 #include "rules/ShieldMask.h"
 
 namespace spaceinvaders {
@@ -197,10 +198,15 @@ namespace spaceinvaders {
          */
         bool saucerSirenActive = false;
 
-        int score;                                 ///< Current score
-        int lives;                                 ///< Remaining lives
-        bool gameOver;                             ///< True when game has ended
-        bool gameWon;                               ///< True if player cleared all aliens
+        /**
+         * Score, ships, wave counter and the session high score (S12). One
+         * rules object owns all four so the HUD, the enemy-fire band and the
+         * end-of-run checks read the same numbers the awards wrote, and reset()
+         * can start a run without discarding the high score.
+         */
+        rules::Scoring scoring;
+
+        bool gameOver;                             ///< True when the run has ended
 
         rules::FixedStep fixedStep;                ///< 60 Hz rules clock (S15)
 
@@ -236,6 +242,17 @@ namespace spaceinvaders {
          * owns that clock.
          */
         void updateAliens();
+
+        /**
+         * @brief Starts the next wave over the same run (S12).
+         *
+         * Clearing the rack is not a win: the wave counter advances, the
+         * formation respawns one drop lower than the previous wave, the shields
+         * are rebuilt and the field is cleared of shots and of the saucer.
+         * Score, ships and the high score carry over, so this is a wave rebuild
+         * and not a run reset.
+         */
+        void advanceWave();
 
         /**
          * @brief Runs the enemy shot-step clock and the reload ladder (S9).

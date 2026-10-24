@@ -26,7 +26,7 @@ uint16_t Scoring::score() const {
     return scorePoints;
 }
 
-uint8_t Scoring::highByte() const {
+uint8_t Scoring::scoreBand() const {
     return static_cast<uint8_t>(scorePoints >> 8);
 }
 

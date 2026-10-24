@@ -36,6 +36,23 @@ struct RackTick {
 };
 
 /**
+ * @brief Spawn origin y for a wave (S12).
+ *
+ * Wave 1 starts at the reference origin and every later wave starts one edge
+ * drop lower, which is the same 8 px the rack takes when it turns at an edge
+ * (S5): the reference does not distinguish a wave offset from an edge drop.
+ *
+ * The drop saturates at the deepest formation that still fits inside the field.
+ * A wave starting any lower is one no run can reach, because the invasion check
+ * (S13) ends it on its first tick, so the function returns a real formation
+ * position instead of accumulating off the panel.
+ *
+ * @param wave Wave number, 1-based; any other value is treated as wave 1.
+ * @return Formation top in playfield pixels, RackOriginY..RackMaxOriginY.
+ */
+int16_t rackOriginYForWave(uint16_t wave);
+
+/**
  * @class Rack
  * @brief The 5 x 11 formation and its one-alien-per-tick sweep (S4-S6).
  *

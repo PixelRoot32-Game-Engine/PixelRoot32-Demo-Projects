@@ -21,9 +21,14 @@ constexpr int FieldHeight = 240;
 /// Rack rows and columns: 5 x 11 = 55 aliens.
 constexpr int RackRows = 5;
 constexpr int RackCols = 11;
+/// Height of every alien mask: all three variants are eight pixels tall (S2).
+constexpr int AlienSpriteHeight = 8;
 /// Horizontal and vertical pitch between adjacent rack cells.
 constexpr int RackPitchX = 16;
 constexpr int RackPitchY = 16;
+/// Vertical extent of the full formation: the four gaps between its five rows
+/// plus the bottom row's sprite.
+constexpr int RackHeight = (RackRows - 1) * RackPitchY + AlienSpriteHeight;
 /// Top-left start of the formation inside the playfield.
 constexpr int RackOriginX = 26;
 constexpr int RackOriginY = 48;
@@ -31,6 +36,14 @@ constexpr int RackOriginY = 48;
 constexpr int RackStepX = 2;
 constexpr int RackLastStepX = 3;
 constexpr int RackDropY = 8;
+/// Extra drop a new wave starts with (S12). It is the edge drop by design: the
+/// reference never distinguishes the two, so a run accumulates one 8 px step per
+/// cleared rack and per edge turn alike.
+constexpr int RackWaveDropY = RackDropY;
+/// Deepest formation top the field can hold. It is also well below the point
+/// where a freshly spawned wave already counts as an invasion (S13), so the
+/// per-wave drop saturates here: no run can reach a wave any lower than this.
+constexpr int RackMaxOriginY = FieldHeight - RackHeight;
 /// Outer x bounds the rack may occupy before it has to reverse.
 constexpr int RackMinLeft = 2;
 constexpr int RackMaxRight = 222;

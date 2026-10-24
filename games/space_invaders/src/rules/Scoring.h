@@ -37,14 +37,17 @@ public:
     uint16_t score() const;
 
     /**
-     * @brief High byte of the current score.
+     * @brief Band index of the current score: its high byte.
      *
      * The enemy reload ladder is indexed by this value, so it is part of the
-     * rules surface rather than a HUD helper.
+     * rules surface rather than a HUD helper. It is not named highByte() on
+     * purpose: the ESP32 Arduino core defines highByte(w) as a macro, which
+     * would rewrite the declaration on that target while compiling cleanly on
+     * the host.
      *
      * @return score() >> 8.
      */
-    uint8_t highByte() const;
+    uint8_t scoreBand() const;
 
     /**
      * @brief Ships remaining.

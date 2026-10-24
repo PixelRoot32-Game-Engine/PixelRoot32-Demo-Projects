@@ -9,6 +9,7 @@
 #include <unity.h>
 
 #include "rules/Rack.h"
+#include "rules/Scoring.h"
 
 using namespace spaceinvaders::rules;
 
@@ -267,6 +268,81 @@ void test_rack_shift_down_moves_formation(void) {
     }
 }
 
+void test_rack_origin_y_for_wave_keeps_wave_one_at_the_rack_origin(void) {
+    // Wave 1 is the reference start of S4; the per-wave drop is relative to it.
+    TEST_ASSERT_EQUAL_INT(RackOriginY, static_cast<int>(rackOriginYForWave(1)));
+}
+
+void test_rack_origin_y_drops_eight_pixels_per_wave(void) {
+    // S12: each wave restarts the formation one edge-drop lower than the last,
+    // so the wave offset accumulates exactly like the drop at an edge (S5).
+    TEST_ASSERT_EQUAL_INT(RackDropY, RackWaveDropY);
+    TEST_ASSERT_EQUAL_INT(RackOriginY + RackWaveDropY,
+                          static_cast<int>(rackOriginYForWave(2)));
+    TEST_ASSERT_EQUAL_INT(RackOriginY + 2 * RackWaveDropY,
+                          static_cast<int>(rackOriginYForWave(3)));
+    TEST_ASSERT_EQUAL_INT(RackOriginY + 3 * RackWaveDropY,
+                          static_cast<int>(rackOriginYForWave(4)));
+}
+
+void test_rack_origin_y_never_drops_past_the_playable_field(void) {
+    // Wave 0 is a number Scoring can never report (its counter is 1-based), so
+    // it resolves to the first wave instead of raising the formation.
+    TEST_ASSERT_EQUAL_INT(RackOriginY, static_cast<int>(rackOriginYForWave(0)));
+
+    // The drop saturates at the deepest formation the field can hold: a wave
+    // starting any lower would already have invaded on its first tick, so no
+    // run reaches it and the origin must not walk off the panel.
+    TEST_ASSERT_EQUAL_INT(RackMaxOriginY, static_cast<int>(rackOriginYForWave(1000)));
+    TEST_ASSERT_EQUAL_INT(RackMaxOriginY, static_cast<int>(rackOriginYForWave(65535)));
+
+    int16_t previous = rackOriginYForWave(1);
+    for (uint16_t wave = 2; wave < 200; ++wave) {
+        const int16_t origin = rackOriginYForWave(wave);
+        TEST_ASSERT_GREATER_OR_EQUAL_INT(RackOriginY, static_cast<int>(origin));
+        TEST_ASSERT_LESS_OR_EQUAL_INT(RackMaxOriginY, static_cast<int>(origin));
+        TEST_ASSERT_GREATER_OR_EQUAL_INT(static_cast<int>(previous), static_cast<int>(origin));
+        previous = origin;
+    }
+}
+
+void test_racking_a_cleared_wave_respawns_the_formation_one_drop_lower(void) {
+    // The wave advance the scene performs (S12): the counter moves, the rack is
+    // spawned at the derived origin, and the run's score and ships carry over.
+    // This pins the parts of that path that live in src/rules/; the actor
+    // mirroring, the shield reset and the shot/saucer clears are scene state and
+    // are covered by the scene, not here.
+    Rack rack;
+    Scoring scoring;
+    rack.spawn(RackOriginX, rackOriginYForWave(scoring.wave()));
+    const int16_t waveOneTop = rack.cell(0, 0).y;
+
+    for (int row = 0; row < RackRows; ++row) {
+        for (int col = 0; col < RackCols; ++col) {
+            rack.kill(row, col);
+        }
+    }
+    TEST_ASSERT_FALSE(rack.anyAlive());
+
+    scoring.add(1234);
+    scoring.nextWave();
+    rack.spawn(RackOriginX, rackOriginYForWave(scoring.wave()));
+
+    TEST_ASSERT_EQUAL_INT(2, scoring.wave());
+    TEST_ASSERT_EQUAL_INT(1234, scoring.score());
+    TEST_ASSERT_EQUAL_INT(StartLives, scoring.lives());
+
+    // The whole formation is back, at the start of the sweep and one drop lower.
+    TEST_ASSERT_EQUAL_INT(55, rack.aliveCount());
+    TEST_ASSERT_EQUAL_INT(0, rack.animationFrame());
+    TEST_ASSERT_EQUAL_INT(1, rack.direction());
+    TEST_ASSERT_EQUAL_INT(waveOneTop + RackWaveDropY, static_cast<int>(rack.cell(0, 0).y));
+    TEST_ASSERT_EQUAL_INT(120 + RackWaveDropY, static_cast<int>(rack.lowestAlienBottom()));
+
+    // spawn() clears the explosion hold, so the new wave marches on its first tick.
+    TEST_ASSERT_TRUE(rack.tick().movedAlien);
+}
+
 void test_rack_lowest_alien_bottom_tracks_row_four(void) {
     Rack rack;
     rack.spawn(RackOriginX, RackOriginY);
@@ -298,6 +374,10 @@ int main(void) {
     RUN_TEST(test_rack_kill_reduces_alive_count);
     RUN_TEST(test_rack_shift_down_moves_formation);
     RUN_TEST(test_rack_lowest_alien_bottom_tracks_row_four);
+    RUN_TEST(test_rack_origin_y_for_wave_keeps_wave_one_at_the_rack_origin);
+    RUN_TEST(test_rack_origin_y_drops_eight_pixels_per_wave);
+    RUN_TEST(test_rack_origin_y_never_drops_past_the_playable_field);
+    RUN_TEST(test_racking_a_cleared_wave_respawns_the_formation_one_drop_lower);
 
     return UNITY_END();
 }

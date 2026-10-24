@@ -14,6 +14,22 @@ constexpr int stepForAlive(int alive) {
 
 }  // namespace
 
+int16_t rackOriginYForWave(uint16_t wave) {
+    // Wave numbers are 1-based, so wave 1 keeps the reference origin and a value
+    // below it is treated as the first wave rather than raising the formation.
+    const uint32_t waveSteps = wave > 1 ? static_cast<uint32_t>(wave - 1) : 0u;
+    const uint32_t origin =
+        static_cast<uint32_t>(RackOriginY) + waveSteps * static_cast<uint32_t>(RackWaveDropY);
+
+    // Saturate at the deepest formation that still fits: a wave whose top is any
+    // lower would already count as an invasion on its first tick (S13), so this
+    // bound is where the accumulation stops describing a reachable wave.
+    if (origin >= static_cast<uint32_t>(RackMaxOriginY)) {
+        return static_cast<int16_t>(RackMaxOriginY);
+    }
+    return static_cast<int16_t>(origin);
+}
+
 void Rack::spawn(int16_t originX, int16_t originY) {
     for (int row = 0; row < RackRows; ++row) {
         for (int col = 0; col < RackCols; ++col) {
