@@ -1,6 +1,5 @@
 #include "AlienActor.h"
 #include "BandColor.h"
-#include "GameConstants.h"
 #include "assets/AlienSprites.h"
 
 namespace spaceinvaders {
@@ -23,28 +22,18 @@ static const SpriteAnimationFrame OCTOPUS_ANIM_FRAMES[] = {
     { &OCTOPUS_F2, nullptr }
 };
 
-AlienActor::AlienActor(pixelroot32::math::Vector2 position, AlienType type)
+AlienActor::AlienActor(pixelroot32::math::Vector2 position, rules::AlienType type)
     : pixelroot32::core::Actor(position, 0, 0), type(type), active(true) {
 
-    switch (type) {
-        case AlienType::SQUID:
-            width = ALIEN_SQUID_W;
-            height = ALIEN_SQUID_H;
-            break;
-        case AlienType::CRAB:
-            width = ALIEN_CRAB_W;
-            height = ALIEN_CRAB_H;
-            break;
-        case AlienType::OCTOPUS:
-            width = ALIEN_OCTOPUS_W;
-            height = ALIEN_OCTOPUS_H;
-            break;
-    }
+    // The rules layer owns the art dimensions: the sweep's edge check and this
+    // hit box must describe the same rectangle, so neither may keep its own copy.
+    width = rules::alienWidth(type);
+    height = rules::alienHeight(type);
 
-    if (type == AlienType::SQUID) {
+    if (type == rules::AlienType::Squid) {
         animation.frames     = SQUID_ANIM_FRAMES;
         animation.frameCount = static_cast<uint8_t>(sizeof(SQUID_ANIM_FRAMES) / sizeof(SpriteAnimationFrame));
-    } else if (type == AlienType::CRAB) {
+    } else if (type == rules::AlienType::Crab) {
         animation.frames     = CRAB_ANIM_FRAMES;
         animation.frameCount = static_cast<uint8_t>(sizeof(CRAB_ANIM_FRAMES) / sizeof(SpriteAnimationFrame));
     } else {
@@ -59,9 +48,17 @@ void AlienActor::update(unsigned long deltaTime) {
 }
 
 void AlienActor::move(pixelroot32::math::Scalar dx, pixelroot32::math::Scalar dy) {
+    // Position only: the frame is written by setAnimationFrame() from the rack,
+    // which flips it once per completed sweep rather than once per movement.
     position.x += dx;
     position.y += dy;
-    animation.step();
+}
+
+void AlienActor::setAnimationFrame(int frame) {
+    if (!animation.frames || animation.frameCount == 0) {
+        return;
+    }
+    animation.current = static_cast<uint8_t>(frame % animation.frameCount);
 }
 
 void AlienActor::draw(pixelroot32::graphics::Renderer& renderer) {
@@ -91,12 +88,7 @@ void AlienActor::onCollision(pixelroot32::core::Actor* other) {
 }
 
 int AlienActor::getScoreValue() const {
-    switch (type) {
-        case AlienType::SQUID: return 30;
-        case AlienType::CRAB: return 20;
-        case AlienType::OCTOPUS: return 10;
-        default: return 0;
-    }
+    return rules::alienScore(type);
 }
 
-}
+}  // namespace spaceinvaders

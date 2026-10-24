@@ -35,11 +35,18 @@ using pixelroot32::core::SceneArena;
 using pixelroot32::core::arenaNew;
 
 /** Arena for all scene entities (player, aliens, bunkers, projectiles).
- *  Before the tile-attributes changes, PhysicsActor was smaller (no userData, sensor, oneWay, etc.),
- *  so 2048 bytes were enough. With the current engine, each actor is larger and ~50 entities need
- *  more space; 4096 is safe. If you need 2048 again (e.g. tight RAM), build this target without
- *  PIXELROOT32_ENABLE_SCENE_ARENA so the scene uses heap instead of this fixed buffer. */
-static unsigned char SPACE_INVADERS_SCENE_ARENA_BUFFER[4096];
+ *  The arena never frees an individual actor, so the whole wave has to fit at
+ *  once: one player, 55 aliens, four shields and twelve shots. Measured on the
+ *  64-bit native build that is 248 + 4400 + 736 + 2400 = 7784 bytes, and the
+ *  previous 4096 budget silently dropped every alien past the forty-eighth,
+ *  all four shields and most shots because arenaNew() returns null and the
+ *  spawn loops skip the actor. 8192 leaves one spare actor of headroom, and
+ *  the static_assert in init() turns a future size regression into a compile
+ *  error instead of a formation with holes.
+ *  If you need 2048 again (e.g. tight RAM), build this target without
+ *  PIXELROOT32_ENABLE_SCENE_ARENA so the scene uses heap instead of this
+ *  fixed buffer. */
+static unsigned char SPACE_INVADERS_SCENE_ARENA_BUFFER[8192];
 #endif
 
 
@@ -205,6 +212,14 @@ SpaceInvadersScene::SpaceInvadersScene()
       fireInputReady(false),
       currentMusicTempoFactor(1.0f) {
 
+    // Null grid entries mean "no actor for this cell"; spawnAliens() fills it
+    // after the rack allocates the wave, and cleanup() clears it again.
+    for (int row = 0; row < rules::RackRows; ++row) {
+        for (int col = 0; col < rules::RackCols; ++col) {
+            alienGrid[row][col] = nullptr;
+        }
+    }
+
     for (int i = 0; i < MaxEnemyExplosions; ++i) {
         enemyExplosions[i].active = false;
         enemyExplosions[i].position = pr32::math::Vector2(0, 0);
@@ -219,6 +234,16 @@ SpaceInvadersScene::~SpaceInvadersScene() {
 void SpaceInvadersScene::init() {
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
     arena.init(SPACE_INVADERS_SCENE_ARENA_BUFFER, sizeof(SPACE_INVADERS_SCENE_ARENA_BUFFER));
+
+    // A failed arenaNew() is silent: the spawn loops skip the actor and the
+    // wave comes out short. Every actor the scene can own must fit together,
+    // so the bound is checked at compile time instead of hours into a run.
+    static_assert(sizeof(PlayerActor) +
+                      rules::RackRows * rules::RackCols * sizeof(AlienActor) +
+                      BUNKER_COUNT * sizeof(BunkerActor) +
+                      MaxProjectiles * sizeof(ProjectileActor) <=
+                  sizeof(SPACE_INVADERS_SCENE_ARENA_BUFFER),
+                  "scene arena must hold one full wave");
 #endif
     pr32::graphics::setSpritePalette(pr32::graphics::PaletteType::NES);
     resetGame();
@@ -230,6 +255,12 @@ void SpaceInvadersScene::init() {
 
 void SpaceInvadersScene::cleanup() {
     clearEntities();
+
+    for (int row = 0; row < rules::RackRows; ++row) {
+        for (int col = 0; col < rules::RackCols; ++col) {
+            alienGrid[row][col] = nullptr;
+        }
+    }
 
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
     player = nullptr;
@@ -299,25 +330,28 @@ void SpaceInvadersScene::resetGame() {
 }
 
 void SpaceInvadersScene::spawnAliens() {
-    for (int row = 0; row < ALIEN_ROWS; ++row) {
-        AlienType type;
-        if (row == 0) type = AlienType::SQUID;
-        else if (row < 3) type = AlienType::CRAB;
-        else type = AlienType::OCTOPUS;
+    // The rack owns the formation: origin, 16 px pitch, per-row variant. The
+    // scene only renders it, offset by FIELD_X because the rules layer works in
+    // playfield coordinates (S4).
+    rack.spawn(rules::RackOriginX, rules::RackOriginY);
 
-        for (int col = 0; col < ALIEN_COLS; ++col) {
-            float x = ALIEN_START_X + (col * ALIEN_SPACING_X);
-            float y = ALIEN_START_Y + (row * ALIEN_SPACING_Y);
-            
+    for (int row = 0; row < rules::RackRows; ++row) {
+        for (int col = 0; col < rules::RackCols; ++col) {
+            const rules::RackCell& cell = rack.cell(row, col);
+            const Scalar x = pr32::math::toScalar(FIELD_X + static_cast<int>(cell.x));
+            const Scalar y = pr32::math::toScalar(static_cast<int>(cell.y));
+
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
-            AlienActor* alien = arenaNew<AlienActor>(arena, pr32::math::Vector2(x, y), type);
+            AlienActor* alien = arenaNew<AlienActor>(arena, pr32::math::Vector2(x, y), cell.type);
             if (!alien) {
                 continue;
             }
             aliens.push_back(alien);
+            alienGrid[row][col] = alien;
             addEntity(alien);
 #else
-            auto alien = std::make_unique<AlienActor>(pr32::math::Vector2(x, y), type);
+            auto alien = std::make_unique<AlienActor>(pr32::math::Vector2(x, y), cell.type);
+            alienGrid[row][col] = alien.get();
             addEntity(alien.get());
             aliens.push_back(std::move(alien));
 #endif
@@ -421,7 +455,7 @@ void SpaceInvadersScene::tick(unsigned long tickMs) {
         }
     }
 
-    updateAliens(tickMs);
+    updateAliens();
 
     handleCollisions();
     updateEnemyExplosions(tickMs);
@@ -429,63 +463,59 @@ void SpaceInvadersScene::tick(unsigned long tickMs) {
     updateMusicTempo();
 }
 
-void SpaceInvadersScene::updateAliens(unsigned long deltaTime) {
-    float scaledDelta = static_cast<float>(deltaTime) * currentMusicTempoFactor;
-    stepTimer += scaledDelta;
-    
-    if (stepTimer >= stepDelay) {
-        stepTimer = 0.0f;
-        
-        bool edgeHit = false;
+void SpaceInvadersScene::updateAliens() {
+    // One rack tick per 60 Hz tick: the rules decide which single alien moves,
+    // where the formation is, and when the sweep (and its beat) closes. Nothing
+    // here is scaled by the frame delta or the music tempo, so the march follows
+    // the live count by itself (S4-S6, D5).
+    const rules::RackTick result = rack.tick();
 
+    syncAliensToRack();
+
+    if (result.frameFlipped) {
+        const int frame = rack.animationFrame();
         for (auto& alien : aliens) {
-            if (!alien->isActive()) continue;
-            
-            if (moveDirection == 1) { // Moving Right
-                if (alien->position.x + alien->width >= DISPLAY_WIDTH - 2) {
-                    edgeHit = true;
-                    break;
-                }
-            } else { // Moving Left
-                if (alien->position.x <= 2) {
-                    edgeHit = true;
-                    break;
-                }
+            if (alien->isActive()) {
+                alien->setAnimationFrame(frame);
             }
         }
+    }
 
-        if (edgeHit) {
-            moveDirection *= -1;
-            for (auto& alien : aliens) {
-                if (alien->isActive()) {
-                    alien->move(0, ALIEN_DROP_AMOUNT);
-                }
-            }
-        } else {
-            pr32::math::Scalar dx = pr32::math::toScalar(moveDirection) * pr32::math::toScalar(ALIEN_STEP_AMOUNT_X);
-            for (auto& alien : aliens) {
-                if (alien->isActive()) {
-                    alien->move(dx, pr32::math::toScalar(0));
-                }
-            }
-        }
-
+    // P4 replaces the cadence, not this hook: firing is still once per sweep.
+    if (result.sweepCompleted) {
         enemyShoot();
+    }
 
-        if (!gameOver && player) {
-            for (auto& alien : aliens) {
-                if (!alien->isActive()) {
-                    continue;
-                }
-                pr32::math::Scalar bottom = alien->position.y + pr32::math::toScalar(alien->height);
-                if (bottom >= player->position.y) {
-                    lives = 0;
-                    gameOver = true;
-                    engine.getMusicPlayer().setTempoFactor(1.0f);
-                    engine.getMusicPlayer().play(GAME_OVER_TRACK);
-                    break;
-                }
+    if (!gameOver && player) {
+        // S13: the run ends when any alien bottom reaches the cannon baseline.
+        // The rack reports the lowest live bottom, so a cleared bottom row stops
+        // holding the check at its old height.
+        const int cannonBaseline = static_cast<int>(CANNON_TOP_Y) + PLAYER_HEIGHT;
+        if (rack.lowestAlienBottom() >= cannonBaseline) {
+            lives = 0;
+            gameOver = true;
+            engine.getMusicPlayer().setTempoFactor(1.0f);
+            engine.getMusicPlayer().play(GAME_OVER_TRACK);
+        }
+    }
+}
+
+void SpaceInvadersScene::syncAliensToRack() {
+    for (int row = 0; row < rules::RackRows; ++row) {
+        for (int col = 0; col < rules::RackCols; ++col) {
+            AlienActor* alien = alienGrid[row][col];
+            const rules::RackCell& cell = rack.cell(row, col);
+            if (!alien || !cell.alive) {
+                continue;
             }
+
+            // The rack works in playfield pixels; the scene draws at FIELD_X.
+            const Scalar targetX = pr32::math::toScalar(FIELD_X + static_cast<int>(cell.x));
+            const Scalar targetY = pr32::math::toScalar(static_cast<int>(cell.y));
+            if (alien->position.x == targetX && alien->position.y == targetY) {
+                continue;
+            }
+            alien->move(targetX - alien->position.x, targetY - alien->position.y);
         }
     }
 }
@@ -512,44 +542,53 @@ void SpaceInvadersScene::handleCollisions() {
             endCircle.y = proj->position.y + halfHeight;
             endCircle.radius = radius;
 
-            bool hitResolved = false;
+            bool alienHit = false;
 
-            for (auto& alien : aliens) {
-                if (!alien->isActive()) {
-                    continue;
-                }
-                pr32::math::Scalar tHit = pr32::math::toScalar(0);
-                pixelroot32::core::Rect targetBox = alien->getHitBox();
-                if (sweepCircleVsRect(startCircle, endCircle, targetBox, tHit) ||
-                    proj->getHitBox().intersects(targetBox)) {
-                    proj->deactivate();
-                    alien->kill();
-                    score += alien->getScoreValue();
-
-                    pr32::math::Scalar ex = alien->position.x + pr32::math::toScalar(alien->width) * pr32::math::toScalar(0.5f);
-                    pr32::math::Scalar ey = alien->position.y + pr32::math::toScalar(alien->height) * pr32::math::toScalar(0.5f);
-                    spawnEnemyExplosion(ex, ey);
-
-                    AudioEvent event{};
-                    event.type = WaveType::NOISE;
-                    event.frequency = 600.0f;
-                    event.duration = 0.12f;
-                    event.volume = 0.6f;
-                    event.duty = 0.5f;
-                    engine.getAudioEngine().playEvent(event);
-
-                    if (getActiveAlienCount() == 0) {
-                        gameOver = true;
-                        gameWon = true;
-                        engine.getMusicPlayer().setTempoFactor(1.0f);
-                        engine.getMusicPlayer().play(WIN_TRACK);
+            for (int row = 0; row < rules::RackRows && !alienHit; ++row) {
+                for (int col = 0; col < rules::RackCols; ++col) {
+                    AlienActor* alien = alienGrid[row][col];
+                    if (!alien || !rack.cell(row, col).alive) {
+                        continue;
                     }
+                    pr32::math::Scalar tHit = pr32::math::toScalar(0);
+                    pixelroot32::core::Rect targetBox = alien->getHitBox();
+                    if (sweepCircleVsRect(startCircle, endCircle, targetBox, tHit) ||
+                        proj->getHitBox().intersects(targetBox)) {
+                        proj->deactivate();
 
-                    hitResolved = true;
-                    break;
+                        // Kill in the rack first, then mirror it onto the actor:
+                        // the rack is the single source of truth, and the hold
+                        // freezes the formation while the explosion plays (S5).
+                        rack.kill(row, col);
+                        rack.hold(rules::RackHoldTicks);
+                        alien->setAlive(false);
+                        score += alien->getScoreValue();
+
+                        pr32::math::Scalar ex = alien->position.x + pr32::math::toScalar(alien->width) * pr32::math::toScalar(0.5f);
+                        pr32::math::Scalar ey = alien->position.y + pr32::math::toScalar(alien->height) * pr32::math::toScalar(0.5f);
+                        spawnEnemyExplosion(ex, ey);
+
+                        AudioEvent event{};
+                        event.type = WaveType::NOISE;
+                        event.frequency = 600.0f;
+                        event.duration = 0.12f;
+                        event.volume = 0.6f;
+                        event.duty = 0.5f;
+                        engine.getAudioEngine().playEvent(event);
+
+                        if (getActiveAlienCount() == 0) {
+                            gameOver = true;
+                            gameWon = true;
+                            engine.getMusicPlayer().setTempoFactor(1.0f);
+                            engine.getMusicPlayer().play(WIN_TRACK);
+                        }
+
+                        alienHit = true;
+                        break;
+                    }
                 }
             }
-            if (!hitResolved && proj->isActive()) {
+            if (!alienHit && proj->isActive()) {
                 for (auto& bunker : bunkers) {
                     if (bunker->isDestroyed()) {
                         continue;
@@ -622,31 +661,22 @@ void SpaceInvadersScene::handleCollisions() {
 }
 
 void SpaceInvadersScene::enemyShoot() {
-    // Fixed-size candidate list: at most one shooter per column, so the array
-    // is sized by the formation and this runs without allocating.
-    AlienActor* potentialShooters[ALIEN_COLS];
+    // Fixed-size candidate list: at most one shooter per rack column, so the
+    // array is sized by the formation and this runs without allocating.
+    AlienActor* potentialShooters[rules::RackCols];
     int shooterCount = 0;
 
-    for (int col = 0; col < ALIEN_COLS; ++col) {
-        AlienActor* lowestAlien = nullptr;
-        float maxY = -1.0f;
-        
-        for (auto& alien : aliens) {
-            if (!alien->isActive()) continue;
-
-            float ax = static_cast<float>(alien->position.x);
-            float colX = ALIEN_START_X + (col * ALIEN_SPACING_X);
-            
-            if (std::abs(ax - colX) < 5.0f) {
-                if (static_cast<float>(alien->position.y) > maxY) {
-                    maxY = static_cast<float>(alien->position.y);
-                    lowestAlien = &*alien;
-                }
+    for (int col = 0; col < rules::RackCols; ++col) {
+        // Column identity comes from the rack grid, not from a float comparison
+        // against where the formation started: the old match aliased to the
+        // neighbouring column once the rack had stepped (F1).
+        for (int row = rules::RackRows - 1; row >= 0; --row) {
+            AlienActor* alien = alienGrid[row][col];
+            if (!alien || !rack.cell(row, col).alive) {
+                continue;
             }
-        }
-        
-        if (lowestAlien) {
-            potentialShooters[shooterCount++] = lowestAlien;
+            potentialShooters[shooterCount++] = alien;
+            break;
         }
     }
 
@@ -667,11 +697,9 @@ void SpaceInvadersScene::enemyShoot() {
 }
 
 int SpaceInvadersScene::getActiveAlienCount() const {
-    int count = 0;
-    for (const auto& alien : aliens) {
-        if (alien->isActive()) count++;
-    }
-    return count;
+    // The rack is the only alive counter; the actor list can lag one kill
+    // behind it, and an arena failure can leave it short.
+    return rack.aliveCount();
 }
 
 void SpaceInvadersScene::draw(pr32::graphics::Renderer& renderer) {
@@ -707,23 +735,12 @@ void SpaceInvadersScene::draw(pr32::graphics::Renderer& renderer) {
 
 void SpaceInvadersScene::updateMusicTempo() {
     if (gameOver) return;
+    if (!rack.anyAlive()) return;
 
-    float lowestY = ALIEN_START_Y;
-    bool found = false;
-
-    for (const auto& alien : aliens) {
-        if (alien->isActive()) {
-            float y = static_cast<float>(alien->position.y + pr32::math::toScalar(alien->height));
-            if (y > lowestY) {
-                lowestY = y;
-                found = true;
-            }
-        }
-    }
-
-    if (!found) return;
-
-    float threatFactor = (lowestY - ALIEN_START_Y) * INV_Y_RANGE;
+    // The rack's lowest bottom is the same number the invasion check reads, so
+    // the soundtrack can never disagree with where the formation actually is.
+    const float lowestY = static_cast<float>(rack.lowestAlienBottom());
+    float threatFactor = (lowestY - static_cast<float>(rules::RackOriginY)) * INV_Y_RANGE;
     if (threatFactor < 0.0f) threatFactor = 0.0f;
     if (threatFactor > 1.0f) threatFactor = 1.0f;
 

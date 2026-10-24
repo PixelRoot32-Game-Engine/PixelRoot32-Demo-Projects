@@ -58,42 +58,23 @@ namespace spaceinvaders {
     /** Bottom line the scene subtracts BUNKER_HEIGHT from, so the shields start at SHIELD_TOP_Y */
     constexpr float BUNKER_Y = SHIELD_TOP_Y + BUNKER_HEIGHT;
 
-    /** Alien formation grid */
-    constexpr int ALIEN_ROWS = 4;
-    constexpr int ALIEN_COLS = 8;
-
-    /** Squid (top row) dimensions */
+    /**
+     * Alien mask dimensions used by the sprite descriptors in
+     * assets/AlienSprites.h. The rules layer owns the formation geometry, the
+     * hit box and the score; these stay because a Sprite descriptor is a
+     * compile-time aggregate that cannot call rules::alienWidth().
+     */
     constexpr int ALIEN_SQUID_SPRITE_W = 8;
     constexpr int ALIEN_SQUID_SPRITE_H = 8;
-    constexpr int ALIEN_SQUID_W = ALIEN_SQUID_SPRITE_W;
-    constexpr int ALIEN_SQUID_H = ALIEN_SQUID_SPRITE_H;
-
-    /** Crab (middle rows) dimensions */
     constexpr int ALIEN_CRAB_SPRITE_W = 11;
     constexpr int ALIEN_CRAB_SPRITE_H = 8;
-    constexpr int ALIEN_CRAB_W = ALIEN_CRAB_SPRITE_W;
-    constexpr int ALIEN_CRAB_H = ALIEN_CRAB_SPRITE_H;
-
-    /** Octopus (bottom rows) dimensions */
     constexpr int ALIEN_OCTOPUS_SPRITE_W = 12;
     constexpr int ALIEN_OCTOPUS_SPRITE_H = 8;
-    constexpr int ALIEN_OCTOPUS_W = ALIEN_OCTOPUS_SPRITE_W;
-    constexpr int ALIEN_OCTOPUS_H = ALIEN_OCTOPUS_SPRITE_H;
 
-    /** Alien grid spacing and starting position */
-    constexpr float ALIEN_SPACING_X = 17.0f;
-    constexpr float ALIEN_SPACING_Y = 18.0f;
-    constexpr float ALIEN_GRID_WIDTH = (ALIEN_COLS - 1) * ALIEN_SPACING_X + ALIEN_OCTOPUS_W;
-    /** Rack top-left: 26 px into the playfield (S4), on the rack row */
-    constexpr float ALIEN_START_X = FIELD_X + 26.0f;
-    constexpr float ALIEN_START_Y = RACK_TOP_Y;
-
-    /** Alien formation step timing (ms) and movement */
+    /** Legacy march timer values; the rack owns movement now (T3.5 removes these) */
     constexpr unsigned long BASE_STEP_DELAY = 417;  ///< 72 BPM (eighth note)
     constexpr unsigned long INITIAL_STEP_DELAY = 380;
     constexpr unsigned long MIN_STEP_DELAY = 150;
-    constexpr float ALIEN_DROP_AMOUNT = 7.0f;
-    constexpr float ALIEN_STEP_AMOUNT_X = 2.5f;
 
     /** Music tempo scaling based on alien proximity (threat factor) */
     constexpr float GAME_OVER_Y = 200.0f;

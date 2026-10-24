@@ -34,6 +34,9 @@ constexpr int RackDropY = 8;
 /// Outer x bounds the rack may occupy before it has to reverse.
 constexpr int RackMinLeft = 2;
 constexpr int RackMaxRight = 222;
+/// Ticks the rack stays frozen while an alien explosion plays (S5). The sweep
+/// resumes exactly where it stopped, so the hold costs time but never distance.
+constexpr uint16_t RackHoldTicks = 10;
 
 /// Cannon sprite size and its one-pixel-per-tick movement clamp.
 constexpr int CannonWidth = 13;

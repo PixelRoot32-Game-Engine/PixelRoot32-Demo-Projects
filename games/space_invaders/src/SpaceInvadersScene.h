@@ -5,6 +5,7 @@
 #include <memory>
 #include "platforms/EngineConfig.h"
 #include "rules/FixedStep.h"
+#include "rules/Rack.h"
 
 namespace spaceinvaders {
 
@@ -126,6 +127,21 @@ namespace spaceinvaders {
         std::vector<std::unique_ptr<BunkerActor>> bunkers;
 #endif
 
+        /**
+         * Rack cell -> actor lookup. Indexed by the rack's own row/column so
+         * the scene never assumes the actor vector is a dense row-major copy:
+         * an arena allocation that fails leaves a null here instead of
+         * shifting every later alien onto the wrong cell.
+         */
+        AlienActor* alienGrid[rules::RackRows][rules::RackCols];
+
+        /**
+         * The formation rules. The scene owns exactly one instance so a reset
+         * can rebuild the wave in place; positions, alive count, animation
+         * frame and the invasion check all read from it.
+         */
+        rules::Rack rack;
+
         int score;                                 ///< Current score
         int lives;                                 ///< Remaining lives
         bool gameOver;                             ///< True when game has ended
@@ -147,7 +163,25 @@ namespace spaceinvaders {
         bool fireInputReady;                        ///< Fire rate limiting state
         float currentMusicTempoFactor;              ///< BGM tempo based on alien proximity
 
-        void updateAliens(unsigned long deltaTime);
+        /**
+         * @brief Advances the rack one tick and mirrors it onto the actors.
+         *
+         * Runs once per 60 Hz tick: rules::Rack::tick() moves exactly one live
+         * cell, the moved cell is copied onto its actor, the shared animation
+         * frame is applied when the sweep closes, and enemyShoot() fires on the
+         * completed sweep. The rack's own hold covers explosion pauses.
+         */
+        void updateAliens();
+
+        /**
+         * @brief Copies the rack's cell positions onto the actors.
+         *
+         * Only cells whose target differs from the actor are written, so a
+         * normal tick touches exactly one actor and an edge turn touches all
+         * live ones with the rack's 8 px drop.
+         */
+        void syncAliensToRack();
+
         void handleCollisions();
         void enemyShoot();
         int getActiveAlienCount() const;
