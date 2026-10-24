@@ -1,4 +1,5 @@
 #include "ProjectileActor.h"
+#include "BandColor.h"
 #include "GameConstants.h"
 #include "physics/CollisionSystem.h"
 
@@ -42,12 +43,16 @@ void ProjectileActor::update(unsigned long deltaTime) {
 
 void ProjectileActor::draw(pixelroot32::graphics::Renderer& renderer) {
     if (!active) return;
-    
-    using Color = pixelroot32::graphics::Color;
-    Color c = (type == ProjectileType::PLAYER_BULLET) ? Color::White : Color::Orange;
-    
-    renderer.drawFilledRectangle(static_cast<int>(position.x), static_cast<int>(position.y), 
-                                 static_cast<int>(width), static_cast<int>(height), c);
+
+    const int drawX = static_cast<int>(position.x);
+    const int drawY = static_cast<int>(position.y);
+
+    // Both shot types are the same white mask under the overlay (S3): the band
+    // the shot is travelling through decides its colour, so the enemy shot is
+    // no longer a separate orange and the player shot reddens near the top.
+    renderer.drawFilledRectangle(drawX, drawY,
+                                 static_cast<int>(width), static_cast<int>(height),
+                                 bandColorFor(drawY));
 }
 
 void ProjectileActor::onCollision(pixelroot32::core::Actor* other) {

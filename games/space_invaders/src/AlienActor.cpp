@@ -1,4 +1,5 @@
 #include "AlienActor.h"
+#include "BandColor.h"
 #include "GameConstants.h"
 #include "assets/AlienSprites.h"
 
@@ -66,7 +67,6 @@ void AlienActor::move(pixelroot32::math::Scalar dx, pixelroot32::math::Scalar dy
 void AlienActor::draw(pixelroot32::graphics::Renderer& renderer) {
     if (!active) return;
 
-    using Color  = pixelroot32::graphics::Color;
     using Sprite = pixelroot32::graphics::Sprite;
 
     const Sprite* sprite = animation.getCurrentSprite();
@@ -75,9 +75,10 @@ void AlienActor::draw(pixelroot32::graphics::Renderer& renderer) {
     const int drawY = static_cast<int>(position.y);
 
     // 1:1 draws: the arcade screen model has no scale factor, and a scaled draw
-    // would make the sprite disagree with its collision box.
+    // would make the sprite disagree with its collision box. The overlay tints
+    // the mask by the row it is drawn on (S3), so the alien row decides it.
     if (sprite) {
-        renderer.drawSprite(*sprite, drawX, drawY, Color::Orange);
+        renderer.drawSprite(*sprite, drawX, drawY, bandColorFor(drawY));
     }
 }
 

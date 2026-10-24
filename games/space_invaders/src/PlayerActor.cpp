@@ -1,5 +1,6 @@
 #include "PlayerActor.h"
 #include "platforms/EngineConfig.h"
+#include "BandColor.h"
 #include "GameConstants.h"
 #include "core/Engine.h"
 #include "assets/PlayerSprites.h"
@@ -152,14 +153,17 @@ bool PlayerActor::wantsToShoot() const {
 
 void PlayerActor::draw(pr32::graphics::Renderer& renderer) {
     if (!isAlive) return;
-    
-    using Color = pr32::graphics::Color;
+
+    const int drawX = static_cast<int>(position.x);
+    const int drawY = static_cast<int>(position.y);
+
     // 1:1 draw: the arcade screen model has no scale factor, so the sprite
-    // occupies exactly the collision box the physics uses.
+    // occupies exactly the collision box the physics uses. The cannon sits in
+    // the green band under the overlay, so its white mask reads green (S3).
     renderer.drawSprite(PLAYER_SHIP_SPRITE,
-                        static_cast<int>(position.x),
-                        static_cast<int>(position.y),
-                        Color::Yellow);
+                        drawX,
+                        drawY,
+                        bandColorFor(drawY));
 }
 
 void PlayerActor::onCollision(pr32::core::Actor* other) {
