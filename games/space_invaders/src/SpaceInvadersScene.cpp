@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include "assets/Background.h"
+#include "assets/FontData.h"
 #include "assets/PlayerExplosionSprites.h"
 
 namespace pr32 = pixelroot32;
@@ -711,25 +712,25 @@ void SpaceInvadersScene::draw(pr32::graphics::Renderer& renderer) {
     char buffer[32];
 
     std::snprintf(buffer, sizeof(buffer), "SCORE %04d", score);
-    renderer.drawText(buffer, 4, 4, pr32::graphics::Color::White, 1);
+    renderer.drawText(buffer, 4, 4, pr32::graphics::Color::White, 1, &ARCADE_FONT);
 
     std::snprintf(buffer, sizeof(buffer), "LIVES %d", lives);
-    renderer.drawText(buffer, DISPLAY_WIDTH - 70, 4, pr32::graphics::Color::White, 1);
+    renderer.drawText(buffer, DISPLAY_WIDTH - 70, 4, pr32::graphics::Color::White, 1, &ARCADE_FONT);
 
     if (gameOver) {
         if (gameWon) {
             std::snprintf(buffer, sizeof(buffer), "YOU WIN!");
             int textY = DISPLAY_HEIGHT / 2 - 8;
-            renderer.drawTextCentered(buffer, textY, pr32::graphics::Color::Green, 2);
+            renderer.drawTextCentered(buffer, textY, pr32::graphics::Color::Green, 1, &ARCADE_FONT);
         } else {
             std::snprintf(buffer, sizeof(buffer), "GAME OVER");
             int textY = DISPLAY_HEIGHT / 2 - 8;
-            renderer.drawTextCentered(buffer, textY, pr32::graphics::Color::Red, 2);
+            renderer.drawTextCentered(buffer, textY, pr32::graphics::Color::Red, 1, &ARCADE_FONT);
         }
 
         std::snprintf(buffer, sizeof(buffer), "PRESS FIRE");
         int textY = DISPLAY_HEIGHT / 2 - 8;
-        renderer.drawTextCentered(buffer, textY + 20, pr32::graphics::Color::White, 1);
+        renderer.drawTextCentered(buffer, textY + 20, pr32::graphics::Color::White, 1, &ARCADE_FONT);
     }
 }
 
