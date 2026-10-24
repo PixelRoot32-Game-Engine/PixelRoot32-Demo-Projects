@@ -131,65 +131,9 @@ static const MusicTrack GAME_OVER_TRACK = {
 };
 
 
-ExplosionAnimation::ExplosionAnimation()
-    : active(false), position(pr32::math::toScalar(0), pr32::math::toScalar(0)), timeAccumulator(0), stepsDone(0) {
-    animation.frames = PLAYER_EXPLOSION_FRAMES;
-    animation.frameCount = static_cast<uint8_t>(sizeof(PLAYER_EXPLOSION_FRAMES) / sizeof(SpriteAnimationFrame));
-    animation.current = 0;
-}
-
-void ExplosionAnimation::start(pr32::math::Vector2 pos) {
-    position = pos;
-    timeAccumulator = 0;
-    stepsDone = 0;
-    animation.reset();
-    active = true;
-}
-
-void ExplosionAnimation::update(unsigned long deltaTime) {
-    if (!active) {
-        return;
-    }
-
-    const unsigned long frameTimeMs = 60;
-    timeAccumulator += deltaTime;
-
-    while (timeAccumulator >= frameTimeMs && active) {
-        timeAccumulator -= frameTimeMs;
-
-        if (stepsDone + 1 < animation.frameCount) {
-            animation.step();
-            stepsDone++;
-        } else {
-            active = false;
-        }
-    }
-}
-
-void ExplosionAnimation::draw(pr32::graphics::Renderer& renderer) {
-    if (!active) {
-        return;
-    }
-
-    const Sprite* sprite = animation.getCurrentSprite();
-    if (!sprite) {
-        return;
-    }
-
-    const int drawX = static_cast<int>(position.x);
-    const int drawY = static_cast<int>(position.y);
-
-    renderer.drawSprite(*sprite, drawX, drawY, pr32::graphics::Color::White);
-}
-
-bool ExplosionAnimation::isActive() const {
-    return active;
-}
-
 SpaceInvadersScene::SpaceInvadersScene()
     : player(nullptr),
       gameOver(false),
-      isPaused(false),
       fireInputReady(false),
       currentMusicTempoFactor(1.0f) {
 
@@ -299,8 +243,18 @@ void SpaceInvadersScene::resetGame() {
     // high score belongs to the session, so reset() leaves it alone by design.
     scoring.reset();
     gameOver = false;
-    isPaused = false;
     fireInputReady = false;
+
+    // S14: a reset ends any death in progress, so the hold and the position it
+    // recorded start empty and a run never opens on a burst left over from the
+    // previous one. The cannon is owned by init(), not rebuilt here, so the
+    // visibility the hold hides has to be restored explicitly: clearing the
+    // counter alone would leave an invisible ship on an empty field.
+    playerDeathHoldTicks = 0;
+    playerDeathPosition = pr32::math::Vector2(0, 0);
+    if (player) {
+        player->setVisible(true);
+    }
 
     // S9: a new run starts in the ladder's first band with a full budget, on a
     // fresh shot-step clock. S20: the column draws start from the run seed, so
@@ -399,13 +353,19 @@ void SpaceInvadersScene::tick(unsigned long tickMs) {
         return;
     }
 
-    if (isPaused) {
-        playerExplosion.update(tickMs);
+    if (playerDeathHoldTicks > 0) {
+        // S14: the hold is the whole death. Every rules step is skipped, so the
+        // rack resumes where it stopped and no enemy bolt, saucer tick or fire
+        // timer advances while the cannon is gone. The enemy bursts keep ageing
+        // so a kill from the tick before the hit does not freeze on screen for
+        // the length of the hold.
+        --playerDeathHoldTicks;
         updateEnemyExplosions(tickMs);
 
-        if (!playerExplosion.isActive()) {
+        if (playerDeathHoldTicks == 0) {
+            // The last count spends the tick returning the cannon, so the frame
+            // after the hold shows the ship at FIELD_X and never an empty field.
             respawnPlayer();
-            isPaused = false;
         }
         return;
     }
@@ -994,7 +954,10 @@ void SpaceInvadersScene::draw(pr32::graphics::Renderer& renderer) {
     drawSaucer(renderer);
 
     drawEnemyExplosions(renderer);
-    playerExplosion.draw(renderer);
+
+    // S14: the death burst belongs to the scene, not to an entity, because the
+    // cannon it replaces is hidden and nothing else knows where it died.
+    drawPlayerExplosion(renderer);
 
     char buffer[32];
 
@@ -1127,6 +1090,25 @@ void SpaceInvadersScene::spawnEnemyExplosion(pr32::math::Scalar x, pr32::math::S
     }
 }
 
+void SpaceInvadersScene::drawPlayerExplosion(pr32::graphics::Renderer& renderer) {
+    if (playerDeathHoldTicks == 0) {
+        return;
+    }
+
+    // The counter's low bit is the frame: one flip per rules tick for the whole
+    // hold, which is the literal "flips back and forth for half a second" of
+    // the reference player task. A separate frame clock would have to be kept
+    // in step with this count for no gain, and its cadence is undocumented.
+    const SpriteAnimationFrame& frame = PLAYER_EXPLOSION_FRAMES[playerDeathHoldTicks & 1u];
+    if (!frame.sprite) {
+        return;
+    }
+
+    renderer.drawSprite(*frame.sprite, static_cast<int>(playerDeathPosition.x),
+                        static_cast<int>(playerDeathPosition.y),
+                        pr32::graphics::Color::White);
+}
+
 void SpaceInvadersScene::handlePlayerHit() {
     // S12: the ship count belongs to the rules object. A hit spends exactly one
     // ship, and the run ends when that was the last one.
@@ -1151,9 +1133,19 @@ void SpaceInvadersScene::handlePlayerHit() {
         return;
     }
 
-    playerExplosion.start(player->position);
+    // S14: every shot in flight dies with the cannon - the player's own shot as
+    // well as each enemy bolt. Clearing them before the hold starts is what
+    // stops the pause from ending with a bolt already on top of the new ship.
+    for (auto& projectile : projectiles) {
+        projectile->deactivate();
+    }
+
+    // The burst draws where the cannon was, so the position is recorded before
+    // the ship is hidden: the actor keeps moving the moment it is visible again,
+    // but a death effect must not follow it.
+    playerDeathPosition = player->position;
+    playerDeathHoldTicks = rules::PlayerDeathHoldTicks;
     player->setVisible(false);
-    isPaused = true;
 }
 
 void SpaceInvadersScene::respawnPlayer() {
@@ -1165,6 +1157,10 @@ void SpaceInvadersScene::respawnPlayer() {
     // FIELD_X in the screen coordinates the actor shares with everything else.
     player->setPosition(pr32::math::Vector2(pr32::math::toScalar(FIELD_X), player->position.y));
     player->setVisible(true);
+
+    // A button held through the death must not fire on the respawn tick: the
+    // gate only reopens on a tick that sees the button released.
+    fireInputReady = false;
 }
 
 }

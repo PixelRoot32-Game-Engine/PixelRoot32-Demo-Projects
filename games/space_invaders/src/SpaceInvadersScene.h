@@ -33,48 +33,6 @@ namespace spaceinvaders {
     };
 
     /**
-     * @class ExplosionAnimation
-     * @brief Multi-frame explosion animation for the player death sequence.
-     *
-     * Plays a non-looping sprite animation at a fixed framerate.
-     * Used during the pause state between player death and respawn.
-     */
-    class ExplosionAnimation {
-    public:
-        ExplosionAnimation();
-
-        /**
-         * @brief Starts the explosion animation at the given world position.
-         * @param pos World position where the explosion is drawn.
-         */
-        void start(pixelroot32::math::Vector2 pos);
-
-        /**
-         * @brief Advances the animation based on elapsed time.
-         * @param deltaTime Time elapsed since last frame in milliseconds.
-         */
-        void update(unsigned long deltaTime);
-
-        /**
-         * @brief Draws the current frame if the animation is active.
-         * @param renderer Reference to the renderer.
-         */
-        void draw(pixelroot32::graphics::Renderer& renderer);
-
-        /**
-         * @brief Returns true while the animation is still playing.
-         */
-        bool isActive() const;
-
-    private:
-        bool active;                               ///< Whether the animation is playing
-        pixelroot32::math::Vector2 position;       ///< Draw position
-        unsigned long timeAccumulator;             ///< Accumulated time for frame stepping
-        unsigned char stepsDone;                   ///< Frames already advanced
-        pixelroot32::graphics::SpriteAnimation animation; ///< Sprite animation data
-    };
-
-    /**
      * @class SpaceInvadersScene
      * @brief Main scene for the Space Invaders clone.
      *
@@ -117,6 +75,12 @@ namespace spaceinvaders {
 
         /**
          * @brief Runs one 60 Hz rules tick.
+         *
+         * While the player-death hold is set this only ages the hold and the
+         * enemy bursts: the rack, the enemy fire clock, the saucer, the shots
+         * and the music tempo all keep the state they had when the cannon died,
+         * which is what makes the wave resume exactly where it stopped (S14).
+         *
          * @param tickMs Duration of one tick in milliseconds.
          */
         void tick(unsigned long tickMs);
@@ -223,8 +187,24 @@ namespace spaceinvaders {
 
         static constexpr int MaxEnemyExplosions = 8;
         EnemyExplosion enemyExplosions[MaxEnemyExplosions];
-        ExplosionAnimation playerExplosion;
-        bool isPaused;                              ///< True during player death/respawn
+
+        /**
+         * @brief Ticks left in the player-death hold (S14); zero means the
+         *        cannon is on the field.
+         *
+         * The counter is the whole death sequence: it is set to
+         * rules::PlayerDeathHoldTicks on the hit and decremented once per rules
+         * tick, and while it is non-zero every rules step is skipped, so the
+         * formation resumes exactly where it stopped. Its low bit also picks
+         * the burst frame, which makes the visual alternate exactly once per
+         * tick for the whole hold with no second clock to keep in step.
+         */
+        uint16_t playerDeathHoldTicks = 0;
+
+        /// Top-left the cannon had when it died. The burst draws here because
+        /// the cannon is hidden during the hold and no entity carries the
+        /// effect: an effect that outlived its actor would need its own actor.
+        pixelroot32::math::Vector2 playerDeathPosition;
 
         static constexpr int MaxProjectiles = 12;
 
@@ -353,6 +333,30 @@ namespace spaceinvaders {
         void drawEnemyExplosions(pixelroot32::graphics::Renderer& renderer);
         void spawnEnemyExplosion(pixelroot32::math::Scalar x, pixelroot32::math::Scalar y);
 
+        /**
+         * @brief Draws the death burst at the position the cannon died (S14).
+         *
+         * The hold counter's low bit selects the frame, so the two masks
+         * alternate once per rules tick for the whole hold. That is the literal
+         * reading of the reference's "flips back and forth for half a second"
+         * and needs no invented intermediate cadence. Nothing is drawn once the
+         * hold expires, because the cannon is back on the field by then.
+         *
+         * @param renderer Renderer to draw into.
+         */
+        void drawPlayerExplosion(pixelroot32::graphics::Renderer& renderer);
+
+        /**
+         * @brief Spends a ship on a hit and starts the death hold (S14).
+         *
+         * The ship count drops first, so losing the last ship ends the run
+         * instead of starting a hold. Otherwise every shot in flight is cleared
+         * - the player's own shot and every enemy bolt - before the hold
+         * begins, the death position is recorded, the cannon is hidden and the
+         * counter starts. Clearing here rather than in the hold keeps the field
+         * empty from the first frame of the death, so no bolt the player never
+         * saw leave can arrive during the pause.
+         */
         void handlePlayerHit();
 
         /**
@@ -363,6 +367,10 @@ namespace spaceinvaders {
          * edge of the playfield. The old version centred the ship under the
          * first intact shield and left the grid state stale, which is the
          * respawn bug F2 by construction.
+         *
+         * The fire gate is re-armed here so a button still held through the
+         * death cannot fire on the tick the cannon comes back: the gate only
+         * opens again after the button has been released.
          */
         void respawnPlayer();
     };

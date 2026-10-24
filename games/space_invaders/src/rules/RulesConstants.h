@@ -51,6 +51,16 @@ constexpr int RackMaxRight = 222;
 /// resumes exactly where it stopped, so the hold costs time but never distance.
 constexpr uint16_t RackHoldTicks = 10;
 
+/// Ticks the formation stays frozen while the cannon is dead (S14).
+///
+/// The value is documented, not measured: Computer Archaeology's disassembly of
+/// the player task describes the reference flipping between two images for half
+/// a second, and half a second at this 60 Hz step is 30 ticks. The exact ROM
+/// flip cadence is not documented, so comparing this count against a reference
+/// capture is still pending (T6.4); until that measurement exists, 30 is the
+/// stated "half a second" and no finer cadence is claimed.
+constexpr uint16_t PlayerDeathHoldTicks = 30;
+
 /// Cannon sprite size and its one-pixel-per-tick movement clamp.
 constexpr int CannonWidth = 13;
 constexpr int CannonHeight = 8;
