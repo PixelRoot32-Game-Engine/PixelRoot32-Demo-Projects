@@ -377,11 +377,13 @@ void SpaceInvadersScene::spawnAliens() {
 }
 
 void SpaceInvadersScene::spawnBunkers() {
-    // S10 fixes the four shields at absolute panel columns rather than spacing
-    // them by a computed gap: the arcade positions are part of the reference
-    // layout, and the rules layer owns them next to ShieldWidth/ShieldHeight.
+    // S10 fixes the four shields at the arcade's own columns rather than spacing
+    // them by a computed gap. The rules layer keeps those columns in playfield
+    // pixels, so the scene adds FIELD_X like it does for the rack: without the
+    // offset the row stays at the square panel's coordinates and sits 40 px left
+    // of the field on a wider canvas.
     for (int i = 0; i < rules::ShieldCount; ++i) {
-        const pr32::math::Vector2 position(rules::ShieldX[i], rules::ShieldY);
+        const pr32::math::Vector2 position(FIELD_X + rules::ShieldX[i], rules::ShieldY);
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
         BunkerActor* bunker = arenaNew<BunkerActor>(arena, position, shieldField, i);
         if (!bunker) {
