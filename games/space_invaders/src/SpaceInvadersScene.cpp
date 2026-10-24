@@ -205,9 +205,6 @@ SpaceInvadersScene::SpaceInvadersScene()
       lives(3),
       gameOver(false),
       gameWon(false),
-      stepTimer(0.0f),
-      stepDelay(BASE_STEP_DELAY),
-      moveDirection(1),
       isPaused(false),
       fireInputReady(false),
       currentMusicTempoFactor(1.0f) {
@@ -323,9 +320,6 @@ void SpaceInvadersScene::resetGame() {
         enemyExplosions[i].remainingMs = 0;
     }
     
-    stepTimer = 0.0f;
-    moveDirection = 1;
-    stepDelay = BASE_STEP_DELAY;
     fixedStep.reset();
 }
 

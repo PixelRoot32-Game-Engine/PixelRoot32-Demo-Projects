@@ -75,14 +75,8 @@ namespace spaceinvaders {
     constexpr int ALIEN_OCTOPUS_SPRITE_W = 12;
     constexpr int ALIEN_OCTOPUS_SPRITE_H = 8;
 
-    /** Legacy march timer values; the rack owns movement now (T3.5 removes these) */
-    constexpr unsigned long BASE_STEP_DELAY = 417;  ///< 72 BPM (eighth note)
-    constexpr unsigned long INITIAL_STEP_DELAY = 380;
-    constexpr unsigned long MIN_STEP_DELAY = 150;
-
     /** Music tempo scaling based on alien proximity (threat factor) */
-    constexpr float GAME_OVER_Y = 200.0f;
     constexpr float Y_RANGE = 160.0f;              ///< Fixed tempo range, not derived from the layout
-    constexpr float INV_Y_RANGE = 0.00625f;        ///< 1.0 / Y_RANGE
+    constexpr float INV_Y_RANGE = 1.0f / Y_RANGE;  ///< Reciprocal, precomputed for the per-tick scale
 
 }

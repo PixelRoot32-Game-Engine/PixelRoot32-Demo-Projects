@@ -147,10 +147,6 @@ namespace spaceinvaders {
         bool gameOver;                             ///< True when game has ended
         bool gameWon;                               ///< True if player cleared all aliens
 
-        float stepTimer;                           ///< Accumulator for alien step timing
-        unsigned long stepDelay;                   ///< Delay between alien steps (ms)
-        int moveDirection;                         ///< 1: Right, -1: Left
-
         rules::FixedStep fixedStep;                ///< 60 Hz rules clock (S15)
 
         static constexpr int MaxEnemyExplosions = 8;
