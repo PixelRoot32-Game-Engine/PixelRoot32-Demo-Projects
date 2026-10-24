@@ -17,13 +17,15 @@
 > that has been reimplemented as a teaching exercise for four decades. The
 > name is used descriptively, to say what the demo clones.
 
-> **✅ ORIGINAL CC0 ARTWORK**
+> **ARTWORK PROVENANCE**
 >
-> Every bitmap in this demo — the ship, the three alien types, the explosion
-> frames, and the starfield tables — is **original pixel data written from
-> scratch** for this repository, in the source itself
-> ([`src/assets/`](src/assets)). Nothing is ripped from, or traced over, any
-> commercial game.
+> The sprites in [`src/assets/`](src/assets) - the cannon, the three alien
+> types, the saucer, both shots, the explosion, the shields and the 8x8 font -
+> were **redrawn for this repository** against a reference arcade sprite sheet,
+> at the arcade's own sizes, as `uint16_t` row data in the source itself. No
+> third-party image file ships with the project. The code remains MIT. The
+> artwork is a visual reimplementation of the arcade's designs, published for
+> demonstration, and is **not offered under a public-domain dedication**.
 
 A clone of the classic fixed-shooter, rebuilt on this engine as a teaching
 demo: four rows of aliens marching down toward four degradable bunkers, one
@@ -118,34 +120,37 @@ decision.
   lowest living alien's Y to a tempo factor between 1.0 and 1.9, eased toward
   the target at 5 % per frame, and that same factor scales the formation's
   step timer. Sound and speed cannot drift apart because they read one number.
-- **Two sprite paths from one animation type.** Squid and Octopus use
-  single-colour `Sprite` frames; the Crab uses a `MultiSprite` — two 1bpp
-  layers, body in orange and an eye highlight in white. `SpriteAnimationFrame`
-  holds either, so `AlienActor::draw()` asks the animation which one it has
-  and calls `drawSprite` or `drawMultiSprite` accordingly.
-- **Damage as geometry.** A bunker's remaining health is drawn as remaining
-  height, shrinking from the bottom up and shifting green to yellow to red.
-  The hitbox shrinks with it, so a chewed-up bunker really does cover less.
-- **A death that pauses the world.** A player hit starts a three-frame
-  explosion and sets `isPaused`, which short-circuits `Scene::update()`
-  entirely — aliens stop marching while the animation plays — then respawns
-  the ship centred under the first surviving bunker.
+- **All three aliens own two frames, as plain sprites.** Squid, Crab and
+  Octopus each ship two single-colour `Sprite` frames, which the formation
+  advances in lockstep. There is one draw path: `AlienActor::draw()` calls
+  `drawSprite` once, and the colour comes from the band the alien occupies
+  rather than from a per-sprite palette.
+- **Colour from the overlay band, not from damage.** A bunker is drawn in the
+  band colour it occupies - green, because the shields sit low on the overlay -
+  with no damage tint: the old green-yellow-red health fade is gone. Its block
+  still shrinks with its remaining health until the mask rewrite lands.
+- **A death that pauses the world.** A player hit shows the explosion burst
+  and sets `isPaused`, which short-circuits `Scene::update()` entirely -
+  aliens stop marching while it plays - then respawns the ship centred under
+  the first surviving bunker.
 
 ## Project layout
 
 ```
 src/
-├── GameConstants.h              layout, sprite scale, timing, button IDs
+├── GameConstants.h              layout, timing, button IDs
 ├── PlayerActor.h/.cpp           nine-lane ship: auto-repeat input, eased motion
 ├── AlienActor.h/.cpp            one alien: type, score value, stepped animation
 ├── ProjectileActor.h/.cpp       pooled bullet with previous-position tracking
 ├── BunkerActor.h/.cpp           StaticActor barrier with health-as-height
 ├── SpaceInvadersScene.h/.cpp    arena, formation march, collisions, music tempo
 ├── assets/
-│   ├── AlienSprites.h           squid/crab/octopus bitmaps + the crab MultiSprite
-│   ├── PlayerSprites.h          ship bitmap
-│   ├── PlayerExplosionSprites.h three explosion frames
-│   └── Background.h/.cpp        starfield coordinate tables
+│   ├── AlienSprites.h           squid/crab/octopus bitmaps, two frames each
+│   ├── PlayerSprites.h          cannon bitmap
+│   ├── PlayerExplosionSprites.h explosion burst bitmap
+│   ├── SaucerSprites.h          saucer bitmap
+│   ├── ShotSprites.h            player and enemy shot bitmaps
+│   └── FontData.h               8x8 arcade font glyphs and descriptor
 ├── main.cpp                     platform selector
 └── platforms/                   native.h, esp32_dev.h — backend wiring per target
 ```
@@ -178,12 +183,12 @@ Source code: [MIT](../../LICENSE).
 
 | Asset | Author | License | Source |
 |-------|--------|---------|--------|
-| Ship, squid, crab, octopus and explosion bitmaps | This repository | CC0 1.0 (public domain) | Original work, written as `uint16_t` row data in [`src/assets/`](src/assets) |
-| Starfield coordinate tables | This repository | CC0 1.0 (public domain) | Original work, [`src/assets/Background.cpp`](src/assets/Background.cpp) |
+| Cannon, alien, saucer, shot, explosion, font and shield masks | This repository | Not CC0: a visual reimplementation, published for demonstration only | Redrawn against a reference arcade sprite sheet, as `uint16_t` row data in [`src/assets/`](src/assets) |
 | All audio cues and music tracks | This repository | CC0 1.0 (public domain) | Original work, synthesised at runtime from `AudioEvent` / `MusicTrack` definitions in `src/` |
 
-Nothing here is derived from third-party game artwork, so the demo carries no
-attribution requirement of its own.
+The masks are hand-drawn in this repository and no third-party image file ships
+with it, but they depict the arcade's sprites, so they carry no public-domain
+dedication of their own.
 
 **Trademark.** *Space Invaders* is a trademark of Taito Corporation. This
 demo is an unofficial clone published for demonstration purposes only, is not
