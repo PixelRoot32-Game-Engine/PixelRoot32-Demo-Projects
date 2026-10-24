@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include "platforms/EngineConfig.h"
+#include "rules/FixedStep.h"
 
 namespace spaceinvaders {
 
@@ -85,7 +86,12 @@ namespace spaceinvaders {
         void init() override;
 
         /**
-         * @brief Updates game logic, entities, and collisions.
+         * @brief Advances the fixed 60 Hz clock and runs its ticks.
+         *
+         * The frame delta only feeds the accumulator (S15). Each reported
+         * tick runs the rules through tick(); a frame that yields none simply
+         * redraws the current state.
+         *
          * @param deltaTime Time elapsed since last frame in milliseconds.
          */
         void update(unsigned long deltaTime) override;
@@ -101,6 +107,12 @@ namespace spaceinvaders {
         void spawnAliens();
         void spawnBunkers();
         void cleanup();
+
+        /**
+         * @brief Runs one 60 Hz rules tick.
+         * @param tickMs Duration of one tick in milliseconds.
+         */
+        void tick(unsigned long tickMs);
 
 #ifdef PIXELROOT32_ENABLE_SCENE_ARENA
         PlayerActor* player;
@@ -122,6 +134,8 @@ namespace spaceinvaders {
         float stepTimer;                           ///< Accumulator for alien step timing
         unsigned long stepDelay;                   ///< Delay between alien steps (ms)
         int moveDirection;                         ///< 1: Right, -1: Left
+
+        rules::FixedStep fixedStep;                ///< 60 Hz rules clock (S15)
 
         static constexpr int MaxEnemyExplosions = 8;
         EnemyExplosion enemyExplosions[MaxEnemyExplosions];

@@ -295,6 +295,7 @@ void SpaceInvadersScene::resetGame() {
     stepTimer = 0.0f;
     moveDirection = 1;
     stepDelay = BASE_STEP_DELAY;
+    fixedStep.reset();
 }
 
 void SpaceInvadersScene::spawnAliens() {
@@ -351,6 +352,15 @@ void SpaceInvadersScene::spawnBunkers() {
 }
 
 void SpaceInvadersScene::update(unsigned long deltaTime) {
+    // The frame delta only advances the clock: rules run in fixed ticks, so a
+    // slow frame cannot stretch or skip game time (S15).
+    const int tickCount = fixedStep.advance(static_cast<uint32_t>(deltaTime));
+    for (int index = 0; index < tickCount; ++index) {
+        tick(rules::FixedStep::TickMs);
+    }
+}
+
+void SpaceInvadersScene::tick(unsigned long tickMs) {
     if (gameOver) {
         if (engine.getInputManager().isButtonPressed(BTN_FIRE)) {
             resetGame();
@@ -362,8 +372,8 @@ void SpaceInvadersScene::update(unsigned long deltaTime) {
     }
 
     if (isPaused) {
-        playerExplosion.update(deltaTime);
-        updateEnemyExplosions(deltaTime);
+        playerExplosion.update(tickMs);
+        updateEnemyExplosions(tickMs);
 
         if (!playerExplosion.isActive()) {
             respawnPlayerUnderBunker();
@@ -372,7 +382,7 @@ void SpaceInvadersScene::update(unsigned long deltaTime) {
         return;
     }
 
-    Scene::update(deltaTime);
+    Scene::update(tickMs);
 
     if (player) {
         if (!fireInputReady) {
@@ -411,10 +421,10 @@ void SpaceInvadersScene::update(unsigned long deltaTime) {
         }
     }
 
-    updateAliens(deltaTime);
+    updateAliens(tickMs);
 
     handleCollisions();
-    updateEnemyExplosions(deltaTime);
+    updateEnemyExplosions(tickMs);
 
     updateMusicTempo();
 }
