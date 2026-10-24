@@ -18,14 +18,44 @@ namespace spaceinvaders {
     constexpr uint8_t BTN_FIRE = 4;
 
     /**
-     * Screen model (S1). The playfield is 224 px wide starting at x=8 and runs
-     * the full screen height; every sprite is drawn 1:1, so there is no scale
-     * factor left to derive sizes from.
+     * Screen model (S1). The playfield is 224 px wide and runs the full screen
+     * height; every sprite is drawn 1:1, so there is no scale factor left to
+     * derive sizes from.
+     *
+     * The build picks the origin, because the field is centred on the logical
+     * canvas: 8 px on the 240 px square panel, 48 px on the 320 px landscape
+     * CYD. Every playfield-derived position -- rack, shields, HUD, reserve
+     * ships, respawn column, saucer bounds -- reads FIELD_X, so the whole
+     * layout moves with this one value and nothing else has to know.
      */
-    constexpr int FIELD_X = 8;
+#ifndef SPACE_INVADERS_FIELD_X
+#define SPACE_INVADERS_FIELD_X 8
+#endif
+    constexpr int FIELD_X = SPACE_INVADERS_FIELD_X;
     constexpr int FIELD_W = 224;
     constexpr int FIELD_H = 240;
     constexpr int HUD_HEIGHT = 16;
+
+    /**
+     * @brief The logical canvas, measured after the engine's rotation.
+     *
+     * DisplayConfig swaps the logical width and height for a quarter turn, so
+     * LOGICAL_WIDTH/LOGICAL_HEIGHT describe the panel as mounted, not the
+     * framebuffer the scene draws into: the 240x320 CYD at DISPLAY_ROTATION=3
+     * renders into 320x240. Rotation also arrives as 0..3 or as degrees, hence
+     * the normalisation to a turn count.
+     */
+    constexpr int QUARTER_TURNS =
+        (DISPLAY_ROTATION >= 4 ? DISPLAY_ROTATION / 90 : DISPLAY_ROTATION) % 4;
+    constexpr int CANVAS_WIDTH = (QUARTER_TURNS % 2 == 0) ? LOGICAL_WIDTH : LOGICAL_HEIGHT;
+    constexpr int CANVAS_HEIGHT = (QUARTER_TURNS % 2 == 0) ? LOGICAL_HEIGHT : LOGICAL_WIDTH;
+
+    // A field that does not fit would draw off-panel instead of failing loudly,
+    // so the two numbers that place it are checked against the real canvas.
+    static_assert(FIELD_X + FIELD_W <= CANVAS_WIDTH,
+                  "Space Invaders: the 224 px playfield must fit the logical canvas width");
+    static_assert(FIELD_H <= CANVAS_HEIGHT,
+                  "Space Invaders: the 240 px playfield must fit the logical canvas height");
 
     /** Vertical band origins, in screen pixels (S1) */
     constexpr float SAUCER_Y = 24.0f;

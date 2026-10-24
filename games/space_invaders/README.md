@@ -27,7 +27,7 @@ runs without a runtime allocation.
 
 Language: C++17  
 Engine: `gperez88/PixelRoot32-Game-Engine@^1.9.0`  
-Environments: `native`, `esp32dev_ST7789`  
+Environments: `native`, `esp32dev_ST7789`, `esp32dev_ILI9341`  
 Category: Games
 
 ![Space Invaders](screenshots/screenshot.png)
@@ -51,7 +51,9 @@ All set in [`lib/platformio.ini`](lib/platformio.ini)'s `[base]` template:
 
 Display is **240×240**, playfield 224 px wide at `x=8`, drawn 1:1; every row,
 pitch and spawn position derives from it in [`src/GameConstants.h`](src/GameConstants.h)
-and [`src/rules/RulesConstants.h`](src/rules/RulesConstants.h).
+and [`src/rules/RulesConstants.h`](src/rules/RulesConstants.h). On the Cheap
+Yellow Display the logical canvas is 320×240, so the same 224 px field sits at
+`x=48` and is centred rather than left-aligned.
 
 ## Platforms
 
@@ -59,16 +61,19 @@ and [`src/rules/RulesConstants.h`](src/rules/RulesConstants.h).
 |-------------|---------|----------------|
 | **`native`** | SDL2, 240×240 | `SDL2_AudioBackend` in [`src/platforms/native.h`](src/platforms/native.h) |
 | **`esp32dev_ST7789`** | **ST7789** 240×240 | `ESP32_I2S_AudioBackend` in [`src/platforms/esp32_dev_ST7789.h`](src/platforms/esp32_dev_ST7789.h) |
+| **`esp32dev_ILI9341`** | **ILI9341** 240×320 (ESP32-2432S028 "Cheap Yellow Display"), rotated to 320×240 | `ESP32_I2S_AudioBackend` in [`src/platforms/esp32_dev_ILI9341.h`](src/platforms/esp32_dev_ILI9341.h) |
 
-Pins for ST7789, I2S and the D-pad are in `src/platforms/esp32_dev_ST7789.h`.
+Pins for ST7789, I2S and the D-pad are in `src/platforms/esp32_dev_ST7789.h`;
+the CYD's ILI9341, I2S and six-button map are in
+`src/platforms/esp32_dev_ILI9341.h`.
 
 ## Controls
 
-| Action | `native` (keyboard) | `esp32dev_ST7789` (GPIO) |
-|--------|----------------------|--------------------|
-| Move ship | Left / Right arrows | D-pad Left / Right (33 / 14) |
-| Fire | Space | Button A (13) |
-| Restart (from Game Over) | Space | Button A |
+| Action | `native` (keyboard) | `esp32dev_ST7789` (GPIO) | `esp32dev_ILI9341` (GPIO) |
+|--------|----------------------|--------------------|--------------------|
+| Move ship | Left / Right arrows | D-pad Left / Right (33 / 14) | D-pad Left / Right (25 / 26) |
+| Fire | Space | Button A (13) | Button A (27) |
+| Restart (from Game Over) | Space | Button A | Button A |
 
 The cannon is **continuous**: one pixel per rules tick while a direction is
 held, clamped to the playfield edge; no lanes, no easing, and both or neither
@@ -195,7 +200,8 @@ src/
 ├── scenes/                        SpaceInvadersScene.h/.cpp — arena, tick loop, collisions, HUD, audio
 ├── rules/                         engine-free: Rack, RulesConstants, FixedStep, FireTiming,
 │                                  Shots, ShieldMask, Saucer, MarchSound, Scoring, Rng
-├── platforms/                     native.h, esp32_dev_ST7789.h — backend wiring
+├── platforms/                     native.h, esp32_dev_ST7789.h, esp32_dev_ILI9341.h
+│                                  — backend wiring
 ├── GameConstants.h                screen model, input IDs
 └── main.cpp                       platform selector
 
@@ -217,6 +223,7 @@ From **`games/space_invaders`**:
 ```bash
 pio run -e native
 pio run -e esp32dev_ST7789
+pio run -e esp32dev_ILI9341
 ```
 
 ## Verification
@@ -226,6 +233,7 @@ pio run -e esp32dev_ST7789
 | `pio test -e host_test` | The rules layer alone: 55 cells, sweep length from the live count, the 3 px last alien and 8 px drop, the reload ladder, the 15-value saucer sequence, shield erosion and the pass-through hole, the 1500-point ship, the wave offset, the march intervals, and a scripted-run replay. No display, no SDL. |
 | `pio run -e native` | The whole game links and builds for SDL2 at 1:1, and every arena-budget assertion holds. |
 | `pio run -e esp32dev_ST7789` | The device target with the ST7789 and I2S wiring compiles. |
+| `pio run -e esp32dev_ILI9341` | The Cheap Yellow Display target compiles with the ILI9341, its rotation and its button map; the `static_assert` in `GameConstants.h` proves the 224 px field fits the 320×240 canvas at `x=48`. |
 
 Still pending: a full run on the panel, and the capture comparison at fixed
 ticks against a reference recording — what the provisional figures wait on.
@@ -234,6 +242,7 @@ ticks against a reference recording — what the provisional figures wait on.
 
 ```bash
 pio run -e esp32dev_ST7789 --target upload
+pio run -e esp32dev_ILI9341 --target upload
 ```
 
 ## License

@@ -1080,7 +1080,7 @@ void SpaceInvadersScene::advanceSaucerSiren() {
 }
 
 void SpaceInvadersScene::draw(pr32::graphics::Renderer& renderer) {
-    renderer.drawFilledRectangle(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, pr32::graphics::Color::Black);
+    renderer.drawFilledRectangle(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT, pr32::graphics::Color::Black);
     Scene::draw(renderer);
 
     // S11: the saucer is a plain member, not an entity, so the scene draws it
@@ -1123,7 +1123,7 @@ void SpaceInvadersScene::draw(pr32::graphics::Renderer& renderer) {
         // S12/S13: there is one ending. A cleared rack starts the next wave, so
         // the only game-over state left is the last ship lost or an invasion.
         std::snprintf(buffer, sizeof(buffer), "GAME OVER");
-        int textY = DISPLAY_HEIGHT / 2 - 8;
+        int textY = CANVAS_HEIGHT / 2 - 8;
         renderer.drawTextCentered(buffer, textY, pr32::graphics::Color::Red, 1, &ARCADE_FONT);
 
         std::snprintf(buffer, sizeof(buffer), "PRESS FIRE");
@@ -1190,11 +1190,11 @@ void SpaceInvadersScene::drawEnemyExplosions(pr32::graphics::Renderer& renderer)
             hw += hx;
             hx = 0;
         }
-        if (hx < DISPLAY_WIDTH && hw > 0) {
-            if (hx + hw > DISPLAY_WIDTH) {
-                hw = DISPLAY_WIDTH - hx;
+        if (hx < CANVAS_WIDTH && hw > 0) {
+            if (hx + hw > CANVAS_WIDTH) {
+                hw = CANVAS_WIDTH - hx;
             }
-            if (hw > 0 && hy >= 0 && hy < DISPLAY_HEIGHT) {
+            if (hw > 0 && hy >= 0 && hy < CANVAS_HEIGHT) {
                 renderer.drawFilledRectangle(hx, hy, hw, 1, Color::White);
             }
         }
@@ -1207,11 +1207,11 @@ void SpaceInvadersScene::drawEnemyExplosions(pr32::graphics::Renderer& renderer)
             vh += vy;
             vy = 0;
         }
-        if (vy < DISPLAY_HEIGHT && vh > 0) {
-            if (vy + vh > DISPLAY_HEIGHT) {
-                vh = DISPLAY_HEIGHT - vy;
+        if (vy < CANVAS_HEIGHT && vh > 0) {
+            if (vy + vh > CANVAS_HEIGHT) {
+                vh = CANVAS_HEIGHT - vy;
             }
-            if (vh > 0 && vx >= 0 && vx < DISPLAY_WIDTH) {
+            if (vh > 0 && vx >= 0 && vx < CANVAS_WIDTH) {
                 renderer.drawFilledRectangle(vx, vy, 1, vh, Color::White);
             }
         }

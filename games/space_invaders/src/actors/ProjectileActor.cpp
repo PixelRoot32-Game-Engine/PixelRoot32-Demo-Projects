@@ -77,7 +77,7 @@ void ProjectileActor::update(unsigned long deltaTime) {
     // An enemy bolt only moves in stepEnemyShot(), which the scene calls after
     // this; the off-screen test still runs every tick so a bolt that fell past
     // the panel is recycled even when no step is due (S9).
-    if (position.y < toScalar(-PROJECTILE_HEIGHT) || position.y > toScalar(DISPLAY_HEIGHT)) {
+    if (position.y < toScalar(-PROJECTILE_HEIGHT) || position.y > toScalar(CANVAS_HEIGHT)) {
         active = false;
     }
 }
