@@ -3,3 +3,8 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Generator scratch output: never shipped. The headers in src/assets/ are the
+# versioned artefact and tools/art_source.py is the editable original.
+tools/__pycache__/
+tools/preview*.png

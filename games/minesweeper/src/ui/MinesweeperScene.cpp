@@ -1,8 +1,15 @@
 #include "ui/MinesweeperScene.h"
+#include "ui/ScenePalette.h"
+#include "ui/TileCatalog.h"
+#include "presentation/PresentationMap.h"
 #include "core/Engine.h"
 #include "audio/AudioTypes.h"
 #include "audio/AudioMusicTypes.h"
+#include <algorithm>
+#include <cstddef>
 #include <cstdio>
+#include <cstring>
+#include <string_view>
 
 namespace pr32 = pixelroot32;
 
@@ -11,22 +18,10 @@ extern pr32::core::Engine engine;
 namespace minesweeper {
 
 using Color = pr32::graphics::Color;
+using Sprite4bpp = pr32::graphics::Sprite4bpp;
 using namespace pr32::audio;
 
 namespace {
-
-// Classic number colors on the dark opened cell.
-const Color NUMBER_COLORS[9] = {
-    Color::Black,  // unused placeholder, never drawn
-    Color::Blue,
-    Color::Green,
-    Color::Red,
-    Color::Purple,
-    Color::DarkRed,
-    Color::Cyan,
-    Color::White,
-    Color::Gray
-};
 
 const MusicNote WIN_MELODY[] = {
     makeNote(INSTR_PULSE_LEAD, Note::C, 0.15f),
@@ -43,18 +38,70 @@ const MusicTrack WIN_MUSIC = {
     0.5f
 };
 
-int textPixelWidth(const char* text, int size) {
-    int chars = 0;
-    while (text[chars] != '\0') {
-        ++chars;
+/** Cell width of the generated 8x8 letters and digits. */
+constexpr int GLYPH_ADVANCE = 8;
+
+/**
+ * @brief Pixel width of a generated glyph run.
+ *
+ * The scene centres counters on the width of the label above them, so the
+ * label strings themselves stay the single source of that number.
+ *
+ * @param text Glyph run to measure.
+ * @return Width in pixels, one 8 px cell per character.
+ */
+constexpr int glyphRunWidth(const char* text) {
+    int cells = 0;
+    while (text[cells] != '\0') {
+        ++cells;
     }
-    // Default 5x7 font advances 6 px per glyph at size 1.
-    return chars * 6 * size - size;
+    return cells * GLYPH_ADVANCE;
 }
+
+/**
+ * @brief Draws default-font text centred on the composition.
+ *
+ * Renderer::drawTextCentered() centres a run on the logical canvas and the
+ * display offset is then added on top of that position, so on a canvas wider
+ * than the composition (the 320 px CYD) the two shifts do not cancel and the
+ * run lands one offset to the right of the panel it belongs to. Lifting the
+ * offset for the call is what makes "the canvas centre" and "the composition
+ * centre" the same point, because the viewport is centred in the canvas by
+ * construction; y is therefore translated into canvas space by the offset that
+ * was lifted. On the 240x240 targets the offset is (0, 0) and this is exactly
+ * the plain call it replaces.
+ *
+ * @param renderer Target renderer.
+ * @param text Text to draw with the engine's default font.
+ * @param y Top edge of the run, in the composition's own coordinates.
+ * @param color Text colour.
+ * @param size Integer glyph scale.
+ */
+void drawCenteredText(pr32::graphics::Renderer& renderer, std::string_view text, int y, Color color,
+                      std::uint8_t size) {
+    const int offsetX = renderer.getXOffset();
+    const int offsetY = renderer.getYOffset();
+    renderer.setDisplayOffset(0, 0);
+    renderer.drawTextCentered(text, y + offsetY, color, size);
+    renderer.setDisplayOffset(offsetX, offsetY);
+}
+
+// --- Menu layout --------------------------------------------------------------
+// Panel, title, row and hint geometry live in GameConstants.h: the scene header
+// sizes its UI widget members from them.
+
+// --- Result overlay layout ----------------------------------------------------
+/** The smiley is drawn at its native size; the sheet has no other. */
+constexpr int RESULT_SMILEY_SIZE = 16;
+/** Offsets from the result box top; the interior starts at PANEL_BORDER. */
+constexpr int RESULT_TITLE_Y = 26;
+constexpr int RESULT_SCORE_Y = 44;
+constexpr int RESULT_HINT_Y = 54;
 
 }  // namespace
 
 void MinesweeperScene::init() {
+    applyScenePalette();
     state_ = SceneState::Menu;
     difficulty_ = Difficulty::Beginner;
     cursor_ = Position{0, 0};
@@ -66,10 +113,25 @@ void MinesweeperScene::init() {
     bestSeconds_[0] = 0;
     bestSeconds_[1] = 0;
     bestSeconds_[2] = 0;
-    hudLine1_[0] = '\0';
     hudLine2_[0] = '\0';
-    hudHint_[0] = '\0';
     input_.reset();
+
+#if PIXELROOT32_ENABLE_UI_SYSTEM
+    // The menu rows are engine widgets: a vertical layout places them, the
+    // button style carries the ink reversal, and the scene only pushes the
+    // selected index. Scrolling stays off -- three rows always fit.
+    menuLayout_.setPadding(pr32::math::toScalar(0));
+    menuLayout_.setSpacing(pr32::math::toScalar(MENU_ROW_GAP));
+    for (std::uint8_t i = 0; i < 3; ++i) {
+        menuLayout_.addElement(&menuRows_[i]);
+    }
+    menuLayout_.setButtonStyle(Color::White, Color::Black, Color::Navy, Color::Gray);
+    menuLayout_.setScrollEnabled(false);
+    menuLayout_.setSelectedIndex(static_cast<int>(difficulty_));
+    menuHint1_.centerX(DESIGN_WIDTH);
+    menuHint2_.centerX(DESIGN_WIDTH);
+#endif
+    refreshMenuLabels();
 }
 
 void MinesweeperScene::update(unsigned long deltaTime) {
@@ -104,10 +166,10 @@ void MinesweeperScene::startGame() {
     // Center the cursor so the opening move starts mid-board.
     cursor_.x = static_cast<std::uint8_t>(config.width / 2);
     cursor_.y = static_cast<std::uint8_t>(config.height / 2);
-    cellSize_ = cellSizeFor(config.width, config.height);
+    cellSize_ = cellPixelsFor(difficulty_);
     const int boardW = cellSize_ * config.width;
     const int boardH = cellSize_ * config.height;
-    boardX_ = (LOGICAL_WIDTH - boardW) / 2;
+    boardX_ = (DESIGN_WIDTH - boardW) / 2;
     boardY_ = BOARD_TOP + (BOARD_AREA_HEIGHT - boardH) / 2;
     state_ = SceneState::Playing;
     input_.reset();
@@ -130,6 +192,10 @@ void MinesweeperScene::cycleDifficulty(int direction) {
         level = 0;
     }
     difficulty_ = static_cast<Difficulty>(level);
+#if PIXELROOT32_ENABLE_UI_SYSTEM
+    // One selection owner: the pad moves difficulty_, the layout mirrors it.
+    menuLayout_.setSelectedIndex(level);
+#endif
     playTone(520.0f, 0.05f, 0.4f);
 }
 
@@ -252,6 +318,30 @@ void MinesweeperScene::recordBest(std::uint32_t seconds) {
     const std::uint16_t value = static_cast<std::uint16_t>(seconds);
     if (bestSeconds_[slot] == 0 || value < bestSeconds_[slot]) {
         bestSeconds_[slot] = value;
+        // The menu row shows this time; the label is rewritten in place.
+        refreshMenuLabels();
+    }
+}
+
+void MinesweeperScene::refreshMenuLabels() {
+    static const Difficulty levels[3] = {
+        Difficulty::Beginner, Difficulty::Intermediate, Difficulty::Expert};
+    for (int i = 0; i < 3; ++i) {
+        const BoardConfig config = boardConfigFor(levels[i]);
+        const char* name = difficultyName(levels[i]);
+        char next[40];
+        const std::size_t written =
+            formatMenuRow(next, sizeof(next), name, config.width, config.height, config.mineCount,
+                          bestSeconds_[i]);
+        // Only overwrite when the new row has exactly the width the buffer was
+        // built with: the widget's view is bound to that length, so a shorter
+        // row would leave it reading a stale tail and a longer one would be
+        // truncated. Both lengths are pinned by the presentation tests.
+        const std::size_t expected =
+            menuRowWidth(name, config.width, config.height, config.mineCount);
+        if (written != 0 && written == expected && written == std::strlen(menuRowText_[i])) {
+            std::memcpy(menuRowText_[i], next, written + 1);
+        }
     }
 }
 
@@ -273,7 +363,16 @@ void MinesweeperScene::playTone(float frequency, float duration, float volume) {
 }
 
 void MinesweeperScene::draw(pr32::graphics::Renderer& renderer) {
-    renderer.drawFilledRectangle(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, Color::Black);
+    // The mid ink covers the whole canvas, not just the composition, so the
+    // margin a wider canvas leaves around the design box is the same paper
+    // colour instead of whatever the framebuffer still held.
+    renderer.setDisplayOffset(0, 0);
+    renderer.drawFilledRectangle(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT, Color::Gray);
+
+    // Everything below is authored in the fixed 240x240 box; one offset moves
+    // the whole of it to the middle of the canvas. On the 240x240 targets
+    // VIEW_X/VIEW_Y are (0, 0), so their output is unchanged.
+    renderer.setDisplayOffset(VIEW_X, VIEW_Y);
     if (state_ == SceneState::Menu) {
         drawMenu(renderer);
     } else {
@@ -283,65 +382,184 @@ void MinesweeperScene::draw(pr32::graphics::Renderer& renderer) {
             drawResult(renderer, millis());
         }
     }
+
+    // Entities belong to the canvas the engine hands the scene, so the viewport
+    // offset must be gone before the base class draws them: leaving it on would
+    // shift them a second time.
+    renderer.setDisplayOffset(0, 0);
     Scene::draw(renderer);
 }
 
 void MinesweeperScene::drawMenu(pr32::graphics::Renderer& renderer) {
-    renderer.drawTextCentered("MINESWEEPER", 30, Color::Yellow, 2);
-    renderer.drawTextCentered("PIXELROOT32 DEMO", 52, Color::Gray, 1);
+    drawPanel(renderer, MENU_PANEL_X, MENU_PANEL_Y, MENU_PANEL_W, MENU_PANEL_H);
 
+    // Title bar: black band inside the frame, neutral face on the left and the
+    // name centred by the default font at double size.
+    renderer.drawFilledRectangle(MENU_CONTENT_X, MENU_TITLE_Y, MENU_CONTENT_W, MENU_TITLE_H,
+                                 Color::Black);
+    const Sprite4bpp* face = smileySprite(SmileyId::Normal);
+    if (face != nullptr) {
+        renderer.drawSprite(*face, MENU_CONTENT_X + 4,
+                            MENU_TITLE_Y + (MENU_TITLE_H - RESULT_SMILEY_SIZE) / 2);
+    }
+    drawCenteredText(renderer, "MINESWEEPER", MENU_TITLE_Y + (MENU_TITLE_H - 2 * 7) / 2,
+                     Color::White, 2);
+
+#if PIXELROOT32_ENABLE_UI_SYSTEM
+    // Rows and hints are engine widgets. The layout already resolved their
+    // positions against the panel, and the button style provides the selected
+    // black bar / light text that the sheet's composition asks for.
+    menuLayout_.draw(renderer);
+    menuHint1_.draw(renderer);
+    menuHint2_.draw(renderer);
+#else
     static const Difficulty levels[3] = {
         Difficulty::Beginner, Difficulty::Intermediate, Difficulty::Expert};
     for (int i = 0; i < 3; ++i) {
-        const BoardConfig config = boardConfigFor(levels[i]);
-        char row[40];
         const int slot = static_cast<int>(levels[i]);
-        if (bestSeconds_[slot] > 0) {
-            std::snprintf(row, sizeof(row), "%s %dX%d-%d BEST %d", difficultyName(levels[i]),
-                          config.width, config.height, config.mineCount, bestSeconds_[slot]);
-        } else {
-            std::snprintf(row, sizeof(row), "%s %dX%d-%d", difficultyName(levels[i]),
-                          config.width, config.height, config.mineCount);
-        }
-        char marked[44];
-        std::snprintf(marked, sizeof(marked), "%c %s", (levels[i] == difficulty_) ? '>' : ' ',
-                      row);
-        const int y = 96 + i * 26;
+        const int rowY = MENU_ROW_FIRST_Y + i * MENU_ROW_STEP;
+        const int textY = rowY + (MENU_ROW_H - 7) / 2;
         if (levels[i] == difficulty_) {
-            renderer.drawTextCentered(marked, y, Color::Yellow, 1);
+            renderer.drawFilledRectangle(MENU_CONTENT_X, rowY, MENU_CONTENT_W, MENU_ROW_H,
+                                         Color::Black);
+            drawCenteredText(renderer, menuRowText_[slot], textY, Color::White, 1);
         } else {
-            renderer.drawTextCentered(marked, y, Color::White, 1);
+            drawCenteredText(renderer, menuRowText_[slot], textY, Color::Navy, 1);
         }
     }
-    renderer.drawTextCentered("UP/DN:LEVEL A:START", 196, Color::Gray, 1);
-    renderer.drawTextCentered("OPEN:A FLAG:B MENU:A+B", 210, Color::Gray, 1);
+    drawCenteredText(renderer, "UP/DN:LEVEL A:START", MENU_HINT_FIRST_Y, Color::Navy, 1);
+    drawCenteredText(renderer, "OPEN:A FLAG:B MENU:A+B", MENU_HINT_FIRST_Y + MENU_HINT_STEP,
+                     Color::Navy, 1);
+#endif
 }
 
 void MinesweeperScene::drawHud(pr32::graphics::Renderer& renderer, unsigned long nowMs) {
+    // The band goes down first: every glyph is transparent-backed light ink,
+    // so the black strip is what makes it readable -- exactly the sheet layout.
+    renderer.drawFilledRectangle(0, 0, DESIGN_WIDTH, HEADER_HEIGHT, Color::Black);
+    renderer.drawLine(0, HEADER_RULE_Y, DESIGN_WIDTH - 1, HEADER_RULE_Y, Color::White);
+
+    char counter[4];
+    drawLetterRun(renderer, "MINES", HEADER_LEFT_X, HEADER_LABEL_Y);
+    formatCounter(counter, session_.getRemainingMines());
+    drawDigitRun(renderer, counter,
+                 HEADER_LEFT_X + (glyphRunWidth("MINES") - glyphRunWidth("000")) / 2,
+                 HEADER_COUNTER_Y);
+
     std::uint32_t seconds = session_.getElapsedSeconds(nowMs);
     if (seconds > 999) {
         seconds = 999;
     }
-    std::snprintf(hudLine1_, sizeof(hudLine1_), "MIN %03d T %03d",
-                  session_.getRemainingMines(), static_cast<int>(seconds));
-    renderer.drawText(hudLine1_, 2, HUD_LINE_1_Y, Color::White, 1);
+    drawLetterRun(renderer, "TIME", HEADER_RIGHT_X, HEADER_LABEL_Y);
+    formatCounter(counter, static_cast<std::uint16_t>(seconds));
+    drawDigitRun(renderer, counter,
+                 HEADER_RIGHT_X + (glyphRunWidth("TIME") - glyphRunWidth("000")) / 2,
+                 HEADER_COUNTER_Y);
 
-    const char* level = difficultyName(difficulty_);
-    renderer.drawText(level, DISPLAY_WIDTH - textPixelWidth(level, 1) - 2, HUD_LINE_1_Y,
-                      Color::Yellow, 1);
-
-    const BoardConfig& config = session_.getConfig();
-    std::snprintf(hudLine2_, sizeof(hudLine2_), "%dX%d-%d X%02d Y%02d", config.width,
-                  config.height, config.mineCount, cursor_.x, cursor_.y);
-    renderer.drawText(hudLine2_, 2, HUD_LINE_2_Y, Color::White, 1);
-
-    if (state_ == SceneState::Playing) {
-        std::snprintf(hudHint_, sizeof(hudHint_), "A:OPEN B:FLAG A+B:MENU");
-    } else {
-        std::snprintf(hudHint_, sizeof(hudHint_), "A:RETRY B:MENU");
+    const Sprite4bpp* face = smileySprite(smileyFor(session_.getStatus()));
+    if (face != nullptr) {
+        renderer.drawSprite(*face, HEADER_SMILEY_X, HEADER_SMILEY_Y);
     }
-    renderer.drawText(hudHint_, 2, HUD_HINT_Y, Color::Gray, 1);
-    renderer.drawLine(0, HUD_DIVIDER_Y, DISPLAY_WIDTH - 1, HUD_DIVIDER_Y, Color::Gray);
+
+    // Footer: the only thing drawn below the board. It is anchored at
+    // FOOTER_Y, which sits under every difficulty's last row, so it can never
+    // overlap the playfield. Navy is the dark ink, which reads on the mid
+    // background the board leaves around itself.
+    const BoardConfig& config = session_.getConfig();
+    std::snprintf(hudLine2_, sizeof(hudLine2_), "%s %dX%d-%d X%02d Y%02d",
+                  difficultyName(difficulty_), config.width, config.height, config.mineCount,
+                  cursor_.x, cursor_.y);
+    renderer.drawText(hudLine2_, 2, FOOTER_Y, Color::Navy, 1);
+}
+
+void MinesweeperScene::drawPanel(pr32::graphics::Renderer& renderer, int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    const int interiorW = w - 2 * PANEL_BORDER;
+    const int interiorH = h - 2 * PANEL_BORDER;
+    if (interiorW > 0 && interiorH > 0) {
+        renderer.drawFilledRectangle(x + PANEL_BORDER, y + PANEL_BORDER, interiorW, interiorH,
+                                     Color::Gray);
+    }
+
+    // Edge tiles only span what the corners leave free, so a panel narrower
+    // than two pieces draws no edge instead of spilling outside its rect.
+    const int edgeEndX = x + w - PANEL_BORDER;
+    const int edgeEndY = y + h - PANEL_BORDER;
+
+    const Sprite4bpp* top = panelPieceSprite(PanelPiece::Top);
+    if (top != nullptr) {
+        for (int px = x + PANEL_BORDER; px + PANEL_BORDER <= edgeEndX; px += PANEL_BORDER) {
+            renderer.drawSprite(*top, px, y);
+        }
+    }
+    const Sprite4bpp* bottom = panelPieceSprite(PanelPiece::Bottom);
+    if (bottom != nullptr) {
+        for (int px = x + PANEL_BORDER; px + PANEL_BORDER <= edgeEndX; px += PANEL_BORDER) {
+            renderer.drawSprite(*bottom, px, y + h - PANEL_BORDER);
+        }
+    }
+    const Sprite4bpp* left = panelPieceSprite(PanelPiece::Left);
+    if (left != nullptr) {
+        for (int py = y + PANEL_BORDER; py + PANEL_BORDER <= edgeEndY; py += PANEL_BORDER) {
+            renderer.drawSprite(*left, x, py);
+        }
+    }
+    const Sprite4bpp* right = panelPieceSprite(PanelPiece::Right);
+    if (right != nullptr) {
+        for (int py = y + PANEL_BORDER; py + PANEL_BORDER <= edgeEndY; py += PANEL_BORDER) {
+            renderer.drawSprite(*right, x + w - PANEL_BORDER, py);
+        }
+    }
+
+    // Corners last: below 8 px on either axis even one piece would not fit the
+    // rect, so they are skipped rather than clipped.
+    if (w < PANEL_BORDER || h < PANEL_BORDER) {
+        return;
+    }
+    const int rightX = x + w - PANEL_BORDER;
+    const int bottomY = y + h - PANEL_BORDER;
+    const Sprite4bpp* topLeft = panelPieceSprite(PanelPiece::TopLeft);
+    if (topLeft != nullptr) {
+        renderer.drawSprite(*topLeft, x, y);
+    }
+    const Sprite4bpp* topRight = panelPieceSprite(PanelPiece::TopRight);
+    if (topRight != nullptr) {
+        renderer.drawSprite(*topRight, rightX, y);
+    }
+    const Sprite4bpp* bottomLeft = panelPieceSprite(PanelPiece::BottomLeft);
+    if (bottomLeft != nullptr) {
+        renderer.drawSprite(*bottomLeft, x, bottomY);
+    }
+    const Sprite4bpp* bottomRight = panelPieceSprite(PanelPiece::BottomRight);
+    if (bottomRight != nullptr) {
+        renderer.drawSprite(*bottomRight, rightX, bottomY);
+    }
+}
+
+void MinesweeperScene::drawLetterRun(pr32::graphics::Renderer& renderer, const char* text, int x,
+                                     int y) {
+    int penX = x;
+    for (const char* glyph = text; *glyph != '\0'; ++glyph) {
+        const Sprite4bpp* sprite = letterSprite(*glyph);
+        if (sprite != nullptr) {
+            renderer.drawSprite(*sprite, penX, y);
+        }
+        penX += GLYPH_ADVANCE;
+    }
+}
+
+void MinesweeperScene::drawDigitRun(pr32::graphics::Renderer& renderer, const char* text, int x,
+                                    int y) {
+    int penX = x;
+    for (const char* glyph = text; *glyph != '\0'; ++glyph) {
+        const Sprite4bpp* sprite = digitSprite(*glyph);
+        if (sprite != nullptr) {
+            renderer.drawSprite(*sprite, penX, y);
+        }
+        penX += GLYPH_ADVANCE;
+    }
 }
 
 void MinesweeperScene::drawBoard(pr32::graphics::Renderer& renderer) {
@@ -366,68 +584,60 @@ void MinesweeperScene::drawBoard(pr32::graphics::Renderer& renderer) {
             const bool isBlast =
                 hasBlast && (detonated.x == x) && (detonated.y == y);
 
-            if (cell->state == CellState::Revealed && !cell->hasMine) {
-                // Opened cell: dark tile plus a colored digit when needed.
-                renderer.drawFilledRectangle(cellX, cellY, cellSize_, cellSize_, Color::Black);
-                if (cell->adjacentMines > 0 && cell->adjacentMines <= 8) {
-                    const char glyph = static_cast<char>('0' + cell->adjacentMines);
-                    drawCellText(renderer, glyph, cellX, cellY,
-                                 NUMBER_COLORS[cell->adjacentMines]);
-                }
-                continue;
+            // tileFor() owns the content precedence (explosion, revealed mine,
+            // flag, open number, covered) so the scene only has to blit.
+            const Sprite4bpp* sprite = tileSprite(tileFor(*cell, showMines, isBlast), cellSize_);
+            if (sprite != nullptr) {
+                renderer.drawSprite(*sprite, cellX, cellY);
             }
 
-            if (cell->state == CellState::Revealed && cell->hasMine) {
-                // Only reachable after a loss: the exploded mine burns red.
-                renderer.drawFilledRectangle(cellX, cellY, cellSize_, cellSize_, Color::Red);
-                const int radius = (cellSize_ / 4 >= 2) ? cellSize_ / 4 : 2;
-                renderer.drawFilledCircle(cellX + cellSize_ / 2, cellY + cellSize_ / 2,
-                                          radius, Color::White);
-                continue;
-            }
-
-            // Covered cell (hidden or flagged): gray tile, white top/left lip.
-            renderer.drawFilledRectangle(cellX, cellY, cellSize_, cellSize_, Color::Gray);
-            renderer.drawLine(cellX, cellY, cellX + cellSize_ - 1, cellY, Color::White);
-            renderer.drawLine(cellX, cellY, cellX, cellY + cellSize_ - 1, Color::White);
-
-            if (cell->state == CellState::Flagged) {
-                if (showMines && !cell->hasMine) {
-                    // Wrong flag exposed by the end-of-game reveal.
-                    drawCellText(renderer, 'X', cellX, cellY, Color::Yellow);
-                } else {
-                    drawCellText(renderer, 'F', cellX, cellY, Color::Red);
-                }
-            } else if (showMines && cell->hasMine && !isBlast) {
-                const int radius = (cellSize_ / 4 >= 2) ? cellSize_ / 4 : 2;
-                renderer.drawFilledCircle(cellX + cellSize_ / 2, cellY + cellSize_ / 2,
-                                          radius, Color::White);
-            }
-
-            if (isBlast) {
-                renderer.drawRectangle(cellX, cellY, cellSize_, cellSize_, Color::Yellow);
+            // A wrong flag keeps the flag art -- the player's own mark -- and
+            // is struck through instead of being replaced by a different tile,
+            // which reads as "this flag was false" rather than "a mine".
+            if (showMines && cell->state == CellState::Flagged && !cell->hasMine) {
+                const int inset = std::max<int>(2, cellSize_ / 8);
+                const int left = cellX + inset;
+                const int top = cellY + inset;
+                const int right = cellX + cellSize_ - 1 - inset;
+                const int bottom = cellY + cellSize_ - 1 - inset;
+                renderer.drawLine(left, top, right, bottom, Color::Navy);
+                renderer.drawLine(right, top, left, bottom, Color::Navy);
             }
         }
     }
 
-    // Cursor: blinking yellow frame, board play only.
-    if (state_ == SceneState::Playing && (millis() / 300) % 2 == 0) {
-        const int cursorX = boardX_ + cursor_.x * cellSize_;
-        const int cursorY = boardY_ + cursor_.y * cellSize_;
-        renderer.drawRectangle(cursorX, cursorY, cellSize_, cellSize_, Color::Yellow);
-        if (cellSize_ >= 10) {
-            renderer.drawRectangle(cursorX + 1, cursorY + 1, cellSize_ - 2, cellSize_ - 2,
-                                   Color::Yellow);
+    // Cursor last, so the frame sits above the cell it marks. The frame is
+    // transparent inside, so drawing it adds no fill; its two dash phases
+    // animate it without any per-frame state. The dashes are generated inset
+    // by one bevel (two pixels at 16 and 12, one at 8), so they land on the
+    // tile body instead of merging with a covered cell's light top/left edge.
+    if (state_ == SceneState::Playing) {
+        const Sprite4bpp* frame = cursorSprite(cursorPhase(millis()), cellSize_);
+        if (frame != nullptr) {
+            renderer.drawSprite(*frame, boardX_ + cursor_.x * cellSize_,
+                                boardY_ + cursor_.y * cellSize_);
         }
     }
 }
 
 void MinesweeperScene::drawResult(pr32::graphics::Renderer& renderer, unsigned long nowMs) {
     const bool won = (session_.getStatus() == GameStatus::Won);
-    const int boxX = (DISPLAY_WIDTH - RESULT_WIDTH) / 2;
-    const int boxY = (DISPLAY_HEIGHT - RESULT_HEIGHT) / 2;
-    renderer.drawFilledRectangle(boxX, boxY, RESULT_WIDTH, RESULT_HEIGHT, Color::Navy);
-    renderer.drawRectangle(boxX, boxY, RESULT_WIDTH, RESULT_HEIGHT, Color::White);
+    const int boxX = (DESIGN_WIDTH - RESULT_WIDTH) / 2;
+    const int boxY = (DESIGN_HEIGHT - RESULT_HEIGHT) / 2;
+
+    // Frame first, then repaint the interior black: the score and hint are
+    // light ink authored for a dark panel, so the mid-ink default interior
+    // would leave them washed out. This is the one overlay that opts out of
+    // the mid fill.
+    drawPanel(renderer, boxX, boxY, RESULT_WIDTH, RESULT_HEIGHT);
+    renderer.drawFilledRectangle(boxX + PANEL_BORDER, boxY + PANEL_BORDER,
+                                 RESULT_WIDTH - 2 * PANEL_BORDER, RESULT_HEIGHT - 2 * PANEL_BORDER,
+                                 Color::Black);
+
+    const Sprite4bpp* face = smileySprite(won ? SmileyId::Cool : SmileyId::Dead);
+    if (face != nullptr) {
+        renderer.drawSprite(*face, (DESIGN_WIDTH - RESULT_SMILEY_SIZE) / 2, boxY + PANEL_BORDER);
+    }
 
     std::uint32_t seconds = session_.getElapsedSeconds(nowMs);
     if (seconds > 999) {
@@ -443,24 +653,12 @@ void MinesweeperScene::drawResult(pr32::graphics::Renderer& renderer, unsigned l
     }
 
     if (won) {
-        renderer.drawTextCentered("YOU WIN!", boxY + 8, Color::Yellow, 2);
+        drawCenteredText(renderer, "YOU WIN!", boxY + RESULT_TITLE_Y, Color::White, 2);
     } else {
-        renderer.drawTextCentered("BOOM!", boxY + 8, Color::Red, 2);
+        drawCenteredText(renderer, "BOOM!", boxY + RESULT_TITLE_Y, Color::White, 2);
     }
-    renderer.drawTextCentered(score, boxY + 34, Color::White, 1);
-    renderer.drawTextCentered("A:RETRY B:MENU", boxY + 50, Color::Gray, 1);
-}
-
-void MinesweeperScene::drawCellText(pr32::graphics::Renderer& renderer, char glyph, int cellX,
-                                    int cellY, Color color) {
-    const std::uint8_t size = cellTextSize(cellSize_);
-    char text[2] = {glyph, '\0'};
-    // The default 5x7 glyphs leave the text slightly left-heavy on purpose:
-    // the 1 px white lip on covered cells eats the left edge.
-    const int glyphX = cellX + (cellSize_ - 5 * size) / 2;
-    const int glyphY = cellY + (cellSize_ - 7 * size) / 2;
-    renderer.drawText(text, static_cast<std::int16_t>(glyphX),
-                      static_cast<std::int16_t>(glyphY), color, size);
+    drawCenteredText(renderer, score, boxY + RESULT_SCORE_Y, Color::Gray, 1);
+    drawCenteredText(renderer, "A:RETRY B:MENU", boxY + RESULT_HINT_Y, Color::Gray, 1);
 }
 
 }  // namespace minesweeper
