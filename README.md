@@ -18,8 +18,9 @@ directory layout to build.
 > focus.
 
 > **Looking for something smaller?** The engine repository ships
-> [**five minimal capability examples**](https://docs.pixelroot32.org/examples/demos) — sprites, camera,
-> animated tilemap, physics and a monochrome OLED. Each one isolates a single
+> [**nine minimal capability examples**](https://docs.pixelroot32.org/examples/demos) — sprites, camera,
+> animated tilemap, physics, dialog, a monochrome OLED and three ESP-NOW demos.
+> Each one isolates a single
 > engine feature and stops there. Read those to learn an API; read these to see
 > a project built out of several.
 
@@ -63,6 +64,7 @@ directory layout to build.
 | [`object_pool`](gameplay/object_pool) | Gameplay | Projectiles acquired and recycled with no allocation. Its one idea is that live slots are a set, not a prefix: the demo draws the liveness bitmask itself, so a release opens a hole and the next acquire refills it. Releasing during a `nextLive()` walk is safe, and the README explains why from the source. |
 | [`iso_tilemap_export`](graphics/iso_tilemap_export) | Graphics | An isometric scene consumed straight out of the Tilemap Editor exporter: projected `drawTileMap`, camera bounds derived from the projected map, per-tile dirty-skip and span-limited blit. |
 | [`iso_dungeon`](graphics/iso_dungeon) | Graphics | Three isometric rooms and a hero who walks them tile by tile. Where `iso_tilemap_export` asks whether the engine paints what the editor showed, this one asks what happens next: exact cell-to-cell motion through `GridMotion`, projection-aware depth ordering via `compareByDepthKey`, and rooms wired by a self-validating `RoomGraph`. Its one idea is that the engine has no isometric mode — the view is six integers in a `ProjectionSpec` and every other system stays projection-blind. Carries the same temporary branch pin. |
+| [`esp_now_dice`](networking/esp_now_dice) | Networking | Two ESP32-C3 boards playing a commit/reveal dice duel over ESP-NOW. Its one idea is that the dice are derived, not transmitted: both boards commit to a secret seed, reveal it, and compute the same two faces from the seeds and the round number, while a `NetCounter` keeps the shared score convergent. A monochrome 72x40 panel per board shows one die each; `native` simulates both panels in one window. |
 
 ## Requirements
 
@@ -129,6 +131,7 @@ input/             one input topic: touch, gestures, calibration
 performance/       what a feature costs: memory budgets, pooling, redraw cost
 gameplay/          one gameplay system per demo (rooms, physics, state)
 graphics/          rendering: projections, tilemaps, cameras, blit paths
+networking/        ESP-NOW: peer sessions, reliability and shared state
 ```
 
 New categories are added as demos need them — the rule is one clear reason
