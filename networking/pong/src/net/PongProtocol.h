@@ -198,8 +198,8 @@ struct State {
     std::uint8_t phase = 0;  ///< One of the kPhase* values.
     std::int16_t ballX = 0;  ///< Ball X in court units.
     std::int16_t ballY = 0;  ///< Ball Y in court units.
-    std::int16_t ballVX = 0; ///< Ball X velocity in court units per step.
-    std::int16_t ballVY = 0; ///< Ball Y velocity in court units per step.
+    std::int16_t ballVX = 0; ///< Ball X velocity in whole pixels per second.
+    std::int16_t ballVY = 0; ///< Ball Y velocity in whole pixels per second.
     std::int16_t p1Y = 0;    ///< Left paddle centre Y.
     std::int16_t p2Y = 0;    ///< Right paddle centre Y.
     std::uint8_t score1 = 0; ///< Points scored by player one.
