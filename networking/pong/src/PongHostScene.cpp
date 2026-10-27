@@ -1,17 +1,15 @@
 /*
- * Networking Pong - host scene scaffold (CYD and native).
+ * Networking Pong - host scene (CYD and native).
  *
- * Placeholder body only: it proves the panel, the rotation and the ESP-NOW link
- * are wired before the court exists.
+ * The scene is the composition root of the host: it brings the link up, starts
+ * the session, owns the match adapter and paints the court that adapter feeds.
  */
 #include <core/Engine.h>
 
 #include "PongHostScene.h"
 
-#include <cstdio>
-#include <string_view>
-
 #include "NetConfig.h"
+#include "presentation/CourtRenderer.h"
 
 // Declared once by the platform header of whichever target is being built; the
 // scene only borrows it, exactly as it borrows nothing else from the platform.
@@ -21,14 +19,13 @@ namespace netpong {
 
 namespace {
 
-using pixelroot32::graphics::Color;
 using pixelroot32::graphics::Renderer;
 using pixelroot32::networking::NetAddress;
 using pixelroot32::networking::NetResult;
 using pixelroot32::networking::NetSessionConfig;
 using pixelroot32::networking::NetTransportConfig;
 
-#if defined(PLATFORM_NATIVE)
+#ifdef PLATFORM_NATIVE
 /**
  * @brief Builds a deterministic loopback MAC.
  * @param tag Node tag; every byte differs between tags.
@@ -46,32 +43,29 @@ NetAddress loopbackAddress(std::uint8_t tag) {
 }
 #endif
 
-/// Vertical offsets from the canvas centre, in logical pixels. The scene is
-/// drawn relative to the centre so the same code composes on the 320x240 CYD
-/// canvas and on the identical native window.
-constexpr int kTitleOffsetY = -46;
-constexpr int kHostOffsetY = -12;
-constexpr int kStatusOffsetY = 20;
-constexpr int kFpsOffsetY = 34;
-
-constexpr std::uint8_t kTitleScale = 3;
-constexpr std::uint8_t kTextScale = 1;
-
 }  // namespace
 
-#if defined(PLATFORM_NATIVE)
+#ifdef PLATFORM_NATIVE
 PongHostScene::PongHostScene()
     : loopbackBus(),
       transport(loopbackBus, loopbackAddress(kNodeIdHost)),
-      netSession(transport) {}
+      netSession(transport),
+      host(netSession, 0) {}
 #else
-PongHostScene::PongHostScene() : transport(), netSession(transport) {}
+PongHostScene::PongHostScene()
+    : transport(), netSession(transport), host(netSession, 0) {}
 #endif
 
 void PongHostScene::init() {
     // Clears the entity array and rewinds the scene arena, so a second init()
     // cannot stack state on top of the first.
     Scene::init();
+
+    // The court, the HUD and the overlay all name palette slots, so the palette
+    // is installed once, here, before the first frame is drawn.
+    pixelroot32::graphics::setPalette(presentation::kCourtPalette);
+
+    const std::uint32_t nowMs = static_cast<std::uint32_t>(millis());
 
     NetTransportConfig transportConfig;
     transportConfig.channel = kChannel;
@@ -83,6 +77,9 @@ void PongHostScene::init() {
     NetResult result = transport.init(transportConfig);
     if (result != NetResult::Ok) {
         start = result;
+        // Without a link the court still has to be truthful, so the match is
+        // reset to WaitingForPlayers and the overlay says so.
+        host.start(nowMs);
         return;
     }
 
@@ -94,9 +91,12 @@ void PongHostScene::init() {
     sessionConfig.bootId = 0;
     sessionConfig.discovery = true;
 
-    result = netSession.init(sessionConfig);
-    start = result;
-    if (result != NetResult::Ok) {
+    start = netSession.init(sessionConfig);
+    // The adapter starts after the session so its cadence baseline comes from a
+    // live clock. It sends nothing until a peer joins, so this is safe even when
+    // the session failed to start.
+    host.start(nowMs);
+    if (start != NetResult::Ok) {
         return;
     }
 
@@ -108,40 +108,35 @@ void PongHostScene::init() {
 }
 
 void PongHostScene::update(unsigned long deltaTime) {
-    // Nothing to advance yet: the Engine pumps the session before this call,
-    // and the fixed-step rules clock arrives with the rules core.
-    (void)deltaTime;
+    // Entities first, as everywhere else in the repository; this scene has none
+    // today, so the call is the base contract rather than work.
+    Scene::update(deltaTime);
+
+    // The Engine already pumped the session and dispatched its events before
+    // this call, so the only clock work left is the fixed-step match. The
+    // adapter takes `millis()` rather than the frame delta: a slow frame must
+    // not change how far the ball travelled.
+    host.update(static_cast<std::uint32_t>(millis()));
 }
 
 void PongHostScene::draw(Renderer& renderer) {
-    const int width = renderer.getLogicalWidth();
-    const int height = renderer.getLogicalHeight();
-    const int centreY = height / 2;
+    // Court first: it fills the score band as its own strip, so it can be
+    // painted before everything else and still never erase a score.
+    presentation::drawBackground(renderer);
 
-    renderer.drawFilledRectangle(0, 0, width, height, Color::Black);
+    // Entities belong on top of the court, and only the base class draws them.
+    Scene::draw(renderer);
 
-    renderer.drawTextCentered("NETWORKING PONG", static_cast<int16_t>(centreY + kTitleOffsetY),
-                              Color::White, kTitleScale);
-    renderer.drawTextCentered("HOST  node 1", static_cast<int16_t>(centreY + kHostOffsetY),
-                              Color::Gray, kTextScale);
+    // Actors, then the HUD, then the overlay: the last two are the only things
+    // allowed to sit over a live court.
+    const game::Rules& rules = host.rules();
+    presentation::drawActors(renderer, rules);
+    presentation::drawHud(renderer, rules, host.level());
+    presentation::drawOverlay(renderer, rules);
+}
 
-    char line[kStatusCapacity];
-    statusText(line);
-    renderer.drawTextCentered(std::string_view(line), static_cast<int16_t>(centreY + kStatusOffsetY),
-                              Color::Gray, kTextScale);
-
-    // The frame clock is the only timing the scaffold can report: it shows at a
-    // glance whether the panel is being pushed at a sane rate.
-    const unsigned long frameMs = engine.getDeltaTime();
-    unsigned long fps = (frameMs == 0) ? 0 : (1000ul / frameMs);
-    if (fps > 999ul) {
-        fps = 999ul;
-    }
-
-    char fpsLine[16];
-    std::snprintf(fpsLine, sizeof(fpsLine), "%lu fps", fps);
-    renderer.drawTextCentered(std::string_view(fpsLine), static_cast<int16_t>(centreY + kFpsOffsetY),
-                              Color::Gray, kTextScale);
+void PongHostScene::onNetworkEvent(const pixelroot32::networking::NetEvent& event) {
+    host.onEvent(event, static_cast<std::uint32_t>(millis()));
 }
 
 pixelroot32::networking::NetSession* PongHostScene::session() { return &netSession; }
@@ -149,14 +144,5 @@ pixelroot32::networking::NetSession* PongHostScene::session() { return &netSessi
 #ifdef PLATFORM_NATIVE
 pixelroot32::networking::LoopbackBus& PongHostScene::bus() { return loopbackBus; }
 #endif
-
-void PongHostScene::statusText(char* out) const {
-    // "2" is the number of controllers the host fans out to; showing it as a
-    // fraction makes a half-connected room obvious without opening a monitor.
-    std::snprintf(out, kStatusCapacity, "ch %u  peers %u/2  %s",
-                  static_cast<unsigned>(kChannel),
-                  static_cast<unsigned>(netSession.peerCount()),
-                  (start == NetResult::Ok) ? "link" : "no link");
-}
 
 }  // namespace netpong

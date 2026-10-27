@@ -1,10 +1,10 @@
 /*
- * Networking Pong - host scene scaffold (CYD and native).
+ * Networking Pong - host scene (CYD and native).
  *
  * The host is the authority: it owns the match, the ball, the paddles and the
- * score, and it is the only node that fans state out. This file currently holds
- * only the composition root plus a placeholder frame; the court, HUD and phase
- * machine land in a later task.
+ * score, and it is the only node that fans state out. This file is the
+ * composition root -- link, session, host adapter -- plus the frame that turns
+ * the authoritative match into the arcade court.
  */
 #pragma once
 
@@ -30,6 +30,8 @@
 #include <drivers/esp32/ESP32EspNowTransport.h>
 #endif
 
+#include "net/PongHost.h"
+
 namespace netpong {
 
 #ifdef PLATFORM_NATIVE
@@ -42,12 +44,18 @@ using HostTransport = pixelroot32::networking::ESP32EspNowTransport;
 
 /**
  * @class PongHostScene
- * @brief Composition root of the host node: link, session and the drawn match.
+ * @brief Composition root of the host node: link, session, adapter and court.
  *
- * The scene owns the transport and the session as direct members in that
- * declaration order, so the node reserves its whole footprint at construction
- * and never allocates. The Engine only borrows the session; bringing the link
- * up, starting the session and registering the pointer all happen here.
+ * The scene owns the transport, the session and the host adapter as direct
+ * members in that declaration order, so the node reserves its whole footprint at
+ * construction and never allocates. The Engine only borrows the session;
+ * bringing the link up, starting the session and registering the pointer all
+ * happen here.
+ *
+ * The scene never pumps the session: the Engine drains it and dispatches every
+ * pending event to @ref onNetworkEvent before @ref update runs, and a second
+ * pump would advance the link twice per frame. @ref update therefore only moves
+ * the match clock forward.
  *
  * On native the scene also owns the LoopbackBus every simulated node shares, so
  * the host is the single place the bus lifetime is decided.
@@ -59,35 +67,51 @@ public:
      *
      * On native the transport is born attached to the scene's own bus; on the
      * CYD the ESP-NOW transport starts idle and claims the radio in @ref init.
+     * The adapter is built around the session but sends nothing until
+     * @ref init calls `start()`.
      */
     PongHostScene();
 
     /**
-     * @brief Starts the link and the session, then registers the session.
+     * @brief Starts the link, the session and the match, then registers the session.
      *
      * Idempotent: re-running it re-applies the same configuration instead of
-     * stacking a second link. On native the primary session is registered with
-     * the Engine here, because one Engine pumps exactly one session and the
-     * native build has three sessions alive at once.
+     * stacking a second link, and it restarts the match from WaitingForPlayers.
+     * On native the primary session is registered with the Engine here, because
+     * one Engine pumps exactly one session and the native build has three
+     * sessions alive at once.
      */
     void init() override;
 
     /**
-     * @brief Advances the host clock.
-     * @param deltaTime Milliseconds since the previous frame; unused until the
-     *        fixed-step rules clock of the next task lands.
+     * @brief Advances the match and the 30 Hz fan-out cadence.
+     * @param deltaTime Milliseconds since the previous frame.
+     *
+     * The adapter derives its own fixed-step clock from `millis()`, so the frame
+     * delta is unused: a slow frame must not change how far the ball travelled.
+     * Entities are updated through the base class as everywhere else in the
+     * repository; this scene has none today.
      */
     void update(unsigned long deltaTime) override;
 
     /**
-     * @brief Draws the placeholder frame: black court, title and link status.
+     * @brief Draws the arcade court.
      * @param renderer Renderer to draw with.
      *
-     * The title and the diagnostics are the two things worth seeing before the
-     * court exists: one proves the panel and the rotation are right, the other
-     * proves the three boards found each other.
+     * Order is the repository's: background, then `Scene::draw()` for entities,
+     * then everything the scene owns on top of them. The HUD goes last but one
+     * and the overlay last, so no court fill can ever erase a score.
      */
     void draw(pixelroot32::graphics::Renderer& renderer) override;
+
+    /**
+     * @brief Forwards one Engine-drained event to the host adapter.
+     * @param event Event popped from this node's session.
+     *
+     * The Engine pumps and drains before @ref update, so joins, leaves and
+     * controller payloads land here for the frame that just arrived.
+     */
+    void onNetworkEvent(const pixelroot32::networking::NetEvent& event) override;
 
     /**
      * @brief Returns the session the Engine should pump.
@@ -110,21 +134,14 @@ public:
 #endif
 
 private:
-    /**
-     * @brief Builds the one-line network status drawn under the title.
-     * @param out Destination buffer, at least @ref kStatusCapacity bytes.
-     */
-    void statusText(char* out) const;
-
-    /// @brief Capacity of the status line, terminator included.
-    static constexpr int kStatusCapacity = 48;
-
 #ifdef PLATFORM_NATIVE
     /// Bus shared by every simulated node; declared first so it outlives them.
     pixelroot32::networking::LoopbackBus loopbackBus;
 #endif
     HostTransport transport;                        ///< Link; never shared.
     pixelroot32::networking::NetSession netSession; ///< Session on that link.
+    /// Match authority and wire cadence; born after the session it borrows.
+    PongHost host;
     pixelroot32::networking::NetResult start =
         pixelroot32::networking::NetResult::NotInitialized; ///< Last start result.
 };
