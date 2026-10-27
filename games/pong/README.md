@@ -14,7 +14,7 @@ camera shake and five cues — is what wraps that core.
 
 Language: C++17  
 Engine: `gperez88/PixelRoot32-Game-Engine@^1.13.0`  
-Environments: `native`, `esp32dev_ST7789`, `esp32dev_ILI9341`  
+Environments: `native`, `esp32dev_ST7789`, `esp32dev_ILI9341`, `rules_test`  
 Category: Games
 
 ![Pong](screenshots/screenshot.png)
@@ -96,6 +96,11 @@ opponent exactly. `reset()` rewinds the stream to its seed and clears the
 remainder, so a rebuilt match is a replay rather than a continuation — which is
 what lets one host test run two matches side by side and compare them.
 
+A rematch after `MatchOver` is the one deliberate exception: `restart()` returns
+the court to 0-0 and Countdown but leaves the noise stream where it stopped, so
+the next set starts from the same state and then diverges on the next sample
+instead of repeating the last set's imperfection sequence.
+
 ## What it demonstrates
 
 - **Determinism as a tested property.** The rules never read a clock: the scene
@@ -123,7 +128,7 @@ what lets one host test run two matches side by side and compare them.
 pio test -e rules_test
 ```
 
-22 Unity cases, all on the host:
+27 Unity cases, all on the host:
 
 - **`test/unit/test_pong_rules`** — the court: the opening countdown, the serve,
   paddle movement and clamping, wall and paddle bounces, scoring at each edge,
@@ -132,6 +137,10 @@ pio test -e rules_test
 - **`test/unit/test_pong_cpu`** — the opponent: the chase in both directions and
   its gain, the dead zone, the speed cap, the play-area clamps, the same script
   under the same seed, and `reset()` restoring the initial state.
+- **`test/unit/test_pong_contract`** — the edges a scene leans on: a zero-length
+  step is inert, a one-second step is clamped to 100 ms, a restart returns to
+  0-0 in Countdown, out-of-range slots read zero and never take input, and the
+  CPU constants are the ratios the header promises.
 
 The environment compiles `src/game/` only (`build_src_filter = +<game/>`) with
 Unity and no engine library, so the suite needs no display and no SDL2 — and any
@@ -144,7 +153,7 @@ engine dependency that crept into the rules would break it. CI runs the row in
 games/pong/
 ├── platformio.ini          # native, esp32dev_ST7789, esp32dev_ILI9341, rules_test
 ├── lib/platformio.ini      # [base] / [base_native] / [base_esp32] templates
-├── screenshots/            # screenshot.png — the arcade court at 240x240
+├── screenshots/            # screenshot.png — the arcade court, captured at 2x
 ├── src/
 │   ├── main.cpp            # platform selector only
 │   ├── PongScene.h/.cpp    # composition root: input, effects, court pass
@@ -162,7 +171,8 @@ games/pong/
 │   ├── test_config.h       # Unity setup/teardown, both empty by design
 │   └── unit/
 │       ├── test_pong_rules/    the court rules
-│       └── test_pong_cpu/      the opponent
+│       ├── test_pong_cpu/      the opponent
+│       └── test_pong_contract/ the step, slot and CPU-constant edges
 └── tools/
     ├── art_source.py       # the editable character grids and 16-slot palette
     └── generate_sprites.py # the 4bpp generator (--check, --preview)
