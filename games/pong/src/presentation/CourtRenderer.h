@@ -16,19 +16,22 @@
 
 /**
  * @file CourtRenderer.h
- * @brief Draws the arcade court, its actors, the score band and the overlay.
+ * @brief Draws the arcade court, its actors, the score band, the overlay and the
+ *        title screen.
  *
- * The scene owns the match and the CPU; this layer only reads it. All four
- * drawing calls are stateless: they derive the viewport offset from the
- * renderer's logical size, paint themselves, and leave no renderer state behind,
- * so the scene can interleave them with `Scene::draw()` without an offset
- * leaking into the entity pass.
+ * The scene owns the match, the CPU and the selected level; this layer only
+ * reads them. Every drawing call is stateless: it derives the viewport offset
+ * from the renderer's logical size, paints itself, and leaves no renderer state
+ * behind, so the scene can interleave the calls with `Scene::draw()` without an
+ * offset leaking into the entity pass.
  *
  * Draw order is the scene's decision and the repo's rule: background first,
  * entities, then the actors this file owns, then the HUD, then the overlay. A
  * full-canvas fill placed after the HUD would erase it, which is why
  * `drawBackground()` paints the score band and the court as two separate
- * rectangles instead of one screen-sized one.
+ * rectangles instead of one screen-sized one. The title screen is the one
+ * exception to the actor order: it is drawn instead of them, so nothing of the
+ * match shows through its panel.
  *
  * This is also the one place the palette lives: `installPalette()` binds the
  * generated 16-slot table, and nothing else in the demo names a colour for the
@@ -192,5 +195,24 @@ void drawHud(pixelroot32::graphics::Renderer& renderer, const game::Rules& rules
  * a band over the court during a rally would only hide the ball.
  */
 void drawOverlay(pixelroot32::graphics::Renderer& renderer, const game::Rules& rules);
+
+/**
+ * @brief Paints the title screen: the panel, the three level rows and the cursor.
+ * @param renderer Renderer to draw with.
+ * @param selection Index of the highlighted row: 0 for EASY, 1 for MEDIUM, 2 for
+ *        HARD.
+ *
+ * A complete screen pass in the same sense as the other entry points: the caller
+ * owns the background, so the court is painted first and this panel stands on it.
+ * The panel is filled paper with the court's inset frame, the title and the three
+ * level labels are centred in it, the selected row carries a filled frame band
+ * with its label in paper, and the hint closes the panel underneath.
+ *
+ * `selection` is a menu cursor, not a level: any value outside the three rows is
+ * clamped to the nearest one and the whole screen is still drawn. Nothing here
+ * asserts, because a cursor read from a stale or saved value must not be able to
+ * stop the demo before it shows anything.
+ */
+void drawMenu(pixelroot32::graphics::Renderer& renderer, std::uint8_t selection);
 
 }  // namespace pong::presentation

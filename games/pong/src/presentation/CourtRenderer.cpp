@@ -10,6 +10,8 @@
 
 #include <graphics/FontManager.h>
 
+#include "presentation/MenuLayout.h"
+
 namespace pong::presentation {
 namespace {
 
@@ -150,6 +152,14 @@ void drawOverlayBand(Renderer& renderer, const ViewOffset& origin, const char* l
     drawCentered(renderer, origin, line2, kOverlayLine2Y, kInk, kOverlayScale, kOverlayX,
                  kOverlayWidth);
 }
+
+// The title screen's labels, in the menu's row order: EASY, MEDIUM, HARD, which
+// is the order the level enum declares so a row index is the level index.
+const char* const kMenuRowLabels[] = {"EASY", "MEDIUM", "HARD"};
+
+static_assert(static_cast<int>(sizeof(kMenuRowLabels) / sizeof(kMenuRowLabels[0])) ==
+                  kMenuRowCount,
+              "CourtRenderer: the title screen needs one label per level row");
 
 /// Milliseconds each countdown digit is shown. kCountdownMs splits evenly into
 /// three, so the HUD reads 3, 2, 1 and never shows a stale 0.
@@ -328,6 +338,49 @@ void drawOverlay(Renderer& renderer, const game::Rules& rules) {
     // here; comparing them is still the truthful source.
     drawOverlayBand(renderer, origin, (rules.score(0) > rules.score(1)) ? "P1 WINS" : "CPU WINS",
                     "PRESS A");
+}
+
+void drawMenu(Renderer& renderer, std::uint8_t selection) {
+    installPalette();
+
+    const ViewOffset origin = viewOffset(renderer.getLogicalWidth(), renderer.getLogicalHeight());
+
+    // Paper panel first, then the same inset frame the match-over band wears:
+    // the panel has to read as its own surface even where the court behind it
+    // resolves to the same palette slot.
+    renderer.drawFilledRectangle(origin.x + kMenuPanelX, origin.y + kMenuPanelY, kMenuPanelWidth,
+                                 kMenuPanelHeight, kPaper);
+    for (int inset = 0; inset < kMenuBorder; ++inset) {
+        renderer.drawRectangle(origin.x + kMenuPanelX + inset, origin.y + kMenuPanelY + inset,
+                               kMenuPanelWidth - 2 * inset, kMenuPanelHeight - 2 * inset, kFrame);
+    }
+
+    // The title sits in the same column as the rows, so the whole panel has one
+    // left and right margin instead of three.
+    drawCentered(renderer, origin, "SELECT LEVEL", kMenuTitleY, kInk, kMenuTitleScale, kMenuRowX,
+                 kMenuRowWidth);
+
+    // A cursor past the last row is pulled back to it instead of being rejected:
+    // the screen has to be whole even if the index arrived from somewhere else.
+    const int selected = std::clamp(static_cast<int>(selection), 0, kMenuRowCount - 1);
+
+    for (int row = 0; row < kMenuRowCount; ++row) {
+        const int rowY = kMenuFirstRowY + row * kMenuRowPitch;
+        const bool isSelected = row == selected;
+
+        // The band goes under the label: frame ink behind paper text, so the
+        // selected row inverts against the paper panel around it.
+        if (isSelected) {
+            renderer.drawFilledRectangle(origin.x + kMenuRowX,
+                                         origin.y + rowY + kMenuHighlightYOffset, kMenuRowWidth,
+                                         kMenuHighlightHeight, kFrame);
+        }
+        drawCentered(renderer, origin, kMenuRowLabels[row], rowY, isSelected ? kPaper : kInk,
+                     kMenuRowScale, kMenuRowX, kMenuRowWidth);
+    }
+
+    drawCentered(renderer, origin, "UP DOWN A", kMenuHintY, kFrame, kMenuHintScale, kMenuPanelX,
+                 kMenuPanelWidth);
 }
 
 }  // namespace pong::presentation
