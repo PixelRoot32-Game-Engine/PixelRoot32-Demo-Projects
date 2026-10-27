@@ -28,7 +28,7 @@
  *     Level   Style    Gain   Cap (% of kPaddleSpeed)   Imperfection   Dead zone
  *     Easy    chase    1/1    40 %  (76 px/s)           +-6 px         2 px
  *     Medium  predict  3/2    60 %  (114 px/s)          +-3 px         0.5 px
- *     Hard    aim      5/2    85 %  (161.5 px/s)        +-1 px         0.125 px
+ *     Hard    aim      5/2    80 %  (152 px/s)          +-1 px         0.125 px
  *
  * Three numeric knobs make each level feel different: the proportional gain (how
  * hard the paddle answers an error), the speed cap (the fastest it can ever
@@ -85,7 +85,7 @@ namespace pong::game {
 enum class Difficulty : std::uint8_t {
     Easy,   ///< Chase the ball's current Y: the forgiving opponent.
     Medium, ///< Predict the intercept: gain 3/2, 60 % cap, +-3 px.
-    Hard    ///< Predict through the walls and aim away: gain 5/2, 85 % cap, +-1 px.
+    Hard    ///< Predict through the walls and aim away: gain 5/2, 80 % cap, +-1 px.
 };
 
 /**

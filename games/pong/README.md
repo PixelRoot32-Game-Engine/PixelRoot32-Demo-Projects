@@ -90,12 +90,19 @@ with that level still selected, so changing the opponent never needs a reboot.
 The opponent is a proportional controller in Q8.8, in
 [`src/game/PongCpu.h`](src/game/PongCpu.h):
 
+- **Reading the shot.** The level decides what the controller thinks the target
+  is before it computes an error. `Easy` chases the ball's current Y. `Medium`
+  predicts the intercept on its own paddle plane from the ball's velocity, and
+  recentres while the ball travels away. `Hard` folds that prediction through
+  the wall bounces and shifts the target so the return travels to the far side
+  of the court.
 - **Gain.** `speed = error * gain`, where the error is the distance from the
   ball to the paddle's centre, so a ball far away is chased faster than one
   already in line.
 - **Cap.** A fraction of the player's 190 px/s paddle speed, always below it.
-  The ratio is one constant per level, and a `static_assert` keeps every cap
-  below the player, so the CPU loses every speed race it can lose.
+  The ratio is one constant per level and a `static_assert` keeps every cap
+  under the player's, so even `HARD` at 80 % loses every speed race it can
+  lose; how it reads the shot is the other half of the level's strength.
 - **Imperfection.** A target offset in `[-r, +r]` px, sampled once per step from
   a 32-bit linear congruential generator. Remove it and the opponent returns
   everything.
@@ -107,17 +114,27 @@ The opponent is a proportional controller in Q8.8, in
 
 ### Levels
 
-| Level | Gain | Speed cap | Imperfection | Dead zone |
-| --- | --- | --- | --- | --- |
-| Easy | `error * 1` | 76 px/s (40 %) | ±6 px | 2 px |
-| Medium | `error * 1.5` | 114 px/s (60 %) | ±3 px | 0.5 px |
-| Hard | `error * 2.5` | 152 px/s (80 %) | ±1 px | 0.125 px |
+| Level | Style | Gain | Speed cap | Imperfection | Dead zone |
+| --- | --- | --- | --- | --- | --- |
+| Easy | `chase` | `error * 1` | 76 px/s (40 %) | ±6 px | 2 px |
+| Medium | `predict` | `error * 1.5` | 114 px/s (60 %) | ±3 px | 0.5 px |
+| Hard | `predict + aim` | `error * 2.5` | 152 px/s (80 %) | ±1 px | 0.125 px |
 
 The court, the ball, the serve and the player paddle do not change with the
-level; only the controller does. `MEDIUM` is the default and the behaviour the
-demo had before the menu, so its numbers keep the historical names
-(`kCpuGainNum`, `kCpuMaxSpeed`, and so on) and the suite compares them against
-the table field by field.
+level; only the controller does. `MEDIUM` is the default and it predicts the
+intercept — that is what this revision changed, so the default match is no
+longer the controller the demo shipped before the menu. Its numbers keep the
+historical names (`kCpuGainNum`, `kCpuMaxSpeed`, and so on) because a default
+match kept its gain, cap, imperfection and dead zone, and the suite compares
+them against the table field by field.
+
+The intelligence is what moves the difficulty now, not only the speed. Chasing
+is always a beat behind a ball that changes height, predicting meets the shot
+where it will be, and the aim turns that meeting point into a return that
+travels across the court. `HARD` shifts its target `kCpuAimOffset` — 16 px —
+above or below the intercept, so the ball meets its paddle off-centre and
+leaves toward the side the player is not covering, while every predicting level
+recentres between rallies because a ball travelling away has no intercept.
 
 The noise is **seeded**, not clocked, on purpose: a replay must reproduce the
 opponent exactly. `reset()` rewinds the stream to its seed and clears the
@@ -162,7 +179,7 @@ title and rebuilds through `resetMatch()` instead.
 pio test -e rules_test
 ```
 
-33 Unity cases in four groups, all on the host:
+36 Unity cases in four groups, all on the host:
 
 - **`test/unit/test_pong_rules`** (14) — the court: the opening countdown, the
   serve, paddle movement and clamping, wall and paddle bounces, scoring at each
@@ -173,11 +190,15 @@ pio test -e rules_test
   directions and its gain, the dead zone, the speed cap, the play-area clamps,
   the same script under the same seed, and `reset()` restoring the initial
   state.
-- **`test/unit/test_pong_difficulty`** (6) — the table: the three caps as
-  ordered fractions of the player's paddle, the imperfection and dead zone
-  shrinking with the level, `MEDIUM` matching the pre-menu constants, a harder
-  level leaving a smaller tracking error on the same script, `Rules` keeping the
-  level across `resetMatch()`, and a `HARD` match replaying field by field.
+- **`test/unit/test_pong_difficulty`** (9) — the table and the prediction: the
+  three caps as ordered fractions of the player's paddle, the imperfection and
+  dead zone shrinking with the level, the styles in order, `MEDIUM`'s numbers
+  matching the legacy constants, `predictBallY()` answering a straight shot,
+  its one-fold and multi-fold cases and the recentre of a ball travelling away,
+  predicting meeting a shot closer than chasing the same one, `HARD` landing
+  `kCpuAimOffset` off the plain prediction on the side away from the player,
+  `Rules` keeping the level across `resetMatch()`, and a `HARD` match replaying
+  field by field.
 - **`test/unit/test_pong_contract`** (5) — the edges a scene leans on: a
   zero-length step is inert, a one-second step is clamped to 100 ms, a restart
   returns to 0-0 in Countdown, out-of-range slots read zero and never take
@@ -200,7 +221,7 @@ games/pong/
 │   ├── PongScene.h/.cpp    # composition root: menu, input, effects, court
 │   ├── game/               # engine-free rules, Q8.8, no float, no clock
 │   │   ├── PongRules.h/.cpp    court, phases, serve, scoring, event ring, level
-│   │   └── PongCpu.h/.cpp      the proportional opponent and its three tunings
+│   │   └── PongCpu.h/.cpp      the opponent: styles, prediction, tunings
 │   ├── presentation/
 │   │   ├── CourtLayout.h       design box and the composition static_asserts
 │   │   ├── MenuLayout.h        the title panel and its composition static_asserts
@@ -214,7 +235,7 @@ games/pong/
 │   └── unit/
 │       ├── test_pong_rules/     the court rules
 │       ├── test_pong_cpu/       the opponent
-│       ├── test_pong_difficulty/ the tuning table and the level API
+│       ├── test_pong_difficulty/ the table, the prediction and the level API
 │       └── test_pong_contract/  the step, slot and CPU-constant edges
 └── tools/
     ├── art_source.py       # the editable character grids and 16-slot palette
