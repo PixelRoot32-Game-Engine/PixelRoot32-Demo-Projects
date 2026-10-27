@@ -169,6 +169,8 @@ jobs:
             env: host_test
           - demo: games/pacman
             env: rules_test
+          - demo: games/pong
+            env: rules_test
           - demo: games/space_invaders
             env: host_test
           - demo: input/digital_buttons
