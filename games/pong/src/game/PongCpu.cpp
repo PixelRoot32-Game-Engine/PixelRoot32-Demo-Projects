@@ -39,6 +39,8 @@ static_assert(kCpuEasy.deadZone > 0,
               "a zero dead zone would let the paddle buzz on a parked ball");
 static_assert(kCpuHard.deadZone > 0,
               "a zero dead zone would let the paddle buzz on a parked ball");
+static_assert(kCpuAimOffset > 0, "the aim style must actually move the contact point off centre");
+static_assert(kCpuAimOffset < kHalfPaddle, "the ball must still meet the paddle when it aims");
 
 constexpr Fixed absFixed(Fixed value) {
     return value < 0 ? -value : value;
@@ -76,9 +78,27 @@ void CpuPaddle::reset() {
     accumulator_ = 0;
 }
 
-Fixed CpuPaddle::step(Fixed ballY, Fixed paddleY, std::uint32_t deltaUs) {
+Fixed CpuPaddle::step(const BallView& ball, Fixed paddleY, Fixed opponentPaddleY,
+                      std::uint32_t deltaUs) {
+    // Where the paddle wants its centre: the ball now (chase), or where the ball
+    // will be when it reaches this paddle's plane (predict and aim).
+    Fixed targetY = ball.y;
+    if (tuning_.style != CpuStyle::Chase) {
+        targetY = predictBallY(ball);
+    }
+
+    if (tuning_.style == CpuStyle::PredictAndAim && ball.vx > 0) {
+        // Aim away from the player, who owns the other paddle. With the player
+        // above the court centre the target moves up, so the ball meets this
+        // paddle below its centre and `Rules::hitPaddle()` sends it down; a
+        // player below the centre gets the mirror image, a return sent up. A tie
+        // takes the else branch, exactly like a player below the centre.
+        const Fixed opponentCentre = opponentPaddleY + kHalfPaddle;
+        targetY -= (opponentCentre < kBallCenterY) ? kCpuAimOffset : -kCpuAimOffset;
+    }
+
     // The controller aims at the centre of its paddle, not at its top edge.
-    Fixed error = ballY - (paddleY + kHalfPaddle);
+    Fixed error = targetY - (paddleY + kHalfPaddle);
 
     if (tuning_.noiseRadius > 0) {
         // One sample per step. The generator advances even when the resulting

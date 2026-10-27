@@ -255,10 +255,13 @@ void Rules::updatePaddles(std::uint32_t deltaUs) {
     const Fixed travel = scaleByTime(kPaddleSpeed, deltaUs);
     for (std::uint8_t player = 0; player < 2; ++player) {
         if (player == 1 && cpuEnabled_) {
-            // The opponent chases the ball from the paddle edge it owns. Its
-            // step clamps to the same box as the button path below, so the CPU
-            // can never reach a pixel the player cannot.
-            paddleY_[1] = cpu_.step(ballY_, paddleY_[1], deltaUs);
+            // The opponent reads the live ball and the player's paddle: the
+            // view lets it predict the intercept, the opponent's edge lets the
+            // aiming level send the return to the far side. Its step clamps to
+            // the same box as the button path below, so the CPU can never reach
+            // a pixel the player cannot.
+            paddleY_[1] = cpu_.step(BallView{ballX_, ballY_, ballVX_, ballVY_}, paddleY_[1],
+                                    paddleY_[0], deltaUs);
             continue;
         }
         const bool up = (input_[player] & kButtonLeft) != 0;

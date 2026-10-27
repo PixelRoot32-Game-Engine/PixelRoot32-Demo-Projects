@@ -220,8 +220,7 @@ public:
      * @param cpuEnabled True for the production match, where the CPU plays slot
      *        1. False hands slot 1 back to `setPlayerInput()`, which is what a
      *        test does when it needs to place the right paddle by hand.
-     * @param level CPU strength; Medium reproduces the pre-menu controller, so
-     *        a match built without a level is unchanged.
+     * @param level CPU strength; Medium is the default and predicts the shot.
      */
     explicit Rules(std::uint8_t firstServer = 0, bool cpuEnabled = true,
                    Difficulty level = Difficulty::Medium);
