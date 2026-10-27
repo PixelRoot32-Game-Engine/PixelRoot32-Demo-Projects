@@ -337,7 +337,7 @@ void drawOverlay(Renderer& renderer, const game::Rules& rules) {
     // A match ends when a side reaches kWinScore, so the scores can never tie
     // here; comparing them is still the truthful source.
     drawOverlayBand(renderer, origin, (rules.score(0) > rules.score(1)) ? "P1 WINS" : "CPU WINS",
-                    "PRESS A");
+                    "A AGAIN  B LEVEL");
 }
 
 void drawMenu(Renderer& renderer, std::uint8_t selection) {

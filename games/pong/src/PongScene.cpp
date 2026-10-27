@@ -11,8 +11,9 @@
  * transport, no peer and no second controller here -- one player, one CPU.
  *
  * It also owns the flow between the demo's two screens: boot lands on the title
- * screen, a confirmed level builds the match, and a finished match returns to
- * the title with that level still selected.
+ * screen, a confirmed level builds the match, and a finished match either
+ * replays at the same level (A) or returns to the title (B) with that level
+ * still selected.
  */
 #include "PongScene.h"
 
@@ -65,8 +66,11 @@ constexpr std::uint8_t kUpButton = 0;
 /// screen.
 constexpr std::uint8_t kDownButton = 1;
 
-/// A: confirms the selected level, and returns to the title after MatchOver.
+/// A: confirms the selected level, and replays the set after MatchOver.
 constexpr std::uint8_t kConfirmButton = 4;
+
+/// B: returns to the title screen after MatchOver, to change the level.
+constexpr std::uint8_t kMenuButton = 5;
 
 // --- Fixed step --------------------------------------------------------------
 
@@ -133,6 +137,7 @@ void PongScene::update(unsigned long deltaTime) {
     const bool upPressed = input.isButtonPressed(kUpButton);
     const bool downPressed = input.isButtonPressed(kDownButton);
     const bool confirmPressed = input.isButtonPressed(kConfirmButton);
+    const bool menuPressed = input.isButtonPressed(kMenuButton);
 
     if (menuOpen) {
         // The title screen owns Up and Down as cursor moves, with wrap-around;
@@ -167,14 +172,25 @@ void PongScene::update(unsigned long deltaTime) {
     }
     rules.setPlayerInput(0, buttons);
 
-    if (lastPhase == game::Phase::MatchOver && confirmPressed) {
-        // A finished match returns to the title screen, not to a rematch: the
-        // court is reset behind the panel and the level stays where it was.
-        openMenu();
-        // openMenu() re-baselined the clock and emptied the accumulator, so even
-        // if the millisecond clock ticks between the two reads below, the frame
-        // is under one step long and the reset court behind the panel cannot be
-        // stepped from here.
+    if (lastPhase == game::Phase::MatchOver) {
+        if (confirmPressed) {
+            // A rematch keeps the level and is immediate: restart() rebuilds
+            // the set and deliberately leaves the CPU's imperfection stream
+            // where it stopped, so the next set is new rather than a replay.
+            rules.restart();
+            effects.reset();
+            lastPhase = rules.phase();
+            accumulatorUs = 0;
+            playSfx(engine, SfxId::Countdown);
+        } else if (menuPressed) {
+            // B is the way back to the title, where the level can change. The
+            // court is reset behind the panel and the level stays selected.
+            openMenu();
+            // openMenu() re-baselined the clock and emptied the accumulator, so
+            // even if the millisecond clock ticks between the two reads below,
+            // the frame is under one step long and the reset court behind the
+            // panel cannot be stepped from here.
+        }
     }
 
     // The rules take microseconds, which a millisecond clock cannot express, so

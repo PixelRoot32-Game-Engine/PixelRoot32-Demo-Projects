@@ -30,8 +30,9 @@ namespace pong {
  * then is a match built at the selected level and the serve announced. It is not
  * an overlay on a live court: while it is open the match is not stepped, not
  * drawn and not heard, and the court behind the panel is a reset 0-0 one. When a
- * match ends, A returns to that same title screen with the level that was just
- * played still selected, so a rematch is one press away.
+ * match ends, A replays the set at the same level and B returns to the title
+ * screen with that level still selected, so changing the opponent is one press
+ * away and a rematch is immediate.
  *
  * The court advances on a fixed 60 Hz step. `update()` measures the wall clock,
  * adds the elapsed time to an accumulator and replays `kStepDtUs` slices of it,

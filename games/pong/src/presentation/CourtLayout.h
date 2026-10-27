@@ -183,8 +183,8 @@ inline constexpr int kHudPhaseWidth =
 // continue hint on its second. It is sized for the longest line, "CPU WINS", at
 // scale 2.
 
-/// Characters in the longest overlay line ("CPU WINS").
-inline constexpr int kOverlayLongestChars = 8;
+/// Characters in the longest overlay line ("A AGAIN  B LEVEL").
+inline constexpr int kOverlayLongestChars = 16;
 
 /// Width of the overlay band.
 inline constexpr int kOverlayWidth = 224;
