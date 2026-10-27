@@ -891,6 +891,105 @@ void test_diagnostics_report_no_drops_and_a_measured_rtt(void) {
     TEST_ASSERT_EQUAL_UINT8(2, rig.hostLogic.level());
 }
 
+// =============================================================================
+// 12. The restart predicate: only MatchOver plus a NEW press is a request. A
+//     held button, a rising edge during a rally and a rising edge during the
+//     countdown are all not.
+// =============================================================================
+
+void test_restart_predicate_needs_match_over_and_a_rising_edge(void) {
+    TEST_ASSERT_TRUE_MESSAGE(
+        netpong::restartRequested(game::Phase::MatchOver, 0, net::kButtonRight),
+        "MatchOver plus a rising edge must request a restart");
+    TEST_ASSERT_FALSE_MESSAGE(
+        netpong::restartRequested(game::Phase::MatchOver, net::kButtonRight,
+                                  net::kButtonRight),
+        "a button already held when the match ended must not restart it");
+    TEST_ASSERT_FALSE_MESSAGE(
+        netpong::restartRequested(game::Phase::Play, 0, net::kButtonRight),
+        "a rising edge during the rally must not restart the set");
+    TEST_ASSERT_FALSE_MESSAGE(
+        netpong::restartRequested(game::Phase::Countdown, 0, net::kButtonRight),
+        "a rising edge during the countdown must not restart the set");
+}
+
+// =============================================================================
+// 13. Any controller press after MatchOver restarts the single set at 0-0 and
+//     the new phase reaches both boards in STATE. A button that was already
+//     held when the set ended is not a press.
+// =============================================================================
+
+void test_any_controller_press_restarts_the_set_after_match_over(void) {
+    Rig rig;
+    TEST_ASSERT_TRUE_MESSAGE(rig.initOk, "loopback link or session failed to init");
+    rig.steps(5);
+
+    // Both paddles parked at the bottom of the court. The first serve is
+    // centred and flat, so a paddle at the bottom cannot return it and every
+    // serve is missed; the serves alternate, so the points do too.
+    rig.setButtons(rig.p1, net::kButtonRight);
+    rig.setButtons(rig.p2, net::kButtonRight);
+
+    int guard = 0;
+    while (rig.hostLogic.rules().phase() != game::Phase::MatchOver &&
+           guard++ < 5000) {
+        rig.step();
+    }
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(static_cast<std::uint8_t>(game::Phase::MatchOver),
+                                    phaseByte(rig.hostLogic.rules()),
+                                    "the match never reached MatchOver");
+    const std::uint8_t final1 = rig.hostLogic.rules().score(0);
+    const std::uint8_t final2 = rig.hostLogic.rules().score(1);
+    TEST_ASSERT_TRUE(final1 == game::kWinScore || final2 == game::kWinScore);
+
+    // The buttons are still held from the rally that ended the set. Held is not
+    // pressed: the match must stay terminal while they stay down.
+    rig.steps(100);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(static_cast<std::uint8_t>(game::Phase::MatchOver),
+                                    phaseByte(rig.hostLogic.rules()),
+                                    "a held button restarted the set");
+    TEST_ASSERT_EQUAL_UINT8(final1, rig.hostLogic.rules().score(0));
+    TEST_ASSERT_EQUAL_UINT8(final2, rig.hostLogic.rules().score(1));
+
+    // Releasing is a falling edge, which is not a restart either.
+    rig.setButtons(rig.p1, 0);
+    rig.setButtons(rig.p2, 0);
+    rig.steps(2);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<std::uint8_t>(game::Phase::MatchOver),
+                            phaseByte(rig.hostLogic.rules()));
+
+    // One new press on P1 restarts the single set.
+    rig.setButtons(rig.p1, net::kButtonRight);
+    rig.steps(5);  // 50 ms: the press and the next 30 Hz STATE tick
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(static_cast<std::uint8_t>(game::Phase::Countdown),
+                                    phaseByte(rig.hostLogic.rules()),
+                                    "the press did not restart the set");
+    TEST_ASSERT_EQUAL_UINT8(0, rig.hostLogic.rules().score(0));
+    TEST_ASSERT_EQUAL_UINT8(0, rig.hostLogic.rules().score(1));
+
+    // Both controllers learn the new phase and the reset score from STATE.
+    TEST_ASSERT_EQUAL_UINT8(net::kPhaseCountdown, rig.p1.lastState.phase);
+    TEST_ASSERT_EQUAL_UINT8(net::kPhaseCountdown, rig.p2.lastState.phase);
+    TEST_ASSERT_EQUAL_UINT8(0, rig.p1.lastState.score1);
+    TEST_ASSERT_EQUAL_UINT8(0, rig.p1.lastState.score2);
+    TEST_ASSERT_EQUAL_UINT8(0, rig.p2.lastState.score1);
+    TEST_ASSERT_EQUAL_UINT8(0, rig.p2.lastState.score2);
+
+    // The restarted set is a real match: releasing the button lets the
+    // countdown finish and the first serve go live at 0-0, which also proves
+    // the restart happened once instead of re-triggering.
+    rig.setButtons(rig.p1, 0);
+    guard = 0;
+    while (rig.hostLogic.rules().phase() != game::Phase::Play && guard++ < 200) {
+        rig.step();
+    }
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(static_cast<std::uint8_t>(game::Phase::Play),
+                                    phaseByte(rig.hostLogic.rules()),
+                                    "the restarted set never served");
+    TEST_ASSERT_EQUAL_UINT8(0, rig.hostLogic.rules().score(0));
+    TEST_ASSERT_EQUAL_UINT8(0, rig.hostLogic.rules().score(1));
+}
+
 #else  // !PIXELROOT32_ENABLE_NETWORKING || !PLATFORM_NATIVE
 
 // [env:host_test] ignores the engine on purpose, so it compiles this directory
@@ -926,6 +1025,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_paused_host_resumes_exactly_once_when_both_controllers_return);
     RUN_TEST(test_match_over_host_never_auto_resumes);
     RUN_TEST(test_diagnostics_report_no_drops_and_a_measured_rtt);
+    RUN_TEST(test_restart_predicate_needs_match_over_and_a_rising_edge);
+    RUN_TEST(test_any_controller_press_restarts_the_set_after_match_over);
 #else
     RUN_TEST(test_pong_host_session_flag_off_stub_compiles);
 #endif

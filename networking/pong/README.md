@@ -182,7 +182,9 @@ sends `APP_HELLO` **and** a reliable `STATE` immediately — waiting for the 30 
 tick would leave the panel showing a stale board for a third of a second. The
 survivor sees `PAUSED` while the host's 1000 ms watchdog is unhappy, and the
 match resumes into a fresh countdown as soon as both controllers are bound,
-compatible and sending again. `MATCH_OVER` is never auto-resumed.
+compatible and sending again. `MATCH_OVER` is never auto-resumed; the set is
+replayed only by a **new** controller press (see
+[How do I play another set?](#how-do-i-play-another-set)).
 
 ## The wire protocol
 
@@ -327,13 +329,13 @@ Two environments, two postures, one set of test files under `test/`:
   the match simulation (`test_rules`: fixed-step movement, bounce geometry,
   scoring, phase timers, event ring), and the engine-free halves of the
   controller and host adapters.
-- **`net_test` — 70 cases, the real engine.** It extends `[env:native]`, so
+- **`net_test` — 72 cases, the real engine.** It extends `[env:native]`, so
   `NetSession`, `LoopbackTransport` and the ESP-NOW-facing code compile as the
   firmware compiles them, and the extra cases drive **three real sessions** over
   a loopback bus: join and expected-node binding, unicast fan-out with one
   sequence, per-board paddle isolation, stale-sequence rejection, version
-  refusal, reliable goal/serve reporting, peer-loss pause, and the controller
-  reboot resync.
+  refusal, reliable goal/serve reporting, peer-loss pause, the controller
+  reboot resync, and the post-match rematch gesture.
 
 Both suites are listed in the hand-maintained matrix in
 [`.github/workflows/build.yml`](../../.github/workflows/build.yml); a `*_test`
@@ -402,11 +404,18 @@ diagnostics panel, and the match resumes into a fresh countdown once the reboote
 board has handshaked and sent input again. The rebooted board's score comes back
 from the immediate reliable `STATE`, not from local storage.
 
-### The match ends and stays on `OVER`
+### How do I play another set?
 
-`MATCH_OVER` is terminal in this build (see [Limitations](#limitations)). Restart
-the host to play another set. The `P1 WINS` / `P2 WINS` result stays correct in
-the meantime, and a controller cannot restart it.
+After the winning point the court shows `P1 WINS` or `P2 WINS`, and each
+controller shows the same result with a `PRESS` prompt under it. Press any
+direction button on either controller: the host turns that new press into a
+rematch, both boards reset to 0-0 and a fresh countdown starts. Release first if
+you were holding a button when the set ended — a button that is already down is
+not a press, so it will not replay the match.
+
+Only `MATCH_OVER` accepts the gesture. During a rally the same press just moves
+that paddle, and `Rules::restart()` ignores every other phase, so a stray frame
+cannot wipe a score in progress.
 
 ## Limitations
 
@@ -418,9 +427,6 @@ the meantime, and a controller cannot restart it.
 - **The channel is fixed at compile time** (`kChannel = 6` in
   [`NetConfig.h`](src/NetConfig.h)). There is no runtime selector, and all three
   boards must be rebuilt if it ever changes.
-- **No rematch from the controllers.** `Rules::restart()` exists and is tested,
-  but no input path in the firmware calls it, so the match stops at 5 and the
-  host must be restarted for another set.
 - **Two players only.** A third peer may associate with the radio, but the host
   binds only node ids 2 and 3 and ignores everything else.
 

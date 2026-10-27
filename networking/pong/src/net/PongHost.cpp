@@ -227,6 +227,7 @@ void PongHost::handleJoined(const NetEvent& event, std::uint32_t nowMs) {
     candidate.versionOk = false;
     candidate.lastInputMs = nowMs;
     candidate.buttons = 0;
+    candidate.previousButtons = 0;
     // The controller's sequence counter restarts on reboot, so the per-player
     // anti-replay window has to restart with it. Otherwise the first frames of
     // the new boot would look older than the last frame of the old one.
@@ -255,6 +256,7 @@ void PongHost::handleLeft(const NetEvent& event) {
 
     candidate.online = false;
     candidate.buttons = 0;
+    candidate.previousButtons = 0;
     rules_.setPlayerInput(player, 0);
 
     // pause() queues the Paused event only on a real transition. If the match
@@ -316,9 +318,24 @@ void PongHost::handleMessage(const NetEvent& event, std::uint32_t nowMs) {
                 break;
             }
             lastInputSeq_[player] = message.input.seq;
+            // The restart gesture is an edge, so the mask from the previous
+            // accepted frame is kept before this one replaces it. A button that
+            // was already down when the set ended is still down here, produces
+            // no edge, and therefore cannot replay the match by itself.
+            candidate.previousButtons = candidate.buttons;
             candidate.buttons = message.input.buttons;
             candidate.lastInputMs = nowMs;
             rules_.setPlayerInput(player, candidate.buttons);
+
+            // S9: any controller button restarts after MatchOver. rules()
+            // .restart() is a no-op outside MatchOver and only the first frame
+            // of a press satisfies the predicate, so this cannot fire twice for
+            // one hold. No reliable frame is sent: the phase rides in the next
+            // 30 Hz STATE, which the controllers already parse.
+            if (restartRequested(rules_.phase(), candidate.previousButtons,
+                                 candidate.buttons)) {
+                rules_.restart();
+            }
             break;
         default:
             // Controllers only send APP_HELLO and INPUT. Anything else from a

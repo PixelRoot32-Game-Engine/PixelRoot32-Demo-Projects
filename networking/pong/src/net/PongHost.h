@@ -61,7 +61,32 @@ struct Binding {
     bool online = false;          ///< Peer is currently reachable.
     std::uint32_t lastInputMs = 0;///< Session time of the last accepted INPUT.
     std::uint8_t buttons = 0;     ///< Last accepted held-direction mask.
+    /// Held-direction mask carried by the frame before `buttons`.
+    ///
+    /// The restart gesture is an edge, not a level: the host compares this with
+    /// the newest mask so a button that was already down when the match ended
+    /// (and is therefore still held) cannot restart the set.
+    std::uint8_t previousButtons = 0;
 };
+
+/**
+ * @brief Reports whether an INPUT is the "play another set" gesture.
+ * @param phase Match phase the host is in before this frame is applied.
+ * @param previousButtons Held mask from the previous accepted INPUT.
+ * @param buttons Held mask from this INPUT.
+ * @return true only in MatchOver and only when a bit that was up went down.
+ *
+ * Pure on purpose: the adapter calls it on the accepted-input path, and the
+ * suite pins the four interesting combinations without a session or a clock.
+ * A press of either direction on either controller is a request; a held button
+ * (no new bit) and any rising edge outside MatchOver are not.
+ */
+[[nodiscard]] constexpr bool restartRequested(game::Phase phase,
+                                             std::uint8_t previousButtons,
+                                             std::uint8_t buttons) {
+    return phase == game::Phase::MatchOver &&
+           (buttons & static_cast<std::uint8_t>(~previousButtons)) != 0;
+}
 
 #if defined(PIXELROOT32_ENABLE_NETWORKING) && PIXELROOT32_ENABLE_NETWORKING
 
@@ -125,7 +150,8 @@ public:
      *
      * A match the watchdog or a lost peer paused is resumed here, as soon as
      * both controllers are bound, compatible and sending again. A match that
-     * reached MatchOver is never touched: its result is final.
+     * reached MatchOver is left alone here: only a new controller press (the
+     * Input path in onEvent) can restart it.
      */
     void update(std::uint32_t nowMs);
 

@@ -88,6 +88,10 @@ struct ScreenKey {
  * The layout is derived from `getLogicalWidth()`/`getLogicalHeight()`, and each
  * band is skipped when the canvas is too short to hold it, so a differently
  * sized simulator window never paints outside the framebuffer.
+ *
+ * MatchOver is drawn as the result, not as another phase: the line under the
+ * score names the winner (`P1 WINS` / `P2 WINS`) and the line below it reads
+ * `PRESS`, because any new controller press is the host's rematch gesture.
  */
 void drawControllerScreen(pixelroot32::graphics::Renderer& renderer,
                           const ControllerView& view, std::uint8_t playerIndex);

@@ -68,9 +68,14 @@ int clampInt(int value, int low, int high) {
     return value;
 }
 
-/// @brief Maps the match phase to the four-to-five letter word the panel shows.
-const char* phaseLabel(std::uint8_t phase) {
-    switch (phase) {
+/// @brief Maps the match phase to the line the panel shows under the score.
+///
+/// MatchOver deliberately does not read "MATCH": the set is over and the next
+/// controller press replays it, so the line names the winner and the line below
+/// carries the PRESS prompt. WAIT and PAUSED stay distinct for the same reason
+/// they always were: waiting for a board is not a frozen rally.
+const char* phaseLabel(const ControllerView& view) {
+    switch (view.phase) {
         case net::kPhaseWaitingForPlayers:
             return "WAIT";
         case net::kPhaseCountdown:
@@ -80,7 +85,9 @@ const char* phaseLabel(std::uint8_t phase) {
         case net::kPhasePoint:
             return "POINT";
         case net::kPhaseMatchOver:
-            return "MATCH";
+            // A single set ends only at kWinScore, so the scores cannot tie;
+            // the comparison is also the same one the court renders.
+            return (view.score1 > view.score2) ? "P1 WINS" : "P2 WINS";
         case net::kPhasePaused:
             // Distinct from WAIT on purpose: waiting for a board and a match
             // frozen mid-rally are different problems, and the player should not
@@ -161,14 +168,22 @@ void drawControllerScreen(Renderer& renderer, const ControllerView& view,
     }
 
     if (height >= kPhaseY + kGlyphHeight) {
-        renderer.drawTextCentered(phaseLabel(view.phase),
+        renderer.drawTextCentered(phaseLabel(view),
                                   static_cast<std::int16_t>(kPhaseY), ink, 1);
     }
 
-    // Ball marker: horizontal court position only. The panel has no room for a
-    // court, so the ball is an indicator of where the rally is across the
-    // table, not a second miniature game.
-    if (height >= kBallY + kBallMarker) {
+    if (view.phase == net::kPhaseMatchOver) {
+        // The ball is frozen after the winning point, so its marker would say
+        // nothing; that line instead tells both players how to replay the set.
+        // The winner line above it already names who won.
+        if (height >= kBallY + kGlyphHeight) {
+            renderer.drawTextCentered("PRESS", static_cast<std::int16_t>(kBallY),
+                                      ink, 1);
+        }
+    } else if (height >= kBallY + kBallMarker) {
+        // Ball marker: horizontal court position only. The panel has no room for
+        // a court, so the ball is an indicator of where the rally is across the
+        // table, not a second miniature game.
         const int courtX = clampInt(static_cast<int>(view.ballX), 0,
                                     game::kCourtWidth);
         const int usable = width - 2 * kMarginX - kBallMarker;
