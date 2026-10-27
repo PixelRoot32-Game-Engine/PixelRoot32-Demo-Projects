@@ -107,6 +107,9 @@ void drawCentered(Renderer& renderer, const ViewOffset& origin, const char* text
  * @brief Returns the word the score band shows for a phase.
  * @param phase Current match phase.
  * @return Upper-case word for the 5x7 face; never nullptr.
+ *
+ * Countdown is the one phase whose word is a number, so `drawHud()` overrides
+ * it from the rules' live timer instead of returning a word here.
  */
 const char* phaseWord(game::Phase phase) {
     switch (phase) {
@@ -126,6 +129,80 @@ const char* phaseWord(game::Phase phase) {
     // Unreachable for a well-formed Phase; an empty word is better than a
     // stale one if a future enumerator is added without a case here.
     return "";
+}
+
+// --- Diagnostics panel -------------------------------------------------------
+// The waiting/paused overlay is a panel, not a word: five short lines at scale 2.
+// It reuses the band's paper/frame look but is taller, and its geometry lives
+// here because the single-word band constants in CourtLayout.h are sized for
+// one line. All of it is derived from the design box, so the panel stays
+// centred when the design canvas changes.
+
+/// Lines the panel prints (channel, slots, RTT, drops, queue).
+constexpr int kDiagLines = 5;
+
+/// Width of the diagnostics panel.
+constexpr int kDiagWidth = 256;
+
+/// Text size inside the panel; 12 px of advance keeps a 16-cell line at 190 px.
+constexpr int kDiagScale = 2;
+
+/// Vertical padding above the first line and below the last one.
+constexpr int kDiagPadY = 6;
+
+/// Drawn height of one text line.
+constexpr int kDiagTextHeight = kGlyphHeight * kDiagScale;
+
+/// Baseline-to-baseline distance between two lines.
+constexpr int kDiagLineStep = kDiagTextHeight + 2;
+
+/// Height of the diagnostics panel.
+constexpr int kDiagHeight =
+    2 * kDiagPadY + kDiagTextHeight + (kDiagLines - 1) * kDiagLineStep;
+
+/// Left edge of the panel, centred on the court.
+constexpr int kDiagX = (kDesignWidth - kDiagWidth) / 2;
+
+/// Top edge of the panel, centred in the play area.
+constexpr int kDiagY = kPlayY + (kPlayHeight - kDiagHeight) / 2;
+
+/// Cells in the widest line the panel can print: "DROP 4294967295".
+constexpr int kDiagLongestCells = 16;
+
+static_assert(kDiagX >= kPlayX && kDiagX + kDiagWidth <= kPlayX + kPlayWidth,
+              "CourtRenderer: the diagnostics panel must fit the court width");
+static_assert(kDiagY >= kPlayY && kDiagY + kDiagHeight <= kPlayBottom,
+              "CourtRenderer: the diagnostics panel must fit the play area");
+static_assert(kDiagLongestCells * kGlyphAdvance * kDiagScale - kGlyphSpacing * kDiagScale <=
+                  kDiagWidth,
+              "CourtRenderer: the longest diagnostics line must fit the panel");
+static_assert(kDiagPadY + (kDiagLines - 1) * kDiagLineStep + kDiagTextHeight <= kDiagHeight,
+              "CourtRenderer: the diagnostics lines must fit the panel height");
+
+/// Milliseconds each countdown digit is shown. kCountdownMs splits evenly into
+/// three, so the host HUD reads 3, 2, 1 and never shows a stale 0.
+constexpr std::uint32_t kCountdownDigitMs = game::kCountdownMs / 3;
+
+static_assert(game::kCountdownMs % 3 == 0,
+              "CourtRenderer: the countdown must split into three whole digits");
+
+/**
+ * @brief Formats the countdown digit for the score band.
+ * @param rules Match whose countdown timer is read.
+ * @param buffer Destination, at least 2 bytes.
+ * @return `buffer`, holding "3", "2" or "1".
+ */
+const char* countdownWord(const game::Rules& rules, char* buffer) {
+    const std::uint32_t remainingMs = rules.countdownRemainingMs();
+    // Ceiling division: the first moments of the countdown still read 3.
+    std::uint32_t digit = (remainingMs + kCountdownDigitMs - 1) / kCountdownDigitMs;
+    if (digit < 1) {
+        digit = 1;
+    } else if (digit > 3) {
+        digit = 3;
+    }
+    std::snprintf(buffer, 2, "%u", static_cast<unsigned>(digit));
+    return buffer;
 }
 
 }  // namespace
@@ -232,7 +309,6 @@ void drawHud(Renderer& renderer, const game::Rules& rules, std::uint8_t level) {
 
     const ViewOffset origin = viewOffset(renderer.getLogicalWidth(), renderer.getLogicalHeight());
     const auto scoreScale = static_cast<std::uint8_t>(kHudScoreScale);
-    const auto phaseScale = static_cast<std::uint8_t>(kHudPhaseScale);
 
     // Waiting with a short count means at least one board is still missing, and
     // the band is the only place that can say so without a second text line.
@@ -242,6 +318,7 @@ void drawHud(Renderer& renderer, const game::Rules& rules, std::uint8_t level) {
 
     char tag[8];
     char score[8];
+    char countdown[2];
 
     // Player one: tag at the padding, score immediately to its right.
     std::snprintf(tag, sizeof(tag), "P%d", 1);
@@ -264,39 +341,24 @@ void drawHud(Renderer& renderer, const game::Rules& rules, std::uint8_t level) {
     renderer.drawText(score, static_cast<int16_t>(scoreX),
                       static_cast<int16_t>(origin.y + kHudScoreY), kInk, scoreScale);
 
-    drawCentered(renderer, origin, phaseWord(rules.phase()), kHudPhaseY, phaseInk, kHudPhaseScale,
+    const char* word = phaseWord(rules.phase());
+    if (rules.phase() == game::Phase::Countdown) {
+        // The host is the only screen that counts the serve in: the controllers
+        // keep "READY" because their board is redrawn at 10 Hz and a digit there
+        // would arrive late. No wire change: the number is derived locally.
+        word = countdownWord(rules, countdown);
+    }
+    drawCentered(renderer, origin, word, kHudPhaseY, phaseInk, kHudPhaseScale,
                  kPlayX, kDesignWidth);
 }
 
-void drawOverlay(Renderer& renderer, const game::Rules& rules) {
-    installPalette();
-
-    const char* text = nullptr;
-    switch (rules.phase()) {
-        case game::Phase::WaitingForPlayers:
-            text = "WAITING FOR PLAYERS";
-            break;
-        case game::Phase::Paused:
-            text = "PAUSED";
-            break;
-        case game::Phase::MatchOver:
-            // A match ends when a side reaches kWinScore, so the scores can
-            // never tie here; comparing them is still the truthful source.
-            text = (rules.score(1) > rules.score(0)) ? "P2 WINS" : "P1 WINS";
-            break;
-        case game::Phase::Countdown:
-        case game::Phase::Play:
-        case game::Phase::Point:
-            // No band over a live court: the phase word in the HUD already says
-            // what is happening, and a band would cover the ball.
-            return;
-    }
-    if (text == nullptr) {
-        return;
-    }
-
-    const ViewOffset origin = viewOffset(renderer.getLogicalWidth(), renderer.getLogicalHeight());
-
+/**
+ * @brief Draws the framed paper band a single overlay word sits in.
+ * @param renderer Renderer to draw with.
+ * @param origin Viewport offset of the design box.
+ * @param text Word to centre in the band.
+ */
+void drawOverlayBand(Renderer& renderer, const ViewOffset& origin, const char* text) {
     // Paper first, then an inset frame: the band has to read even when the
     // court behind it resolves to the same palette slot.
     renderer.drawFilledRectangle(origin.x + kOverlayX, origin.y + kOverlayY, kOverlayWidth,
@@ -308,6 +370,74 @@ void drawOverlay(Renderer& renderer, const game::Rules& rules) {
 
     drawCentered(renderer, origin, text, kOverlayTextY, kInk, kOverlayScale, kOverlayX,
                  kOverlayWidth);
+}
+
+/**
+ * @brief Returns the token one controller slot shows in the diagnostics panel.
+ * @param ok Bound, online and speaking the host's protocol version.
+ * @return "OK" or "--".
+ */
+const char* slotToken(bool ok) { return ok ? "OK" : "--"; }
+
+/**
+ * @brief Draws the network diagnostics panel for WaitingForPlayers and Paused.
+ * @param renderer Renderer to draw with.
+ * @param origin Viewport offset of the design box.
+ * @param net Link facts sampled from the host adapter.
+ */
+void drawDiagnosticsPanel(Renderer& renderer, const ViewOffset& origin, const NetStatus& net) {
+    renderer.drawFilledRectangle(origin.x + kDiagX, origin.y + kDiagY, kDiagWidth, kDiagHeight,
+                                 kPaper);
+    for (int inset = 0; inset < kFrameThickness; ++inset) {
+        renderer.drawRectangle(origin.x + kDiagX + inset, origin.y + kDiagY + inset,
+                               kDiagWidth - 2 * inset, kDiagHeight - 2 * inset, kFrame);
+    }
+
+    // Five fixed lines, each formatted into its own tiny buffer: no allocation
+    // and no shared mutable state between them.
+    char lines[kDiagLines][24] = {};
+    std::snprintf(lines[0], sizeof(lines[0]), "NET CH %u",
+                  static_cast<unsigned>(net.channel));
+    std::snprintf(lines[1], sizeof(lines[1]), "P1 %s   P2 %s", slotToken(net.slotOk[0]),
+                  slotToken(net.slotOk[1]));
+    std::snprintf(lines[2], sizeof(lines[2]), "RTT %u MS",
+                  static_cast<unsigned>(net.lastRttMs));
+    std::snprintf(lines[3], sizeof(lines[3]), "DROP %lu",
+                  static_cast<unsigned long>(net.rxDropped));
+    std::snprintf(lines[4], sizeof(lines[4]), "QUEUE %u",
+                  static_cast<unsigned>(net.pendingCount));
+
+    for (int line = 0; line < kDiagLines; ++line) {
+        drawCentered(renderer, origin, lines[line], kDiagY + kDiagPadY + line * kDiagLineStep,
+                     kInk, kDiagScale, kDiagX, kDiagWidth);
+    }
+}
+
+void drawOverlay(Renderer& renderer, const game::Rules& rules, const NetStatus& net) {
+    installPalette();
+
+    const ViewOffset origin = viewOffset(renderer.getLogicalWidth(), renderer.getLogicalHeight());
+
+    switch (rules.phase()) {
+        case game::Phase::WaitingForPlayers:
+        case game::Phase::Paused:
+            // Nothing is moving in either phase, and "why is nothing moving" is
+            // exactly what the panel answers. The HUD word already names Paused.
+            drawDiagnosticsPanel(renderer, origin, net);
+            return;
+        case game::Phase::MatchOver:
+            // A match ends when a side reaches kWinScore, so the scores can
+            // never tie here; comparing them is still the truthful source.
+            drawOverlayBand(renderer, origin,
+                            (rules.score(1) > rules.score(0)) ? "P2 WINS" : "P1 WINS");
+            return;
+        case game::Phase::Countdown:
+        case game::Phase::Play:
+        case game::Phase::Point:
+            // No band over a live court: the phase word in the HUD already says
+            // what is happening, and a band would cover the ball.
+            return;
+    }
 }
 
 }  // namespace netpong::presentation

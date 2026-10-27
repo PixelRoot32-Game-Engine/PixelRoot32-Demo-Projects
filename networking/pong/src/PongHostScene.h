@@ -31,6 +31,7 @@
 #include <drivers/esp32/ESP32EspNowTransport.h>
 #endif
 
+#include "net/PongController.h"
 #include "net/PongHost.h"
 #include "presentation/PongEffects.h"
 
@@ -54,13 +55,18 @@ using HostTransport = pixelroot32::networking::ESP32EspNowTransport;
  * bringing the link up, starting the session and registering the pointer all
  * happen here.
  *
- * The scene never pumps the session: the Engine drains it and dispatches every
- * pending event to @ref onNetworkEvent before @ref update runs, and a second
- * pump would advance the link twice per frame. @ref update therefore only moves
- * the match clock forward.
+ * The scene never pumps the session it hands to the Engine: the Engine drains it
+ * and dispatches every pending event to @ref onNetworkEvent before @ref update
+ * runs, and a second pump would advance the link twice per frame. @ref update
+ * therefore only moves the match clock forward.
  *
- * On native the scene also owns the LoopbackBus every simulated node shares, so
- * the host is the single place the bus lifetime is decided.
+ * On native the scene also owns the LoopbackBus every simulated node shares and
+ * the two controller nodes themselves. Because one Engine pumps exactly one
+ * session, @ref update pumps those two after the host step; that is a
+ * simulation detail, not an engine limitation (three real boards each run their
+ * own Engine). The device builds never instantiate any of it: the guard is
+ * `PLATFORM_NATIVE`, so the CYD firmware owns one link, one session and no
+ * controller node.
  */
 class PongHostScene : public pixelroot32::core::Scene {
 public:
@@ -174,6 +180,38 @@ private:
     void repaintHudBand(pixelroot32::graphics::Renderer& renderer);
 
 #ifdef PLATFORM_NATIVE
+    /**
+     * @brief Brings one simulated controller up on the host's own bus.
+     * @param transport Link to initialize; already attached to the bus.
+     * @param session Session to start on it.
+     * @param controller Firmware to reset and announce.
+     * @param nodeId Application label (kNodeIdP1 or kNodeIdP2).
+     * @param nowMs Current time, the controller's cadence baseline.
+     *
+     * Mirrors PongControllerScene::init() without the Scene: the simulator has
+     * one window and one Engine, so the two extra boards are plain node objects
+     * owned here rather than scenes nobody would ever draw.
+     */
+    void startController(pixelroot32::networking::LoopbackTransport& transport,
+                         pixelroot32::networking::NetSession& session,
+                         PongController& controller, std::uint8_t nodeId,
+                         std::uint32_t nowMs);
+
+    /**
+     * @brief Pumps one simulated controller and feeds it the held direction.
+     * @param session Session to pump and drain.
+     * @param controller Firmware to advance.
+     * @param nowMs Current time.
+     * @param buttons Held-direction mask from the keyboard.
+     *
+     * The Engine pumps exactly one session (the host's), so the two simulated
+     * boards are pumped here with the same shape the ESP-NOW dice demo uses:
+     * update, drain, then the firmware.
+     */
+    void pumpController(pixelroot32::networking::NetSession& session,
+                        PongController& controller, std::uint32_t nowMs,
+                        std::uint8_t buttons);
+
     /// Bus shared by every simulated node; declared first so it outlives them.
     pixelroot32::networking::LoopbackBus loopbackBus;
 #endif
@@ -181,6 +219,17 @@ private:
     pixelroot32::networking::NetSession netSession; ///< Session on that link.
     /// Match authority and wire cadence; born after the session it borrows.
     PongHost host;
+#ifdef PLATFORM_NATIVE
+    // The two simulated controllers. Each owns its link, session and firmware
+    // in that order, exactly like a C3 board; they share the host's bus and
+    // never touch the Engine's session slot.
+    pixelroot32::networking::LoopbackTransport p1Transport;
+    pixelroot32::networking::NetSession p1Session;
+    PongController p1Controller;
+    pixelroot32::networking::LoopbackTransport p2Transport;
+    pixelroot32::networking::NetSession p2Session;
+    PongController p2Controller;
+#endif
     /// Bursts and shake; owns the only particle emitter in the demo.
     presentation::PongEffects effects;
     /// Phase on the previous frame, for the countdown and goal edges.

@@ -82,7 +82,10 @@ const char* phaseLabel(std::uint8_t phase) {
         case net::kPhaseMatchOver:
             return "MATCH";
         case net::kPhasePaused:
-            return "PAUSE";
+            // Distinct from WAIT on purpose: waiting for a board and a match
+            // frozen mid-rally are different problems, and the player should not
+            // read one as the other.
+            return "PAUSED";
         default:
             return "?";
     }

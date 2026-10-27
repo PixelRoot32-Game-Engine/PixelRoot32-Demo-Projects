@@ -9,6 +9,7 @@
 #include "PongHostScene.h"
 
 #include "NetConfig.h"
+#include "net/PongProtocol.h"
 #include "presentation/CourtLayout.h"
 #include "presentation/CourtRenderer.h"
 #include "presentation/PongSfx.h"
@@ -43,7 +44,33 @@ NetAddress loopbackAddress(std::uint8_t tag) {
     }
     return address;
 }
+
+/// Indices of the four native keys in the InputConfig built by platforms/native.h.
+/// The order there and the order here are the same contract: W/S drive P1,
+/// UP/DOWN drive P2.
+constexpr std::uint8_t kP1UpKey = 0;    ///< SDL_SCANCODE_W.
+constexpr std::uint8_t kP1DownKey = 1;  ///< SDL_SCANCODE_S.
+constexpr std::uint8_t kP2UpKey = 2;    ///< SDL_SCANCODE_UP.
+constexpr std::uint8_t kP2DownKey = 3;  ///< SDL_SCANCODE_DOWN.
 #endif
+
+/// Samples the diagnostics panel from the host adapter's public getters.
+/// @param host Adapter whose link facts the panel prints.
+/// @return Plain-value snapshot; allocates nothing.
+presentation::NetStatus makeNetStatus(const PongHost& host) {
+    presentation::NetStatus status;
+    status.channel = host.channel();
+    for (std::uint8_t player = 0; player < PongHost::kPlayerCount; ++player) {
+        const Binding& slot = host.binding(player);
+        // One token answers "can this paddle be played with right now": bound to
+        // the slot, reachable, and speaking a protocol version this host parses.
+        status.slotOk[player] = slot.bound && slot.online && slot.versionOk;
+    }
+    status.lastRttMs = host.lastRttMs();
+    status.rxDropped = host.rxDropped();
+    status.pendingCount = host.pendingCount();
+    return status;
+}
 
 }  // namespace
 
@@ -53,6 +80,12 @@ PongHostScene::PongHostScene()
       transport(loopbackBus, loopbackAddress(kNodeIdHost)),
       netSession(transport),
       host(netSession, 0),
+      p1Transport(loopbackBus, loopbackAddress(kNodeIdP1)),
+      p1Session(p1Transport),
+      p1Controller(p1Session, 0, 0),
+      p2Transport(loopbackBus, loopbackAddress(kNodeIdP2)),
+      p2Session(p2Transport),
+      p2Controller(p2Session, 1, 0),
       shakeCamera(game::kCourtWidth, game::kCourtHeight) {}
 #else
 PongHostScene::PongHostScene()
@@ -117,8 +150,11 @@ void PongHostScene::init() {
 
 #ifdef PLATFORM_NATIVE
     // One Engine dispatches one session, so the native build registers the host
-    // here and pumps the two simulated controllers itself.
+    // here and pumps the two simulated controllers itself. Both boards join the
+    // host's bus and start after it, exactly as two C3s would after the CYD.
     engine.setNetworkSession(&netSession);
+    startController(p1Transport, p1Session, p1Controller, kNodeIdP1, nowMs);
+    startController(p2Transport, p2Session, p2Controller, kNodeIdP2, nowMs);
 #endif
 }
 
@@ -134,6 +170,33 @@ void PongHostScene::update(unsigned long deltaTime) {
     // adapter takes `millis()` rather than the frame delta: a slow frame must
     // not change how far the ball travelled.
     host.update(nowMs);
+
+#ifdef PLATFORM_NATIVE
+    // The loopback bus has no clock of its own. Hand it the frame time the host
+    // just used, then pump both simulated boards: without an Engine each, they
+    // need the same update/drain/firmware sequence the Engine performs for the
+    // host. This is why the native window leaves WAITING_FOR_PLAYERS on its own.
+    loopbackBus.setNowMs(nowMs);
+
+    const auto& keyboard = engine.getInputManager();
+    std::uint8_t p1Buttons = 0;
+    if (keyboard.isButtonDown(kP1UpKey)) {
+        p1Buttons |= net::kButtonLeft;
+    }
+    if (keyboard.isButtonDown(kP1DownKey)) {
+        p1Buttons |= net::kButtonRight;
+    }
+    std::uint8_t p2Buttons = 0;
+    if (keyboard.isButtonDown(kP2UpKey)) {
+        p2Buttons |= net::kButtonLeft;
+    }
+    if (keyboard.isButtonDown(kP2DownKey)) {
+        p2Buttons |= net::kButtonRight;
+    }
+
+    pumpController(p1Session, p1Controller, nowMs, p1Buttons);
+    pumpController(p2Session, p2Controller, nowMs, p2Buttons);
+#endif
 
     // Effects advance before this frame's cues are triggered: a burst queued
     // below must be drawn at full life instead of being aged by the frame that
@@ -248,7 +311,7 @@ void PongHostScene::draw(Renderer& renderer) {
     // The HUD and the overlay are the only things allowed to sit over a live
     // court, and neither one moves with the shake.
     presentation::drawHud(renderer, rules, host.level());
-    presentation::drawOverlay(renderer, rules);
+    presentation::drawOverlay(renderer, rules, makeNetStatus(host));
 }
 
 void PongHostScene::playPaddleHit(const game::Rules& rules, std::uint8_t player) {
@@ -324,6 +387,53 @@ pixelroot32::networking::NetSession* PongHostScene::session() { return &netSessi
 
 #ifdef PLATFORM_NATIVE
 pixelroot32::networking::LoopbackBus& PongHostScene::bus() { return loopbackBus; }
+
+void PongHostScene::startController(
+    pixelroot32::networking::LoopbackTransport& controllerTransport,
+    pixelroot32::networking::NetSession& controllerSession,
+    PongController& controller, std::uint8_t nodeId, std::uint32_t nowMs) {
+    NetTransportConfig transportConfig;
+    transportConfig.channel = kChannel;
+    transportConfig.nodeId = nodeId;
+    // Same posture as the C3 build: the station comes up without joining an AP.
+    transportConfig.manageWifi = true;
+    if (controllerTransport.init(transportConfig) != NetResult::Ok) {
+        return;
+    }
+
+    NetSessionConfig sessionConfig;
+    sessionConfig.channel = kChannel;
+    sessionConfig.nodeId = nodeId;
+    // 0 asks for a per-boot generation, so a re-init looks like a reboot to the
+    // host instead of a duplicate of the previous peer.
+    sessionConfig.bootId = 0;
+    sessionConfig.discovery = true;
+    if (controllerSession.init(sessionConfig) != NetResult::Ok) {
+        return;
+    }
+
+    // Announce after the session exists; the controller looks the host up in the
+    // peer table as well, because discovery may have run before this call.
+    controller.start(nowMs);
+}
+
+void PongHostScene::pumpController(
+    pixelroot32::networking::NetSession& controllerSession,
+    PongController& controller, std::uint32_t nowMs, std::uint8_t buttons) {
+    controllerSession.update(nowMs);
+
+    // Neither consumer owns the queue: drain it once and hand every event to the
+    // firmware, exactly like the Engine does for the host and like the ESP-NOW
+    // dice demo does for its simulated second board.
+    pixelroot32::networking::NetEvent event;
+    while (controllerSession.pollEvent(event)) {
+        controller.onEvent(event, nowMs);
+    }
+
+    // The firmware's cadence is driven by the same millisecond clock the host
+    // used this frame, so the two boards and the tests share one time base.
+    controller.update(nowMs, buttons);
+}
 #endif
 
 }  // namespace netpong

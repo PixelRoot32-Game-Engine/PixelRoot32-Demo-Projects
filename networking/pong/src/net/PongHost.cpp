@@ -79,6 +79,11 @@ void PongHost::update(std::uint32_t nowMs) {
 
     refreshReadyGate();
     maintainWatchdog(nowMs);
+    // A controller that came back must un-pause the match on its own; the
+    // players are watching a frozen court and have no button to press for it.
+    // Resuming before the drain below also puts the Resumed event on the wire
+    // in this same frame.
+    resumeWhenReconnected(nowMs);
     // The watchdog can pause the match, and that Paused event must reach the
     // controllers in this same frame, not in the next one.
     drainRuleEvents();
@@ -142,6 +147,14 @@ bool PongHost::bothPlayersReady() const {
     }
     return true;
 }
+
+std::uint8_t PongHost::channel() const { return kChannel; }
+
+std::uint16_t PongHost::lastRttMs() const { return session_.stats().lastRttMs; }
+
+std::uint32_t PongHost::rxDropped() const { return session_.stats().rxDropped; }
+
+std::uint8_t PongHost::pendingCount() const { return session_.pendingCount(); }
 
 bool PongHost::pollEffect(game::Event& out) {
     if (effectCount_ == 0) {
@@ -342,6 +355,35 @@ void PongHost::maintainWatchdog(std::uint32_t nowMs) {
             return;
         }
     }
+}
+
+void PongHost::resumeWhenReconnected(std::uint32_t nowMs) {
+    if (rules_.phase() != game::Phase::Paused) {
+        return;
+    }
+    if (!bothPlayersReady() || !playersResponsive(nowMs)) {
+        return;
+    }
+    // resume() only acts on Paused and goes straight to Countdown, so this
+    // fires exactly once per pause: the next update sees Countdown, not Paused.
+    rules_.resume();
+}
+
+bool PongHost::playersResponsive(std::uint32_t nowMs) const {
+    for (std::uint8_t player = 0; player < kPlayerCount; ++player) {
+        const Binding& candidate = bindings_[player];
+        if (!candidate.bound || !candidate.online || !candidate.versionOk) {
+            return false;
+        }
+        // The watchdog reads silence as a lost player. An INPUT that is older
+        // than its window would pause the match again on the very next frame,
+        // turning the reconnect into a Paused/Countdown loop instead of a match.
+        if (static_cast<std::uint32_t>(nowMs - candidate.lastInputMs) >=
+            kWatchdogMs) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void PongHost::drainRuleEvents() {

@@ -225,6 +225,19 @@ bool Rules::paused() const {
     return phase_ == Phase::Paused;
 }
 
+std::uint32_t Rules::countdownRemainingMs() const {
+    if (phase_ != Phase::Countdown) {
+        return 0;
+    }
+    const std::uint32_t totalUs = kCountdownMs * 1000U;
+    if (phaseElapsedUs_ >= totalUs) {
+        // step() turns this exact state into a serve, so a caller that asks
+        // between the two reads "no time left" rather than a wrapped value.
+        return 0;
+    }
+    return (totalUs - phaseElapsedUs_) / 1000U;
+}
+
 std::uint8_t Rules::score(std::uint8_t player) const {
     if (player == 0) {
         return score1_;

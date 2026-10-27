@@ -79,6 +79,28 @@ inline constexpr pixelroot32::graphics::Color kP2Tint = pixelroot32::graphics::C
 void installPalette();
 
 /**
+ * @struct NetStatus
+ * @brief The link facts the diagnostics panel prints.
+ *
+ * Filled by the scene from `PongHost`'s public getters and handed to
+ * `drawOverlay()`, so the renderer stays engine-free and cannot reach into a
+ * session itself. Every field is a plain value; the struct allocates nothing.
+ */
+struct NetStatus {
+    /// Wi-Fi channel every node must share.
+    std::uint8_t channel = 0;
+    /// One token per player slot: bound, online AND speaking this build's
+    /// protocol version. False renders as "--".
+    bool slotOk[2] = {false, false};
+    /// Newest reliable round trip in milliseconds, 0 before the first ACK.
+    std::uint16_t lastRttMs = 0;
+    /// Frames the host session had to drop; the demo's contract is zero.
+    std::uint32_t rxDropped = 0;
+    /// Reliable frames still waiting for an ACK.
+    std::uint8_t pendingCount = 0;
+};
+
+/**
  * @struct CourtRect
  * @brief An axis-aligned rectangle in design-box pixels.
  *
@@ -178,6 +200,11 @@ void drawActors(pixelroot32::graphics::Renderer& renderer, const game::Rules& ru
  * The band uses the engine's 5x7 default face: the tags and scores at scale 3,
  * the phase word at scale 2. Both scores and the phase word are formatted into
  * a fixed `char[8]`; nothing here allocates.
+ *
+ * During Countdown the phase word is the number of seconds left (3, 2, 1) read
+ * from `Rules::countdownRemainingMs()`, not the static "READY": the host screen
+ * is the only place a player can see the serve coming to the tick, while the
+ * controllers keep their READY word (S10, no wire change).
  */
 void drawHud(pixelroot32::graphics::Renderer& renderer, const game::Rules& rules,
              std::uint8_t level);
@@ -186,12 +213,16 @@ void drawHud(pixelroot32::graphics::Renderer& renderer, const game::Rules& rules
  * @brief Paints the centred overlay for the phases that need a word.
  * @param renderer Renderer to draw with.
  * @param rules Match to read the phase and the winner from.
+ * @param net Link facts for the diagnostics panel.
  *
- * WaitingForPlayers shows "WAITING FOR PLAYERS", Paused shows "PAUSED" and
- * MatchOver shows "P1 WINS" or "P2 WINS" by score. Countdown, Play and Point
- * draw nothing: their state is already in the HUD phase word and a band over
- * the court during a rally would only hide the ball.
+ * WaitingForPlayers and Paused show the diagnostics panel: the channel, one
+ * token per controller slot, the last RTT, the session's drop counter and its
+ * reliable queue depth. Those are the two phases where nothing is moving and a
+ * player needs to know why. MatchOver shows "P1 WINS" or "P2 WINS" by score.
+ * Countdown, Play and Point draw nothing: their state is already in the HUD
+ * phase word and a band over the court during a rally would only hide the ball.
  */
-void drawOverlay(pixelroot32::graphics::Renderer& renderer, const game::Rules& rules);
+void drawOverlay(pixelroot32::graphics::Renderer& renderer, const game::Rules& rules,
+                 const NetStatus& net);
 
 }  // namespace netpong::presentation

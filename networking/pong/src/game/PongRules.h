@@ -266,6 +266,19 @@ public:
     [[nodiscard]] bool paused() const;
 
     /**
+     * @brief Milliseconds left before the serve goes live.
+     * @return Remaining countdown time while in Countdown, 0 in every other
+     *         phase.
+     *
+     * Read-only view of the countdown timer the host HUD paints as 3-2-1. It is
+     * derived from the same accumulator `step()` advances, so the number the
+     * player sees cannot disagree with the step that starts the rally. A phase
+     * that paused a countdown reports 0: `resume()` restarts the countdown from
+     * the top instead of inheriting frozen time.
+     */
+    [[nodiscard]] std::uint32_t countdownRemainingMs() const;
+
+    /**
      * @brief Score of one side.
      * @param player 0 or 1; any other value yields 0.
      * @return Points scored by that side.

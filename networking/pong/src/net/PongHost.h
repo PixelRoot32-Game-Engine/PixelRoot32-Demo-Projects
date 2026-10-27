@@ -122,6 +122,10 @@ public:
      * At most kMaxCatchUpSteps steps are replayed per call and the rest of a
      * long stall is dropped: replaying it would make the next frame late too,
      * and the positions are stale by then anyway.
+     *
+     * A match the watchdog or a lost peer paused is resumed here, as soon as
+     * both controllers are bound, compatible and sending again. A match that
+     * reached MatchOver is never touched: its result is final.
      */
     void update(std::uint32_t nowMs);
 
@@ -178,6 +182,44 @@ public:
      */
     [[nodiscard]] std::uint8_t level() const;
 
+    /**
+     * @brief Returns the Wi-Fi channel every node of the demo shares.
+     * @return The `kChannel` constant the host configures its link with.
+     *
+     * The diagnostics panel prints it because "same board, different channel"
+     * is the failure a player cannot see on either screen.
+     */
+    [[nodiscard]] std::uint8_t channel() const;
+
+    /**
+     * @brief Returns the newest reliable round-trip time.
+     * @return Milliseconds of the last ACKed reliable frame, 0 before the first.
+     *
+     * The host only sends reliable frames on joins and discrete match events, so
+     * a value of 0 while both controllers are bound means the handshake has not
+     * been acknowledged yet.
+     */
+    [[nodiscard]] std::uint16_t lastRttMs() const;
+
+    /**
+     * @brief Returns how many received frames the session had to drop.
+     * @return Monotonic drop counter from the session.
+     *
+     * The demo's contract is zero drops: the cadence is sized so the receive
+     * queue never overflows, and a resync is sent at once instead of waiting for
+     * the 30 Hz tick. A non-zero value is a bug, not normal traffic.
+     */
+    [[nodiscard]] std::uint32_t rxDropped() const;
+
+    /**
+     * @brief Returns how many reliable frames are still waiting for an ACK.
+     * @return Occupied pending entries in the session.
+     *
+     * Above zero for a frame or two after a join or a goal; a value that stays
+     * at the queue capacity means the link is gone and events are queueing.
+     */
+    [[nodiscard]] std::uint8_t pendingCount() const;
+
 private:
     /// Session slot value that means "this peer is not a player".
     static constexpr std::uint8_t kUnboundPlayer = 0xFF;
@@ -215,6 +257,15 @@ private:
 
     /// @brief Pauses the match when a bound peer stopped sending INPUT.
     void maintainWatchdog(std::uint32_t nowMs);
+
+    /// @brief Resumes a paused match once every controller is usable again.
+    void resumeWhenReconnected(std::uint32_t nowMs);
+
+    /// @brief Reports whether both players are bound, compatible and sending.
+    /// @param nowMs Current session time.
+    /// @return true when a resume would be stable instead of being re-paused by
+    ///         the watchdog on the next frame.
+    [[nodiscard]] bool playersResponsive(std::uint32_t nowMs) const;
 
     /// @brief Drains the rules event ring and forwards every event.
     ///

@@ -696,6 +696,53 @@ void test_event_ring_drops_the_newest_when_full(void) {
     }
 }
 
+// -----------------------------------------------------------------------------
+// 14. countdownRemainingMs() counts down on the fixed step and lands on zero
+//     exactly when the serve goes live.
+// -----------------------------------------------------------------------------
+void test_countdown_remaining_reaches_zero_at_the_serve(void) {
+    Rules rules(0);
+
+    // Outside Countdown the getter reports zero, not a stale timer.
+    assertPhase(rules, Phase::WaitingForPlayers);
+    TEST_ASSERT_EQUAL_UINT32(0, rules.countdownRemainingMs());
+
+    rules.setPlayersReady(true);
+    assertPhase(rules, Phase::Countdown);
+    TEST_ASSERT_EQUAL_UINT32(kCountdownMs, rules.countdownRemainingMs());
+
+    // One nominal step removes one step's worth of time: 1200000 - 16667 us is
+    // 1183333 us, and the getter reports whole milliseconds.
+    rules.step(kStepDtUs);
+    TEST_ASSERT_EQUAL_UINT32(1183, rules.countdownRemainingMs());
+
+    // Every remaining step strictly decreases the timer and the last Countdown
+    // sample is still positive: the transition, not a rounding artefact, is what
+    // takes it to zero.
+    std::uint32_t previous = rules.countdownRemainingMs();
+    int guard = 0;
+    while (rules.phase() == Phase::Countdown && guard++ < stepsForMs(kCountdownMs) + 5) {
+        rules.step(kStepDtUs);
+        if (rules.phase() == Phase::Countdown) {
+            const std::uint32_t remaining = rules.countdownRemainingMs();
+            TEST_ASSERT_TRUE(remaining < previous);
+            previous = remaining;
+        }
+    }
+    // The first nominal step above already consumed one of the 72 steps the
+    // 1200 ms countdown needs, so the loop must end on the seventy-second.
+    TEST_ASSERT_EQUAL_INT_MESSAGE(stepsForMs(kCountdownMs) - 1, guard,
+                                  "the countdown must end on the exact fixed step");
+    assertPhase(rules, Phase::Play);
+    TEST_ASSERT_EQUAL_UINT32(0, rules.countdownRemainingMs());
+    TEST_ASSERT_TRUE(previous > 0);
+
+    // A paused match does not inherit the countdown of the phase it froze.
+    rules.pause();
+    assertPhase(rules, Phase::Paused);
+    TEST_ASSERT_EQUAL_UINT32(0, rules.countdownRemainingMs());
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -714,6 +761,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_snapshot_keeps_seq_and_maps_to_whole_pixels);
     RUN_TEST(test_two_rules_produce_identical_snapshots);
     RUN_TEST(test_event_ring_drops_the_newest_when_full);
+    RUN_TEST(test_countdown_remaining_reaches_zero_at_the_serve);
 
     return UNITY_END();
 }
