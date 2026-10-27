@@ -9,6 +9,7 @@
 #pragma once
 
 #include <core/Scene.h>
+#include <graphics/Camera2D.h>
 #include <graphics/Renderer.h>
 #include <platforms/EngineConfig.h>
 
@@ -31,6 +32,7 @@
 #endif
 
 #include "net/PongHost.h"
+#include "presentation/PongEffects.h"
 
 namespace netpong {
 
@@ -99,8 +101,9 @@ public:
      * @param renderer Renderer to draw with.
      *
      * Order is the repository's: background, then `Scene::draw()` for entities,
-     * then everything the scene owns on top of them. The HUD goes last but one
-     * and the overlay last, so no court fill can ever erase a score.
+     * then the actors and the particles, then the HUD and the overlay. The score
+     * band and the overlay are drawn outside the shaken pass on purpose: a jolt
+     * that moved the scores would only make them harder to read.
      */
     void draw(pixelroot32::graphics::Renderer& renderer) override;
 
@@ -134,6 +137,42 @@ public:
 #endif
 
 private:
+    /// @brief Pops one paddle contact into a burst and a sound.
+    /// @param rules Match the contact happened in.
+    /// @param player Paddle that was hit.
+    void playPaddleHit(const game::Rules& rules, std::uint8_t player);
+
+    /// @brief Pops one wall contact into a burst and a sound.
+    /// @param rules Match the contact happened in.
+    void playWallBounce(const game::Rules& rules);
+
+    /// @brief Pops one goal into a burst and a sound.
+    /// @param rules Match the goal happened in.
+    /// @param scorer Side awarded the point.
+    void playGoal(const game::Rules& rules, std::uint8_t scorer);
+
+    /// @brief Fires the heavier feedback that closes a match.
+    void playMatchPoint();
+
+    /// @brief Reports which side scored from where the ball left the court.
+    /// @param rules Match to read.
+    /// @return 0 for P1, 1 for P2.
+    ///
+    /// `Rules::awardPoint()` does not re-centre the ball, so on the goal frame
+    /// the ball is still just outside the edge it crossed. That makes the sign
+    /// of `ballX()` the truthful scorer rather than a second score counter.
+    [[nodiscard]] std::uint8_t goalScorer(const game::Rules& rules) const;
+
+    /// @brief Repaints the HUD band after a shaken court pass.
+    /// @param renderer Renderer to paint.
+    ///
+    /// The court is drawn a second time under the shake offset so the frame and
+    /// the centre line move with the actors. That shifted pass can reach a few
+    /// pixels under the score band, so the band is repainted with the court's
+    /// own paper slot before the HUD text goes down. The HUD itself is never
+    /// drawn inside the shaken pass.
+    void repaintHudBand(pixelroot32::graphics::Renderer& renderer);
+
 #ifdef PLATFORM_NATIVE
     /// Bus shared by every simulated node; declared first so it outlives them.
     pixelroot32::networking::LoopbackBus loopbackBus;
@@ -142,6 +181,12 @@ private:
     pixelroot32::networking::NetSession netSession; ///< Session on that link.
     /// Match authority and wire cadence; born after the session it borrows.
     PongHost host;
+    /// Bursts and shake; owns the only particle emitter in the demo.
+    presentation::PongEffects effects;
+    /// Phase on the previous frame, for the countdown and goal edges.
+    game::Phase lastPhase = game::Phase::WaitingForPlayers;
+    /// Parked at the origin; only ever moved by the effect offset.
+    pixelroot32::graphics::Camera2D shakeCamera;
     pixelroot32::networking::NetResult start =
         pixelroot32::networking::NetResult::NotInitialized; ///< Last start result.
 };
