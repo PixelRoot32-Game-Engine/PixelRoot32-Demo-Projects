@@ -80,11 +80,24 @@ constexpr Fixed clampFixed(Fixed value, Fixed low, Fixed high) {
 
 }  // namespace
 
-Rules::Rules(std::uint8_t firstServer, bool cpuEnabled)
+Rules::Rules(std::uint8_t firstServer, bool cpuEnabled, Difficulty level)
     : firstServer_(firstServer == 1 ? 1 : 0),
       serveDir_(firstServer_ == 0 ? 1 : -1),
+      level_(level),
       cpuEnabled_(cpuEnabled) {
+    // The controller starts on the selected level's table; `resetMatch()` below
+    // only rewinds its stream and leaves the tuning alone.
+    cpu_.setTuning(cpuTuning(level_));
     resetMatch();
+}
+
+void Rules::setDifficulty(Difficulty level) {
+    level_ = level;
+    cpu_.setTuning(cpuTuning(level));
+}
+
+Difficulty Rules::difficulty() const {
+    return level_;
 }
 
 void Rules::resetMatch() {

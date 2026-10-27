@@ -35,6 +35,10 @@ constexpr int kLcgSampleShift = 16;
 static_assert(kPaddleHeight % 2 == 0, "the chase is measured from the paddle centre");
 static_assert(kCpuMaxSpeed < kPaddleSpeed, "the cpu must lose every speed race it can lose");
 static_assert(kCpuDeadZone > 0, "a zero dead zone would let the paddle buzz on a parked ball");
+static_assert(kCpuEasy.deadZone > 0,
+              "a zero dead zone would let the paddle buzz on a parked ball");
+static_assert(kCpuHard.deadZone > 0,
+              "a zero dead zone would let the paddle buzz on a parked ball");
 
 constexpr Fixed absFixed(Fixed value) {
     return value < 0 ? -value : value;
@@ -52,8 +56,20 @@ constexpr Fixed clampFixed(Fixed value, Fixed low, Fixed high) {
 
 }  // namespace
 
-CpuPaddle::CpuPaddle(Fixed noiseRadius, std::uint32_t seed)
-    : noiseRadius_(noiseRadius), seed_(seed), noise_(seed) {}
+CpuPaddle::CpuPaddle(CpuTuning tuning, std::uint32_t seed)
+    : tuning_(tuning), seed_(seed), noise_(seed) {}
+
+void CpuPaddle::setTuning(CpuTuning tuning) {
+    tuning_ = tuning;
+    // A level change starts a fresh match: no sub-pixel debt from the previous
+    // level and the noise stream at its first sample, not wherever it was.
+    accumulator_ = 0;
+    noise_ = seed_;
+}
+
+CpuTuning CpuPaddle::tuning() const {
+    return tuning_;
+}
 
 void CpuPaddle::reset() {
     noise_ = seed_;
@@ -64,29 +80,31 @@ Fixed CpuPaddle::step(Fixed ballY, Fixed paddleY, std::uint32_t deltaUs) {
     // The controller aims at the centre of its paddle, not at its top edge.
     Fixed error = ballY - (paddleY + kHalfPaddle);
 
-    if (noiseRadius_ > 0) {
+    if (tuning_.noiseRadius > 0) {
         // One sample per step. The generator advances even when the resulting
         // offset is unused, so the stream stays tied to the step count and not
         // to how the paddle happened to move.
         noise_ = noise_ * kLcgMultiplier + kLcgIncrement;
 
-        // Uniform over [-noiseRadius_, +noiseRadius_] in Q8.8, both ends
-        // included: `span` is 2r + 1 distinct values, and subtracting r centres
-        // them on zero. The box is the demo's AI_TARGET_OFFSET / 2, so the
+        // Uniform over [-tuning_.noiseRadius, +tuning_.noiseRadius] in Q8.8,
+        // both ends included: `span` is 2r + 1 distinct values, and subtracting
+        // r centres them on zero. The box is the level's imperfection, so the
         // offset can never exceed it; a 65536 % span remainder makes the
         // distribution very slightly uneven at the edges, which is invisible in
-        // a 3 px box and irrelevant to a replay.
-        const std::uint32_t span = static_cast<std::uint32_t>(2 * noiseRadius_) + 1u;
+        // a 6 px box and irrelevant to a replay.
+        const std::uint32_t span = static_cast<std::uint32_t>(2 * tuning_.noiseRadius) + 1u;
         const Fixed sample =
-            static_cast<Fixed>((noise_ >> kLcgSampleShift) % span) - noiseRadius_;
+            static_cast<Fixed>((noise_ >> kLcgSampleShift) % span) - tuning_.noiseRadius;
         error += sample;
     }
 
-    // Gain 3/2. Truncation toward zero keeps the controller symmetric: errors of
-    // the same size above and below the paddle produce the same speed.
-    const Fixed speed = clampFixed(error * kCpuGainNum / kCpuGainDen, -kCpuMaxSpeed, kCpuMaxSpeed);
+    // The level's proportional gain. Truncation toward zero keeps the controller
+    // symmetric: errors of the same size above and below the paddle produce the
+    // same speed.
+    const Fixed speed = clampFixed(error * tuning_.gainNum / tuning_.gainDen,
+                                   -tuning_.maxSpeed, tuning_.maxSpeed);
 
-    if (absFixed(error) > kCpuDeadZone) {
+    if (absFixed(error) > tuning_.deadZone) {
         accumulator_ += scaleByTime(speed, deltaUs);
     }
 

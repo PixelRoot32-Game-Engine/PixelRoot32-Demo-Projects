@@ -203,8 +203,10 @@ namespace pong::game {
  * `setPlayerInput()` and `step()` calls always produces the same state on every
  * build, because the only one-sided "random" value in the match is the CPU's
  * imperfection, and that comes from a seeded word rather than from a clock. The
- * scene feeds it the D-pad on slot 0, the CPU drives slot 1, then the scene reads
- * the accessors for rendering and `pollEvent()` for feedback.
+ * difficulty is part of that state too: the same script at the same level
+ * replays the same match. The scene feeds it the D-pad on slot 0, the CPU drives
+ * slot 1, then the scene reads the accessors for rendering and `pollEvent()` for
+ * feedback.
  */
 class Rules {
 public:
@@ -218,15 +220,38 @@ public:
      * @param cpuEnabled True for the production match, where the CPU plays slot
      *        1. False hands slot 1 back to `setPlayerInput()`, which is what a
      *        test does when it needs to place the right paddle by hand.
+     * @param level CPU strength; Medium reproduces the pre-menu controller, so
+     *        a match built without a level is unchanged.
      */
-    explicit Rules(std::uint8_t firstServer = 0, bool cpuEnabled = true);
+    explicit Rules(std::uint8_t firstServer = 0, bool cpuEnabled = true,
+                   Difficulty level = Difficulty::Medium);
+
+    /**
+     * @brief Selects the CPU difficulty for this match.
+     * @param level CPU strength; any value outside the enum falls back to
+     *        Medium through `cpuTuning()`.
+     *
+     * The caller owns the match reset: the rules store the level and re-tune the
+     * controller (rewinding its accumulator and noise stream), and the scene
+     * calls `resetMatch()` afterwards so the score, the serve and the paddles
+     * start from the same place. `resetMatch()` preserves the level, which is
+     * what makes the selection survive a rebuild.
+     */
+    void setDifficulty(Difficulty level);
+
+    /**
+     * @brief The CPU level this match is playing.
+     * @return The level passed to the constructor or `setDifficulty()`.
+     */
+    [[nodiscard]] Difficulty difficulty() const;
 
     /**
      * @brief Returns to Countdown at 0-0 with a still ball.
      *
      * Also clears the event ring, because events queued by the previous match
      * (a stale MatchOver in particular) must never be replayed, and rewinds the
-     * CPU controller, so a rebuilt match is a replay and not a continuation.
+     * CPU controller, so a rebuilt match is a replay and not a continuation. The
+     * selected difficulty is kept: a reset is a new match at the same level.
      */
     void resetMatch();
 
@@ -258,7 +283,8 @@ public:
      * @brief Starts a new set after MatchOver.
      *
      * Ignored outside MatchOver so a stray button press during a rally cannot
-     * wipe the score. Scores go back to 0-0 and the phase to Countdown.
+     * wipe the score. Scores go back to 0-0 and the phase to Countdown. The
+     * selected difficulty is kept.
      */
     void restart();
 
@@ -339,6 +365,8 @@ private:
     std::uint8_t input_[2] = {0, 0};
     /// The opponent that plays slot 1 while cpuEnabled_ is true.
     CpuPaddle cpu_;
+    /// Selected CPU difficulty; part of the deterministic match state.
+    Difficulty level_ = Difficulty::Medium;
     /// Whether slot 1 is the CPU instead of a second button-driven paddle.
     bool cpuEnabled_ = true;
     /// Fixed-size event ring.

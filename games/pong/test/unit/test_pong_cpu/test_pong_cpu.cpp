@@ -53,6 +53,15 @@ constexpr Fixed paddleCentre(Fixed top) {
     return top + (kPaddleHeight / 2) * kOne;
 }
 
+/// The Medium tuning with the imperfection disabled. These cases measure the
+/// gain and the cap, so they must not have the noise in the way.
+constexpr CpuTuning noNoise(CpuTuning tuning) {
+    tuning.noiseRadius = 0;
+    return tuning;
+}
+
+constexpr CpuTuning kMediumNoNoise = noNoise(cpuTuning(Difficulty::Medium));
+
 /// Top edge of the play area, in Q8.8.
 constexpr Fixed kPlayTop = kHudHeight * kOne;
 
@@ -75,7 +84,7 @@ constexpr Fixed scriptedBallY(int step) {
 // 1. A ball below the paddle drags it down and the gap closes.
 // -----------------------------------------------------------------------------
 void test_cpu_moves_down_towards_a_ball_below_it(void) {
-    CpuPaddle cpu(0);  // no imperfection: this test is about the gain
+    CpuPaddle cpu(kMediumNoNoise);  // no imperfection: this test is about the gain
 
     Fixed paddle = kPaddleCentreTop;
     const Fixed ball = paddleCentre(paddle) + 60 * kOne;
@@ -101,7 +110,7 @@ void test_cpu_moves_down_towards_a_ball_below_it(void) {
 // 2. A ball above the paddle drags it up.
 // -----------------------------------------------------------------------------
 void test_cpu_moves_up_towards_a_ball_above_it(void) {
-    CpuPaddle cpu(0);
+    CpuPaddle cpu(kMediumNoNoise);
 
     Fixed paddle = kPaddleCentreTop;
     const Fixed ball = paddleCentre(paddle) - 60 * kOne;
@@ -124,7 +133,7 @@ void test_cpu_moves_up_towards_a_ball_above_it(void) {
 // -----------------------------------------------------------------------------
 void test_cpu_ignores_an_error_inside_the_dead_zone(void) {
     // Exactly the threshold: still inside, because the rule is |error| > 0.5.
-    CpuPaddle below(0);
+    CpuPaddle below(kMediumNoNoise);
     Fixed lowered = kPaddleCentreTop;
     const Fixed ballBelow = paddleCentre(lowered) + kCpuDeadZone;
     for (int i = 0; i < 600; ++i) {
@@ -132,7 +141,7 @@ void test_cpu_ignores_an_error_inside_the_dead_zone(void) {
     }
     TEST_ASSERT_EQUAL_INT32(kPaddleCentreTop, lowered);
 
-    CpuPaddle above(0);
+    CpuPaddle above(kMediumNoNoise);
     Fixed raised = kPaddleCentreTop;
     const Fixed ballAbove = paddleCentre(raised) - kCpuDeadZone;
     for (int i = 0; i < 600; ++i) {
@@ -142,7 +151,7 @@ void test_cpu_ignores_an_error_inside_the_dead_zone(void) {
 
     // Outside the dead zone it does move, and it stops before the ball: the
     // controller chases the centre, never overshoots it.
-    CpuPaddle chasing(0);
+    CpuPaddle chasing(kMediumNoNoise);
     Fixed chasing1 = kPaddleCentreTop;
     const Fixed ballNear = paddleCentre(chasing1) + 2 * kOne;
     for (int i = 0; i < 60; ++i) {
@@ -157,7 +166,7 @@ void test_cpu_ignores_an_error_inside_the_dead_zone(void) {
 // -----------------------------------------------------------------------------
 void test_cpu_clamps_inside_the_play_area(void) {
     // A ball at the top of the court pins the paddle against the HUD band.
-    CpuPaddle rising(0);
+    CpuPaddle rising(kMediumNoNoise);
     Fixed high = kPaddleCentreTop;
     const Fixed ballAtTop = kPlayTop;
     for (int i = 0; i < 100; ++i) {
@@ -170,7 +179,7 @@ void test_cpu_clamps_inside_the_play_area(void) {
     TEST_ASSERT_EQUAL_INT32(kPlayTop, high);
 
     // A ball at the bottom edge pins it at the last legal top edge.
-    CpuPaddle falling(0);
+    CpuPaddle falling(kMediumNoNoise);
     Fixed low = kPaddleCentreTop;
     const Fixed ballAtBottom = kCourtHeight * kOne;
     for (int i = 0; i < 100; ++i) {
@@ -189,7 +198,7 @@ void test_cpu_clamps_inside_the_play_area(void) {
 void test_cpu_speed_is_capped_below_the_player_paddle(void) {
     // The court of this environment is 240 tall, so the widest reachable error
     // is 194 px: a paddle at the top edge and a ball on the bottom edge.
-    CpuPaddle cpu(0);
+    CpuPaddle cpu(kMediumNoNoise);
     const Fixed start = kPlayTop;
     Fixed paddle = start;
     const Fixed ball = kCourtHeight * kOne;
@@ -231,8 +240,8 @@ void test_cpu_replays_the_same_script_for_the_same_seed(void) {
 
     // A different seed is a different imperfection: the same ball script cannot
     // end on the same Q8.8 value by accident.
-    CpuPaddle other(kCpuNoiseRadius, 0x12345678u);
-    CpuPaddle seeded(kCpuNoiseRadius, 0x12345679u);
+    CpuPaddle other(cpuTuning(Difficulty::Medium), 0x12345678u);
+    CpuPaddle seeded(cpuTuning(Difficulty::Medium), 0x12345679u);
     Fixed otherY = kPaddleCentreTop;
     Fixed seededY = kPaddleCentreTop;
     bool diverged = false;
@@ -277,7 +286,7 @@ void test_cpu_rests_close_to_a_parked_ball(void) {
 void test_cpu_reset_restores_the_initial_state(void) {
     constexpr std::uint32_t kSeed = 0x12345678u;
 
-    CpuPaddle scripted(kCpuNoiseRadius, kSeed);
+    CpuPaddle scripted(cpuTuning(Difficulty::Medium), kSeed);
     Fixed ran = kPaddleCentreTop;
     bool moved = false;
     for (int i = 0; i < 240; ++i) {
@@ -294,7 +303,7 @@ void test_cpu_reset_restores_the_initial_state(void) {
     // A controller that was run and reset must agree, step by step, with one
     // that was never run: both the sub-pixel remainder and the noise stream are
     // part of the state `reset()` clears.
-    CpuPaddle fresh(kCpuNoiseRadius, kSeed);
+    CpuPaddle fresh(cpuTuning(Difficulty::Medium), kSeed);
     Fixed resetY = kPaddleCentreTop;
     Fixed freshY = kPaddleCentreTop;
     for (int i = 0; i < 240; ++i) {
