@@ -1,10 +1,10 @@
 /*
- * Networking Pong - controller scene scaffold (ESP32-C3, native simulator).
+ * Networking Pong - controller scene (ESP32-C3, native simulator).
  *
  * A controller owns no game state. It sends the held direction of one paddle
- * and paints the scoreboard it is told about; this file currently holds only
- * the composition root plus a placeholder panel. Input cadence, prediction and
- * the gated redraw land in a later task.
+ * and paints the scoreboard it is told about. This scene is the composition
+ * root for that role: the link, the session and the controller contract, plus
+ * the gated redraw that keeps the I2C panel off the critical path.
  */
 #pragma once
 
@@ -30,6 +30,9 @@
 #include <drivers/esp32/ESP32EspNowTransport.h>
 #endif
 
+#include "net/PongController.h"
+#include "presentation/ControllerScreen.h"
+
 namespace netpong {
 
 #ifdef PLATFORM_NATIVE
@@ -42,13 +45,18 @@ using ControllerTransport = pixelroot32::networking::ESP32EspNowTransport;
 
 /**
  * @class PongControllerScene
- * @brief Composition root of one controller node: link, session and panel.
+ * @brief Composition root of one controller node: link, session, firmware and panel.
  *
- * The transport and the session are direct members in that declaration order,
- * so the node reserves its whole footprint at construction and never allocates.
- * The Engine pumps the registered session; this scene never calls update() on
- * it, because a second pump from the scene would advance the link twice per
- * frame.
+ * The transport, the session and the controller are direct members in that
+ * declaration order, so the node reserves its whole footprint at construction
+ * and never allocates. The Engine pumps the registered session; this scene never
+ * calls update() on it, because a second pump from the scene would advance the
+ * link twice per frame.
+ *
+ * The panel is repainted only when its visible key changes AND at most
+ * `kControllerRedrawHz` times a second. A full 128x64 U8G2 frame blocks on I2C
+ * for roughly 23 ms, so an unconditional redraw would spend about a quarter of
+ * every frame on the wire.
  */
 class PongControllerScene : public pixelroot32::core::Scene {
 public:
@@ -71,28 +79,49 @@ public:
 #endif
 
     /**
-     * @brief Starts the link and the session.
+     * @brief Starts the link, the session and the controller firmware.
      *
      * Idempotent: re-running it re-applies the same configuration instead of
      * stacking a second link. The Engine pumps the session afterwards; the
      * platform header registers the pointer, because this scene never touches
-     * the Engine.
+     * the Engine's session slot.
      */
     void init() override;
 
     /**
-     * @brief Advances the controller clock.
-     * @param deltaTime Milliseconds since the previous frame; unused until the
-     *        input cadence of the next task lands.
+     * @brief Runs one controller frame: prediction and the INPUT cadence.
+     * @param deltaTime Milliseconds since the previous frame; unused because
+     *        the controller contract takes `millis()` and derives its own delta.
      */
     void update(unsigned long deltaTime) override;
 
     /**
-     * @brief Draws the placeholder scoreboard.
+     * @brief Paints the scoreboard.
      * @param renderer Renderer to draw with; the panel is 1-bit, so every
      *        primitive here is White on an empty buffer.
      */
     void draw(pixelroot32::graphics::Renderer& renderer) override;
+
+    /**
+     * @brief Skips the frame when the panel would not change.
+     * @return true when a visible field changed and the 10 Hz throttle allows a
+     *         repaint; false otherwise.
+     *
+     * A key change inside the throttle window is remembered, not dropped: the
+     * next window compares against the last painted key, so the panel catches up
+     * as soon as the bus is free instead of waiting for another change.
+     */
+    bool shouldRedrawFramebuffer() const override;
+
+    /**
+     * @brief Forwards one Engine-drained event to the controller.
+     * @param event Event popped from this node's session.
+     *
+     * The Engine pumps and drains before `update()`, so this is where the
+     * handshake and the STATE merge happen for the frame that just arrived.
+     */
+    void onNetworkEvent(
+        const pixelroot32::networking::NetEvent& event) override;
 
     /**
      * @brief Returns the session the Engine should pump.
@@ -108,16 +137,29 @@ public:
 
 private:
     /**
-     * @brief Draws the player label: "P1" or "P2".
-     * @return Pointer to a static string, never null.
+     * @brief Maps a node label to the paddle it drives.
+     * @return 1 for kNodeIdP2, 0 otherwise.
+     *
+     * The label is the only source for the player slot: deriving it twice from
+     * two different values would let the drawn tag and the predicted paddle
+     * disagree.
      */
-    const char* playerLabel() const;
+    std::uint8_t playerIndex() const;
 
     ControllerTransport transport;                  ///< Link; never shared.
     pixelroot32::networking::NetSession netSession; ///< Session on that link.
-    std::uint8_t nodeIdValue = 0;                   ///< Application label.
+    /// Application label first: the controller derives its player slot from it,
+    /// and a member initializer may only read fields declared before it.
+    std::uint8_t nodeIdValue = 0;
+    PongController pongController;                  ///< Firmware of this board.
     pixelroot32::networking::NetResult start =
         pixelroot32::networking::NetResult::NotInitialized; ///< Last start result.
+
+    /// Key of the last frame actually painted. Mutable because
+    /// shouldRedrawFramebuffer() is const but has to remember its decision.
+    mutable ScreenKey lastPaintedKey{};
+    mutable bool hasPaintedKey = false;  ///< false forces the first draw.
+    mutable std::uint32_t lastPaintMs = 0;  ///< Throttle baseline.
 };
 
 }  // namespace netpong

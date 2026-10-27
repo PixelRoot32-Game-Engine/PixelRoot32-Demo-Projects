@@ -1,57 +1,69 @@
 /*
- * Networking Pong - controller scene scaffold (ESP32-C3, native simulator).
+ * Networking Pong - controller scene (ESP32-C3, native simulator).
  *
- * Placeholder panel only: it proves the OLED, the I2C wiring and the ESP-NOW
- * session are alive before the real scoreboard exists.
+ * The scene is the composition root of one controller: it brings the link up,
+ * starts the session, owns the controller firmware and decides when the OLED
+ * is worth a full I2C frame.
  */
+#include <core/Engine.h>
+
 #include "PongControllerScene.h"
 
-#include <cstring>
-#include <string_view>
-
 #include "NetConfig.h"
+
+// Declared once by the platform header of whichever target is being built; the
+// scene only borrows it, exactly as it borrows nothing else from the platform.
+extern pixelroot32::core::Engine engine;
 
 namespace netpong {
 
 namespace {
 
-using pixelroot32::graphics::Color;
 using pixelroot32::graphics::Renderer;
 using pixelroot32::networking::NetResult;
 using pixelroot32::networking::NetSessionConfig;
 using pixelroot32::networking::NetTransportConfig;
 
-/// Geometry of the 128x64 panel. Every row is stated so the placeholder cannot
-/// drift into an overlap that the 1-bit buffer would hide.
-constexpr int kHeaderY = 0;
-constexpr int kScoreY = 12;
-constexpr int kPhaseY = 30;
-constexpr int kBarY = 42;
-constexpr int kBarHeight = 10;
-constexpr int kHintY = 54;
-constexpr int kMarginX = 2;
+/// Mutable state of both buttons, indexed the way the platform header declares
+/// them: 0 is GPIO 3 (left/towards the top), 1 is GPIO 1 (right/towards the
+/// bottom). InputManager applies INPUT_PULLUP, so a pressed button reads down.
+constexpr std::uint8_t kLeftButton = 0;
+constexpr std::uint8_t kRightButton = 1;
 
-/// The built-in font at size 1 is 6x8 per glyph.
-constexpr int kGlyphWidth = 6;
-constexpr std::uint8_t kScoreScale = 2;
-constexpr std::uint8_t kTextScale = 1;
+/// Panel repaint period. S10 caps the OLED at 10 Hz because a 128x64 frame over
+/// I2C blocks for about 23 ms; asking for more would starve the link pump.
+constexpr std::uint32_t kRedrawIntervalMs = 1000 / kControllerRedrawHz;
+
+static_assert(kControllerRedrawHz > 0, "the redraw period needs a real rate");
+static_assert(kRedrawIntervalMs > 0, "the redraw period must be non-zero");
 
 }  // namespace
 
 #ifdef PLATFORM_NATIVE
-PongControllerScene::PongControllerScene(pixelroot32::networking::LoopbackBus& loopbackBus,
-                                         const pixelroot32::networking::NetAddress& address,
-                                         std::uint8_t nodeId)
-    : transport(loopbackBus, address), netSession(transport), nodeIdValue(nodeId) {}
+PongControllerScene::PongControllerScene(
+    pixelroot32::networking::LoopbackBus& loopbackBus,
+    const pixelroot32::networking::NetAddress& address, std::uint8_t nodeId)
+    : transport(loopbackBus, address),
+      netSession(transport),
+      nodeIdValue(nodeId),
+      pongController(netSession, playerIndex(), 0) {}
 #else
 PongControllerScene::PongControllerScene(std::uint8_t nodeId)
-    : transport(), netSession(transport), nodeIdValue(nodeId) {}
+    : transport(),
+      netSession(transport),
+      nodeIdValue(nodeId),
+      pongController(netSession, playerIndex(), 0) {}
 #endif
 
 void PongControllerScene::init() {
     // Clears the entity array and rewinds the scene arena, so a second init()
     // cannot stack state on top of the first.
     Scene::init();
+    // A fresh init must repaint even when every visible field still reads its
+    // initial value.
+    hasPaintedKey = false;
+
+    const std::uint32_t nowMs = static_cast<std::uint32_t>(millis());
 
     NetTransportConfig transportConfig;
     transportConfig.channel = kChannel;
@@ -63,6 +75,9 @@ void PongControllerScene::init() {
     NetResult result = transport.init(transportConfig);
     if (result != NetResult::Ok) {
         start = result;
+        // Even without a link the panel must show the parked court instead of
+        // four zeros, so the player sees "NO LINK" over a truthful board.
+        pongController.start(nowMs);
         return;
     }
 
@@ -75,54 +90,77 @@ void PongControllerScene::init() {
     sessionConfig.discovery = true;
 
     start = netSession.init(sessionConfig);
+    // The controller announces itself here, after the session started. On the
+    // native simulator discovery may already have happened before the scene
+    // exists; start() looks the host up in the peer table so the handshake is
+    // not waiting for a join again.
+    pongController.start(nowMs);
+    if (start != NetResult::Ok) {
+        return;
+    }
     // The Engine pumps this session; pumping it here as well would advance the
     // link twice per frame and halve every timeout in practice.
 }
 
 void PongControllerScene::update(unsigned long deltaTime) {
-    // Nothing to advance yet: the Engine pumps the session before this call,
-    // and the input cadence arrives with the controller firmware.
     (void)deltaTime;
+
+    // The controller contract takes an explicit clock, so the two boards and
+    // the test suite share one cadence implementation. millis() is the only
+    // clock available on both the C3 and the native mock.
+    const std::uint32_t nowMs = static_cast<std::uint32_t>(millis());
+
+    const auto& input = engine.getInputManager();
+    std::uint8_t buttons = 0;
+    if (input.isButtonDown(kLeftButton)) {
+        buttons |= net::kButtonLeft;
+    }
+    if (input.isButtonDown(kRightButton)) {
+        buttons |= net::kButtonRight;
+    }
+
+    pongController.update(nowMs, buttons);
 }
 
 void PongControllerScene::draw(Renderer& renderer) {
-    const int width = renderer.getLogicalWidth();
-
-    const char* link = (start == NetResult::Ok) ? "LINK" : "NO LINK";
-    renderer.drawText(std::string_view(playerLabel()), static_cast<int16_t>(kMarginX),
-                      static_cast<int16_t>(kHeaderY), Color::White, kTextScale);
-
-    // Right-align the link word: the panel is narrow enough that a fixed column
-    // would either clip "NO LINK" or leave it floating mid-row.
-    const int linkX = width - kMarginX - (kGlyphWidth * static_cast<int>(std::strlen(link)));
-    renderer.drawText(std::string_view(link), static_cast<int16_t>(linkX),
-                      static_cast<int16_t>(kHeaderY), Color::White, kTextScale);
-
-    // Score placeholder. It reads "0 - 0" until the host state arrives, which is
-    // also the honest thing to show on a controller that has not joined yet.
-    renderer.drawText(std::string_view("0 - 0"), static_cast<int16_t>(kMarginX),
-                      static_cast<int16_t>(kScoreY), Color::White, kScoreScale);
-
-    renderer.drawText(std::string_view("WAIT"), static_cast<int16_t>(kMarginX),
-                      static_cast<int16_t>(kPhaseY), Color::White, kTextScale);
-
-    // Paddle bar placeholder: the frame is where the bar will slide, the filled
-    // block is the centre position it starts from.
-    renderer.drawRectangle(kMarginX, kBarY, width - (2 * kMarginX), kBarHeight, Color::White);
-    renderer.drawFilledRectangle((width / 2) - 10, kBarY + 2, 20, kBarHeight - 4, Color::White);
-
-    // Wiring hint, so a freshly flashed board says which pin is which before
-    // anything has been pressed.
-    renderer.drawText(std::string_view("GPIO3<  >GPIO1"), static_cast<int16_t>(kMarginX),
-                      static_cast<int16_t>(kHintY), Color::White, kTextScale);
+    drawControllerScreen(renderer, pongController.view(), playerIndex());
 }
 
-pixelroot32::networking::NetSession* PongControllerScene::session() { return &netSession; }
+bool PongControllerScene::shouldRedrawFramebuffer() const {
+    const ScreenKey current = makeKey(pongController.view());
+    if (hasPaintedKey && current == lastPaintedKey) {
+        return false;
+    }
 
-const char* PongControllerScene::playerLabel() const {
-    // The label is derived from the node id, not compiled in separately: the
-    // env flag and the drawn word can then never disagree.
-    return (nodeIdValue == kNodeIdP2) ? "P2" : "P1";
+    const std::uint32_t nowMs = static_cast<std::uint32_t>(millis());
+    if (hasPaintedKey &&
+        static_cast<std::uint32_t>(nowMs - lastPaintMs) <
+            kRedrawIntervalMs) {
+        // Remember nothing: the next call compares against the last PAINTED
+        // key, so a change made during the window is caught the moment the
+        // window opens rather than being swallowed by a no-draw frame.
+        return false;
+    }
+
+    lastPaintedKey = current;
+    hasPaintedKey = true;
+    lastPaintMs = nowMs;
+    return true;
+}
+
+void PongControllerScene::onNetworkEvent(
+    const pixelroot32::networking::NetEvent& event) {
+    pongController.onEvent(event, static_cast<std::uint32_t>(millis()));
+}
+
+pixelroot32::networking::NetSession* PongControllerScene::session() {
+    return &netSession;
+}
+
+std::uint8_t PongControllerScene::playerIndex() const {
+    // Derived from the label, never compiled in separately: the env flag, the
+    // outgoing INPUT and the drawn tag can then never disagree.
+    return (nodeIdValue == kNodeIdP2) ? 1 : 0;
 }
 
 }  // namespace netpong
