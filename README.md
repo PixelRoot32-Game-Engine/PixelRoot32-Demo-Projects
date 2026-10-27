@@ -65,6 +65,7 @@ directory layout to build.
 | [`iso_tilemap_export`](graphics/iso_tilemap_export) | Graphics | An isometric scene consumed straight out of the Tilemap Editor exporter: projected `drawTileMap`, camera bounds derived from the projected map, per-tile dirty-skip and span-limited blit. |
 | [`iso_dungeon`](graphics/iso_dungeon) | Graphics | Three isometric rooms and a hero who walks them tile by tile. Where `iso_tilemap_export` asks whether the engine paints what the editor showed, this one asks what happens next: exact cell-to-cell motion through `GridMotion`, projection-aware depth ordering via `compareByDepthKey`, and rooms wired by a self-validating `RoomGraph`. Its one idea is that the engine has no isometric mode — the view is six integers in a `ProjectionSpec` and every other system stays projection-blind. Carries the same temporary branch pin. |
 | [`esp_now_dice`](networking/esp_now_dice) | Networking | Two ESP32-C3 boards playing a commit/reveal dice duel over ESP-NOW. Its one idea is that the dice are derived, not transmitted: both boards commit to a secret seed, reveal it, and compute the same two faces from the seeds and the round number, while a `NetCounter` keeps the shared score convergent. A monochrome 72x40 panel per board shows one die each; `native` simulates both panels in one window. |
+| [`pong`](networking/pong) | Networking | Three boards and no router: an ESP32-2432S028 "Cheap Yellow Display" runs the match and two ESP32-C3 pads send held direction over ESP-NOW, each pad with a 128x64 OLED scoreboard. Its one idea is that a single owner removes the whole class of desync bugs — the host integrates, snapshots leave at 30 Hz as *unreliable* because a late ball position is worthless, and only goals, serves and match events pay for reliable delivery. Shares no code with `games/pong`. |
 
 ## Requirements
 
@@ -111,7 +112,9 @@ lib_deps = gperez88/PixelRoot32-Game-Engine@^1.9.0
 Two demos, [`iso_dungeon`](graphics/iso_dungeon) and
 [`iso_tilemap_export`](graphics/iso_tilemap_export), raise that floor to
 `@^1.10.0`: they need `graphics/ProjectedMapBounds.h` and `math/Projection.h`,
-which first ship in that release.
+which first ship in that release. The two networking demos,
+[`esp_now_dice`](networking/esp_now_dice) and [`pong`](networking/pong), pin
+`@^1.13.0`, the release that carries `NetSession` and the ESP-NOW transport.
 
 To develop a demo against a local engine checkout instead, swap that line for
 a symlink dependency:
