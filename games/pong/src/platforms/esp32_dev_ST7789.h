@@ -1,4 +1,7 @@
-#ifdef PLATFORM_ESP32DEV
+// esp32dev_ST7789 — the square 240x240 ST7789 board this demo was written for,
+// with a MAX98357A-class I2S DAC on GPIO 26/25/22 and the six-button D-pad on
+// GPIO 32/27/33/14/13/12.
+#ifdef PLATFORM_ESP32DEV_ST7789
 
 #include <Arduino.h>
 #include <drivers/esp32/TFT_eSPI_Drawer.h>
@@ -54,4 +57,4 @@ void loop() {
     engine.run();
 }
 
-#endif
+#endif // PLATFORM_ESP32DEV_ST7789
