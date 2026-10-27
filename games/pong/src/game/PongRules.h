@@ -30,6 +30,11 @@
  * The phase set is the one a local match has. There is no waiting gate -- the
  * controllers of the networking demo do not exist here -- and no pause: a fresh
  * match starts counting down immediately.
+ *
+ * Slot 0 is the player and slot 1 is the CPU (game/PongCpu.h) in the production
+ * configuration. The button path for slot 1 is kept because the suite needs a
+ * way to place the right paddle by hand, and the constructor flag selects
+ * between the two.
  */
 namespace pong::game {
 
@@ -41,6 +46,34 @@ inline constexpr int kFixedShift = 8;
 
 /// One whole unit (one pixel, or one pixel per second) in Q8.8.
 inline constexpr Fixed kOne = 1 << kFixedShift;
+
+/// Microseconds in one second, the denominator of every velocity integration.
+inline constexpr std::int64_t kMicrosPerSecond = 1000000;
+
+/**
+ * @brief Integrates a Q8.8 per-second value over `deltaUs`, rounding to nearest.
+ * @param perSecond Velocity, or any per-second rate, in Q8.8.
+ * @param deltaUs Elapsed microseconds.
+ * @return The travelled distance in Q8.8, rounded to the nearest 1/256 of a unit.
+ *
+ * Truncation would lose up to a fixed unit per sub-step and make the ball
+ * quietly slower than 180 px/s; rounding keeps a 60 Hz step of the nominal
+ * velocity exactly three pixels, which is what the tests assume. The rounding is
+ * symmetric around zero so a leftward and a rightward ball travel the same
+ * distance.
+ *
+ * It lives here, in the court header, because three layers integrate the same
+ * way: the ball, the player paddle and the CPU paddle. A second copy of the
+ * rounding rule would be a second way for the host and the board to disagree.
+ */
+inline constexpr Fixed scaleByTime(Fixed perSecond, std::uint32_t deltaUs) {
+    const std::int64_t scaled =
+        static_cast<std::int64_t>(perSecond) * static_cast<std::int64_t>(deltaUs);
+    if (scaled >= 0) {
+        return static_cast<Fixed>((scaled + kMicrosPerSecond / 2) / kMicrosPerSecond);
+    }
+    return static_cast<Fixed>(-((-scaled + kMicrosPerSecond / 2) / kMicrosPerSecond));
+}
 
 #ifndef PONG_COURT_WIDTH
 #error "pong: PONG_COURT_WIDTH must be defined by the environment (240 or 320)"
@@ -68,7 +101,7 @@ inline constexpr int kPaddleInset = 8;
 /// Left edge of the left paddle (player one).
 inline constexpr int kPaddleLeftX = kPaddleInset;
 
-/// Left edge of the right paddle (player two, the CPU once T2 lands).
+/// Left edge of the right paddle (the CPU in the production configuration).
 inline constexpr int kPaddleRightX = kCourtWidth - kPaddleInset - kPaddleWidth;
 
 /// Ball collision radius; the ball is drawn as a square of side 2 * radius.
@@ -152,15 +185,27 @@ struct Event {
     std::uint8_t player = 0xFF;             ///< 0 (left), 1 (right) or 0xFF.
 };
 
+}  // namespace pong::game
+
+// The CPU policy reads the court primitives above -- the paddle geometry,
+// kPaddleSpeed and scaleByTime() -- and `Rules` below owns one, so it is
+// declared between the two. The dependency only runs one way: game/PongCpu.h
+// uses this header, and never includes it back.
+#include "game/PongCpu.h"
+
+namespace pong::game {
+
 /**
  * @class Rules
  * @brief Authoritative, engine-free court simulation.
  *
  * The class owns the ball, both paddles, the score, the phase machine and the
- * serve sequence. It has no clock, no RNG and no allocation: the same sequence
- * of `setPlayerInput()` and `step()` calls always produces the same state on
- * every build. The scene feeds it the D-pad on slot 0 and (from T2) the CPU on
- * slot 1, then reads the accessors for rendering and `pollEvent()` for feedback.
+ * serve sequence. It has no clock and no allocation: the same sequence of
+ * `setPlayerInput()` and `step()` calls always produces the same state on every
+ * build, because the only one-sided "random" value in the match is the CPU's
+ * imperfection, and that comes from a seeded word rather than from a clock. The
+ * scene feeds it the D-pad on slot 0, the CPU drives slot 1, then the scene reads
+ * the accessors for rendering and `pollEvent()` for feedback.
  */
 class Rules {
 public:
@@ -171,14 +216,18 @@ public:
      * @brief Builds a fresh match in Countdown.
      * @param firstServer Side that serves first (0 = left, anything else is
      *        normalised to the right).
+     * @param cpuEnabled True for the production match, where the CPU plays slot
+     *        1. False hands slot 1 back to `setPlayerInput()`, which is what a
+     *        test does when it needs to place the right paddle by hand.
      */
-    explicit Rules(std::uint8_t firstServer = 0);
+    explicit Rules(std::uint8_t firstServer = 0, bool cpuEnabled = true);
 
     /**
      * @brief Returns to Countdown at 0-0 with a still ball.
      *
      * Also clears the event ring, because events queued by the previous match
-     * (a stale MatchOver in particular) must never be replayed.
+     * (a stale MatchOver in particular) must never be replayed, and rewinds the
+     * CPU controller, so a rebuilt match is a replay and not a continuation.
      */
     void resetMatch();
 
@@ -187,6 +236,11 @@ public:
      * @param player 0 (left) or 1 (right); other values are ignored.
      * @param buttons Mask of kButtonLeft (towards the top) and kButtonRight
      *        (towards the bottom). Holding both cancels out.
+     *
+     * Slot 1 is stored but ignored while the CPU is enabled, which is the
+     * game's production configuration: the only way to move the right paddle in
+     * a real match is the opponent. A `Rules` built with `cpuEnabled = false`
+     * does read it, and that is the mode the tests use to steer slot 1.
      */
     void setPlayerInput(std::uint8_t player, std::uint8_t buttons);
 
@@ -284,6 +338,10 @@ private:
     Fixed paddleY_[2] = {0, 0};
     /// Held button mask per slot.
     std::uint8_t input_[2] = {0, 0};
+    /// The opponent that plays slot 1 while cpuEnabled_ is true.
+    CpuPaddle cpu_;
+    /// Whether slot 1 is the CPU instead of a second button-driven paddle.
+    bool cpuEnabled_ = true;
     /// Fixed-size event ring.
     Event events_[kMaxEvents];
     std::uint8_t eventHead_ = 0;
@@ -295,7 +353,8 @@ private:
     /// Places the ball at the centre and makes it live with the next serve.
     void beginServe();
 
-    /// Moves both paddles for one step and clamps them to the play area.
+    /// Moves both paddles for one step: the player from its buttons, the CPU
+    /// from the ball when it is enabled. Both end up inside the play area.
     void updatePaddles(std::uint32_t deltaUs);
 
     /// Moves the ball in sub-steps of at most one pixel, resolving collisions.

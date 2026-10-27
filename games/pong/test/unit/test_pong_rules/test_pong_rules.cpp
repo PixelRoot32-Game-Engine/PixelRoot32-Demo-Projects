@@ -11,11 +11,19 @@
  *
  * Two properties get special attention because no later task can repair them
  * without changing the match:
- *  - the simulation is deterministic: no clock, no RNG, no float. The last test
- *    replays one input script through two instances and compares every exported
- *    field on every step;
+ *  - the simulation is deterministic: no clock, no float, and the CPU's only
+ *    pseudo-random value comes from a seeded word. The last test replays one
+ *    input script through two instances and compares every exported field on
+ *    every step;
  *  - the phase set is the local one: Countdown, Play, Point, MatchOver. There is
  *    no waiting gate and no pause, so a fresh match is already counting down.
+ *
+ * A `Rules` built with the default arguments has the CPU on slot 1, which is the
+ * game's production configuration. A scenario that places the right paddle by
+ * hand -- parking it against the HUD band to lose a rally, or steering it into a
+ * dead-centre return -- therefore builds `Rules(firstServer, false)`: with the
+ * opponent on, the paddle would chase the ball and the scenario would measure
+ * the CPU instead of the court.
  *
  * Velocities are not exported on purpose (the renderer reads positions), so the
  * tests derive a velocity from the distance the ball covers in one fixed step.
@@ -74,6 +82,9 @@ Fixed absFixed(Fixed value) {
 /// rally: the served ball travels at y = 132 while a parked paddle occupies
 /// y = 24..68, so every serve reaches an edge and scores. Parking takes 28
 /// frames, all of them inside the 1200 ms countdown.
+///
+/// The caller must have built its `Rules` with the CPU disabled: this helper
+/// drives slot 1 by hand, and an enabled CPU would ignore that input.
 void parkPaddlesAtTop(Rules& rules) {
     rules.setPlayerInput(0, kButtonLeft);
     rules.setPlayerInput(1, kButtonLeft);
@@ -301,9 +312,10 @@ void test_held_input_moves_the_paddle_and_clamps_to_the_play_area(void) {
     stepN(cancelling, 10);
     TEST_ASSERT_EQUAL_INT32(kPaddleCentreTop, cancelling.paddleY(0));
 
-    // The right slot is driven independently; T2 replaces it with the CPU, and
-    // until then a test needs manual control of it.
-    Rules rightSlot(0);
+    // The right slot is driven independently when the CPU is off; in a real
+    // match the opponent plays it, and a test needs a way back to manual
+    // control.
+    Rules rightSlot(0, false);
     rightSlot.setPlayerInput(1, kButtonRight);
     stepN(rightSlot, 20);
     TEST_ASSERT_TRUE(rightSlot.paddleY(1) > kPaddleCentreTop);
@@ -370,9 +382,10 @@ void test_paddle_hit_flips_the_horizontal_travel(void) {
         TEST_ASSERT_EQUAL_INT32(kBallCenterY, rules.ballY());
     }
 
-    // Right paddle, dead centre: the ball returns left.
+    // Right paddle, dead centre: the ball returns left. The CPU is off so the
+    // paddle stays where the court centred it and the contact stays dead centre.
     {
-        Rules rules(0);
+        Rules rules(0, false);
         Event hit;
         TEST_ASSERT_TRUE(stepUntilEvent(rules, EventType::PaddleHit, hit, 200));
         TEST_ASSERT_EQUAL_UINT8(1, hit.player);
@@ -392,7 +405,7 @@ void test_paddle_hit_flips_the_horizontal_travel(void) {
 void test_ball_past_each_edge_scores_for_the_other_side(void) {
     // Right edge: player 0 scores.
     {
-        Rules rules(0);
+        Rules rules(0, false);
         parkPaddlesAtTop(rules);
         stepN(rules, kStepsPerCountdown - 28);
 
@@ -425,7 +438,7 @@ void test_ball_past_each_edge_scores_for_the_other_side(void) {
 
     // Left edge: player 1 scores.
     {
-        Rules rules(1);
+        Rules rules(1, false);
         parkPaddlesAtTop(rules);
         stepN(rules, kStepsPerCountdown - 28);
 
@@ -444,7 +457,7 @@ void test_ball_past_each_edge_scores_for_the_other_side(void) {
 // 8. Serve direction alternates and the three-serve angle sequence repeats.
 // -----------------------------------------------------------------------------
 void test_serves_alternate_direction_and_repeat_the_angle_sequence(void) {
-    Rules rules(0);
+    Rules rules(0, false);
     parkPaddlesAtTop(rules);
     stepN(rules, kStepsPerCountdown - 29);  // one step short of the first serve
 
@@ -489,7 +502,7 @@ void test_serves_alternate_direction_and_repeat_the_angle_sequence(void) {
     TEST_ASSERT_EQUAL_UINT8(0, probes[4].player);
 
     // firstServer = 1 opens towards the left instead.
-    Rules leftFirst(1);
+    Rules leftFirst(1, false);
     parkPaddlesAtTop(leftFirst);
     stepN(leftFirst, kStepsPerCountdown - 29);
     ServeProbe opening;
@@ -502,7 +515,7 @@ void test_serves_alternate_direction_and_repeat_the_angle_sequence(void) {
 // 9. Reaching kWinScore enters MatchOver, queues the event and freezes.
 // -----------------------------------------------------------------------------
 void test_reaching_the_win_score_ends_the_match(void) {
-    Rules rules(0);
+    Rules rules(0, false);
     parkPaddlesAtTop(rules);
     stepN(rules, kStepsPerCountdown - 28);
 
@@ -549,7 +562,7 @@ void test_restart_only_rebuilds_a_finished_match(void) {
     assertPhase(playing, Phase::Play);
 
     // Ignored in Point, even with a point already on the board.
-    Rules pointing(0);
+    Rules pointing(0, false);
     parkPaddlesAtTop(pointing);
     stepN(pointing, kStepsPerCountdown - 28);
     EventTally pointTally;
@@ -560,7 +573,7 @@ void test_restart_only_rebuilds_a_finished_match(void) {
     TEST_ASSERT_EQUAL_UINT8(1, pointing.score(0));
 
     // From MatchOver it rebuilds a 0-0 countdown at the centre.
-    Rules finished(0);
+    Rules finished(0, false);
     parkPaddlesAtTop(finished);
     stepN(finished, kStepsPerCountdown - 28);
     EventTally finishedTally;
@@ -595,7 +608,7 @@ void test_restart_only_rebuilds_a_finished_match(void) {
 // 11. The event ring keeps order and drops the newest when it is full.
 // -----------------------------------------------------------------------------
 void test_event_ring_preserves_order_and_drops_the_newest(void) {
-    Rules rules(0);
+    Rules rules(0, false);
     parkPaddlesAtTop(rules);
     stepN(rules, kStepsPerCountdown - 28);
 
@@ -637,6 +650,9 @@ void test_event_ring_preserves_order_and_drops_the_newest(void) {
 // 12. Two instances fed the same script export identical state on every step.
 // -----------------------------------------------------------------------------
 void test_two_rules_replay_the_same_match(void) {
+    // The CPU is on, which is the point: the opponent's imperfection is a seeded
+    // stream, so a replay has to match down to the paddle's last sub-pixel.
+    // Slot 1's scripted input is ignored here, exactly as it is in a real match.
     Rules left(0);
     Rules right(0);
 
@@ -667,6 +683,71 @@ void test_two_rules_replay_the_same_match(void) {
     }
 }
 
+// -----------------------------------------------------------------------------
+// 13. With the CPU on, a centred serve is returned by the right paddle.
+// -----------------------------------------------------------------------------
+void test_cpu_returns_a_centred_serve(void) {
+    Rules rules(0);  // the production configuration: slot 1 is the opponent
+
+    // firstServer = 0 serves flat to the right, at the centre of the court,
+    // which is also the centre of a paddle built by centreActors().
+    Event hit;
+    TEST_ASSERT_TRUE(stepUntilEvent(rules, EventType::PaddleHit, hit, 200));
+    TEST_ASSERT_EQUAL_UINT8(1, hit.player);
+
+    // "Returned" means the ball is travelling left again, not just touched.
+    const Fixed after = rules.ballX();
+    stepN(rules, 3);
+    TEST_ASSERT_TRUE(rules.ballX() < after);
+}
+
+// -----------------------------------------------------------------------------
+// 14. Over a long match the CPU paddle never leaves the play area.
+// -----------------------------------------------------------------------------
+void test_cpu_paddle_stays_inside_the_play_area(void) {
+    const Fixed top = kHudHeight * kOne;
+    const Fixed bottom = (kCourtHeight - kPaddleHeight) * kOne;
+
+    Rules rules(0);  // CPU on
+
+    // A scripted player for the other side: it follows the ball, but aims ten
+    // pixels off the centre, alternating above and below every 200 steps. It
+    // therefore returns the ball from the edge of its paddle, which sends it off
+    // at an angle, so the ball keeps visiting new heights instead of settling
+    // into an endless flat rally down the centre line -- which is exactly the
+    // case where the opponent has nothing to do.
+    Fixed highest = rules.paddleY(1);
+    Fixed lowest = rules.paddleY(1);
+    for (int step = 0; step < 3000; ++step) {
+        const Fixed aim = rules.ballY() + (((step / 200) % 2 == 0) ? -10 * kOne : 10 * kOne);
+        const Fixed centre = rules.paddleY(0) + (kPaddleHeight / 2) * kOne;
+        const Fixed error = aim - centre;
+        if (error > kOne) {
+            rules.setPlayerInput(0, kButtonRight);
+        } else if (error < -kOne) {
+            rules.setPlayerInput(0, kButtonLeft);
+        } else {
+            rules.setPlayerInput(0, 0);
+        }
+        rules.step(kStepDtUs);
+
+        const Fixed cpuTop = rules.paddleY(1);
+        TEST_ASSERT_TRUE(cpuTop >= top);
+        TEST_ASSERT_TRUE(cpuTop <= bottom);
+        if (cpuTop < highest) {
+            highest = cpuTop;
+        }
+        if (cpuTop > lowest) {
+            lowest = cpuTop;
+        }
+    }
+
+    // The opponent actually played: the ball swept the court, so the paddle had
+    // to cover at least a quarter of the play area instead of sitting on its
+    // centre for the whole script.
+    TEST_ASSERT_TRUE(lowest - highest > ((kCourtHeight - kHudHeight) / 4) * kOne);
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -685,6 +766,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_restart_only_rebuilds_a_finished_match);
     RUN_TEST(test_event_ring_preserves_order_and_drops_the_newest);
     RUN_TEST(test_two_rules_replay_the_same_match);
+    RUN_TEST(test_cpu_returns_a_centred_serve);
+    RUN_TEST(test_cpu_paddle_stays_inside_the_play_area);
 
     return UNITY_END();
 }

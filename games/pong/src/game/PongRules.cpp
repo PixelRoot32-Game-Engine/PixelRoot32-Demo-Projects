@@ -7,9 +7,6 @@
 namespace pong::game {
 namespace {
 
-/// Microseconds in one second, the denominator of every velocity integration.
-constexpr std::int64_t kMicrosPerSecond = 1000000;
-
 /// Hard ceiling for one step.
 ///
 /// The scene owns catch-up and calls this at 60 Hz; a caller that passes a whole
@@ -66,22 +63,7 @@ constexpr Fixed kCosTable[kMaxBounceIndex + 1] = {256, 254, 247, 237, 222, 203, 
 constexpr Fixed kServeSin[3] = {0, 88, -88};
 constexpr Fixed kServeCos[3] = {256, 240, 240};
 
-/// Integrates a Q8.8 per-second value over `deltaUs`, rounding to nearest.
-///
-/// Truncation would lose up to a fixed unit per sub-step and make the ball
-/// quietly slower than 180 px/s; rounding keeps a 60 Hz step of the nominal
-/// velocity exactly three pixels, which is what the tests assume. The rounding
-/// is symmetric around zero so a leftward and a rightward ball travel the same
-/// distance.
-constexpr Fixed scaleByTime(Fixed perSecond, std::uint32_t deltaUs) {
-    const std::int64_t scaled =
-        static_cast<std::int64_t>(perSecond) * static_cast<std::int64_t>(deltaUs);
-    if (scaled >= 0) {
-        return static_cast<Fixed>((scaled + kMicrosPerSecond / 2) / kMicrosPerSecond);
-    }
-    return static_cast<Fixed>(-((-scaled + kMicrosPerSecond / 2) / kMicrosPerSecond));
-}
-
+/// Absolute value of a Q8.8 scalar.
 constexpr Fixed absFixed(Fixed value) {
     return value < 0 ? -value : value;
 }
@@ -98,8 +80,10 @@ constexpr Fixed clampFixed(Fixed value, Fixed low, Fixed high) {
 
 }  // namespace
 
-Rules::Rules(std::uint8_t firstServer)
-    : firstServer_(firstServer == 1 ? 1 : 0), serveDir_(firstServer_ == 0 ? 1 : -1) {
+Rules::Rules(std::uint8_t firstServer, bool cpuEnabled)
+    : firstServer_(firstServer == 1 ? 1 : 0),
+      serveDir_(firstServer_ == 0 ? 1 : -1),
+      cpuEnabled_(cpuEnabled) {
     resetMatch();
 }
 
@@ -112,6 +96,9 @@ void Rules::resetMatch() {
     serveDir_ = (firstServer_ == 0) ? 1 : -1;
     input_[0] = 0;
     input_[1] = 0;
+    // The opponent is part of the match, not of the court: rewinding it here is
+    // what makes a rebuilt match a replay of the same match.
+    cpu_.reset();
     centreActors();
     // A fresh match must not replay the previous one's events, a stale
     // MatchOver in particular.
@@ -254,6 +241,13 @@ void Rules::beginServe() {
 void Rules::updatePaddles(std::uint32_t deltaUs) {
     const Fixed travel = scaleByTime(kPaddleSpeed, deltaUs);
     for (std::uint8_t player = 0; player < 2; ++player) {
+        if (player == 1 && cpuEnabled_) {
+            // The opponent chases the ball from the paddle edge it owns. Its
+            // step clamps to the same box as the button path below, so the CPU
+            // can never reach a pixel the player cannot.
+            paddleY_[1] = cpu_.step(ballY_, paddleY_[1], deltaUs);
+            continue;
+        }
         const bool up = (input_[player] & kButtonLeft) != 0;
         const bool down = (input_[player] & kButtonRight) != 0;
         if (up == down) {
