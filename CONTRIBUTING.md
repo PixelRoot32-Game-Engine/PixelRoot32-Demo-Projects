@@ -27,6 +27,7 @@ the right-hand column are what its demos are built on.
 | `audio/` | One audio topic — sequencing, SFX banks, envelopes, sweeps | `PIXELROOT32_ENABLE_AUDIO` |
 | `ui/` | One UI topic — layouts, widgets, HUDs, menu navigation | `PIXELROOT32_ENABLE_UI_SYSTEM` |
 | `input/` | One input topic — touch, gestures, calibration | `PIXELROOT32_ENABLE_TOUCH` |
+| `networking/` | One networking topic — ESP-NOW peers, sessions, delivery contracts; two demos: a dice duel and a three-board Pong | `PIXELROOT32_ENABLE_NETWORKING` |
 | `performance/` | One cost topic — memory budgets, pooling, redraw cost | `SCENE_ARENA`, `DIRTY_REGIONS`, `GAMEPLAY_OBJECT_POOL` |
 | `gameplay/` | A single gameplay system (rooms, physics, state machines) | `PIXELROOT32_ENABLE_GAMEPLAY_*` |
 | `graphics/` | One rendering topic — projections, tilemaps, cameras, blit paths | sprite bit depths, tilemap, palette, depth sort, particles |

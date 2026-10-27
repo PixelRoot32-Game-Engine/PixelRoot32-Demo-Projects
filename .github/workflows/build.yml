@@ -173,6 +173,10 @@ jobs:
             env: host_test
           - demo: input/digital_buttons
             env: host_test
+          - demo: networking/pong
+            env: host_test
+          - demo: networking/pong
+            env: net_test
     name: test ${{ matrix.demo }} (${{ matrix.env }})
     steps:
       - uses: actions/checkout@v7
