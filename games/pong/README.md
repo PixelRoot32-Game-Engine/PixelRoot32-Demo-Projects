@@ -5,12 +5,16 @@
 > experimental, or deliberately simplified to keep one idea in focus.
 
 One player against the CPU on the arcade court: a navy playfield, `P1` and
-`CPU` in the score band, and a single set to five. The single idea it is about
-is **determinism**: the whole match lives in an engine-free rules layer written
+`CPU` in the score band, and a single set to five. The demo opens on a title
+screen where you pick the opponent's level — `EASY`, `MEDIUM` or `HARD` — and
+the set starts only once one is confirmed. The single idea it is about is
+**determinism**: the whole match lives in an engine-free rules layer written
 in Q8.8 fixed point, with no `float`, no clock and no physics at all, so the
 same host suite replays a match step by step and compares it field by field.
-The generated arcade presentation — a 4bpp ball and paddles, contact particles,
-camera shake and five cues — is what wraps that core.
+The chosen level is part of that deterministic state: the same script at the
+same level replays identically. The generated arcade presentation — a 4bpp ball
+and paddles, contact particles, camera shake and five cues — is what wraps that
+core.
 
 Language: C++17  
 Engine: `gperez88/PixelRoot32-Game-Engine@^1.13.0`  
@@ -18,6 +22,11 @@ Environments: `native`, `esp32dev_ST7789`, `esp32dev_ILI9341`, `rules_test`
 Category: Games
 
 ![Pong](screenshots/screenshot.png)
+
+![Level select](screenshots/menu.png)
+
+The court and the title screen that arms it. Both are 2x captures of the
+240×240 native window.
 
 ## Requirements (build flags)
 
@@ -62,53 +71,78 @@ builds were not re-flashed on hardware after the port.
 
 ## Controls
 
-| Action | `native` | ESP32 |
-| --- | --- | --- |
-| Move the left paddle | Up / Down arrows | D-pad up / down |
-| Restart after Game Over | Space | Button A |
+| Screen | Action | `native` | ESP32 |
+| --- | --- | --- | --- |
+| Title | Move the level | Up / Down arrows | D-pad up / down |
+| Title | Confirm the level | Space (A) | Button A |
+| Match | Move the left paddle | Up / Down arrows | D-pad up / down |
+| Match over | Replay at the same level | Space (A) | Button A |
+| Match over | Return to the title | Enter (B) | Button B |
 
-The right paddle is the CPU and has no input path in a real match. The first
-side to five points takes the single set; `PRESS A` (or Space) starts a fresh
-one from `P1 WINS` / `CPU WINS`, and the scores go back to 0–0.
+The level cursor wraps: Down past `HARD` lands on `EASY`, and Up past `EASY`
+lands on `HARD`. The right paddle is the CPU and has no input path in a real
+match. The first side to five points takes the single set. At `P1 WINS` /
+`CPU WINS`, A replays the set at the same level and B opens the title screen
+with that level still selected, so changing the opponent never needs a reboot.
 
 ## How the CPU plays
 
 The opponent is a proportional controller in Q8.8, in
 [`src/game/PongCpu.h`](src/game/PongCpu.h):
 
-- **Gain.** `speed = error * 1.5`, where the error is the distance from the
+- **Gain.** `speed = error * gain`, where the error is the distance from the
   ball to the paddle's centre, so a ball far away is chased faster than one
   already in line.
-- **Cap.** 60 % of the player's 190 px/s paddle speed, which is 114 px/s. The
-  ratio is one constant, and a `static_assert` keeps the cap below the player,
-  so the CPU loses every speed race it can lose.
-- **Imperfection.** A target offset in `[-3, +3]` px, sampled once per step from
+- **Cap.** A fraction of the player's 190 px/s paddle speed, always below it.
+  The ratio is one constant per level, and a `static_assert` keeps every cap
+  below the player, so the CPU loses every speed race it can lose.
+- **Imperfection.** A target offset in `[-r, +r]` px, sampled once per step from
   a 32-bit linear congruential generator. Remove it and the opponent returns
   everything.
-- **Dead zone.** An error of 0.5 px or less is ignored, so a centred paddle does
-  not buzz against a centred ball.
+- **Dead zone.** An error at or below the level's threshold is ignored, so a
+  centred paddle does not buzz against a centred ball.
 - **Sub-pixel travel.** Movement accumulates in a `Fixed` remainder and only
   whole pixels are handed to the paddle, so a slow correction is not lost to
   integer truncation.
 
+### Levels
+
+| Level | Gain | Speed cap | Imperfection | Dead zone |
+| --- | --- | --- | --- | --- |
+| Easy | `error * 1` | 76 px/s (40 %) | ±6 px | 2 px |
+| Medium | `error * 1.5` | 114 px/s (60 %) | ±3 px | 0.5 px |
+| Hard | `error * 2.5` | 152 px/s (80 %) | ±1 px | 0.125 px |
+
+The court, the ball, the serve and the player paddle do not change with the
+level; only the controller does. `MEDIUM` is the default and the behaviour the
+demo had before the menu, so its numbers keep the historical names
+(`kCpuGainNum`, `kCpuMaxSpeed`, and so on) and the suite compares them against
+the table field by field.
+
 The noise is **seeded**, not clocked, on purpose: a replay must reproduce the
 opponent exactly. `reset()` rewinds the stream to its seed and clears the
 remainder, so a rebuilt match is a replay rather than a continuation — which is
-what lets one host test run two matches side by side and compare them.
+what lets one host test run two matches side by side and compare them. The menu
+flow leans on that: confirming a level rebuilds the match through
+`resetMatch()`, which rewinds the controller, so every confirmed level starts
+from the same deterministic state.
 
-A rematch after `MatchOver` is the one deliberate exception: `restart()` returns
-the court to 0-0 and Countdown but leaves the noise stream where it stopped, so
-the next set starts from the same state and then diverges on the next sample
-instead of repeating the last set's imperfection sequence.
+The rules also keep `restart()`, the one deliberate exception: it returns the
+court to 0-0 and Countdown but leaves the noise stream where it stopped, so a
+second set diverges on its next sample instead of repeating the previous set's
+imperfection sequence. The scene uses it for the A rematch; B goes back to the
+title and rebuilds through `resetMatch()` instead.
 
 ## What it demonstrates
 
 - **Determinism as a tested property.** The rules never read a clock: the scene
   feeds a fixed 60 Hz step from its accumulator, and the only "random" value in
-  a match is the CPU's seeded offset. `test_two_rules_replay_the_same_match`
-  runs two `Rules` for 1200 steps under an identical input script and compares
-  phase, countdown, both scores, the ball position and both paddle positions
-  after every single step, plus the event stream's kinds, owners and order.
+  a match is the CPU's seeded offset. The selected level is part of the state
+  too, so the same script at `HARD` replays identically.
+  `test_two_rules_replay_the_same_match` runs two `Rules` for 1200 steps under
+  an identical input script and compares phase, countdown, both scores, the
+  ball position and both paddle positions after every single step, plus the
+  event stream's kinds, owners and order.
 - **A rules layer with no engine in it.** `src/game/` includes no engine,
   Arduino, display, audio or networking header. It is Q8.8 integers, a
   fixed-size event ring and nothing else, so it compiles into a host test
@@ -128,19 +162,26 @@ instead of repeating the last set's imperfection sequence.
 pio test -e rules_test
 ```
 
-27 Unity cases, all on the host:
+33 Unity cases in four groups, all on the host:
 
-- **`test/unit/test_pong_rules`** — the court: the opening countdown, the serve,
-  paddle movement and clamping, wall and paddle bounces, scoring at each edge,
-  the alternating serve sequence, the win at five, restart only from a finished
-  match, the event ring's order and drop rule, and the replay comparison above.
-- **`test/unit/test_pong_cpu`** — the opponent: the chase in both directions and
-  its gain, the dead zone, the speed cap, the play-area clamps, the same script
-  under the same seed, and `reset()` restoring the initial state.
-- **`test/unit/test_pong_contract`** — the edges a scene leans on: a zero-length
-  step is inert, a one-second step is clamped to 100 ms, a restart returns to
-  0-0 in Countdown, out-of-range slots read zero and never take input, and the
-  CPU constants are the ratios the header promises.
+- **`test/unit/test_pong_rules`** (14) — the court: the opening countdown, the
+  serve, paddle movement and clamping, wall and paddle bounces, scoring at each
+  edge, the alternating serve sequence, the win at five, restart only from a
+  finished match, the event ring's order and drop rule, and the replay
+  comparison above.
+- **`test/unit/test_pong_cpu`** (8) — the opponent: the chase in both
+  directions and its gain, the dead zone, the speed cap, the play-area clamps,
+  the same script under the same seed, and `reset()` restoring the initial
+  state.
+- **`test/unit/test_pong_difficulty`** (6) — the table: the three caps as
+  ordered fractions of the player's paddle, the imperfection and dead zone
+  shrinking with the level, `MEDIUM` matching the pre-menu constants, a harder
+  level leaving a smaller tracking error on the same script, `Rules` keeping the
+  level across `resetMatch()`, and a `HARD` match replaying field by field.
+- **`test/unit/test_pong_contract`** (5) — the edges a scene leans on: a
+  zero-length step is inert, a one-second step is clamped to 100 ms, a restart
+  returns to 0-0 in Countdown, out-of-range slots read zero and never take
+  input, and the CPU constants are the ratios the header promises.
 
 The environment compiles `src/game/` only (`build_src_filter = +<game/>`) with
 Unity and no engine library, so the suite needs no display and no SDL2 — and any
@@ -153,15 +194,16 @@ engine dependency that crept into the rules would break it. CI runs the row in
 games/pong/
 ├── platformio.ini          # native, esp32dev_ST7789, esp32dev_ILI9341, rules_test
 ├── lib/platformio.ini      # [base] / [base_native] / [base_esp32] templates
-├── screenshots/            # screenshot.png — the arcade court, captured at 2x
+├── screenshots/            # screenshot.png and menu.png — court and title, 2x
 ├── src/
 │   ├── main.cpp            # platform selector only
-│   ├── PongScene.h/.cpp    # composition root: input, effects, court pass
+│   ├── PongScene.h/.cpp    # composition root: menu, input, effects, court
 │   ├── game/               # engine-free rules, Q8.8, no float, no clock
-│   │   ├── PongRules.h/.cpp    court, phases, serve, scoring, event ring
-│   │   └── PongCpu.h/.cpp      the proportional opponent
+│   │   ├── PongRules.h/.cpp    court, phases, serve, scoring, event ring, level
+│   │   └── PongCpu.h/.cpp      the proportional opponent and its three tunings
 │   ├── presentation/
 │   │   ├── CourtLayout.h       design box and the composition static_asserts
+│   │   ├── MenuLayout.h        the title panel and its composition static_asserts
 │   │   ├── CourtRenderer.h/.cpp court, HUD, phase word, overlay
 │   │   ├── PongEffects.h/.cpp   one emitter, one shake
 │   │   └── PongSfx.h/.cpp       the five cues behind the audio shim
@@ -170,9 +212,10 @@ games/pong/
 ├── test/
 │   ├── test_config.h       # Unity setup/teardown, both empty by design
 │   └── unit/
-│       ├── test_pong_rules/    the court rules
-│       ├── test_pong_cpu/      the opponent
-│       └── test_pong_contract/ the step, slot and CPU-constant edges
+│       ├── test_pong_rules/     the court rules
+│       ├── test_pong_cpu/       the opponent
+│       ├── test_pong_difficulty/ the tuning table and the level API
+│       └── test_pong_contract/  the step, slot and CPU-constant edges
 └── tools/
     ├── art_source.py       # the editable character grids and 16-slot palette
     └── generate_sprites.py # the 4bpp generator (--check, --preview)
