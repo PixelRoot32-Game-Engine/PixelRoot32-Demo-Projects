@@ -1,353 +1,316 @@
+/*
+ * Copyright (c) 2026 PixelRoot32
+ * Licensed under the MIT License
+ */
+
+/*
+ * Local Pong - the scene that plays the arcade court against the CPU.
+ *
+ * The scene is the composition root of the demo: it owns the match rules, turns
+ * their events into sound and particles, and paints the court. There is no
+ * transport, no peer and no second controller here -- one player, one CPU.
+ */
 #include "PongScene.h"
-#include "core/Engine.h"
-#include "physics/RigidActor.h"
-#include "physics/StaticActor.h"
-#include "audio/AudioTypes.h"
-#include "GameLayers.h"
-#include "graphics/particles/ParticlePresets.h"
-#include "PongPhysicsValidator.h"
 
-namespace pr32 = pixelroot32;
+#include <core/Engine.h>
+#include <graphics/Renderer.h>
+#include <math/Vector2.h>
+#include <platforms/EngineConfig.h>
 
-extern pr32::core::Engine engine;
+#include "presentation/CourtLayout.h"
+#include "presentation/CourtRenderer.h"
+#include "presentation/PongSfx.h"
+
+// Declared once by the platform header of whichever target is being built; the
+// scene only borrows it, exactly as it borrows nothing else from the platform.
+extern pixelroot32::core::Engine engine;
 
 namespace pong {
 
-using Color = pr32::graphics::Color;
+namespace {
 
-/**
- * @brief Classic Pong clone with particle effects and stress testing
- * 
- * Gameplay Features:
- * - Particle System: Generates visual sparks on collision (in StressBall::onCollision).
- * - "English" Effect: Paddle movement influences ball reflection angle.
- * - Stress Test Mode: Can spawn multiple balls to test physics performance.
- * 
- * Architecture:
- * - Local Classes: Defines PongBackground and StressBall locally to keep the
- *   example self-contained.
- * - Direct Physics: Uses RigidActor for balls but handles paddle movement
- *   kinematically based on input.
- */
-class PongBackground : public pr32::core::Entity {
-public:
-    PongBackground(int top, int bottom)
-        : pr32::core::Entity(pr32::math::Vector2(0.0f, 0.0f), 0, 0, pr32::core::EntityType::GENERIC),
-          playAreaTop(top),
-          playAreaBottom(bottom) {
-        setRenderLayer(0);
-    }
+using pixelroot32::graphics::Renderer;
 
-    void update(unsigned long) override {
-    }
+// --- Input contract ----------------------------------------------------------
+// Indices into the InputConfig every platform header builds, in the engine's
+// fixed order: 0 up, 1 down, 2 left, 3 right, 4 A (Space on native), 5 B. Both
+// device headers map 0/1 to the D-pad and 4 to the A button; platforms/native.h
+// maps them to the arrow keys and Space, matching the demo this replaced. The
+// scene reads the same indices everywhere, which is why the order there and the
+// order here are one contract.
 
-    void draw(pr32::graphics::Renderer& renderer) override {
-        int screenWidth = renderer.getLogicalWidth();
-        int screenHeight = renderer.getLogicalHeight();
+/// Held direction towards the top of the court.
+constexpr std::uint8_t kUpButton = 0;
 
-        renderer.drawFilledRectangle(0, 0, screenWidth, playAreaTop, Color::DarkGray);
-        renderer.drawFilledRectangle(0, playAreaBottom, screenWidth, screenHeight - playAreaBottom, Color::DarkGray);
+/// Held direction towards the bottom of the court.
+constexpr std::uint8_t kDownButton = 1;
 
-        renderer.drawLine(0, playAreaTop, screenWidth, playAreaTop, Color::White);
-        renderer.drawLine(0, playAreaBottom, screenWidth, playAreaBottom, Color::White);
+/// Restart after MatchOver.
+constexpr std::uint8_t kRestartButton = 4;
 
-        int16_t centerX = screenWidth / 2;
-        int16_t dashHeight = 10;
-        int16_t dashGap = 5;
+// --- Fixed step --------------------------------------------------------------
 
-        for (int16_t y = 0; y < screenHeight; y += dashHeight + dashGap) {
-            int16_t dashEnd = y + dashHeight;
-            if (dashEnd > screenHeight) {
-                dashEnd = screenHeight;
-            }
-            renderer.drawLine(centerX, y, centerX, dashEnd, Color::LightGray);
-        }
-    }
+/// Fixed steps one frame may replay before the backlog is dropped.
+///
+/// Three steps is 50 ms of motion: enough to absorb a dropped frame or two on
+/// the panel build, small enough that a long stall cannot replay a visible
+/// stretch of the rally at once.
+constexpr int kMaxCatchUpSteps = 3;
 
-private:
-    int playAreaTop;
-    int playAreaBottom;
-};
+/// Longest frame the accumulator accepts, in milliseconds.
+///
+/// A first frame after a debugger pause or a slow panel refresh would otherwise
+/// hand the accumulator seconds of motion. The clamp trims the frame instead,
+/// and the rules clamp their own step for the same reason.
+constexpr std::uint32_t kMaxFrameMs = 100;
 
-class StressBall : public pr32::physics::RigidActor {
-public:
-    int radius;
+}  // namespace
 
-    StressBall(pixelroot32::math::Vector2 position, float initialSpeed, int radius, int index)
-        : pr32::physics::RigidActor(position, radius * 2, radius * 2),
-          radius(radius) {
-        setRestitution(pr32::math::toScalar(1.0f));
-        setFriction(pr32::math::toScalar(0.0f));
-        setGravityScale(pr32::math::toScalar(0.0f));
-
-        setRenderLayer(1);
-        setCollisionLayer(Layers::BALL);
-        setCollisionMask(Layers::BALL | Layers::PADDLE | Layers::WALL);
-
-        float sx = initialSpeed;
-        float sy = initialSpeed;
-        if (index % 2 != 0) {
-            sx = -sx;
-        }
-        if ((index / 2) % 2 != 0) {
-            sy = -sy;
-        }
-        velocity.x = pixelroot32::math::toScalar(sx);
-        velocity.y = pixelroot32::math::toScalar(sy);
-    }
-
-    void update(unsigned long deltaTime) override {
-        pr32::core::PhysicsActor::update(deltaTime);
-    }
-
-    void draw(pr32::graphics::Renderer& renderer) override {
-        renderer.drawFilledCircle(static_cast<int>(position.x), static_cast<int>(position.y), radius, Color::LightGray);
-    }
-
-    pr32::core::Rect getHitBox() override {
-        return { {position.x - radius, position.y - radius}, radius * 2, radius * 2 };
-    }
-
-    void onCollision(pr32::core::Actor* other) override {
-        pr32::physics::RigidActor::onCollision(other);
-        
-        // Trigger particle effect on collision
-        auto scene = static_cast<PongScene*>(engine.getCurrentScene().value_or(nullptr));
-        if (scene && scene->getParticleEmitter()) {
-            scene->getParticleEmitter()->burst(position, 3); // Small burst for performance
-        }
-    }
-};
-
-PongScene::PongScene() = default;
-PongScene::~PongScene() = default;
+PongScene::PongScene() : shakeCamera(game::kCourtWidth, game::kCourtHeight) {}
 
 void PongScene::init() {
-    pr32::graphics::setPalette(pr32::graphics::PaletteType::PICO8);
-    int screenWidth = engine.getRenderer().getLogicalWidth();
-    int screenHeight = engine.getRenderer().getLogicalHeight();
+    // Clears the entity array and rewinds the scene arena, so a second init()
+    // cannot stack state on top of the first.
+    Scene::init();
 
-    // Calculate play area
-    playAreaTop = (screenHeight - PONG_PLAY_AREA_HEIGHT) / 2;
-    playAreaBottom = playAreaTop + PONG_PLAY_AREA_HEIGHT;
+    // A rebuilt match must not inherit a burst or a jolt from the one that was
+    // on screen before.
+    effects.reset();
 
-    leftScore = 0;
-    rightScore = 0;
-    gameOver = false;
+    // The court, the HUD and the overlay all name slots of the generated table,
+    // so the palette is bound before the first frame is drawn. The draw entry
+    // points re-bind it too, which keeps a scene re-init from falling back to an
+    // engine preset.
+    presentation::installPalette();
 
-    // Clear any existing entities owned by this scene
-    ownedEntities.clear();
+    rules.resetMatch();
 
-    auto bg = std::make_unique<PongBackground>(playAreaTop, playAreaBottom);
-    addEntity(bg.get());
-    ownedEntities.push_back(std::move(bg));
+    lastUpdateMs = static_cast<std::uint32_t>(millis());
+    accumulatorUs = 0;
+    lastPhase = rules.phase();
 
-    // Create Static Walls for Physics
-    // Top Wall
-    auto topWall = std::make_unique<pr32::physics::StaticActor>(
-        pixelroot32::math::toScalar(0), 
-        pixelroot32::math::toScalar(playAreaTop - 19), 
-        screenWidth, 
-        20
-    );
-    topWall->setCollisionLayer(Layers::WALL);
-    topWall->setRestitution(pixelroot32::math::toScalar(1.0f));
-    topWall->setFriction(pixelroot32::math::toScalar(0.0f));
-    addEntity(topWall.get());
-    ownedEntities.push_back(std::move(topWall));
-
-    // Bottom Wall
-    auto bottomWall = std::make_unique<pr32::physics::StaticActor>(
-        pixelroot32::math::toScalar(0), 
-        pixelroot32::math::toScalar(playAreaBottom - 1), 
-        screenWidth, 
-        20
-    );
-    bottomWall->setCollisionLayer(Layers::WALL);
-    bottomWall->setRestitution(pixelroot32::math::toScalar(1.0f));
-    bottomWall->setFriction(pixelroot32::math::toScalar(0.0f));
-    addEntity(bottomWall.get());
-    ownedEntities.push_back(std::move(bottomWall));
-
-    leftPaddle = std::make_unique<PaddleActor>(pixelroot32::math::Vector2(0, screenHeight/2 - PADDLE_HEIGHT/2), PADDLE_WIDTH, PADDLE_HEIGHT, false);
-    leftPaddle->setTopLimit(playAreaTop);
-    leftPaddle->setBottomLimit(playAreaBottom);
-    leftPaddle->setCollisionLayer(Layers::PADDLE);
-    leftPaddle->setCollisionMask(Layers::BALL);
-    leftPaddle->setShape(pr32::core::CollisionShape::AABB);
-    
-    rightPaddle = std::make_unique<PaddleActor>(pixelroot32::math::Vector2(screenWidth - PADDLE_WIDTH, screenHeight/2 - PADDLE_HEIGHT/2), PADDLE_WIDTH, PADDLE_HEIGHT, true);
-    rightPaddle->setTopLimit(playAreaTop);
-    rightPaddle->setBottomLimit(playAreaBottom);
-    rightPaddle->setCollisionLayer(Layers::PADDLE);
-    rightPaddle->setCollisionMask(Layers::BALL);
-    rightPaddle->setShape(pr32::core::CollisionShape::AABB);
-    
-    // Use CCD test speed if enabled (for testing ultra-fast collisions)
-    float ballSpeed = CCD_TEST_MODE ? CCD_TEST_BALL_SPEED : BALL_SPEED;
-    ball = std::make_unique<BallActor>(pixelroot32::math::Vector2(screenWidth/2, screenHeight/2), ballSpeed, BALL_RADIUS);
-    ball->reset();
-
-    // Initialize particle system for stress test
-    explosionEffect = std::make_unique<pr32::graphics::particles::ParticleEmitter>(pixelroot32::math::Vector2(100, 100), pr32::graphics::particles::ParticlePresets::Explosion);
-    addEntity(explosionEffect.get());
-
-    stressBalls.clear();
-    if (STRESS_TEST_MODE) {
-        int maxEntities = pr32::platforms::config::MaxEntities;
-        int baseStress = STRESS_BASE_BALL_COUNT;
-        int playAreaHeight = playAreaBottom - playAreaTop;
-        int referenceArea = 160 * 160;
-        int screenArea = screenWidth * playAreaHeight;
-        int scaledStress = baseStress * screenArea / referenceArea;
-        if (scaledStress < 8) {
-            scaledStress = 8;
-        }
-        if (scaledStress > baseStress) {
-            scaledStress = baseStress;
-        }
-
-        int reservedEntities = 3 + static_cast<int>(ownedEntities.size());
-        int availableSlots = maxEntities - reservedEntities;
-        if (availableSlots < 0) {
-            availableSlots = 0;
-        }
-
-        int stressCount = scaledStress;
-        if (stressCount > availableSlots) {
-            stressCount = availableSlots;
-        }
-
-        for (int i = 0; i < stressCount; ++i) {
-            float startX = static_cast<float>(screenWidth / 4 + (i % 8) * (BALL_RADIUS * 2));
-            float startY = static_cast<float>(playAreaTop + BALL_RADIUS + (i / 8) * (BALL_RADIUS * 2));
-            auto stressBall = std::make_unique<StressBall>(pixelroot32::math::Vector2(startX, startY), BALL_SPEED * 1.5f, BALL_RADIUS, i);
-            addEntity(stressBall.get());
-            stressBalls.push_back(std::move(stressBall));
-        }
-    }
-
-    addEntity(leftPaddle.get());
-    addEntity(rightPaddle.get());
-    addEntity(ball.get());
-    
-    // Initialize physics validator
-    PongPhysicsValidator::getInstance().startTracking(BALL_SPEED);
+    // The opening serve has no phase edge to announce it -- init() itself is the
+    // edge, and lastPhase is baselined from the phase this call just created --
+    // so the countdown blip is played here, once, and the serve is audible from
+    // the first second. Every later serve is announced by its Countdown edge.
+    playSfx(engine, SfxId::Countdown);
 }
 
 void PongScene::update(unsigned long deltaTime) {
-    // 1. Input Processing
-    if (!gameOver) {
-        leftPaddle->velocity = 0;
-        if (engine.getInputManager().isButtonDown(BTN_UP)) leftPaddle->velocity = -150.0f;
-        if (engine.getInputManager().isButtonDown(BTN_DOWN)) leftPaddle->velocity = 150.0f;
-    } else {
-        if (engine.getInputManager().isButtonPressed(BTN_START)) resetGame();
-    }
-
-    // 2. Physics & Entity Update (Always call this!)
+    // Entities first, as everywhere else in the repository; this scene has none,
+    // so the call is the base contract rather than work.
     Scene::update(deltaTime);
 
-    // 3. Physics Validation
-    PongPhysicsValidator::getInstance().update(
-        static_cast<float>(ball->position.x),
-        static_cast<float>(ball->position.y),
-        static_cast<float>(ball->getVelocityX()),
-        static_cast<float>(ball->getVelocityY()),
-        ball->isActive
-    );
-
-    // 4. Game Logic
-    if (!gameOver) {
-        // --- Check if ball is out of bounds ---
-        // Left side (Player failed to return) - AI scores
-        int ballLeft = static_cast<int>(ball->position.x);
-        int ballRight = ballLeft + BALL_RADIUS * 2;
-        int screenWidth = engine.getRenderer().getLogicalWidth();
-        
-        if (ball->isActive && ballRight < 0) {
-            rightScore++;
-            
-            // Score sound (bad for player)
-            pr32::audio::AudioEvent scoreEv{};
-            scoreEv.type = pr32::audio::WaveType::NOISE;
-            scoreEv.frequency = 200.0f;
-            scoreEv.duration = 0.3f;
-            scoreEv.volume = 0.7f;
-            engine.getAudioEngine().playEvent(scoreEv);
-
-            ball->reset();
-            PongPhysicsValidator::getInstance().onReset();
-        }
-        
-        // Right side (AI failed to return) - Player scores
-        if (ball->isActive && ballLeft > screenWidth) {
-            leftScore++;
-
-            pr32::audio::AudioEvent coinEv{};
-            coinEv.type = pr32::audio::WaveType::PULSE;
-            coinEv.frequency = 900.0f;
-            coinEv.duration = 0.2f;
-            coinEv.volume = 0.7f;
-            coinEv.duty = 0.5f;
-            engine.getAudioEngine().playEvent(coinEv);
-
-            ball->reset();
-            PongPhysicsValidator::getInstance().onReset();
-        }
-
-        // --- Game Over ---
-        if (leftScore >= SCORE_TO_WIN || rightScore >= SCORE_TO_WIN) {
-            gameOver = true;
-
-            if (leftScore >= SCORE_TO_WIN) {
-                // Player Wins
-                pr32::audio::AudioEvent winEv{};
-                winEv.type = pr32::audio::WaveType::PULSE;
-                winEv.frequency = 600.0f;
-                winEv.duration = 0.6f;
-                winEv.volume = 0.8f;
-                engine.getAudioEngine().playEvent(winEv);
-            } else {
-                // CPU Wins
-                pr32::audio::AudioEvent loseEv{};
-                loseEv.type = pr32::audio::WaveType::NOISE;
-                loseEv.frequency = 200.0f;
-                loseEv.duration = 0.6f;
-                loseEv.volume = 0.8f;
-                engine.getAudioEngine().playEvent(loseEv);
-            }
-        }
-
+    // The player drives slot 0 only. Slot 1 belongs to the CPU, which lives
+    // inside the rules and reads the ball, so nothing here can move it.
+    auto& input = engine.getInputManager();
+    std::uint8_t buttons = 0;
+    if (input.isButtonDown(kUpButton)) {
+        buttons |= game::kButtonLeft;
     }
+    if (input.isButtonDown(kDownButton)) {
+        buttons |= game::kButtonRight;
+    }
+    rules.setPlayerInput(0, buttons);
+
+    if (lastPhase == game::Phase::MatchOver && input.isButtonPressed(kRestartButton)) {
+        rules.restart();
+        // The winning point is still shaking and its burst is still alive. A new
+        // match starts on a still court, so the shake is cancelled and the
+        // particle clock restarts from this frame; the particles themselves are
+        // left to expire, which takes well under a second of the fixed clock.
+        effects.reset();
+        // Re-baseline the phase machine so the restart is not mistaken for a
+        // rally edge, then announce the serve exactly as init() does: the
+        // countdown blip is the one sound a fresh match makes. Resetting the
+        // baseline is what makes this call explicit instead of an edge that the
+        // same reset would have swallowed.
+        lastPhase = rules.phase();
+        playSfx(engine, SfxId::Countdown);
+    }
+
+    // The rules take microseconds, which a millisecond clock cannot express, so
+    // the frame delta is accumulated in microseconds and spent in exact
+    // kStepDtUs slices. A slow frame therefore changes how many steps run, never
+    // how far the ball moved inside one.
+    const std::uint32_t nowMs = static_cast<std::uint32_t>(millis());
+    std::uint32_t frameMs = nowMs - lastUpdateMs;
+    lastUpdateMs = nowMs;
+    if (frameMs > kMaxFrameMs) {
+        frameMs = kMaxFrameMs;
+    }
+    accumulatorUs += frameMs * 1000U;
+
+    int steps = 0;
+    while (accumulatorUs >= game::kStepDtUs && steps < kMaxCatchUpSteps) {
+        accumulatorUs -= game::kStepDtUs;
+        rules.step(game::kStepDtUs);
+        ++steps;
+    }
+    if (accumulatorUs >= game::kStepDtUs) {
+        // Still a step behind after the cap: the frame is already late, and
+        // replaying the rest would land the ball a visible jump away from where
+        // the player last saw it. Dropping the backlog keeps the court honest
+        // about being behind instead of pretending it never was.
+        accumulatorUs = 0;
+    }
+
+    // Effects advance before this frame's cues are triggered: a burst queued
+    // below must be drawn at full life instead of being aged by the frame that
+    // created it.
+    effects.update(nowMs);
+
+    // Contacts and the match end arrive as edges. The flags let a cue that could
+    // ever arrive both as an event and as a phase edge play once, never twice.
+    bool goalSeen = false;
+    bool matchSeen = false;
+
+    game::Event event;
+    while (rules.pollEvent(event)) {
+        switch (event.type) {
+            case game::EventType::PaddleHit:
+                playPaddleHit(event.player);
+                break;
+            case game::EventType::WallBounce:
+                playWallBounce();
+                break;
+            case game::EventType::Goal:
+                playGoal(event.player);
+                goalSeen = true;
+                break;
+            case game::EventType::MatchOver:
+                playMatchPoint();
+                matchSeen = true;
+                break;
+            case game::EventType::ServeStarted:
+                // The countdown blip already announced this serve; a second
+                // sound on release would double up on every point.
+                break;
+        }
+    }
+
+    const game::Phase phase = rules.phase();
+    if (phase == lastPhase) {
+        return;
+    }
+
+    // A point is the edge out of Play into Point, or straight into MatchOver
+    // when it is the winning one. The rules do not re-centre the ball during
+    // this frame, so the scorer is still readable from where it left the court.
+    if (lastPhase == game::Phase::Play &&
+        (phase == game::Phase::Point || phase == game::Phase::MatchOver) && !goalSeen) {
+        playGoal(goalScorer());
+    }
+    if (phase == game::Phase::MatchOver && !matchSeen) {
+        playMatchPoint();
+    }
+    if (phase == game::Phase::Countdown) {
+        playSfx(engine, SfxId::Countdown);
+    }
+
+    lastPhase = phase;
 }
 
-void PongScene::draw(pr32::graphics::Renderer& renderer) {
+void PongScene::draw(Renderer& renderer) {
+    // Court first: it fills the score band as its own strip, so it can be
+    // painted before everything else and still never erase a score. This base
+    // pass is never shaken, so when the court is drawn again under the offset
+    // the pixels the shifted copy vacates are already painted.
+    presentation::drawBackground(renderer);
+
+    // One sample per frame: shake() draws fresh random numbers on every call, so
+    // the start and the end of the pass must reuse this value or the court would
+    // tear against its own actors.
+    const pixelroot32::math::Vector2 shake = effects.shake();
+    const bool shaking = effects.shaking();
+    shakeCamera.apply(renderer, shake);
+
+    if (shaking) {
+        // The frame and the centre line ride the jolt with the actors; the HUD
+        // band is repainted below and never enters this pass.
+        presentation::drawBackground(renderer);
+    }
+
+    // Entities belong on top of the court, and only the base class draws them.
     Scene::draw(renderer);
 
-    char scoreStr[16];
-    snprintf(scoreStr, sizeof(scoreStr), "%d : %d", leftScore, rightScore);
-    int16_t scoreY = playAreaTop / 2 - 8;
-    renderer.drawTextCentered(scoreStr, scoreY, Color::Black, 2);
+    // Actors, then the particles above them, both inside the shaken pass.
+    presentation::drawActors(renderer, rules);
+    effects.draw(renderer);
 
-    if (gameOver) {
-        renderer.drawTextCentered("GAME OVER", 120, Color::White, 2);
-        renderer.drawTextCentered("PRESS A TO START", 150, Color::White, 1);
+    shakeCamera.apply(renderer);
+    if (shaking) {
+        repaintHudBand(renderer);
     }
+
+    // The HUD and the overlay are the only things allowed to sit over a live
+    // court, and neither one moves with the shake.
+    presentation::drawHud(renderer, rules);
+    presentation::drawOverlay(renderer, rules);
 }
 
-void PongScene::resetGame() {
-    // Print physics validation report before resetting
-    PongPhysicsValidator::getInstance().printReport();
-    PongPhysicsValidator::getInstance().reset();
-    
-    leftScore = 0;
-    rightScore = 0;
-    gameOver = false;
-    ball->reset();
-    
-    // Restart tracking with fresh metrics
-    PongPhysicsValidator::getInstance().startTracking(BALL_SPEED);
+void PongScene::playPaddleHit(std::uint8_t player) {
+    presentation::CourtRect ball = presentation::ballRect(rules);
+    if (ball.empty()) {
+        // A queued contact should still be inside the play area, but if the
+        // rule state has already moved on, land on the paddle the court drew
+        // rather than throwing the burst at the origin.
+        ball = presentation::paddleRect(rules, player);
+    }
+
+    const auto contactY = static_cast<std::int16_t>(ball.y + ball.height / 2);
+    const auto ballX = static_cast<std::int16_t>(ball.x + ball.width / 2);
+    effects.onPaddleHit(player, contactY, ballX);
+    playSfx(engine, SfxId::PaddleHit);
 }
 
+void PongScene::playWallBounce() {
+    const presentation::CourtRect ball = presentation::ballRect(rules);
+    const int x = ball.empty() ? presentation::kCourtCentreX : ball.x + ball.width / 2;
+    const int y = ball.empty() ? presentation::kPlayY : ball.y + ball.height / 2;
+    effects.onWallBounce(static_cast<std::int16_t>(x), static_cast<std::int16_t>(y));
+    playSfx(engine, SfxId::WallBounce);
 }
+
+void PongScene::playGoal(std::uint8_t scorer) {
+    const presentation::CourtRect play = presentation::playAreaRect();
+    const presentation::CourtRect ball = presentation::ballRect(rules);
+    const int ballY = ball.empty() ? play.y + play.height / 2 : ball.y + ball.height / 2;
+
+    // Scorer 0 put the ball out on the right edge, scorer 1 on the left.
+    const int edgeX = (scorer == 0) ? play.x + play.width - 1 : play.x;
+
+    effects.onGoal(scorer, static_cast<std::int16_t>(edgeX),
+                   static_cast<std::int16_t>(ballY));
+    playSfx(engine, SfxId::Goal);
+}
+
+void PongScene::playMatchPoint() {
+    effects.onMatchPoint();
+    playSfx(engine, SfxId::Win);
+}
+
+std::uint8_t PongScene::goalScorer() const {
+    if (rules.ballX() < 0) {
+        return 1;
+    }
+    if (rules.ballX() > game::kCourtWidth * game::kOne) {
+        return 0;
+    }
+    // Fallback for a caller that asks after the ball was placed again: the
+    // score is the only remaining evidence of who was awarded the point.
+    return rules.score(1) > rules.score(0) ? 1 : 0;
+}
+
+void PongScene::repaintHudBand(Renderer& renderer) {
+    const presentation::ViewOffset origin =
+        presentation::viewOffset(renderer.getLogicalWidth(), renderer.getLogicalHeight());
+
+    // The shifted playfield can reach a few pixels under the band, so the band
+    // is restored with the same paper slot the court paints it with. The HUD
+    // text is drawn afterwards, by drawHud(), never inside the shaken pass.
+    renderer.drawFilledRectangle(origin.x, origin.y, presentation::kDesignWidth,
+                                 presentation::kHudHeight, presentation::kPaper);
+}
+
+}  // namespace pong

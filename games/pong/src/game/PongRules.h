@@ -27,9 +27,8 @@
  * feeds a fixed 60 Hz step (kStepDtUs) from its accumulator, so a slow frame
  * cannot change how far the ball travelled.
  *
- * The phase set is the one a local match has. There is no waiting gate -- the
- * controllers of the networking demo do not exist here -- and no pause: a fresh
- * match starts counting down immediately.
+ * The phase set is the one a local match has. There is no waiting gate to open
+ * and no pause to leave: a fresh match counts down immediately.
  *
  * Slot 0 is the player and slot 1 is the CPU (game/PongCpu.h) in the production
  * configuration. The button path for slot 1 is kept because the suite needs a

@@ -10,8 +10,8 @@
  * @file PongCpu.h
  * @brief Engine-free proportional controller that plays the right paddle.
  *
- * This is the opponent of the single-player match. It is the AI mode of the
- * retired physics demo (`PaddleActor.cpp`) expressed in Q8.8 instead of float:
+ * This is the opponent of the single-player match. It is the AI paddle of the
+ * demo this one replaced, expressed in Q8.8 instead of float:
  *
  *     error  = ballY - paddleCentreY
  *     error += noise()                             // the +-3 px imperfection
