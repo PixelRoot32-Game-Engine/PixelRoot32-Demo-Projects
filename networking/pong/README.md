@@ -130,6 +130,133 @@ GPIO 26 is DAC2 and is where the speaker sits on the common 2432S028; board
 revisions vary, and the internal DAC does not exist on the C3 at all, which is
 why the controllers have no audio flag.
 
+## Hardware bring-up
+
+**This is a source-derived checklist, not a lab report.** Every step below comes
+from the firmware in this directory and from the `native` simulator; the three
+physical boards were not available when it was written, so nothing here is
+claimed as hardware-verified. If a screen disagrees with a row, the screen is
+right and this section is the thing to fix.
+
+Work in this order — wire both controllers, flash the host, flash Player 1,
+flash Player 2 — and read one screen after each step. The order exists for the
+host's panel: it is the only instrument that can tell "that pad joined as node 2"
+from "that pad is node 2 again".
+
+### 1. Wire the two ESP32-C3 controllers
+
+Both controllers are the same board with the same wiring. Nothing in the
+hardware distinguishes Player 1 from Player 2: `ESP_NOW_NODE_ID` in the flashed
+environment is the whole difference, and each board prints which one it believes
+it is (`P1` or `P2`, top-left of its OLED).
+
+| SSD1306 module | ESP32-C3 |
+| -------------- | -------- |
+| `VCC` | `3V3` |
+| `GND` | `GND` |
+| `SDA` | GPIO 5 |
+| `SCL` | GPIO 6 |
+
+| Button | ESP32-C3 | Other leg |
+| ------ | -------- | --------- |
+| Up | GPIO 3 | `GND` |
+| Down | GPIO 1 | `GND` |
+
+No external resistors and no OLED reset line: the firmware hands both button
+pins to `InputManager`, which applies `INPUT_PULLUP`, so a press shorts the pin
+to ground; the panel's reset is passed to the driver as `255`, which means
+"none". The five numbers are the same as in [Hardware](#hardware), and
+[`src/platforms/esp32_c3_controller.h`](src/platforms/esp32_c3_controller.h) is
+where they are defined.
+
+### 2. Flash in order: host, Player 1, Player 2
+
+From **`networking/pong`**, with one board attached at a time (or all three and
+an explicit port on each command):
+
+```bash
+pio device list
+pio run -e esp32cyd_host -t upload
+pio run -e esp32c3_p1    -t upload
+pio run -e esp32c3_p2    -t upload
+```
+
+`pio device list` prints one entry per attached board, and each entry's
+`Hardware ID` is what actually identifies it. The CYD's USB-UART bridge shows a
+vendor such as `VID:PID=1A86:7523` (`USB-SERIAL CH340`) or `10C4:EA60`
+(`CP210x`); a Beetle C3 on Windows shows `USB Serial Device (COMn)` with
+`VID:PID=303A:1001`, Espressif's own USB (on Linux the same board appears as
+`USB JTAG/serial debug unit`). Identify a port by unplugging one board and
+re-listing, not by trusting the order the ports were enumerated in.
+
+With more than one board attached, add `--upload-port COM5` (or `/dev/ttyUSB0`,
+`/dev/ttyACM0`) to each command so PlatformIO cannot pick a sibling. Each
+`-t upload` echoes the environment it built — confirm the second controller says
+`esp32c3_p2` **before** you read its screen, because a board flashed with the
+wrong environment looks perfectly healthy and only fails to be player two.
+
+### 3. Read the screens at each step
+
+The host's score band shows a phase word (`WAITING`, `3`, `2`, `1`, `GO`,
+`POINT`, `PAUSED`, `OVER`), the two scores, and — while the match is `WAITING`
+or `PAUSED` — a diagnostics panel over the court. The controllers show their own
+id, a link/version line, the two scores, the phase word, a ball marker and their
+paddle track.
+
+| After | Host (CYD) | Controller |
+| ----- | ---------- | ---------- |
+| Host powered, no pads | Band reads `WAITING` with `0` and `0`; panel reads `NET CH 6`, `P1 --   P2 --`, `RTT 0 MS`, `DROP 0`, `QUEUE 0` | — |
+| Player 1 powered | One token flips: `P1 OK   P2 --`. Still `WAITING`, still no countdown | Top-right `LINK V1` under a top-left `P1`; score `0  -  0`; phase `WAIT`; empty paddle track |
+| Player 2 powered | `P1 OK   P2 OK`; the gate opens on that frame | Top-left `P2`; `LINK V1`; `WAIT` for at most one state, then `READY` |
+| Both bound | Band counts `3`, `2`, `1` (400 ms each, 1.2 s total), then `GO`; ball and paddles move | `READY` during the countdown, then `PLAY`; the score line and the marker track the host |
+| A paddle moved | That paddle moves, the other stays | Its own marker slides; the other board's screen does not change |
+
+That is the whole diagnosis: a pad that shows `OK` in its own token and `LINK V1`
+on its own screen is bound as the id printed top-left. A pad that shows `--` on
+the host while its own screen says `P1` is a *wrong node id* (two boards claiming
+`P1`), a different channel, or a board that is not running this firmware —
+never a gameplay problem.
+
+### 4. When a step does not happen
+
+| Symptom | What it means | What to do |
+| ------- | ------------- | ---------- |
+| A pad's token stays `--` | That board is not bound: a different channel, out of range, not running this demo, or its frames are never accepted. The tag top-left of its own screen is the id it claims | Compare the two tags. Two `P1`s means reflash one board with `esp32c3_p2`; two `P2`s, `esp32c3_p1`. Then check the host reads `NET CH 6` |
+| Both pads show the same id (`P1` twice) | Duplicate node id. The host keeps the first claimant and ignores the second, so one paddle never moves and that board's token stays `--` | Reflash one board with the other controller environment. There is no runtime switch |
+| `DROP` is rising on the host | The host's receive queue overflowed. The demo's contract is zero: the cadences are sized to keep it there | Look for another demo or an access point on channel 6. This is saturation, not weather |
+| A controller is stuck on `WAIT` after the host is up | `WAIT` only means "no `STATE` yet". One pad alone legitimately shows `WAIT` + `LINK V1` while the host waits for the other. `NO LNK` means the 1500 ms host watchdog expired (never joined, wrong channel, host not running); `V?` means a protocol-version mismatch | With both pads joined, a `WAIT` + `LINK V1` board means the host is the one stuck — read the host row below |
+| Host is stuck on the lobby panel with one pad joined | The countdown needs **both** slots bound, online and version-compatible, and will wait indefinitely otherwise. This is the gate, not a hang | Read which token is `--`; that board is the fault. Fix it per the first two rows |
+| A pad reconnects mid-set | Expected, not a bug: the survivor freezes on `PAUSED`, the diagnostics panel comes back on the host, and both boards resume into a fresh `3-2-1` once the rebooted board has handshaked **and** sent an `INPUT` | Do nothing. If it stays paused, that board is not sending input: check its two buttons and their ground |
+| A controller shows a version error (`V?`) | The two builds disagree on `kProtocolVersion`, i.e. one board came from a different checkout or commit | Reflash all three from the same tree. The host pauses rather than parse frames with the wrong field widths |
+
+### 5. Reset and rematch
+
+The set is no longer terminal. When a side reaches 5 the host band reads `OVER`
+and the court carries a `P1 WINS` / `P2 WINS` band; both controllers show the
+same winner and a `PRESS` prompt. Press and release **any** direction button on
+either controller and the host turns that press into a rematch: both scores go
+back to 0 and a fresh countdown starts. Nothing is re-flashed between sets, and
+either player can start one.
+
+Two details matter when it does not work:
+
+- A button that was already down when the set ended is not a press — the host
+  compares the new held mask with the previous one, so release first.
+- Only `MATCH_OVER` accepts the gesture. During a rally the same press just moves
+  that paddle, and `Rules::restart()` ignores every other phase, so a stray frame
+  cannot wipe a score in progress.
+
+There is no persistence anywhere in the demo: the score, the phase and the serve
+live in the CYD's RAM, so power-cycling the host starts over at 0-0. The
+controllers hold nothing, which is why a rebooted pad gets its score back from
+the immediate reliable `STATE` rather than from flash.
+
+**Again: none of the above was observed on the three boards.** It is the
+firmware's behaviour, read from the source and exercised in the `native`
+simulator, which puts the host and both controllers on a lossless loopback and
+therefore says nothing about radio range, antenna orientation or a crowded
+channel 6.
+
 ## What it demonstrates
 
 **One authority, two intents.** The CYD owns the ball, both paddles, the score,
@@ -517,8 +644,10 @@ pio run -e esp32c3_p2    --target upload --upload-port COM6
 
 On Linux/macOS use the device paths instead (`/dev/ttyUSB0`, `/dev/ttyACM0`).
 With only one board attached, omit `--upload-port` and let PlatformIO pick it.
-The order does not matter: whoever boots last joins the room, and the host
-re-syncs the newcomer from its own authoritative state.
+The order does not affect correctness: whoever boots last joins the room, and the
+host re-syncs the newcomer from its own authoritative state. It does affect what
+you can see, which is why [Hardware bring-up](#hardware-bring-up) flashes the
+host first and reads its panel after each controller.
 
 ## License
 
