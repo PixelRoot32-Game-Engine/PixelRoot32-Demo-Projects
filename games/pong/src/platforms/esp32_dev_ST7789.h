@@ -40,7 +40,7 @@ pr32::graphics::DisplayConfig config(
     Y_OFF_SET
 );
 
-pr32::input::InputConfig inputConfig(BTN_UP_PIN, BTN_DOWN_PIN, BTN_LEFT_PIN, BTN_RIGHT_PIN, BTN_A_PIN, BTN_B_PIN); // 6 buttons: Up, Down, Left, Right, A (restart), B (unused)
+pr32::input::InputConfig inputConfig(BTN_UP_PIN, BTN_DOWN_PIN, BTN_LEFT_PIN, BTN_RIGHT_PIN, BTN_A_PIN, BTN_B_PIN); // 6 buttons: Up, Down, Left, Right, A (confirm), B (unused)
 
 pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate());
 

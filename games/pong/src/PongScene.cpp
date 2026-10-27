@@ -9,6 +9,10 @@
  * The scene is the composition root of the demo: it owns the match rules, turns
  * their events into sound and particles, and paints the court. There is no
  * transport, no peer and no second controller here -- one player, one CPU.
+ *
+ * It also owns the flow between the demo's two screens: boot lands on the title
+ * screen, a confirmed level builds the match, and a finished match returns to
+ * the title with that level still selected.
  */
 #include "PongScene.h"
 
@@ -19,6 +23,7 @@
 
 #include "presentation/CourtLayout.h"
 #include "presentation/CourtRenderer.h"
+#include "presentation/MenuLayout.h"
 #include "presentation/PongSfx.h"
 
 // Declared once by the platform header of whichever target is being built; the
@@ -26,6 +31,20 @@
 extern pixelroot32::core::Engine engine;
 
 namespace pong {
+
+// The title screen draws one row per level and the scene reads the cursor as a
+// level index, so the enum's order and the menu's row count are one contract:
+// EASY is row 0, MEDIUM row 1, HARD row 2. Renumbering the enum or adding a
+// fourth level has to happen in both places at once; compiling this file is
+// where that is caught.
+static_assert(static_cast<int>(game::Difficulty::Easy) == 0 &&
+                  static_cast<int>(game::Difficulty::Medium) == 1 &&
+                  static_cast<int>(game::Difficulty::Hard) == 2,
+              "PongScene: the title screen maps game::Difficulty straight to a row index, so the "
+              "enum must stay ordered Easy, Medium, Hard");
+static_assert(presentation::kMenuRowCount == 3,
+              "PongScene: the title screen needs one row per level, so three levels and three "
+              "rows must stay in step");
 
 namespace {
 
@@ -39,14 +58,15 @@ using pixelroot32::graphics::Renderer;
 // scene reads the same indices everywhere, which is why the order there and the
 // order here are one contract.
 
-/// Held direction towards the top of the court.
+/// Held direction towards the top of the court; one row up on the title screen.
 constexpr std::uint8_t kUpButton = 0;
 
-/// Held direction towards the bottom of the court.
+/// Held direction towards the bottom of the court; one row down on the title
+/// screen.
 constexpr std::uint8_t kDownButton = 1;
 
-/// Restart after MatchOver.
-constexpr std::uint8_t kRestartButton = 4;
+/// A: confirms the selected level, and returns to the title after MatchOver.
+constexpr std::uint8_t kConfirmButton = 4;
 
 // --- Fixed step --------------------------------------------------------------
 
@@ -83,17 +103,22 @@ void PongScene::init() {
     // engine preset.
     presentation::installPalette();
 
+    // Boot lands on the title screen, not in a match. The rules are built at the
+    // default level anyway -- a menu that never runs still leaves a valid match
+    // behind it -- and the cursor is read back from them, so the selection and
+    // the rules can never disagree about which level is armed.
+    rules.setDifficulty(game::Difficulty::Medium);
     rules.resetMatch();
+    menuOpen = true;
+    menuSelection = static_cast<std::uint8_t>(rules.difficulty());
 
     lastUpdateMs = static_cast<std::uint32_t>(millis());
     accumulatorUs = 0;
     lastPhase = rules.phase();
 
-    // The opening serve has no phase edge to announce it -- init() itself is the
-    // edge, and lastPhase is baselined from the phase this call just created --
-    // so the countdown blip is played here, once, and the serve is audible from
-    // the first second. Every later serve is announced by its Countdown edge.
-    playSfx(engine, SfxId::Countdown);
+    // Deliberately silent: the countdown blip announces a serve, and boot shows a
+    // title screen rather than a rally. It is played by confirmMenuSelection()
+    // instead, and afterwards by the Countdown edge of every later serve.
 }
 
 void PongScene::update(unsigned long deltaTime) {
@@ -101,9 +126,38 @@ void PongScene::update(unsigned long deltaTime) {
     // so the call is the base contract rather than work.
     Scene::update(deltaTime);
 
+    auto& input = engine.getInputManager();
+
+    // The three edges are sampled once, so no branch can consume a press the
+    // other one also sees.
+    const bool upPressed = input.isButtonPressed(kUpButton);
+    const bool downPressed = input.isButtonPressed(kDownButton);
+    const bool confirmPressed = input.isButtonPressed(kConfirmButton);
+
+    if (menuOpen) {
+        // The title screen owns Up and Down as cursor moves, with wrap-around;
+        // A arms the highlighted level.
+        if (upPressed) {
+            moveMenuSelection(-1);
+        }
+        if (downPressed) {
+            moveMenuSelection(+1);
+        }
+        if (confirmPressed) {
+            confirmMenuSelection();
+        }
+
+        // Time spent on the title must not become catch-up steps behind the
+        // panel: the clock is re-baselined and the accumulator emptied on every
+        // menu frame, so the match starts with an empty account whatever the
+        // player took to choose.
+        lastUpdateMs = static_cast<std::uint32_t>(millis());
+        accumulatorUs = 0;
+        return;
+    }
+
     // The player drives slot 0 only. Slot 1 belongs to the CPU, which lives
     // inside the rules and reads the ball, so nothing here can move it.
-    auto& input = engine.getInputManager();
     std::uint8_t buttons = 0;
     if (input.isButtonDown(kUpButton)) {
         buttons |= game::kButtonLeft;
@@ -113,20 +167,14 @@ void PongScene::update(unsigned long deltaTime) {
     }
     rules.setPlayerInput(0, buttons);
 
-    if (lastPhase == game::Phase::MatchOver && input.isButtonPressed(kRestartButton)) {
-        rules.restart();
-        // The winning point is still shaking and its burst is still alive. A new
-        // match starts on a still court, so the shake is cancelled and the
-        // particle clock restarts from this frame; the particles themselves are
-        // left to expire, which takes well under a second of the fixed clock.
-        effects.reset();
-        // Re-baseline the phase machine so the restart is not mistaken for a
-        // rally edge, then announce the serve exactly as init() does: the
-        // countdown blip is the one sound a fresh match makes. Resetting the
-        // baseline is what makes this call explicit instead of an edge that the
-        // same reset would have swallowed.
-        lastPhase = rules.phase();
-        playSfx(engine, SfxId::Countdown);
+    if (lastPhase == game::Phase::MatchOver && confirmPressed) {
+        // A finished match returns to the title screen, not to a rematch: the
+        // court is reset behind the panel and the level stays where it was.
+        openMenu();
+        // openMenu() re-baselined the clock and emptied the accumulator, so even
+        // if the millisecond clock ticks between the two reads below, the frame
+        // is under one step long and the reset court behind the panel cannot be
+        // stepped from here.
     }
 
     // The rules take microseconds, which a millisecond clock cannot express, so
@@ -218,6 +266,14 @@ void PongScene::draw(Renderer& renderer) {
     // the pixels the shifted copy vacates are already painted.
     presentation::drawBackground(renderer);
 
+    // The title screen stands on that court but replaces the match: no actors,
+    // no HUD and no overlay are drawn while it is open, so nothing of the match
+    // can peek through the panel.
+    if (menuOpen) {
+        presentation::drawMenu(renderer, menuSelection);
+        return;
+    }
+
     // One sample per frame: shake() draws fresh random numbers on every call, so
     // the start and the end of the pass must reuse this value or the court would
     // tear against its own actors.
@@ -247,6 +303,50 @@ void PongScene::draw(Renderer& renderer) {
     // court, and neither one moves with the shake.
     presentation::drawHud(renderer, rules);
     presentation::drawOverlay(renderer, rules);
+}
+
+void PongScene::moveMenuSelection(int delta) {
+    // A single expression so the wrap is the only rule: adding the row count
+    // before the modulo keeps a step above EASY from going negative, and the
+    // modulo pulls a step past HARD back to EASY.
+    menuSelection = static_cast<std::uint8_t>(
+        (static_cast<int>(menuSelection) + delta + presentation::kMenuRowCount) %
+        presentation::kMenuRowCount);
+}
+
+void PongScene::confirmMenuSelection() {
+    // The cursor is a row index and the enum is declared in row order, so the
+    // cast is the whole mapping (pinned by the static_assert above).
+    rules.setDifficulty(static_cast<game::Difficulty>(menuSelection));
+    rules.resetMatch();
+    effects.reset();
+    menuOpen = false;
+
+    // A brand new match, so the phase, the clock and the accumulator all start
+    // from here: the countdown that is about to run is the first thing the rules
+    // ever step, not a continuation of the one the menu interrupted.
+    lastPhase = rules.phase();
+    accumulatorUs = 0;
+    lastUpdateMs = static_cast<std::uint32_t>(millis());
+
+    // The serve has no later edge to announce it -- this call re-baselined the
+    // phase the new match starts on -- so the countdown blip is played here, once.
+    playSfx(engine, SfxId::Countdown);
+}
+
+void PongScene::openMenu() {
+    // The level comes back from the rules instead of from a saved copy, so the
+    // cursor lands on the row that was actually played.
+    menuSelection = static_cast<std::uint8_t>(rules.difficulty());
+
+    // Behind the panel: a clean 0-0 court. It also stops the finished match from
+    // stepping, because a reset match is in Countdown with a still ball.
+    rules.resetMatch();
+    effects.reset();
+    menuOpen = true;
+    lastPhase = rules.phase();
+    accumulatorUs = 0;
+    lastUpdateMs = static_cast<std::uint32_t>(millis());
 }
 
 void PongScene::playPaddleHit(std::uint8_t player) {

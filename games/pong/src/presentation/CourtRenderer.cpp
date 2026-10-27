@@ -134,7 +134,7 @@ const char* phaseWord(game::Phase phase) {
  * @param renderer Renderer to draw with.
  * @param origin Viewport offset of the design box.
  * @param line1 Winner line, centred on the band's first row.
- * @param line2 Restart hint, centred on the band's second row.
+ * @param line2 Continue hint, centred on the band's second row.
  */
 void drawOverlayBand(Renderer& renderer, const ViewOffset& origin, const char* line1,
                      const char* line2) {

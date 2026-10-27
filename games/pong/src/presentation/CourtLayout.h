@@ -180,7 +180,7 @@ inline constexpr int kHudPhaseWidth =
 
 // --- Centred overlay ---------------------------------------------------------
 // One band serves the match-over screen: the winner on its first line and the
-// restart hint on its second. It is sized for the longest line, "CPU WINS", at
+// continue hint on its second. It is sized for the longest line, "CPU WINS", at
 // scale 2.
 
 /// Characters in the longest overlay line ("CPU WINS").
