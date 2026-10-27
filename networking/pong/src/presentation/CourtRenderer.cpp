@@ -16,6 +16,9 @@ namespace {
 using pixelroot32::graphics::Color;
 using pixelroot32::graphics::FontManager;
 using pixelroot32::graphics::Renderer;
+#ifdef PIXELROOT32_ENABLE_4BPP_SPRITES
+using pixelroot32::graphics::Sprite4bpp;
+#endif
 
 /// Converts a Q8.8 rules value to whole pixels.
 ///
@@ -39,6 +42,32 @@ CourtRect clipToPlay(const CourtRect& rect) {
     }
     return CourtRect{left, top, right - left, bottom - top};
 }
+
+#ifdef PIXELROOT32_ENABLE_4BPP_SPRITES
+/**
+ * @brief Blits one actor sprite when the play-area clip left it whole.
+ * @param renderer Renderer to draw with.
+ * @param sprite Generated sprite for the actor.
+ * @param rect Clipped rectangle the rules and the court agree on.
+ * @param origin Viewport offset of the design box.
+ * @param flipX True to mirror; player two's paddle uses it so its light leading
+ *        edge faces the centre of the court.
+ * @return true when the sprite was drawn, false when the caller must fall back.
+ *
+ * `Renderer::drawSprite()` clips to the canvas, not to the play area, so blitting
+ * a clipped actor would paint over the score band. The clip only bites on a
+ * pathological rules value, which is why the rectangle fallback is enough: it is
+ * the same rectangle, drawn in one ink instead of four.
+ */
+bool drawWholeSprite(Renderer& renderer, const Sprite4bpp& sprite, const CourtRect& rect,
+                     const ViewOffset& origin, bool flipX) {
+    if (rect.width != sprite.width || rect.height != sprite.height) {
+        return false;
+    }
+    renderer.drawSprite(sprite, origin.x + rect.x, origin.y + rect.y, 0, flipX);
+    return true;
+}
+#endif
 
 /**
  * @brief Measures text in the engine's default face.
@@ -101,6 +130,19 @@ const char* phaseWord(game::Phase phase) {
 
 }  // namespace
 
+void installPalette() {
+    // Both banks are compared, not just the sprite one: setCustomPalette()
+    // assigns them together, so a call that put either half back on a preset
+    // (a scene re-init, a sibling demo's palette install) has to be repaired
+    // before the next primitive resolves. Two pointer reads per entry point is
+    // cheaper than a per-frame table copy, and the engine never copies it.
+    if (pixelroot32::graphics::getBackgroundPaletteSlot(0) == assets::kPongPalette &&
+        pixelroot32::graphics::getSpritePaletteSlot(0) == assets::kPongPalette) {
+        return;
+    }
+    pixelroot32::graphics::setCustomPalette(assets::kPongPalette);
+}
+
 CourtRect playAreaRect() { return CourtRect{kPlayX, kPlayY, kPlayWidth, kPlayHeight}; }
 
 CourtRect paddleRect(const game::Rules& rules, std::uint8_t player) {
@@ -117,6 +159,11 @@ CourtRect ballRect(const game::Rules& rules) {
 }
 
 void drawBackground(Renderer& renderer) {
+    // First entry point of a frame, and the one caller that paints the band and
+    // the court: binding the palette here keeps the install ahead of every
+    // primitive in the pass (see installPalette()).
+    installPalette();
+
     const ViewOffset origin = viewOffset(renderer.getLogicalWidth(), renderer.getLogicalHeight());
 
     // Two fills, never one screen-sized one: the score band is painted as its
@@ -145,6 +192,8 @@ void drawBackground(Renderer& renderer) {
 }
 
 void drawActors(Renderer& renderer, const game::Rules& rules) {
+    installPalette();
+
     const ViewOffset origin = viewOffset(renderer.getLogicalWidth(), renderer.getLogicalHeight());
 
     for (std::uint8_t player = 0; player < 2; ++player) {
@@ -152,18 +201,35 @@ void drawActors(Renderer& renderer, const game::Rules& rules) {
         if (paddle.empty()) {
             continue;
         }
+#ifdef PIXELROOT32_ENABLE_4BPP_SPRITES
+        // Same bevelled bar, different ink set; player two is mirrored at draw
+        // time so its light leading edge faces the centre of the court.
+        const Sprite4bpp& sprite =
+            (player == 0) ? assets::kPongPaddle : assets::kPongPaddleP2;
+        if (drawWholeSprite(renderer, sprite, paddle, origin, player != 0)) {
+            continue;
+        }
+#endif
         renderer.drawFilledRectangle(origin.x + paddle.x, origin.y + paddle.y, paddle.width,
                                      paddle.height, kInk);
     }
 
     const CourtRect ball = ballRect(rules);
-    if (!ball.empty()) {
-        renderer.drawFilledRectangle(origin.x + ball.x, origin.y + ball.y, ball.width, ball.height,
-                                     kInk);
+    if (ball.empty()) {
+        return;
     }
+#ifdef PIXELROOT32_ENABLE_4BPP_SPRITES
+    if (drawWholeSprite(renderer, assets::kPongBall, ball, origin, false)) {
+        return;
+    }
+#endif
+    renderer.drawFilledRectangle(origin.x + ball.x, origin.y + ball.y, ball.width, ball.height,
+                                 kInk);
 }
 
 void drawHud(Renderer& renderer, const game::Rules& rules, std::uint8_t level) {
+    installPalette();
+
     const ViewOffset origin = viewOffset(renderer.getLogicalWidth(), renderer.getLogicalHeight());
     const auto scoreScale = static_cast<std::uint8_t>(kHudScoreScale);
     const auto phaseScale = static_cast<std::uint8_t>(kHudPhaseScale);
@@ -203,6 +269,8 @@ void drawHud(Renderer& renderer, const game::Rules& rules, std::uint8_t level) {
 }
 
 void drawOverlay(Renderer& renderer, const game::Rules& rules) {
+    installPalette();
+
     const char* text = nullptr;
     switch (rules.phase()) {
         case game::Phase::WaitingForPlayers:

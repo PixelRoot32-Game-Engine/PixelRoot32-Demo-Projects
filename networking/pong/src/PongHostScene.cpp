@@ -70,9 +70,11 @@ void PongHostScene::init() {
     // A restart must not inherit a burst or a jolt from the previous match.
     effects.reset();
 
-    // The court, the HUD and the overlay all name palette slots, so the palette
-    // is installed once, here, before the first frame is drawn.
-    pixelroot32::graphics::setPalette(presentation::kCourtPalette);
+    // The court, the HUD and the overlay all name slots of the generated table,
+    // so the palette is bound before the first frame is drawn. The draw entry
+    // points re-bind it too, which keeps a scene re-init from falling back to an
+    // engine preset.
+    presentation::installPalette();
 
     const std::uint32_t nowMs = static_cast<std::uint32_t>(millis());
 

@@ -9,6 +9,8 @@
 #include <graphics/Color.h>
 #include <graphics/Renderer.h>
 
+#include "assets/PongPalette.h"
+#include "assets/PongSprites.h"
 #include "game/PongRules.h"
 #include "presentation/CourtLayout.h"
 
@@ -17,10 +19,10 @@
  * @brief Draws the arcade court, its actors, the score band and the overlays.
  *
  * The host scene owns the match and the network; this layer only reads it. All
- * four calls are stateless: they derive the viewport offset from the renderer's
- * logical size, paint themselves, and leave no renderer state behind, so the
- * scene can interleave them with `Scene::draw()` without an offset leaking into
- * the entity pass.
+ * four drawing calls are stateless: they derive the viewport offset from the
+ * renderer's logical size, paint themselves, and leave no renderer state behind,
+ * so the scene can interleave them with `Scene::draw()` without an offset
+ * leaking into the entity pass.
  *
  * Draw order is the scene's decision and the repo's rule: background first,
  * entities, then the actors this file owns, then the HUD, then the overlay. A
@@ -28,25 +30,21 @@
  * `drawBackground()` paints the score band and the court as two separate
  * rectangles instead of one screen-sized one.
  *
- * This is also the one place the palette lives (S11). T7 replaces the
- * `PaletteType` and the slot constants below with the generated custom palette;
- * nothing else in the demo names a colour for the court.
+ * This is also the one place the palette lives (S11): `installPalette()` binds
+ * the generated 16-slot table, and nothing else in the demo names a colour for
+ * the court.
  */
 namespace netpong::presentation {
 
-/// Palette the court is authored against.
-///
-/// PR32 is the engine default and the palette the `Color` enumerators are
-/// indexed for, so the slots below read as their names until the generated
-/// arcade palette of T7 replaces this constant.
-inline constexpr pixelroot32::graphics::PaletteType kCourtPalette =
-    pixelroot32::graphics::PaletteType::PR32;
+/// Blue/gold arcade look that a `PaletteType` cannot express; the table itself
+/// is generated into `assets::kPongPalette`.
 
 // --- Palette slots -----------------------------------------------------------
 // A `Color` is a palette index, not an RGB value: every name below is a slot in
-// whatever palette is active, which is what makes the T7 swap a one-file change.
+// the generated `assets::kPongPalette`, which is why swapping the palette only
+// meant regenerating that header.
 
-/// Ink: scores, paddles, ball, overlay text.
+/// Ink: scores, overlay text, and the ball's specular highlight.
 inline constexpr pixelroot32::graphics::Color kInk = pixelroot32::graphics::Color::White;
 
 /// Paper: the score band and the overlay band that carry the ink.
@@ -58,11 +56,27 @@ inline constexpr pixelroot32::graphics::Color kCourt = pixelroot32::graphics::Co
 /// Frame: the border, the dashed centre line and the dim phase word.
 inline constexpr pixelroot32::graphics::Color kFrame = pixelroot32::graphics::Color::Gray;
 
-/// Player one's tag.
+/// Player one's tag, and the body ink of its generated paddle.
 inline constexpr pixelroot32::graphics::Color kP1Tint = pixelroot32::graphics::Color::Cyan;
 
-/// Player two's tag.
+/// Player two's tag, and the body ink of its generated paddle.
 inline constexpr pixelroot32::graphics::Color kP2Tint = pixelroot32::graphics::Color::LightRed;
+
+/**
+ * @brief Binds the generated arcade palette to the renderer.
+ *
+ * Idempotent by pointer comparison, and called from every drawing entry point
+ * rather than once at start-up: the engine stores the pointer it is given and
+ * never copies the table, and a scene that is re-initialised (a restart, a
+ * transition back) would otherwise silently fall back to the preset the scene's
+ * `init()` installed.
+ *
+ * `setCustomPalette()` assigns both the background and the sprite palette and
+ * leaves the engine in single-palette mode, which is deliberate: primitives
+ * (the band, the frame, the dashes) and generated sprites must resolve through
+ * the same table, or a paddle and the frame behind it would disagree.
+ */
+void installPalette();
 
 /**
  * @struct CourtRect
@@ -84,6 +98,20 @@ struct CourtRect {
      */
     [[nodiscard]] bool empty() const { return width <= 0 || height <= 0; }
 };
+
+// --- Sprite contract ---------------------------------------------------------
+// A Sprite4bpp cannot be scaled at draw time, so the generated art has to be
+// exactly the rectangle the rules hand the renderer. Checked here, where the
+// art and the geometry meet, so regenerating a different-sized sprite fails the
+// build instead of cropping the actors.
+static_assert(assets::kPongBall.width == kBallSize && assets::kPongBall.height == kBallSize,
+              "CourtRenderer: the generated ball must be kBallSize square");
+static_assert(assets::kPongPaddle.width == kPaddleWidth &&
+                  assets::kPongPaddle.height == kPaddleHeight,
+              "CourtRenderer: the generated P1 paddle must be kPaddleWidth x kPaddleHeight");
+static_assert(assets::kPongPaddleP2.width == kPaddleWidth &&
+                  assets::kPongPaddleP2.height == kPaddleHeight,
+              "CourtRenderer: the generated P2 paddle must be kPaddleWidth x kPaddleHeight");
 
 /**
  * @brief Returns the play area the actors are clipped to.
@@ -128,8 +156,13 @@ void drawBackground(pixelroot32::graphics::Renderer& renderer);
  * @param renderer Renderer to draw with.
  * @param rules Match to read.
  *
- * Every rectangle is intersected with the play area before it is filled, so an
- * actor can never bleed into the score band or past a court edge.
+ * Every rectangle is intersected with the play area before it is drawn, so an
+ * actor can never bleed into the score band or past a court edge. With
+ * `PIXELROOT32_ENABLE_4BPP_SPRITES` the actors are the generated sprites; a
+ * `Sprite4bpp` has no per-draw clip, so an actor whose clip actually bit falls
+ * back to a filled rectangle. That is the same rectangle the rules hand the
+ * renderer, so the fallback is a colour-only difference, never a position one.
+ * Without the flag the whole cast is those filled rectangles.
  */
 void drawActors(pixelroot32::graphics::Renderer& renderer, const game::Rules& rules);
 
