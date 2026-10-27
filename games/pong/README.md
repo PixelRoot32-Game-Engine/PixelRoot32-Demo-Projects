@@ -66,8 +66,10 @@ letterboxing; `viewOffset()` returns `(0, 0)` on both canvases.
 The `esp32dev_ILI9341` environment leaves the XPT2046 touch bus unclaimed: the
 game is played with the six buttons, as on the square board.
 
-The three environments build and the host suite is green; the two device
-builds were not re-flashed on hardware after the port.
+The three environments build and the host suite is green. The
+`esp32dev_ILI9341` build has been flashed on the 320×240 Cheap Yellow Display
+and played; the `esp32dev_ST7789` build compiles but was not re-flashed after
+the port.
 
 ## Controls
 
