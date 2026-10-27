@@ -1,0 +1,151 @@
+/*
+ * Copyright (c) 2026 PixelRoot32
+ * Licensed under the MIT License
+ */
+#include "game/PongRules.h"  // court primitives first: PongCpu.h reads them
+#include "game/PongCpu.h"
+
+namespace pong::game {
+namespace {
+
+/// Half the paddle height, in Q8.8: the distance from the top edge to the centre.
+constexpr Fixed kHalfPaddle = (kPaddleHeight / 2) * kOne;
+
+/// Top edge limits of a paddle, in Q8.8. The same box the rules apply to the
+/// player paddle, so the CPU can never occupy a pixel the player cannot.
+constexpr Fixed kCpuTopLimit = kHudHeight * kOne;
+constexpr Fixed kCpuBottomLimit = (kCourtHeight - kPaddleHeight) * kOne;
+
+/// Numerical Recipes 32-bit linear congruential generator constants.
+///
+/// A full-period LCG is all the imperfection needs: it is cheap, it is exactly
+/// reproducible in 32-bit unsigned arithmetic on every target, and it needs no
+/// state beyond one word. std::minstd_rand and friends would drag in <random>
+/// and the C++ runtime, which this layer deliberately does not use.
+constexpr std::uint32_t kLcgMultiplier = 1664525u;
+constexpr std::uint32_t kLcgIncrement = 1013904223u;
+
+/// Bits discarded before the sample is taken.
+///
+/// The low bits of an LCG with a power-of-two modulus cycle far too quickly to
+/// look random; the top 16 bits are the useful ones, and 16 bits are more than
+/// the 1537 distinct offsets of the +-3 px box need.
+constexpr int kLcgSampleShift = 16;
+
+static_assert(kPaddleHeight % 2 == 0, "the chase is measured from the paddle centre");
+static_assert(kCpuMaxSpeed < kPaddleSpeed, "the cpu must lose every speed race it can lose");
+static_assert(kCpuDeadZone > 0, "a zero dead zone would let the paddle buzz on a parked ball");
+static_assert(kCpuEasy.deadZone > 0,
+              "a zero dead zone would let the paddle buzz on a parked ball");
+static_assert(kCpuHard.deadZone > 0,
+              "a zero dead zone would let the paddle buzz on a parked ball");
+static_assert(kCpuAimOffset > 0, "the aim style must actually move the contact point off centre");
+static_assert(kCpuAimOffset < kHalfPaddle, "the ball must still meet the paddle when it aims");
+
+constexpr Fixed absFixed(Fixed value) {
+    return value < 0 ? -value : value;
+}
+
+constexpr Fixed clampFixed(Fixed value, Fixed low, Fixed high) {
+    if (value < low) {
+        return low;
+    }
+    if (value > high) {
+        return high;
+    }
+    return value;
+}
+
+}  // namespace
+
+CpuPaddle::CpuPaddle(CpuTuning tuning, std::uint32_t seed)
+    : tuning_(tuning), seed_(seed), noise_(seed) {}
+
+void CpuPaddle::setTuning(CpuTuning tuning) {
+    tuning_ = tuning;
+    // A level change starts a fresh match: no sub-pixel debt from the previous
+    // level and the noise stream at its first sample, not wherever it was.
+    accumulator_ = 0;
+    noise_ = seed_;
+}
+
+CpuTuning CpuPaddle::tuning() const {
+    return tuning_;
+}
+
+void CpuPaddle::reset() {
+    noise_ = seed_;
+    accumulator_ = 0;
+}
+
+Fixed CpuPaddle::step(const BallView& ball, Fixed paddleY, Fixed opponentPaddleY,
+                      std::uint32_t deltaUs) {
+    // Where the paddle wants its centre: the ball now (chase), or where the ball
+    // will be when it reaches this paddle's plane (predict and aim).
+    Fixed targetY = ball.y;
+    if (tuning_.style != CpuStyle::Chase) {
+        targetY = predictBallY(ball);
+    }
+
+    if (tuning_.style == CpuStyle::PredictAndAim && ball.vx > 0) {
+        // Aim away from the player, who owns the other paddle. With the player
+        // above the court centre the target moves up, so the ball meets this
+        // paddle below its centre and `Rules::hitPaddle()` sends it down; a
+        // player below the centre gets the mirror image, a return sent up. A tie
+        // takes the else branch, exactly like a player below the centre.
+        const Fixed opponentCentre = opponentPaddleY + kHalfPaddle;
+        targetY -= (opponentCentre < kBallCenterY) ? kCpuAimOffset : -kCpuAimOffset;
+    }
+
+    // The controller aims at the centre of its paddle, not at its top edge.
+    Fixed error = targetY - (paddleY + kHalfPaddle);
+
+    if (tuning_.noiseRadius > 0) {
+        // One sample per step. The generator advances even when the resulting
+        // offset is unused, so the stream stays tied to the step count and not
+        // to how the paddle happened to move.
+        noise_ = noise_ * kLcgMultiplier + kLcgIncrement;
+
+        // Uniform over [-tuning_.noiseRadius, +tuning_.noiseRadius] in Q8.8,
+        // both ends included: `span` is 2r + 1 distinct values, and subtracting
+        // r centres them on zero. The box is the level's imperfection, so the
+        // offset can never exceed it; a 65536 % span remainder makes the
+        // distribution very slightly uneven at the edges, which is invisible in
+        // a 6 px box and irrelevant to a replay.
+        const std::uint32_t span = static_cast<std::uint32_t>(2 * tuning_.noiseRadius) + 1u;
+        const Fixed sample =
+            static_cast<Fixed>((noise_ >> kLcgSampleShift) % span) - tuning_.noiseRadius;
+        error += sample;
+    }
+
+    // The level's proportional gain. Truncation toward zero keeps the controller
+    // symmetric: errors of the same size above and below the paddle produce the
+    // same speed.
+    const Fixed speed = clampFixed(error * tuning_.gainNum / tuning_.gainDen,
+                                   -tuning_.maxSpeed, tuning_.maxSpeed);
+
+    if (absFixed(error) > tuning_.deadZone) {
+        accumulator_ += scaleByTime(speed, deltaUs);
+    }
+
+    // A paddle moves in whole pixels; what is left over waits in the
+    // accumulator for the next step. Truncating toward zero leaves the remainder
+    // with the sign of the travel, so reversing direction does not first pay off
+    // the other direction's sub-pixel debt.
+    const Fixed wholePixels = accumulator_ / kOne;
+    if (wholePixels != 0) {
+        accumulator_ -= wholePixels * kOne;
+        paddleY += wholePixels * kOne;
+    }
+
+    const Fixed clamped = clampFixed(paddleY, kCpuTopLimit, kCpuBottomLimit);
+    if (clamped != paddleY) {
+        // The clamp ate the travel: keeping the remainder would make the paddle
+        // lurch the moment the ball turned away from the wall.
+        accumulator_ = 0;
+        return clamped;
+    }
+    return paddleY;
+}
+
+}  // namespace pong::game

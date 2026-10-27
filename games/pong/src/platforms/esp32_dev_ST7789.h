@@ -1,4 +1,7 @@
-#ifdef PLATFORM_ESP32DEV
+// esp32dev_ST7789 — the square 240x240 ST7789 board this demo was written for,
+// with a MAX98357A-class I2S DAC on GPIO 26/25/22 and the six-button D-pad on
+// GPIO 32/27/33/14/13/12.
+#ifdef PLATFORM_ESP32DEV_ST7789
 
 #include <Arduino.h>
 #include <drivers/esp32/TFT_eSPI_Drawer.h>
@@ -37,7 +40,7 @@ pr32::graphics::DisplayConfig config(
     Y_OFF_SET
 );
 
-pr32::input::InputConfig inputConfig(BTN_UP_PIN, BTN_DOWN_PIN, BTN_LEFT_PIN, BTN_RIGHT_PIN, BTN_A_PIN, BTN_B_PIN); // 6 buttons: Up, Down, Left, Right, A (restart), B (unused)
+pr32::input::InputConfig inputConfig(BTN_UP_PIN, BTN_DOWN_PIN, BTN_LEFT_PIN, BTN_RIGHT_PIN, BTN_A_PIN, BTN_B_PIN); // 6 buttons: Up, Down, Left, Right, A (confirm), B (unused)
 
 pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate());
 
@@ -54,4 +57,4 @@ void loop() {
     engine.run();
 }
 
-#endif
+#endif // PLATFORM_ESP32DEV_ST7789

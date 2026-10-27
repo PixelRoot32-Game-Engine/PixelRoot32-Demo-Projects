@@ -470,22 +470,19 @@ environment nobody lists is a suite CI never runs.
 
 ## How this differs from `games/pong`
 
-This is an independent implementation, not a port. It shares no file, no type
-and no namespace with `games/pong` (this one lives in `netpong`), and
-`games/pong` is not modified.
+`games/pong` is the same court played locally against the CPU; this demo is the
+network version of it.
 
-- **Network-authoritative instead of local.** `games/pong` reads a local input
-  device, drives a CPU right paddle and serves on `rand()`. Here no node holds
-  input for both players: the host is the only writer of the ball, the score and
-  the phase, and the right paddle is a second board on the radio.
-- **No physics module.** `games/pong` leans on the engine's physics; this demo
-  integrates Q8.8 fixed point in an engine-free `src/game/PongRules` so the host
-  and the CYD produce byte-identical arithmetic.
-- **A real test surface.** `games/pong` has no `test/` directory. Here the codec
-  and the rules are host-testable by construction, and the three-node behaviour
-  is covered by a loopback suite.
+- **Network-authoritative instead of local.** `games/pong` reads one local input
+  device and lets the rules drive the CPU paddle. Here no node holds input for
+  both players: the host is the only writer of the ball, the score and the
+  phase, and the right paddle is a second board on the radio.
 - **Two screens, not one.** The controllers own their panels; the host owns the
   court. Nothing mirrors the CYD's framebuffer over the wire.
+- **Different things under test.** The three-node loopback suite is what this
+  demo proves — binding, fan-out, version refusal, a controller reboot, the
+  rematch gesture. `games/pong` tests the engine-free court and the CPU instead,
+  on the host, with no radio in the picture.
 
 ## Troubleshooting
 

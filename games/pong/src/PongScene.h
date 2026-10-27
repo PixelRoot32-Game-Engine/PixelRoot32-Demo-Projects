@@ -1,53 +1,158 @@
+/*
+ * Copyright (c) 2026 PixelRoot32
+ * Licensed under the MIT License
+ */
 #pragma once
-#include "core/Scene.h"
-#include "PaddleActor.h"
-#include "BallActor.h"
-#include "graphics/Color.h"
-#include "platforms/EngineConfig.h"
-#include "GameConstants.h"
-#include <memory>
-#include <vector>
-#include "graphics/particles/ParticleEmitter.h"
+
+#include <cstdint>
+
+#include <core/Scene.h>
+#include <graphics/Camera2D.h>
+
+#include "game/PongRules.h"
+#include "presentation/PongEffects.h"
 
 namespace pong {
 
-class StressBall;
-
+/**
+ * @class PongScene
+ * @brief The local arcade Pong demo: a title screen and the match behind it.
+ *
+ * This class is the composition root of the demo and nothing more. The match
+ * itself lives in `game::Rules`, held by value as a member; the CPU opponent is
+ * already inside those rules, so the scene never moves the right paddle and has
+ * no second input path to keep in sync. Reading the D-pad, turning the rules'
+ * events into sound and particles, and painting the court are the whole of its
+ * job.
+ *
+ * The demo has two screens and opens on the first one. The title screen lists
+ * the three CPU levels; Up and Down move the cursor and A confirms, and only
+ * then is a match built at the selected level and the serve announced. It is not
+ * an overlay on a live court: while it is open the match is not stepped, not
+ * drawn and not heard, and the court behind the panel is a reset 0-0 one. When a
+ * match ends, A replays the set at the same level and B returns to the title
+ * screen with that level still selected, so changing the opponent is one press
+ * away and a rematch is immediate.
+ *
+ * The court advances on a fixed 60 Hz step. `update()` measures the wall clock,
+ * adds the elapsed time to an accumulator and replays `kStepDtUs` slices of it,
+ * so a slow frame cannot change how far the ball travelled or how far the
+ * paddles moved: the same sequence of steps always replays the same match. The
+ * frame's own delta never reaches the simulation, only the accumulator does.
+ *
+ * The court is drawn outside the entity pass. `PongScene` owns no entities: the
+ * ball, the paddles, the HUD and the overlay are painted straight from the rules
+ * by `presentation::CourtRenderer`, in the order the repo requires (background,
+ * entities, actors, HUD, overlay). `Scene::draw()` is still called, because it is
+ * the base contract, but it has nothing to iterate over -- and because the
+ * renderer helpers are stateless, the court can be interleaved with it without
+ * an offset or a palette leaking from one pass into the other.
+ */
 class PongScene : public pixelroot32::core::Scene {
 public:
     PongScene();
-    ~PongScene() override;
 
     void init() override;
     void update(unsigned long deltaTime) override;
     void draw(pixelroot32::graphics::Renderer& renderer) override;
 
-    float getBallX() { return static_cast<float>(ball->position.x); }
-    float getBallY() { return static_cast<float>(ball->position.y); }
-    
-    pixelroot32::graphics::particles::ParticleEmitter* getParticleEmitter() { return explosionEffect.get(); }
-
 private:
-    std::unique_ptr<PaddleActor> leftPaddle;
-    std::unique_ptr<PaddleActor> rightPaddle;
-    std::unique_ptr<BallActor> ball;
-    
-    // Container for other entities owned by the scene (like background)
-    std::vector<std::unique_ptr<pixelroot32::core::Entity>> ownedEntities;
-    
-    // Particle system for stress test
-    std::unique_ptr<pixelroot32::graphics::particles::ParticleEmitter> explosionEffect;
+    /**
+     * @brief Fires the feedback for a paddle contact.
+     * @param player 0 for the player's paddle, 1 for the CPU's.
+     */
+    void playPaddleHit(std::uint8_t player);
 
-    int leftScore, rightScore;
-    bool gameOver;
-    
-    // Play area bounds
-    int playAreaTop;
-    int playAreaBottom;
+    /// @brief Fires the feedback for a top or bottom wall contact.
+    void playWallBounce();
 
-    std::vector<std::unique_ptr<StressBall>> stressBalls;
+    /**
+     * @brief Fires the feedback for a point.
+     * @param scorer 0 when the player scored, 1 when the CPU did.
+     */
+    void playGoal(std::uint8_t scorer);
 
-    void resetGame();
+    /// @brief Fires the heavier feedback that closes the match.
+    void playMatchPoint();
+
+    /**
+     * @brief Reads which side was awarded the point the phase edge reports.
+     * @return 0 for the player, 1 for the CPU.
+     *
+     * Prefers the ball's position, which is still the edge it left the court
+     * through on the frame the point is awarded, and falls back to the score
+     * when the ball has already been re-centred.
+     */
+    [[nodiscard]] std::uint8_t goalScorer() const;
+
+    /**
+     * @brief Restores the score band after it rode a shaken pass.
+     * @param renderer Renderer to paint with.
+     */
+    void repaintHudBand(pixelroot32::graphics::Renderer& renderer);
+
+    /**
+     * @brief Moves the title screen's cursor by one row.
+     * @param delta Rows to move: -1 towards EASY, +1 towards HARD.
+     *
+     * Wraps around the three rows, so the cursor never sticks at either end and
+     * the hint's two arrows always do something.
+     */
+    void moveMenuSelection(int delta);
+
+    /**
+     * @brief Starts a match at the level the cursor is on.
+     *
+     * Applies the selected level to the rules, rebuilds the match so the score,
+     * the ball and the CPU controller start clean, closes the title screen and
+     * announces the serve. The clock is re-baselined and the accumulator
+     * emptied, so the time the player spent reading the menu is never replayed
+     * as catch-up steps on the first frame of the match.
+     */
+    void confirmMenuSelection();
+
+    /**
+     * @brief Returns to the title screen with the level just played selected.
+     *
+     * The level is read from the rules, so the cursor lands back on the row that
+     * was confirmed. The match behind the panel is reset -- a clean 0-0 court
+     * that cannot keep stepping -- and the phase baseline, the clock and the
+     * accumulator are all re-taken, so leaving the title screen again starts a
+     * fresh match instead of resuming the finished one.
+     */
+    void openMenu();
+
+    /// Authoritative match state; the CPU plays slot 1 from inside it.
+    game::Rules rules;
+
+    /// Bursts and shake, kept out of the class so the particle member stays in
+    /// the effect module where its feature gate lives.
+    presentation::PongEffects effects;
+
+    /// Camera used only to push and restore the shake offset around the court
+    /// pass; it never scrolls, because the court fits its canvas.
+    pixelroot32::graphics::Camera2D shakeCamera;
+
+    /// Wall clock of the previous `update()`, the accumulator's time base.
+    std::uint32_t lastUpdateMs = 0;
+
+    /// Microseconds owed to the simulation but not stepped yet.
+    std::uint32_t accumulatorUs = 0;
+
+    /// Phase seen on the previous frame, so the edges can be detected.
+    game::Phase lastPhase = game::Phase::Countdown;
+
+    /// Whether the title screen is the screen on display.
+    ///
+    /// True from `init()` on: the demo boots into the title screen and no match
+    /// is stepped or drawn until a level is confirmed.
+    bool menuOpen = true;
+
+    /// Highlighted row of the title screen.
+    ///
+    /// A row index, which is also the level index because `game::Difficulty` is
+    /// declared Easy, Medium, Hard -- the assertion in the .cpp pins that.
+    std::uint8_t menuSelection = static_cast<std::uint8_t>(game::Difficulty::Medium);
 };
 
-}
+}  // namespace pong
