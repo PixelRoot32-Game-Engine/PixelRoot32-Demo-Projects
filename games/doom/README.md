@@ -71,7 +71,7 @@ demos in this repository do not import each other's code.
 | Function | GPIO |
 | --- | --- |
 | TFT MOSI / SCLK / DC / RST / CS | 23 / 18 / 2 / 4 / -1 (CS strapped low) |
-| SPI clock | 40 MHz (`SPI_FREQUENCY`) |
+| SPI clock | 80 MHz (`SPI_FREQUENCY`), measured in Phase 0 |
 | I2S BCLK / LRCK / DOUT | 26 / 25 / 22, 22050 Hz |
 | D-pad up / down / left / right | 32 / 27 / 33 / 14 |
 | A / B | 13 / 12 |
