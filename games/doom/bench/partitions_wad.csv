@@ -1,0 +1,16 @@
+# Phase 0 partition table for D0.5 (docs/plan-doom-esp32.md 6.4).
+#
+# One app slot and one `wad` data partition. There is deliberately no OTA and
+# no spiffs: the 4 MB part cannot carry a second app image and the shareware
+# WAD at the same time, and the WAD is the reason this table exists.
+#
+#   nvs       0x009000 .. 0x00F000   24 KB
+#   factory   0x010000 .. 0x200000  1.9375 MB app
+#   wad       0x200000 .. 0x400000  2 MB mmap'd WAD
+#
+# Subtype 0x40 is the first custom data subtype. The probe finds the partition
+# by label, so the number only has to be unique in this table.
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+factory,  app,  factory, 0x10000,  0x1F0000,
+wad,      data, 0x40,    0x200000, 0x200000,

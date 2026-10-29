@@ -12,6 +12,7 @@
 #include <platforms/PlatformDefaults.h>
 
 #include "bench_common.h"
+#include "bench_flash.h"
 #include "bench_memory.h"
 #include "bench_present.h"
 
@@ -112,6 +113,9 @@ void runProbe(int mode) {
         break;
     case 4:
         bench::runDramCensus();
+        break;
+    case 5:
+        bench::runFlashProbe();
         break;
     case 6:
         bench::runLetterboxProbe(gDrawer);
