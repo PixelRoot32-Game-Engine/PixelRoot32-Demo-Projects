@@ -87,10 +87,12 @@ this repository do not import each other's code.
 | Touch | XPT2046 present, bus not claimed yet |
 
 `PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK` is pinned to **20** in
-[`lib/platformio.ini`](lib/platformio.ini), not left at the engine's default of
-60: the drawer allocates two DMA line buffers of
-`physicalWidth * 2 B * linesPerBlock` each, so 60 lines at 320 px costs
-76,800 B against the 25,600 B the DRAM budget allows.
+[`lib/platformio.ini`](lib/platformio.ini): the drawer allocates two DMA line
+buffers of `physicalWidth * 2 B * linesPerBlock` each, so 60 lines at 320 px
+costs 76,800 B against the 25,600 B a 20-line block costs — 51,200 B that the
+twin framebuffer needs. A 20-line block only renders cleanly with
+`PIXELROOT32_DRAIN_PRESENT` defined, which closes each frame's transfer instead
+of leaving its tail in flight into the next frame.
 
 ## What the scaffold proves
 
