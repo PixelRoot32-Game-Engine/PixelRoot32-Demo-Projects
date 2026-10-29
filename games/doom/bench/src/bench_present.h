@@ -21,4 +21,10 @@ void runPresentProbe(pixelroot32::graphics::DrawSurface& surface,
                      bool reportBlockSize,
                      int frames = 100);
 
+/// D0.6: fill the physical window with a white frame and four corner markers
+/// (red top-left, green top-right, blue bottom-left, yellow bottom-right),
+/// present it once and hold it for `holdMs` so a photo can be taken.
+void runLetterboxProbe(pixelroot32::graphics::DrawSurface& surface,
+                       uint32_t holdMs = 60000);
+
 } // namespace bench

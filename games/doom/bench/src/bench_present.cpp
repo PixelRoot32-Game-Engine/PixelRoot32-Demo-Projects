@@ -12,11 +12,51 @@
 #include "bench_common.h"
 
 #include <cstdint>
+#include <cstring>
 #include <graphics/DrawSurface.h>
 #include <platforms/EngineConfig.h>
 #include <platforms/PlatformDefaults.h>
 
 namespace bench {
+namespace {
+
+// TFT_eSPI's color8to16() treats an 8-bit sprite value as RGB332:
+// RRRGGGBB. These are the indices that become pure red, green, blue,
+// yellow, white and black through the drawer's palette LUT.
+constexpr uint8_t kBlack = 0x00;
+constexpr uint8_t kWhite = 0xFF;
+constexpr uint8_t kRed = 0xE0;
+constexpr uint8_t kGreen = 0x1C;
+constexpr uint8_t kBlue = 0x03;
+constexpr uint8_t kYellow = 0xFC;
+
+void drawPatternRect(uint8_t* buffer, int width, int height,
+                     int x, int y, int w, int h, uint8_t color) {
+    if (x < 0) {
+        w += x;
+        x = 0;
+    }
+    if (y < 0) {
+        h += y;
+        y = 0;
+    }
+    if (x + w > width) {
+        w = width - x;
+    }
+    if (y + h > height) {
+        h = height - y;
+    }
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    for (int row = y; row < y + h; ++row) {
+        std::memset(buffer + static_cast<size_t>(row) * static_cast<size_t>(width) + x,
+                    color,
+                    static_cast<size_t>(w));
+    }
+}
+
+} // namespace
 
 void runPresentProbe(pixelroot32::graphics::DrawSurface& surface,
                      const char* probeId,
@@ -121,6 +161,61 @@ void runPresentProbe(pixelroot32::graphics::DrawSurface& surface,
                   static_cast<unsigned long>(badFrames),
                   static_cast<unsigned long>(expectedChecksum),
                   static_cast<unsigned long>(lastChecksum));
+}
+
+// D0.6 - letterbox validation.
+//
+// Everything is drawn in logical coordinates; the drawer's xLUT/yLUT is what
+// squashes it into the physical window, so what the photo shows is the path
+// the port actually uses. The four markers survive the 0.75x namesake because
+// they are blocks, not single pixels.
+void runLetterboxProbe(pixelroot32::graphics::DrawSurface& surface, uint32_t holdMs) {
+    uint8_t* buffer = surface.getSpriteBuffer();
+    if (buffer == nullptr) {
+        csvPrefix("D0.6");
+        Serial.printf(",status=no_sprite_buffer\n");
+        return;
+    }
+
+    const int width = LOGICAL_WIDTH;
+    const int height = LOGICAL_HEIGHT;
+    const size_t bytes = static_cast<size_t>(width) * static_cast<size_t>(height);
+
+    std::memset(buffer, kBlack, bytes);
+
+    constexpr int kFrame = 4;
+    constexpr int kMarker = 28;
+    constexpr int kInset = kFrame + 2;
+
+    drawPatternRect(buffer, width, height, 0, 0, width, kFrame, kWhite);
+    drawPatternRect(buffer, width, height, 0, height - kFrame, width, kFrame, kWhite);
+    drawPatternRect(buffer, width, height, 0, 0, kFrame, height, kWhite);
+    drawPatternRect(buffer, width, height, width - kFrame, 0, kFrame, height, kWhite);
+
+    drawPatternRect(buffer, width, height, kInset, kInset, kMarker, kMarker, kRed);
+    drawPatternRect(buffer, width, height, width - kInset - kMarker, kInset, kMarker, kMarker, kGreen);
+    drawPatternRect(buffer, width, height, kInset, height - kInset - kMarker, kMarker, kMarker, kBlue);
+    drawPatternRect(buffer, width, height,
+                    width - kInset - kMarker, height - kInset - kMarker,
+                    kMarker, kMarker, kYellow);
+
+    surface.sendBuffer();
+    surface.flushPendingTransfers();
+
+    csvPrefix("D0.6");
+    Serial.printf(",physical=%dx%d,logical=%dx%d,x_offset=%d,y_offset=%d,rotation=%d,hold_ms=%lu,frame_px=%d,marker_px=%d,corner_tl=red,corner_tr=green,corner_bl=blue,corner_br=yellow\n",
+                  PHYSICAL_DISPLAY_WIDTH,
+                  PHYSICAL_DISPLAY_HEIGHT,
+                  width,
+                  height,
+                  X_OFF_SET,
+                  Y_OFF_SET,
+                  DISPLAY_ROTATION,
+                  static_cast<unsigned long>(holdMs),
+                  kFrame,
+                  kMarker);
+
+    delay(holdMs);
 }
 
 } // namespace bench

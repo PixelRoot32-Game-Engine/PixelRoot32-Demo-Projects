@@ -57,7 +57,7 @@ unsigned long spiFrequency() {
 }
 
 void printHelp() {
-    Serial.println("help: 1=D0.1 clock 2=D0.2 block 3=D0.3 fill 4=D0.4 dram h=help");
+    Serial.println("help: 1=D0.1 clock 2=D0.2 block 3=D0.3 fill 4=D0.4 dram 5=D0.5 flash 6=D0.6 letterbox h=help");
 }
 
 void printBanner() {
@@ -112,6 +112,9 @@ void runProbe(int mode) {
         break;
     case 4:
         bench::runDramCensus();
+        break;
+    case 6:
+        bench::runLetterboxProbe(gDrawer);
         break;
     default:
         Serial.printf("probe %d is not implemented in this build\n", mode);
