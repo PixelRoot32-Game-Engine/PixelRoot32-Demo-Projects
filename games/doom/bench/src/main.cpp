@@ -56,7 +56,7 @@ unsigned long spiFrequency() {
 }
 
 void printHelp() {
-    Serial.println("help: 3=D0.3 fill h=help");
+    Serial.println("help: 3=D0.3 fill 4=D0.4 dram h=help");
 }
 
 void printBanner() {
@@ -102,6 +102,9 @@ void runProbe(int mode) {
     switch (mode) {
     case 3:
         bench::runFillProbe();
+        break;
+    case 4:
+        bench::runDramCensus();
         break;
     default:
         Serial.printf("probe %d is not implemented in this build\n", mode);
