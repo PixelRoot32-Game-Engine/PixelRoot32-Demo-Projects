@@ -1,6 +1,6 @@
-// native — the SDL2 simulator. It mirrors the primary board: a 240x180 window
-// letterboxed out of the same 320x200 logical surface the panel shows, so the
-// squash is visible on a desktop instead of only on hardware.
+// native — the SDL2 simulator. It mirrors the primary board: a 320x200 window,
+// 1:1 with DOOM's surface, which is what the rotated ILI9341 panel shows. The
+// panel adds two 20 px bars; the simulator does not need to.
 #ifndef PLATFORM_NATIVE
 #error "native.h included without PLATFORM_NATIVE"
 #else
