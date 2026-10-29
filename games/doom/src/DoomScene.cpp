@@ -5,14 +5,18 @@
 #include <cstddef>
 #include <cstdio>
 
+#if defined(PLATFORM_NATIVE)
+#include <chrono>
+#else
+#include <Arduino.h>
+
+#include "time/Esp32TicSource.h"
+#endif
+
 #include <core/Engine.h>
 #include <graphics/Color.h>
 #include <graphics/DrawSurface.h>
 #include <graphics/Renderer.h>
-
-#if !defined(PLATFORM_NATIVE)
-#include <Arduino.h>
-#endif
 
 // Declared once by the platform header of whichever target is being built, the
 // same way PongScene borrows it. The scene needs exactly two things from the
@@ -153,6 +157,29 @@ void reportFrameContract(Renderer& renderer) {
     std::snprintf(line, sizeof line, "SHELL,surface=%dx%d,stride=%d,bytes=%d,palette=%s\n",
                   width, height, stride, stride * height * bytesPerPixel, palette);
     writeSerialLine(line);
+}
+
+// --- Tic clock ---------------------------------------------------------------
+
+/**
+ * @brief One microsecond sample, in the source's own 32-bit range.
+ *
+ * `TicClock` is platform-free; this is the only place the sample is taken. The
+ * board reads the Arduino core's `micros()` through the adapter, which is
+ * 32-bit and wraps every ~71 minutes. The desktop mirror produces the same
+ * shape from `steady_clock`, truncated on purpose: the host then exercises the
+ * same wrap extension as the panel instead of a 64-bit shortcut only one target
+ * has. The cast is not an optimisation -- it is the contract the clock expects.
+ */
+std::uint32_t sampleMicros() {
+#if defined(PLATFORM_NATIVE)
+    using SteadyClock = std::chrono::steady_clock;
+    const auto sinceEpoch = SteadyClock::now().time_since_epoch();
+    return static_cast<std::uint32_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(sinceEpoch).count());
+#else
+    return time::esp32Micros();
+#endif
 }
 
 // --- Pattern ----------------------------------------------------------------
@@ -408,13 +435,41 @@ void DoomScene::init() {
     // and nothing else in the frame path changes.
     palette::init();
 
+    // Anchors the tic clock at the scene's first microsecond sample, which is
+    // tic 0. The sentinel makes the first update() report it, so the serial
+    // stream starts with a TIC line instead of hiding tic 0 behind the filter.
+    ticClock_.reset(sampleMicros());
+    reportedTic_ = kNoTic;
+
     reportFrameContract(engine.getRenderer());
+}
+
+void DoomScene::pollTicClock() {
+    // One sample, one tic: the sample that produced the tic is the one the line
+    // prints, so no second reading can already belong to the next tic.
+    const std::uint32_t sample = sampleMicros();
+    const std::uint32_t tic = ticClock_.update(sample);
+    if (tic == reportedTic_) {
+        return;
+    }
+    reportedTic_ = tic;
+
+    // One line per tic, never per frame. A tic that elapses while update() is
+    // not running is never a line either -- there was no sample to report it.
+    char line[48];
+    std::snprintf(line, sizeof line, "TIC,n=%u,us=%lu\n", static_cast<unsigned>(tic),
+                  static_cast<unsigned long>(sample));
+    writeSerialLine(line);
 }
 
 void DoomScene::update(unsigned long deltaTime) {
     // Entities first, as everywhere else in the repository; this scene has
     // none, so the call is the base contract rather than work.
     Scene::update(deltaTime);
+
+    // The 35 Hz tic advances on every frame, input or not, so it is sampled
+    // before the input early-return below.
+    pollTicClock();
 
     const pixelroot32::input::InputManager& input = engine.getInputManager();
 

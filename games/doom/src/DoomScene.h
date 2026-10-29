@@ -4,13 +4,15 @@
 
 #include <core/Scene.h>
 
+#include "time/TicClock.h"
+
 namespace doom {
 
 /**
  * @brief Composition root of the DOOM port: the platform shell DOOM plugs into.
  *
  * Phase 0 built this as a link-and-present test. D1.1 turns it into the shell
- * the 1993 rasteriser will draw into, and owns exactly two things:
+ * the 1993 rasteriser will draw into, and owns exactly three things:
  *
  * 1. The framebuffer contract. Both shipped drivers expose the logical surface
  *    as a linear buffer, one entry per pixel, stride = the logical width,
@@ -29,6 +31,15 @@ namespace doom {
  *    bottom edge and the bit order of the `INPUT,buttons=0x%02X` serial line.
  *    The three are the same number, so there is no table that can fall out of
  *    step: index 0 is up and bit 0 is up everywhere in this scene.
+ *
+ * 3. The tic clock. `update()` takes one monotonic microsecond sample per frame
+ *    and feeds it to `time::TicClock`, which derives DOOM's 35 Hz tic as
+ *    `t * 35 / 1000000` from the elapsed base -- never by accumulating a
+ *    per-frame delta, which truncates and drifts. Every tic the clock reaches
+ *    prints one `TIC,n=%u,us=%lu` line (n = tic index since `init()`, us = the
+ *    32-bit sample that produced it), once per tic and never per frame. That
+ *    line is the serial witness for the simulation's clock until the real game
+ *    loop exists.
  *
  * Nothing on screen depends on a frame counter or an animation phase. The
  * pattern is a pure function of the surface size, the palette and the pressed
@@ -60,6 +71,15 @@ public:
 
 private:
     /**
+     * @brief Drives the tic clock and reports every tic it reaches.
+     *
+     * Split out of `update()` so the clock is sampled exactly once per frame,
+     * before the input early-return: a quiet frame must still advance the
+     * simulation's clock.
+     */
+    void pollTicClock();
+
+    /**
      * @brief Buttons held at the last `update()`, packed as `INPUT` reports them.
      *
      * Bit 0 up, 1 down, 2 left, 3 right, 4 A, 5 B. Kept from `update()` to
@@ -67,6 +87,17 @@ private:
      * sample, not a second reading taken mid-draw that no serial line saw.
      */
     std::uint8_t buttons_ = 0;
+
+    /// Tic 0 is a real tic, so "nothing reported yet" needs a value of its own
+    /// as the sentinel; every bit set is outside any reachable tic count.
+    static constexpr std::uint32_t kNoTic = 0xFFFFFFFFu;
+
+    /// Derives DOOM's 35 Hz tic from the platform's microsecond source.
+    time::TicClock ticClock_;
+
+    /// Last tic written to the serial line; the change filter behind the
+    /// once-per-tic (never per-frame) reporting.
+    std::uint32_t reportedTic_ = kNoTic;
 };
 
 }  // namespace doom
