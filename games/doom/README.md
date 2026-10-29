@@ -17,7 +17,7 @@ loop, the fixed-point math, the WAD reader — is DOOM's own code in
 Language: C++17 (+ C99 for the DOOM core)  
 Engine: `PixelRoot32-Game-Engine` branch `feature/doom-esp32`
 (tracking `feature/apu-hybrid-synthesis`)  
-Environments: `native`, `esp32dev_ST7789`, `esp32dev_ILI9341`  
+Environments: `native`, `esp32dev_ST7789`  
 Category: Games
 
 ## The one constraint that shapes everything
@@ -34,7 +34,15 @@ logical surface fails instead of shipping a cropped HUD.
 | --- | --- | --- |
 | `native` | 240x180 | SDL2 window mirroring the primary board (0.75x squash) |
 | `esp32dev_ST7789` | 240x180 | primary target: the square 240x240 board, 30 px bars |
-| `esp32dev_ILI9341` | 320x200 | secondary target: the CYD turned a quarter turn, 20 px bars, 1:1 |
+
+The ILI9341 320x240 "Cheap Yellow Display" is the secondary, fidelity target,
+and its environment is **deliberately absent until Phase 1**:
+`DisplayConfig::applyRotationNormalization()` swaps width and height for odd
+rotations, so a 320x200 window requested with `DISPLAY_ROTATION=3` becomes a
+200x320 one on a panel whose rotated frame is 320x240. Phase 0 still measures
+that panel — [`bench/`](bench/) drives `TFT_eSPI_Drawer` directly for D0.6 —
+but the demo environment returns only once the rotation/sub-window question is
+settled, which is engine-side work.
 
 ## Build and upload
 
@@ -43,7 +51,6 @@ From **`games/doom`**:
 ```bash
 pio run -e native
 pio run -e esp32dev_ST7789
-pio run -e esp32dev_ILI9341
 ```
 
 The native build needs SDL2 (`libsdl2-dev` on Linux, `brew install sdl2` on
@@ -57,18 +64,25 @@ pio device monitor
 
 ## Hardware
 
-Both boards are `esp32dev` modules: 240 MHz, dual core, 4 MB flash, no PSRAM.
-The pin maps are copied from the pong demo, which is where they were validated;
+The board is an `esp32dev` module: 240 MHz, dual core, 4 MB flash, no PSRAM.
+The pin map is copied from the pong demo, which is where it was validated;
 demos in this repository do not import each other's code.
 
-| Function | ST7789 (primary) | ILI9341 (CYD) |
-| --- | --- | --- |
-| TFT MOSI / SCLK / DC / RST / CS | 23 / 18 / 2 / 4 / -1 | 23 / 14 / 2 / 4 / 15 |
-| SPI clock | 40 MHz | 55 MHz |
-| I2S BCLK / LRCK / DOUT | 26 / 25 / 22 | 5 / 21 / 19 |
-| D-pad up / down / left / right | 32 / 27 / 33 / 14 | 32 / 33 / 25 / 26 |
-| A / B | 13 / 12 | 27 / 13 |
-| Touch | none | XPT2046 present, not claimed |
+| Function | GPIO |
+| --- | --- |
+| TFT MOSI / SCLK / DC / RST / CS | 23 / 18 / 2 / 4 / -1 (CS strapped low) |
+| SPI clock | 40 MHz (`SPI_FREQUENCY`) |
+| I2S BCLK / LRCK / DOUT | 26 / 25 / 22, 22050 Hz |
+| D-pad up / down / left / right | 32 / 27 / 33 / 14 |
+| A / B | 13 / 12 |
+| Touch | none (`TOUCH_CS=-1`) |
+
+`PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK` is pinned to **20** in
+[`lib/platformio.ini`](lib/platformio.ini), not left at the engine's default of
+60: the drawer allocates two DMA line buffers of
+`physicalWidth * 2 B * linesPerBlock` each, so 60 costs 57,600 B at a 240 px
+window — 38,400 B more than the DRAM budget allows. Phase 0's D0.2 measures the
+frame-time cost of the trade.
 
 ## What the scaffold proves
 
@@ -84,15 +98,24 @@ demos in this repository do not import each other's code.
 
 ```text
 games/doom/
-├── platformio.ini          # native, esp32dev_ST7789, esp32dev_ILI9341
+├── platformio.ini          # native, esp32dev_ST7789
 ├── lib/platformio.ini      # [base] / [base_native] / [base_esp32] templates
 ├── lib/doom/               # the DOOM core lands here (GPLv2, see License)
-├── src/
-│   ├── main.cpp            # platform selector only
-│   ├── DoomScene.h/.cpp    # composition root; a placeholder frame for now
-│   └── platforms/          # native.h, esp32_dev_ST7789.h, esp32_dev_ILI9341.h
-└── odd/tasks/              # (repository root) the tracked task record
+├── bench/                  # Phase 0 measurement firmware (throwaway)
+└── src/
+    ├── main.cpp            # platform selector only
+    ├── DoomScene.h/.cpp    # composition root; a placeholder frame for now
+    └── platforms/          # native.h, esp32_dev_ST7789.h
 ```
+
+## Phase 0 bench
+
+[`bench/`](bench/) is a standalone PlatformIO project, not a demo: it sits at
+depth 4, so the demo CI does not discover it, and it is deleted when Phase 0
+closes. It measures the numbers the plan currently estimates — SPI clock
+stability, DMA block size, fill throughput, DRAM census, the flash partition
+map and the letterbox — and its own README carries the env table, the serial
+commands and the empty results table.
 
 ## License
 
