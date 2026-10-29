@@ -1,17 +1,38 @@
 #pragma once
 
+#include <cstdint>
+
 #include <core/Scene.h>
 
 namespace doom {
 
 /**
- * @brief Composition root of the DOOM port.
+ * @brief Composition root of the DOOM port: the platform shell DOOM plugs into.
  *
- * This is the Phase 0 scaffold: it exists so the project links against the
- * engine, owns the 320x200 logical surface and proves that the whole surface
- * reaches the panel through the engine's present path. The rasteriser that
- * replaces the placeholder frame is Phase 3 work; the palette contract it will
- * need is Phase 1 (docs/plan-doom-esp32.md, Phase 1).
+ * Phase 0 built this as a link-and-present test. D1.1 turns it into the shell
+ * the 1993 rasteriser will draw into, and owns exactly two things:
+ *
+ * 1. The framebuffer contract. Both shipped drivers expose the logical surface
+ *    as a linear buffer, one entry per pixel, stride = the logical width,
+ *    top-left origin:
+ *      - ESP32 (`TFT_eSPI_Drawer::getSpriteBuffer()`): one byte per pixel,
+ *        RRRGGGBB (RGB332), which the drawer expands to RGB565 as it presents.
+ *        This is the buffer DOOM's renderer writes into.
+ *      - native (`SDL2_Drawer::getPixelBuffer()`): one `uint16_t` per pixel,
+ *        RGB565. It exists so the desktop mirror shows the same frame.
+ *    The scene paints the whole surface through those pointers and never
+ *    through `Renderer` primitives, because the primitives are the engine's
+ *    abstract surface and the rasteriser needs the concrete one.
+ *
+ * 2. The input map. The engine's `InputConfig` order -- 0 up, 1 down, 2 left,
+ *    3 right, 4 A, 5 B -- is also the order of the button slots along the
+ *    bottom edge and the bit order of the `INPUT,buttons=0x%02X` serial line.
+ *    The three are the same number, so there is no table that can fall out of
+ *    step: index 0 is up and bit 0 is up everywhere in this scene.
+ *
+ * Nothing on screen depends on a frame counter or an animation phase. The
+ * pattern is a pure function of the surface size, the palette and the pressed
+ * set, so a still frame is always the same frame.
  *
  * The logical surface is a constant here on purpose. DOOM's renderer is
  * column-indexed: `distscale[SCREENWIDTH]`, `visplane_t::top[SCREENWIDTH]`,
@@ -31,7 +52,14 @@ public:
     void draw(pixelroot32::graphics::Renderer& renderer) override;
 
 private:
-    unsigned long frames_ = 0;
+    /**
+     * @brief Buttons held at the last `update()`, packed as `INPUT` reports them.
+     *
+     * Bit 0 up, 1 down, 2 left, 3 right, 4 A, 5 B. Kept from `update()` to
+     * `draw()` on purpose: the frame must show the state of the last input
+     * sample, not a second reading taken mid-draw that no serial line saw.
+     */
+    std::uint8_t buttons_ = 0;
 };
 
 }  // namespace doom
