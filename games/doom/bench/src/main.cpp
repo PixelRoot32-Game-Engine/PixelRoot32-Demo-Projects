@@ -13,6 +13,7 @@
 
 #include "bench_common.h"
 #include "bench_memory.h"
+#include "bench_present.h"
 
 // S8: DOOM's renderer is 320 columns wide; the panel only changes the physical
 // window. A bench build that moved LOGICAL would measure a different product.
@@ -56,7 +57,7 @@ unsigned long spiFrequency() {
 }
 
 void printHelp() {
-    Serial.println("help: 3=D0.3 fill 4=D0.4 dram h=help");
+    Serial.println("help: 1=D0.1 clock 2=D0.2 block 3=D0.3 fill 4=D0.4 dram h=help");
 }
 
 void printBanner() {
@@ -100,6 +101,12 @@ void printBanner() {
 
 void runProbe(int mode) {
     switch (mode) {
+    case 1:
+        bench::runPresentProbe(gDrawer, "D0.1", false);
+        break;
+    case 2:
+        bench::runPresentProbe(gDrawer, "D0.2", true);
+        break;
     case 3:
         bench::runFillProbe();
         break;
