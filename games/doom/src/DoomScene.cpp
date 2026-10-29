@@ -1,5 +1,7 @@
 #include "DoomScene.h"
 
+#include "palette/DoomPalette.h"
+
 #include <cstddef>
 #include <cstdio>
 
@@ -89,31 +91,11 @@ static_assert(sizeof(kInkColors) / sizeof(kInkColors[0]) == static_cast<std::siz
 
 // --- Pixel formats ----------------------------------------------------------
 
-/**
- * @brief Pack an RGB565 colour into the byte an 8bpp framebuffer carries.
- *
- * The 8bpp surface is not a palette index: the byte is a colour, RRRGGGBB
- * (RGB332), which the drawer expands back to RGB565 while it presents
- * (`TFT_eSPI_Drawer::buildScaleLUTs()` fills its LUT from `color8to16()`).
- *
- * These are the same shifts TFT_eSPI's own 8bpp `drawPixel()` / `fillRect()`
- * apply (Extensions/Sprite.cpp) and the same ones `Renderer`'s direct blit path
- * applies (`packRgb565ToTftSprite8()` in src/graphics/Renderer.cpp). That helper
- * is file-local there, so the shell keeps its own copy; the static_asserts
- * below pin the arithmetic to the wire colours it must produce, so a change on
- * either side fails this build instead of showing the wrong hue on the panel.
- */
-constexpr std::uint8_t packRgb332(std::uint16_t rgb565) {
-    return static_cast<std::uint8_t>(((rgb565 & 0xE000u) >> 8) |
-                                     ((rgb565 & 0x0700u) >> 6) |
-                                     ((rgb565 & 0x0018u) >> 3));
-}
-
-static_assert(packRgb332(0xFFFF) == 0xFF, "RGB332: white must survive the pack");
-static_assert(packRgb332(0xF800) == 0xE0, "RGB332: red must survive the pack");
-static_assert(packRgb332(0x07E0) == 0x1C, "RGB332: green must survive the pack");
-static_assert(packRgb332(0x001F) == 0x03, "RGB332: blue must survive the pack");
-static_assert(packRgb332(0xFFE0) == 0xFC, "RGB332: yellow must survive the pack");
+// The colour formats live in palette/DoomPalette.h: the RGB332 layout the 8bpp
+// surface stores, the palette table DOOM's rasteriser indexes, and the
+// static_asserts that pin both to the wire colours they must produce. The shell
+// writes through `palette::packRgb332()` for the same reason -- one conversion
+// in the port, not two that can drift.
 
 // --- Serial -----------------------------------------------------------------
 
@@ -248,6 +230,168 @@ void paintShell(const std::uint16_t* inks, int width, int height, std::uint8_t p
     }
 }
 
+#if !defined(PIXELROOT32_DOOM_PALETTE_TEST)
+
+/**
+ * @brief Paint the shipped shell into whichever framebuffer the driver offers.
+ *
+ * Split out of `draw()` so the palette-test build can replace it whole instead
+ * of editing it: with the test flag off, this is the frame the port has always
+ * shown, unchanged.
+ */
+void paintShellFrame(Renderer& renderer, std::uint8_t pressed) {
+    DrawSurface& surface = renderer.getDrawSurface();
+    const int width = renderer.getLogicalWidth();
+    const int height = renderer.getLogicalHeight();
+
+    // paintShell() indexes `y * width + x` with no clipping, which is only
+    // inside the buffer while the surface has a size. Renderer asserts both are
+    // positive; this guard is what keeps a broken configuration from becoming a
+    // wild write instead of an empty frame.
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    // Resolved once per frame rather than per pixel: the pattern is a handful of
+    // colours, and the engine palette can be swapped by any code that runs
+    // between frames.
+    constexpr int kInkCount = static_cast<int>(Ink::Count);
+    std::uint16_t inks[kInkCount];
+    for (int index = 0; index < kInkCount; ++index) {
+        inks[index] = pixelroot32::graphics::resolveColor(kInkColors[index]);
+    }
+
+    // The panel path, and the one DOOM's renderer will use: the 8bpp logical
+    // framebuffer, one byte per pixel, stride = logical width, top-left origin.
+    // Writing through this pointer is the whole point of the shell -- it is
+    // what a column-indexed rasteriser can fill without a single virtual call.
+    if (std::uint8_t* framebuffer = surface.getSpriteBuffer()) {
+        paintShell(inks, width, height, pressed,
+                   [framebuffer, width](int x, int y, std::uint16_t rgb565) {
+                       framebuffer[y * width + x] = palette::packRgb332(rgb565);
+                   });
+        return;
+    }
+
+    // The desktop mirror: SDL2 has no 8bpp surface, but its RGB565 buffer is
+    // logical-sized and indexed the same way, so the same pattern (and the same
+    // button state) reaches the window.
+    if (std::uint16_t* framebuffer = surface.getPixelBuffer()) {
+        paintShell(inks, width, height, pressed,
+                   [framebuffer, width](int x, int y, std::uint16_t rgb565) {
+                       framebuffer[y * width + x] = rgb565;
+                   });
+        return;
+    }
+
+    // A driver with neither buffer has no frame to write. init() has already
+    // reported bytes=0,palette=none, so there is nothing left to say here.
+}
+
+#endif  // !PIXELROOT32_DOOM_PALETTE_TEST
+
+#if defined(PIXELROOT32_DOOM_PALETTE_TEST)
+
+/// Palette order, as PLAYPAL stores it: 16 rows of 16 entries.
+constexpr int kPaletteColumns = 16;
+constexpr int kPaletteRows = 16;
+
+/// Levels in the bottom greyscale ramp.
+constexpr int kGreySteps = 32;
+
+/**
+ * @brief Paint the palette contract: the whole index table, then grey banding.
+ *
+ * Two things and nothing else:
+ *
+ * 1. A 16x16 grid of 20x12 blocks in palette order -- row 0 is indices 0-15
+ *    and the last block is index 255 -- so a swapped channel, an off-by-one in
+ *    the table or a shuffled PLAYPAL read is visible at a glance. The synthetic
+ *    palette starts with its grey row, then 15 hue ramps, which is why the grid
+ *    reads as a grey top row followed by a wheel from red to magenta.
+ * 2. A 32-step greyscale ramp along the bottom strip, built through the same
+ *    RGB888 -> RGB332 conversion the table builder uses. RGB332 has eight
+ *    distinct greys, so 32 source levels must collapse onto 8 flat bands; a
+ *    smooth ramp means the strip bypassed the wire format.
+ *
+ * @param width   Surface width; also the stride.
+ * @param height  Surface height.
+ * @param store   Callable (int x, int y, std::uint8_t wire) that writes one
+ *                RGB332 byte. It must not clip: every rectangle below is inside
+ *                the surface by construction.
+ */
+template <typename Store>
+void paintPaletteTest(int width, int height, Store store) {
+    const std::uint8_t* table = palette::indexTable();
+
+    // Clear first. At 320x200 the blocks and the strip tile the surface exactly,
+    // but a different logical size must not leave a stale pixel behind.
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            store(x, y, table[0]);
+        }
+    }
+
+    const int blockWidth = width / kPaletteColumns;
+    const int blockHeight = height / kPaletteRows;
+    for (int row = 0; row < kPaletteRows; ++row) {
+        for (int column = 0; column < kPaletteColumns; ++column) {
+            const std::uint8_t wire = table[row * kPaletteColumns + column];
+            for (int pixelY = 0; pixelY < blockHeight; ++pixelY) {
+                for (int pixelX = 0; pixelX < blockWidth; ++pixelX) {
+                    store(column * blockWidth + pixelX, row * blockHeight + pixelY, wire);
+                }
+            }
+        }
+    }
+
+    // The strip is whatever the grid left over, so the two never overlap.
+    const int stripY = kPaletteRows * blockHeight;
+    const int stripHeight = height - stripY;
+    const int stepWidth = width / kGreySteps;
+    for (int step = 0; step < kGreySteps; ++step) {
+        const std::uint8_t grey = static_cast<std::uint8_t>(step * 255 / (kGreySteps - 1));
+        const std::uint8_t wire = palette::rgb888To332(grey, grey, grey);
+        for (int pixelY = 0; pixelY < stripHeight; ++pixelY) {
+            for (int pixelX = 0; pixelX < stepWidth; ++pixelX) {
+                store(step * stepWidth + pixelX, stripY + pixelY, wire);
+            }
+        }
+    }
+}
+
+/**
+ * @brief Paint the palette test into whichever framebuffer the driver offers.
+ *
+ * The panel path writes the table byte straight into the 8bpp surface -- the
+ * same store DOOM's rasteriser performs -- so the panel shows exactly what
+ * Phase 2 will draw. The desktop mirror expands that byte the way TFT_eSPI
+ * does, so both screens agree instead of showing the expanded source colour.
+ */
+void paintPaletteTestFrame(Renderer& renderer) {
+    DrawSurface& surface = renderer.getDrawSurface();
+    const int width = renderer.getLogicalWidth();
+    const int height = renderer.getLogicalHeight();
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    if (std::uint8_t* framebuffer = surface.getSpriteBuffer()) {
+        paintPaletteTest(width, height, [framebuffer, width](int x, int y, std::uint8_t wire) {
+            framebuffer[y * width + x] = wire;
+        });
+        return;
+    }
+
+    if (std::uint16_t* framebuffer = surface.getPixelBuffer()) {
+        paintPaletteTest(width, height, [framebuffer, width](int x, int y, std::uint8_t wire) {
+            framebuffer[y * width + x] = palette::expandRgb332(wire);
+        });
+    }
+}
+
+#endif  // PIXELROOT32_DOOM_PALETTE_TEST
+
 }  // namespace
 
 void DoomScene::init() {
@@ -258,6 +402,11 @@ void DoomScene::init() {
     // Nothing is held when the shell comes up; the first change edge is what
     // prints the INPUT line.
     buttons_ = 0;
+
+    // Builds the index -> RGB332 table once. It is the port's whole palette
+    // story: Phase 2 replaces the synthetic source with the WAD's PLAYPAL lump
+    // and nothing else in the frame path changes.
+    palette::init();
 
     reportFrameContract(engine.getRenderer());
 }
@@ -293,52 +442,14 @@ void DoomScene::update(unsigned long deltaTime) {
 }
 
 void DoomScene::draw(Renderer& renderer) {
-    DrawSurface& surface = renderer.getDrawSurface();
-    const int width = renderer.getLogicalWidth();
-    const int height = renderer.getLogicalHeight();
-
-    // paintShell() indexes `y * width + x` with no clipping, which is only
-    // inside the buffer while the surface has a size. Renderer asserts both are
-    // positive; this guard is what keeps a broken configuration from becoming a
-    // wild write instead of an empty frame.
-    if (width <= 0 || height <= 0) {
-        return;
-    }
-
-    // Resolved once per frame rather than per pixel: the pattern is a handful of
-    // colours, and the engine palette can be swapped by any code that runs
-    // between frames.
-    constexpr int kInkCount = static_cast<int>(Ink::Count);
-    std::uint16_t inks[kInkCount];
-    for (int index = 0; index < kInkCount; ++index) {
-        inks[index] = pixelroot32::graphics::resolveColor(kInkColors[index]);
-    }
-
-    // The panel path, and the one DOOM's renderer will use: the 8bpp logical
-    // framebuffer, one byte per pixel, stride = logical width, top-left origin.
-    // Writing through this pointer is the whole point of the shell -- it is
-    // what a column-indexed rasteriser can fill without a single virtual call.
-    if (std::uint8_t* framebuffer = surface.getSpriteBuffer()) {
-        paintShell(inks, width, height, buttons_,
-                   [framebuffer, width](int x, int y, std::uint16_t rgb565) {
-                       framebuffer[y * width + x] = packRgb332(rgb565);
-                   });
-        return;
-    }
-
-    // The desktop mirror: SDL2 has no 8bpp surface, but its RGB565 buffer is
-    // logical-sized and indexed the same way, so the same pattern (and the same
-    // button state) reaches the window.
-    if (std::uint16_t* framebuffer = surface.getPixelBuffer()) {
-        paintShell(inks, width, height, buttons_,
-                   [framebuffer, width](int x, int y, std::uint16_t rgb565) {
-                       framebuffer[y * width + x] = rgb565;
-                   });
-        return;
-    }
-
-    // A driver with neither buffer has no frame to write. init() has already
-    // reported bytes=0,palette=none, so there is nothing left to say here.
+#if defined(PIXELROOT32_DOOM_PALETTE_TEST)
+    // A separate build (env:esp32dev_ILI9341_palette) shows the palette
+    // contract instead of the shell. The shipped environments never define the
+    // flag, so their frame is the one above, untouched.
+    paintPaletteTestFrame(renderer);
+#else
+    paintShellFrame(renderer, buttons_);
+#endif
 }
 
 }  // namespace doom

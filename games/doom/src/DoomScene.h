@@ -34,6 +34,13 @@ namespace doom {
  * pattern is a pure function of the surface size, the palette and the pressed
  * set, so a still frame is always the same frame.
  *
+ * `PIXELROOT32_DOOM_PALETTE_TEST` replaces that shell with the palette contract
+ * screen: a 16x16 grid of all 256 indices in palette order plus a 32-step grey
+ * ramp, painted from `palette/DoomPalette.h` through the same 8bpp buffer DOOM
+ * will write. It lives in its own build environment
+ * (`env:esp32dev_ILI9341_palette`); the shipped environments never define it
+ * and render the shell exactly as they always have.
+ *
  * The logical surface is a constant here on purpose. DOOM's renderer is
  * column-indexed: `distscale[SCREENWIDTH]`, `visplane_t::top[SCREENWIDTH]`,
  * `floorclip` / `ceilingclip` and the status bar layout all assume 320x200.
