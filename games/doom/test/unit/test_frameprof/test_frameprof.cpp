@@ -89,6 +89,42 @@ FrameProfileSample makeSample(std::uint32_t frameMicros) {
     sample.spriteResolves = 52;
     sample.spriteDecodes = 52;
     sample.bytesDecoded = 345678u;
+
+    // D3.5 attribution fields, each distinct for the same reason.
+    sample.wallPixels = 600u;
+    sample.planePixels = 350u;
+    sample.spritePixels = 50u;
+    sample.pixels = 1000u;
+    sample.wallColumns = 123u;
+    sample.wallFragments = 39u;
+    sample.planeSpans = 45u;
+    sample.skyColumns = 7u;
+    sample.spriteColumns = 11u;
+    sample.decodeMicros = 111u;
+    sample.composeMicros = 22u;
+    sample.lookupMicros = 33u;
+    sample.wallDecodeMicros = 44u;
+    sample.planeDecodeMicros = 55u;
+    sample.maskedDecodeMicros = 66u;
+    sample.wallComposeMicros = 7u;
+    sample.planeComposeMicros = 8u;
+    sample.maskedComposeMicros = 9u;
+    sample.wallLookupMicros = 10u;
+    sample.planeLookupMicros = 11u;
+    sample.maskedLookupMicros = 12u;
+    sample.texHits = 13u;
+    sample.texMisses = 14u;
+    sample.flatHits = 15u;
+    sample.flatMisses = 16u;
+    sample.spriteHits = 17u;
+    sample.spriteMisses = 18u;
+    sample.texSetCount = 19u;
+    sample.texSetBytes = 20000u;
+    sample.flatSetCount = 20u;
+    sample.spriteSetCount = 21u;
+    sample.spriteSetBytes = 22000u;
+    sample.cacheBytes = 23000u;
+    sample.cachePeakSlots = 24u;
     return sample;
 }
 
@@ -356,6 +392,82 @@ void test_enabled_report_without_a_sink_writes_nothing(void) {
     TEST_ASSERT_EQUAL_INT(0, g_calls);
 }
 
+// The D3.5 attribution line, field for field: every denominator and every
+// exclusive bucket, so a parser can assign a microsecond to a unit.
+void test_attribution_line_is_exact(void) {
+    const FrameProfileSample sample = makeSample(2950u);
+
+    char line[doom::doomc::kFrameAttributionLineCapacity];
+    const std::size_t length =
+        doom::doomc::frameProfileFormatAttribution(sample, line, sizeof line);
+
+    TEST_ASSERT_TRUE(length > 0u);
+    TEST_ASSERT_EQUAL_STRING(
+        "FRAMEPROF,attr,frame=03,run=2,pixels=1000,wall_pixels=600,plane_pixels=350,"
+        "sprite_pixels=50,columns=123,fragments=39,plane_spans=45,sky_columns=7,"
+        "sprite_columns=11,decode_us=111,compose_us=22,lookup_us=33,wall_decode_us=44,"
+        "plane_decode_us=55,masked_decode_us=66,wall_compose_us=7,plane_compose_us=8,"
+        "masked_compose_us=9,wall_lookup_us=10,plane_lookup_us=11,masked_lookup_us=12,"
+        "tex_hit=13,tex_miss=14,flat_hit=15,flat_miss=16,sprite_hit=17,sprite_miss=18,"
+        "tex_set=19,tex_set_bytes=20000,flat_set=20,sprite_set=21,sprite_set_bytes=22000,"
+        "cache_bytes=23000,cache_peak=24\n",
+        line);
+}
+
+// The attribution summary turns the buckets into the three per-unit answers the
+// brief asks for, and reports the hit rates as per-mille of the resolves. The
+// numbers are worked out by hand: wall raster is 2,000 - 44 - 7 - 10 = 1,939 us
+// per frame, so 1,939,000 / 600 pixels = 3,231 ns/pixel, / 123 columns = 15,764
+// ns/column and / 39 fragments = 49,717 ns/fragment.
+void test_attribution_summary_reports_per_unit_costs_and_hit_rates(void) {
+    FrameProfileStats stats;
+    doom::doomc::frameProfileReset(&stats);
+
+    const FrameProfileSample one = makeSample(2950u);
+    const FrameProfileSample two = makeSample(2950u);
+    doom::doomc::frameProfileRecord(&stats, one);
+    doom::doomc::frameProfileRecord(&stats, two);
+
+    char line[doom::doomc::kFrameAttributionLineCapacity];
+    const std::size_t length =
+        doom::doomc::frameProfileFormatAttributionSummary(stats, line, sizeof line);
+
+    TEST_ASSERT_TRUE(length > 0u);
+    TEST_ASSERT_NOT_NULL(std::strstr(line, "wall_raster_us=1939,"));
+    TEST_ASSERT_NOT_NULL(std::strstr(line, "px_us_permille=3231,"));
+    TEST_ASSERT_NOT_NULL(std::strstr(line, "col_us_permille=15764,"));
+    TEST_ASSERT_NOT_NULL(std::strstr(line, "frag_us_permille=49717,"));
+    TEST_ASSERT_NOT_NULL(std::strstr(line, "tex_hit_permille=481,"));
+    TEST_ASSERT_NOT_NULL(std::strstr(line, "flat_hit_permille=483,"));
+    TEST_ASSERT_NOT_NULL(std::strstr(line, "sprite_hit_permille=485,"));
+    TEST_ASSERT_NOT_NULL(std::strstr(line, "cache_bytes=23000,cache_peak=24\n"));
+}
+
+// No sample, no denominator: every per-unit cost is 0 and nothing divides by a
+// zero pixel or column count.
+void test_attribution_summary_with_no_sample_reports_zero_costs(void) {
+    FrameProfileStats stats;
+    doom::doomc::frameProfileReset(&stats);
+
+    char line[doom::doomc::kFrameAttributionLineCapacity];
+    TEST_ASSERT_TRUE(doom::doomc::frameProfileFormatAttributionSummary(stats, line, sizeof line)
+                     > 0u);
+    TEST_ASSERT_NOT_NULL(std::strstr(line, "px_us_permille=0,"));
+    TEST_ASSERT_NOT_NULL(std::strstr(line, "col_us_permille=0,"));
+    TEST_ASSERT_NOT_NULL(std::strstr(line, "frag_us_permille=0,"));
+}
+
+// A buffer that cannot hold the attribution line reports 0 and holds an empty
+// string, exactly as the frame line does.
+void test_attribution_line_that_does_not_fit_is_not_written(void) {
+    const FrameProfileSample sample = makeSample(2950u);
+    char small[32];
+    TEST_ASSERT_EQUAL_UINT32(0u, static_cast<std::uint32_t>(
+                                     doom::doomc::frameProfileFormatAttribution(sample, small,
+                                                                                sizeof small)));
+    TEST_ASSERT_EQUAL_INT('\0', small[0]);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_mean_min_max_over_three_frames);
@@ -369,5 +481,9 @@ int main(int, char**) {
     RUN_TEST(test_disabled_report_emits_nothing);
     RUN_TEST(test_enabled_report_emits_one_line);
     RUN_TEST(test_enabled_report_without_a_sink_writes_nothing);
+    RUN_TEST(test_attribution_line_is_exact);
+    RUN_TEST(test_attribution_summary_reports_per_unit_costs_and_hit_rates);
+    RUN_TEST(test_attribution_summary_with_no_sample_reports_zero_costs);
+    RUN_TEST(test_attribution_line_that_does_not_fit_is_not_written);
     return UNITY_END();
 }

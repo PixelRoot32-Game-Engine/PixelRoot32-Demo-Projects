@@ -16,6 +16,39 @@
  *
  * THE TWO MAP PATHS, AND WHY THERE ARE TWO
  *
+ * D3.5: WHAT THE FRAME COSTS, AND WHERE IT GOES
+ *
+ * The D3.6/D3.7 driver was the naive one: two texture slots, "nothing beyond
+ * the current call", and a resolver that re-composed a texture for every
+ * fragment that asked. D3.5 replaces that policy with one caller-owned residency
+ * cache and instruments the frame so a microsecond can be assigned to a unit.
+ *
+ * The probe now prints, beside the frame line, one `FRAMEPROF,attr` line per
+ * measured frame and one `FRAMEPROF,attrsum` summary. They carry:
+ *
+ *   pixels / columns / fragments   the wall tier pixels, the wall columns the
+ *                                  loop visited (sum of x2-x1+1) and the number
+ *                                  of drawsegs, plus the plane pixels and spans,
+ *                                  the sky columns and the sprite columns.
+ *   decode_us                      inflate/copy only, summed at the leaf.
+ *   compose_us                     the rest of a composition: validate, blit and
+ *                                  the in-place 128-row column expansion.
+ *   lookup_us                      the container's name -> lump scan and the
+ *                                  TEXTURE1 directory scan.
+ *   wall_/plane_/masked_*_us       the same three buckets per pass.
+ *   raster_us                      pass time less those buckets, i.e. the column
+ *                                  loop, the span loop and the sprite post walk.
+ *   px_us_permille                 wall raster per wall pixel, in thousandths
+ *                                  of a microsecond (1,100 = 1.100 us/pixel).
+ *
+ * The cache: one arena per pool, first fit, 512 B granules, LRU eviction, and a
+ * pin ring the renderer scopes with `r_tex_source_t::beginFragment`. Arena 0 is
+ * the static 52 KB block; up to three 8 KB heap blocks follow. Capacity, hit
+ * counts and the peak live entries are on the same line, so a hit rate is always
+ * printed beside the bytes it is trying to hold.
+ *
+ * THE TWO MAP PATHS, AND WHY THERE ARE TWO (unchanged)
+ *
  * The one thing a raw section cannot tell you by itself is what the flash reads
  * cost. So the same driver is built twice:
  *
@@ -157,6 +190,11 @@ constexpr std::uint32_t kFrameGateMicros = 20000u;
 /// frame line carries a 64-byte SHA-256 in hex, so it is the longest one.
 constexpr std::size_t kFrameProfileLineCapacity = 512;
 
+/// Bytes the D3.5 attribution line can need. It carries the pixel, column and
+/// fragment counts, the exclusive time buckets and the cache counters, so it is
+/// longer than the frame line and has its own budget.
+constexpr std::size_t kFrameAttributionLineCapacity = 1024;
+
 /// The views whose per-phase breakdown is printed in addition to the table.
 ///
 /// The brief named "frame 01 and frame 16 (the two densest drawseg sets)" and
@@ -191,7 +229,63 @@ struct FrameProfileSample {
     std::uint16_t spriteDecodes = 0;
     std::uint16_t drawsegOverflowed = 0;
     std::uint32_t bytesDecoded = 0;
+
+    // --- D3.5 attribution ---------------------------------------------------
+    //
+    // The counts that let a microsecond be assigned to a unit rather than to a
+    // phase: the pixels each pass wrote, the columns each column loop visited,
+    // and the fragments (drawsegs and vis sprites) it iterated. `pixels` is the
+    // sum of the three pass records, so a per-pixel cost is one division.
+    std::uint32_t wallPixels = 0;
+    std::uint32_t planePixels = 0;
+    std::uint32_t spritePixels = 0;
+    std::uint32_t pixels = 0;
+    std::uint16_t wallColumns = 0;
+    std::uint16_t wallFragments = 0;
+    std::uint16_t planeSpans = 0;
+    std::uint16_t skyColumns = 0;
+    std::uint16_t spriteColumns = 0;
+
+    // The exclusive time buckets. `decodeMicros` is inflate/copy only and is
+    // summed at the leaf, so a compose that decodes six patches counts each
+    // patch's inflate once. `composeMicros` is the rest of a compose (validate,
+    // blit, the in-place column expansion), `lookupMicros` is the container
+    // name -> lump scan, and everything left in a pass is raster.
+    std::uint32_t decodeMicros = 0;
+    std::uint32_t composeMicros = 0;
+    std::uint32_t lookupMicros = 0;
+    std::uint32_t wallDecodeMicros = 0;
+    std::uint32_t planeDecodeMicros = 0;
+    std::uint32_t maskedDecodeMicros = 0;
+    std::uint32_t wallComposeMicros = 0;
+    std::uint32_t planeComposeMicros = 0;
+    std::uint32_t maskedComposeMicros = 0;
+    std::uint32_t wallLookupMicros = 0;
+    std::uint32_t planeLookupMicros = 0;
+    std::uint32_t maskedLookupMicros = 0;
+
+    // The residency cache. A hit is a resolve the cache answered without
+    // touching the container; a miss is one that had to decode.
+    std::uint16_t texHits = 0;
+    std::uint16_t texMisses = 0;
+    std::uint16_t flatHits = 0;
+    std::uint16_t flatMisses = 0;
+    std::uint16_t spriteHits = 0;
+    std::uint16_t spriteMisses = 0;
+    std::uint32_t cacheBytes = 0;
+    std::uint16_t cachePeakSlots = 0;
+
+    // The working set: how many *distinct* wall textures, flats and sprite
+    // lumps this frame asked for, and how many bytes their composed forms
+    // occupy. That is the number a residency cache has to hold to make the
+    // frame's second run free.
+    std::uint16_t texSetCount = 0;
+    std::uint32_t texSetBytes = 0;
+    std::uint16_t flatSetCount = 0;
+    std::uint16_t spriteSetCount = 0;
+    std::uint32_t spriteSetBytes = 0;
 };
+
 
 /**
  * @brief The accumulator over measured frames.
@@ -212,7 +306,46 @@ struct FrameProfileStats {
     std::uint64_t maskedSum = 0;
     std::uint64_t residencySum = 0;
     std::uint64_t bytesSum = 0;
+
+    // --- D3.5 attribution ---------------------------------------------------
+    std::uint64_t wallPixelsSum = 0;
+    std::uint64_t planePixelsSum = 0;
+    std::uint64_t spritePixelsSum = 0;
+    std::uint64_t pixelsSum = 0;
+    std::uint64_t columnsSum = 0;
+    std::uint64_t fragmentsSum = 0;
+    std::uint64_t spansSum = 0;
+    std::uint64_t skyColumnsSum = 0;
+    std::uint64_t spriteColumnsSum = 0;
+    std::uint64_t decodeSum = 0;
+    std::uint64_t composeSum = 0;
+    std::uint64_t lookupSum = 0;
+    std::uint64_t wallDecodeSum = 0;
+    std::uint64_t planeDecodeSum = 0;
+    std::uint64_t maskedDecodeSum = 0;
+    std::uint64_t wallComposeSum = 0;
+    std::uint64_t planeComposeSum = 0;
+    std::uint64_t maskedComposeSum = 0;
+    std::uint64_t wallLookupSum = 0;
+    std::uint64_t planeLookupSum = 0;
+    std::uint64_t maskedLookupSum = 0;
+    std::uint64_t texHitsSum = 0;
+    std::uint64_t texMissesSum = 0;
+    std::uint64_t flatHitsSum = 0;
+    std::uint64_t flatMissesSum = 0;
+    std::uint64_t spriteHitsSum = 0;
+    std::uint64_t spriteMissesSum = 0;
+    std::uint64_t texSetSum = 0;
+    std::uint64_t texSetBytesSum = 0;
+    std::uint64_t flatSetSum = 0;
+    std::uint64_t spriteSetSum = 0;
+    std::uint64_t spriteSetBytesSum = 0;
+    /// The largest configured cache seen, and the largest slot peak: both are
+    /// capacities the run actually ran with, so a summary carries them.
+    std::uint32_t cacheBytesMax = 0;
+    std::uint32_t cachePeakMax = 0;
 };
+
 
 /// Receives one complete line, trailing newline included.
 using FrameProfileSink = void (*)(const char* line);
@@ -270,6 +403,36 @@ std::size_t frameProfileFormatSummary(const FrameProfileStats& stats, std::uint3
 /// Formats one per-phase breakdown line for a representative view.
 std::size_t frameProfileFormatBreakdown(const FrameProfileSample& sample, char* out,
                                         std::size_t capacity);
+
+/**
+ * @brief Formats the D3.5 attribution line for one frame.
+ *
+ * One line per measured frame, beside the frame line, carrying the denominator
+ * (pixels, columns, fragments, spans) and the exclusive time buckets that let
+ * a microsecond be assigned: `decode_us` (inflate/copy), `compose_us` (the rest
+ * of a composition), `lookup_us` (the container name -> lump scan) and, by
+ * subtraction from the pass time, the raster remainder. The cache counters and
+ * the frame's distinct working set are on the same line because a hit rate is
+ * only meaningful beside the bytes it is trying to hold.
+ *
+ * @return The line length excluding the NUL, or 0 when it does not fit.
+ */
+std::size_t frameProfileFormatAttribution(const FrameProfileSample& sample, char* out,
+                                          std::size_t capacity);
+
+/**
+ * @brief Formats the D3.5 attribution summary: means, per-unit costs and hit rates.
+ *
+ * The per-unit fields are thousandths of a microsecond (nanoseconds), computed
+ * from the raster remainder of the whole measured set: `px_us_permille` divides
+ * the wall pass's raster time by its pixels, `col_us_permille` by its columns
+ * and `frag_us_permille` by its fragments, so the three answers are directly
+ * comparable. `raster_us` is the part of the four passes that no decode,
+ * compose or lookup accounted for. A zero denominator reports 0, never a
+ * division by it.
+ */
+std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats, char* out,
+                                                 std::size_t capacity);
 
 /**
  * @brief The compile-time gate the probe emits through.

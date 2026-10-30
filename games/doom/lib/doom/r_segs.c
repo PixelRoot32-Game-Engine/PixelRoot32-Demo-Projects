@@ -104,42 +104,39 @@ static r_segs_error_t resolve_tier(const r_tex_source_t* textures, r_name_t name
 }
 
 /* Resolves every texture /p drawseg will draw. Runs before the first write, so a
- * frame with one non-resident texture changes nothing. */
-static r_segs_error_t preflight_fragment(const r_view_state_t* state,
-                                         const r_tex_source_t* textures,
-                                         const r_drawseg_t* drawseg) {
-    r_wall_fragment_t fragment;
-    const r_walltex_t* texture = NULL;
+ * frame with one non-resident texture changes nothing.
+ *
+ * A name already proved in this call is not resolved again. The preflight's job
+ * is a proof, and one proof per name is enough: the resolver contract requires
+ * the same name to answer consistently for the duration of the call, and the
+ * draw pass resolves every tier again anyway, so a resolver that changes its
+ * mind still cannot corrupt the surface -- it skips the tier, as it always did.
+ * The saving is the duplicate compose the old preflight paid for every fragment
+ * that used a texture an earlier fragment had already proved. The table is the
+ * frame's distinct wall textures (measured peak 8) with headroom; a name that
+ * does not fit is simply resolved, never dropped.
+ */
+#define R_SEGS_PREFLIGHT_MEMO 16
+
+static r_segs_error_t preflight_texture(const r_tex_source_t* textures, r_name_t name,
+                                        r_name_t* proven, int* provenCount) {
+    int index;
+    const r_walltex_t* texture;
     r_segs_error_t result;
 
-    r_wall_fragment_open(state->map, &state->params, drawseg->seg, &fragment);
+    for (index = 0; index < *provenCount; ++index) {
+        if (proven[index] == name) {
+            return R_SEGS_OK;
+        }
+    }
 
-    if (fragment.wallMid) {
-        result = resolve_tier(textures, fragment.midTexture, &texture);
-        if (result != R_SEGS_OK) {
-            return result;
-        }
+    result = resolve_tier(textures, name, &texture);
+    if (result != R_SEGS_OK) {
+        return result;
     }
-    if (fragment.wallTop) {
-        result = resolve_tier(textures, fragment.topTexture, &texture);
-        if (result != R_SEGS_OK) {
-            return result;
-        }
-    }
-    if (fragment.wallBottom) {
-        result = resolve_tier(textures, fragment.bottomTexture, &texture);
-        if (result != R_SEGS_OK) {
-            return result;
-        }
-    }
-    /* The deferred masked mid texture of a two-sided line. It is not drawn here,
-     * but it must be resident before the first wall pixel is written, because
-     * the masked pass that draws it runs later and cannot undo a frame. */
-    if (fragment.hasBack && r_has_name(fragment.midTexture)) {
-        result = resolve_tier(textures, fragment.midTexture, &texture);
-        if (result != R_SEGS_OK) {
-            return result;
-        }
+    if (*provenCount < R_SEGS_PREFLIGHT_MEMO) {
+        proven[*provenCount] = name;
+        ++(*provenCount);
     }
     return R_SEGS_OK;
 }
@@ -148,42 +145,12 @@ static r_segs_error_t preflight_fragment(const r_view_state_t* state,
 
 /*
  * The blocks this frame needs, computed from the same predicate the save step
- * uses and *before* the first pixel. The two reserved constant blocks are always
- * counted, so a storage that cannot hold them is rejected even for a frame with
- * no drawsegs.
+ * uses and *before* the first pixel. The merged preflight loop in r_wall_emit()
+ * counts them while it opens each fragment for its texture proof, so the pass
+ * pays one r_wall_fragment_open() per drawseg instead of two. The two reserved
+ * constant blocks are always counted, so a storage that cannot hold them is
+ * rejected even for a frame with no drawsegs.
  */
-static r_segs_error_t plan_pools(const r_view_state_t* state, uint16_t* clipBlocks,
-                                 uint16_t* openingBlocks) {
-    uint16_t index;
-
-    *clipBlocks = R_DRAWSEG_RESERVED_BLOCKS;
-    *openingBlocks = 0;
-
-    for (index = 0; index < state->drawsegCount; ++index) {
-        r_wall_fragment_t fragment;
-        int silhouette;
-        int masked;
-
-        r_wall_fragment_open(state->map, &state->params,
-                             state->storage.drawsegs[index].seg, &fragment);
-        masked = fragment.hasBack && r_has_name(fragment.midTexture) ? 1 : 0;
-        silhouette = fragment.silhouette;
-        if (masked) {
-            /* R_StoreWallRange's tail: a masked texture forces both edges. */
-            silhouette |= R_SIL_BOTH;
-            *openingBlocks = (uint16_t)(*openingBlocks + 1u);
-        }
-        if (fragment.hasBack) {
-            if (!fragment.clipTopSolid && (silhouette & R_SIL_TOP) != 0) {
-                *clipBlocks = (uint16_t)(*clipBlocks + 1u);
-            }
-            if (!fragment.clipBottomSolid && (silhouette & R_SIL_BOTTOM) != 0) {
-                *clipBlocks = (uint16_t)(*clipBlocks + 1u);
-            }
-        }
-    }
-    return R_SEGS_OK;
-}
 
 /* Copies one fragment's clip array into a pool block, fragment-relative:
  * block[x - x1] is clip[x], which is what every consumer indexes. */
@@ -228,6 +195,9 @@ void r_column_draw(r_draw_surface_t* surface, int x, int yl, int yh,
                    const uint8_t* colormap, uint8_t* pixelMask,
                    uint32_t* written) {
     fixed_t frac;
+    const int stride = surface->width;
+    size_t at;
+    uint32_t count = 0u;
     int row;
 
     /* R_DrawColumn's `count = dc_yh - dc_yl; if (count < 0) return;`. */
@@ -251,25 +221,49 @@ void r_column_draw(r_draw_surface_t* surface, int x, int yl, int yh,
     }
 
     frac = textureMid + (fixed_t)((yl - R_CENTER_Y) * iscale);
+    /* The strided address is advanced, not recomputed: the row multiply was the
+     * only one in the loop, and a wall column is a run of rows at a fixed x. */
+    at = (size_t)x + (size_t)yl * (size_t)stride;
 
-    for (row = yl; row <= yh; ++row) {
-        const int texel = (int)((frac >> FRACBITS) & heightMask);
-
-        if (mask == NULL || mask[texel] != 0u) {
-            const size_t at = (size_t)x + (size_t)row * (size_t)surface->width;
-
-            surface->pixels[at] = colormap[column[texel]];
+    if (mask == NULL) {
+        /* Every tier DOOM's R_RenderSegLoop draws is opaque, and so is every
+         * composite in the sampled map; this is the path that matters. */
+        for (row = yl; row <= yh; ++row) {
+            surface->pixels[at] =
+                colormap[column[(int)((frac >> FRACBITS) & heightMask)]];
             if (pixelMask != NULL) {
                 pixelMask[at] = 1u;
             }
-            if (surface->covered != NULL) {
-                surface->covered[x] = 1u;
-            }
-            if (written != NULL) {
-                ++(*written);
-            }
+            at += (size_t)stride;
+            frac += iscale;
         }
-        frac += iscale;
+        count = (uint32_t)(yh - yl + 1);
+    } else {
+        for (row = yl; row <= yh; ++row) {
+            const int texel = (int)((frac >> FRACBITS) & heightMask);
+
+            if (mask[texel] != 0u) {
+                surface->pixels[at] = colormap[column[texel]];
+                if (pixelMask != NULL) {
+                    pixelMask[at] = 1u;
+                }
+                ++count;
+            }
+            at += (size_t)stride;
+            frac += iscale;
+        }
+    }
+
+    /* One coverage write and one counter update per column instead of per pixel:
+     * the counter's total is the same, and a column with no written row leaves
+     * the coverage byte alone exactly as before. */
+    if (count != 0u) {
+        if (surface->covered != NULL) {
+            surface->covered[x] = 1u;
+        }
+        if (written != NULL) {
+            *written += count;
+        }
     }
 }
 
@@ -289,8 +283,9 @@ static fixed_t column_iscale(fixed_t scale) {
 
 static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface,
                           const r_tex_source_t* textures, const r_light_t* light,
-                          const r_drawseg_t* drawseg, int16_t* maskedColumns) {
-    r_wall_fragment_t fragment;
+                          const r_drawseg_t* drawseg, const r_wall_fragment_t* opened,
+                          int16_t* maskedColumns) {
+    r_wall_fragment_t fragment = *opened;
     const r_walltex_t* mid = NULL;
     const r_walltex_t* top = NULL;
     const r_walltex_t* bottom = NULL;
@@ -302,12 +297,13 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
     fixed_t pixlow;
     fixed_t scale;
     uint32_t* tierPixels = surface->tierPixels;
+    fixed_t scaleStep;
+    fixed_t topStep;
+    fixed_t bottomStep;
     int x;
 
-    /* The predicate, from the map (shared with the walk) ... */
-    r_wall_fragment_open(state->map, &state->params, drawseg->seg, &fragment);
-
-    /* ... and the range, from the walk's record rather than a recomputation. */
+    /* The predicate arrived from the caller's single r_wall_fragment_open(); ...
+     * and the range, from the walk's record rather than a recomputation. */
     fragment.x1 = drawseg->x1;
     fragment.x2 = drawseg->x2;
     fragment.scale1 = drawseg->scale1;
@@ -346,11 +342,61 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
                         top != NULL ? (fixed_t)top->height << FRACBITS : 0);
     r_wall_fragment_step(&fragment, fragment.scale1, fragment.scaleStep);
 
+    /* The steppers are r_wall_fragment_step()'s output, so they are read after
+     * it: taking them from the opened fragment would freeze every column at the
+     * first column's value. */
+    scaleStep = fragment.scaleStep;
+    topStep = fragment.topStep;
+    bottomStep = fragment.bottomStep;
+
     topfrac = fragment.topFrac;
     bottomfrac = fragment.bottomFrac;
     pixhigh = fragment.pixHigh;
     pixlow = fragment.pixLow;
     scale = fragment.scale;
+
+    if (fragment.wallMid && maskedColumns == NULL) {
+        /* The single-sided line is the sampled map's hot case: 666,303 of its
+         * 682,590 wall pixels come through this branch. Split out of the generic
+         * loop so the per-column texture lookup, light and scale are unconditional
+         * and no top/bottom arithmetic is done for a tier that does not exist.
+         * The generic loop below keeps every rule for the two-sided case. */
+        for (x = fragment.x1; x <= fragment.x2; ++x) {
+            int yl = (int)((topfrac + (1 << 12) - 1) >> 12);
+            int yh;
+            const angle_t angle = fragment.centerAngle + r_x_to_view_angle[x];
+            fixed_t texturecolumn =
+                fragment.offset - fixed_mul(r_fine_tangent_lookup(angle), fragment.distance);
+            const uint8_t* colormap;
+            fixed_t iscale;
+            int textureColumn;
+
+            if (yl < ceilingclip[x] + 1) {
+                yl = ceilingclip[x] + 1;
+            }
+            yh = (int)(bottomfrac >> 12);
+            if (yh >= floorclip[x]) {
+                yh = floorclip[x] - 1;
+            }
+
+            texturecolumn >>= FRACBITS;
+            textureColumn = (int)texturecolumn;
+            colormap = r_light_wall(light, fragment.lightNum, scale);
+            iscale = column_iscale(scale);
+            r_column_draw(surface, x, yl, yh, fragment.midTextureMid, iscale,
+                          mid->pixels + (size_t)(textureColumn & mid->widthMask)
+                                            * (size_t)(mid->heightMask + 1),
+                          mid->heightMask, mid->mask, colormap, NULL,
+                          &tierPixels[R_DRAW_TIER_MID]);
+
+            ceilingclip[x] = (int16_t)R_VIEW_HEIGHT;
+            floorclip[x] = -1;
+            scale += scaleStep;
+            topfrac += topStep;
+            bottomfrac += bottomStep;
+        }
+        return;
+    }
 
     for (x = fragment.x1; x <= fragment.x2; ++x) {
         int yl = (int)((topfrac + (1 << 12) - 1) >> 12);
@@ -447,9 +493,9 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
             }
         }
 
-        scale += fragment.scaleStep;
-        topfrac += fragment.topStep;
-        bottomfrac += fragment.bottomStep;
+        scale += scaleStep;
+        topfrac += topStep;
+        bottomfrac += bottomStep;
     }
 }
 
@@ -467,6 +513,8 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
     int16_t* clipPool;
     int16_t* openingPool;
     int column;
+    r_name_t proven[R_SEGS_PREFLIGHT_MEMO];
+    int provenCount = 0;
 
     if (state == NULL) {
         return R_SEGS_ERR_NULL_STATE;
@@ -499,17 +547,63 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
     openingPool = state->storage.openingBlocks;
 
     /* Nothing is written until every texture the pass will draw is resident and
-     * well formed, and every block the clip capture needs exists. */
+     * well formed, and every block the clip capture needs exists. One
+     * r_wall_fragment_open() per drawseg serves both proofs: the old pass opened
+     * the same fragment once to resolve its tiers and again to count its clip
+     * blocks, and a fragment open is a chain of mapped-flash record reads. */
+    clipBlocks = R_DRAWSEG_RESERVED_BLOCKS;
+    openingBlocks = 0u;
     for (index = 0; index < state->drawsegCount; ++index) {
-        result = preflight_fragment(state, textures,
-                                    &state->storage.drawsegs[index]);
-        if (result != R_SEGS_OK) {
-            return result;
+        r_drawseg_t* drawseg = &state->storage.drawsegs[index];
+        r_wall_fragment_t fragment;
+        int masked;
+        int silhouette;
+
+        if (textures->beginFragment != NULL) {
+            textures->beginFragment(textures->context);
         }
-    }
-    result = plan_pools(state, &clipBlocks, &openingBlocks);
-    if (result != R_SEGS_OK) {
-        return result;
+        r_wall_fragment_open(state->map, &state->params, drawseg->seg, &fragment);
+
+        if (fragment.wallMid) {
+            result = preflight_texture(textures, fragment.midTexture, proven, &provenCount);
+            if (result != R_SEGS_OK) {
+                return result;
+            }
+        }
+        if (fragment.wallTop) {
+            result = preflight_texture(textures, fragment.topTexture, proven, &provenCount);
+            if (result != R_SEGS_OK) {
+                return result;
+            }
+        }
+        if (fragment.wallBottom) {
+            result = preflight_texture(textures, fragment.bottomTexture, proven, &provenCount);
+            if (result != R_SEGS_OK) {
+                return result;
+            }
+        }
+        if (fragment.hasBack && r_has_name(fragment.midTexture)) {
+            result = preflight_texture(textures, fragment.midTexture, proven, &provenCount);
+            if (result != R_SEGS_OK) {
+                return result;
+            }
+        }
+
+        masked = fragment.hasBack && r_has_name(fragment.midTexture) ? 1 : 0;
+        silhouette = fragment.silhouette;
+        if (masked) {
+            /* R_StoreWallRange's tail: a masked texture forces both edges. */
+            silhouette |= R_SIL_BOTH;
+            openingBlocks = (uint16_t)(openingBlocks + 1u);
+        }
+        if (fragment.hasBack) {
+            if (!fragment.clipTopSolid && (silhouette & R_SIL_TOP) != 0) {
+                clipBlocks = (uint16_t)(clipBlocks + 1u);
+            }
+            if (!fragment.clipBottomSolid && (silhouette & R_SIL_BOTTOM) != 0) {
+                clipBlocks = (uint16_t)(clipBlocks + 1u);
+            }
+        }
     }
     if (state->storage.clipBlockCapacity < clipBlocks) {
         return R_SEGS_ERR_SMALL_CLIP_POOL;
@@ -558,7 +652,10 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
             }
         }
 
-        emit_fragment(state, surface, textures, light, drawseg, maskedColumns);
+        if (textures->beginFragment != NULL) {
+            textures->beginFragment(textures->context);
+        }
+        emit_fragment(state, surface, textures, light, drawseg, &fragment, maskedColumns);
 
         /* R_StoreWallRange's tail: the clip arrays as the column loop left
          * them, then the edges a masked texture forces. */

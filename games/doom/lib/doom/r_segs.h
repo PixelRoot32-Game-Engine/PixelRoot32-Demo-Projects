@@ -161,9 +161,10 @@
  * texture the pass will draw, and only then writes the first byte. A missing or
  * malformed texture therefore leaves the surface byte for byte as the caller
  * left it -- which is what makes "not resident" a reportable condition rather
- * than a half-painted frame. The cost is one extra resolve per tier per
- * fragment (six pointer-returning calls per drawseg instead of three) and no
- * work at all inside the column loop.
+ * than a half-painted frame. The preflight resolves a name once per call rather
+ * than once per fragment (R_SEGS_PREFLIGHT_MEMO), so the proof costs one resolve
+ * per distinct texture; the draw loop still resolves every tier, which is what
+ * keeps the resolver's lifetime contract local to one fragment.
  *
  * This is C99 only: <stddef.h> and <stdint.h>, no allocation, no globals, no
  * stdio, no floating point.
@@ -244,10 +245,12 @@ int r_walltex_is_usable(const r_walltex_t* texture);
 /**
  * @brief Resolves a packed texture name to bytes, or NULL when not resident.
  *
- * Called once per tier per fragment (twice per fragment in total, once to prove
- * the whole frame resolvable and once to draw it), never per column. The
- * returned struct must stay valid until r_wall_emit() returns; the emitter
- * copies nothing.
+ * Called once per tier in the draw loop, and once per *distinct* name in the
+ * preflight: the preflight stops resolving a name it has already proved in the
+ * same call (a resolver that answers the same name inconsistently is already
+ * outside this contract, and the draw still skips a tier it cannot resolve).
+ * Never per column. The returned struct must stay valid until r_wall_emit()
+ * returns; the emitter copies nothing.
  *
  * The policy behind the callback -- a cache, a zone block, a mapped flash
  * region, "decode it now" -- is the caller's. Answering NULL is a normal
@@ -294,6 +297,16 @@ typedef struct r_tex_source {
     r_flat_resolve_fn resolveFlat;
     void* flatContext;
     r_name_t skyTexture;
+    /*
+     * Optional. Called at the start of every fragment's preflight and again at
+     * the start of that fragment's draw. A caller-owned cache uses it to scope
+     * its "do not evict this" pins to one fragment: a fragment resolves its
+     * tiers one after the other and then reads all of them, so those results
+     * must survive the next resolve, while a previous fragment's are free to be
+     * evicted. NULL means the caller needs no signal, which is what a resolver
+     * with stable storage passes.
+     */
+    void (*beginFragment)(void* context);
 } r_tex_source_t;
 
 /* --- Error codes --------------------------------------------------------- */

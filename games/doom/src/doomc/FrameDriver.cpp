@@ -16,28 +16,32 @@
  * The second half is the board driver and only exists when
  * `PIXELROOT32_DOOM_FRAME_PROBE` is defined (`env:esp32dev_ILI9341_frame` and
  * `env:esp32dev_ILI9341_frameram`). It is the only code in this project that
- * renders a whole frame on the board, and it is deliberately the *naive* driver:
- * no cache, no reuse, no residency policy beyond "the current call". Improving it
- * is D3.5's job, and D3.5 measures against the numbers this file prints.
+ * renders a whole frame on the board. D3.6 and D3.7 left it deliberately naive
+ * -- two texture slots, no reuse, no resident set -- so D3.5 had a baseline to
+ * beat. D3.5 replaces that policy with the residency cache below and adds the
+ * per-frame attribution the frame table is read with; FrameDriver.h states both.
  *
- * WHAT THE NAIVE POLICY COSTS IN BYTES, AND WHERE THOSE BYTES COME FROM NOW
+ * WHAT THE FRAME COSTS, IN BYTES, AND WHERE THOSE BYTES COME FROM NOW
  *
- * Every buffer below is static .bss, because the task stack is 8 KB and the
- * largest E1M1 patch alone is 35,080 B. The total is printed by the probe's own
- * `FRAMEPROF,mem` line from `sizeof`-derived constants, so the RAM cost is a
- * reported number and not an estimate:
+ * Every large buffer below is a reported size, not an estimate: `FRAMEPROF,mem`
+ * prints each one from `sizeof` or from the bootstrap that allocated it.
  *
  *   walk state     33,184 B   drawsegs 2,080, visplanes 14,608, clip posts 256,
  *                             floorclip/ceilingclip 1,280, clip blocks 9,600,
  *                             opening blocks 640, vis sprites 4,400, covered 320
- *   wall arena     36,864 B   two composed textures: 32,768 + 4,096, the
- *                             measured peak pair sum over the 20 views
+ *   cache arena 0  53,248 B   static .bss; the old two-slot wall arena grown to
+ *                             hold a 32,768 B texture beside a 16,384 B one
+ *   cache arena 1-3 up to     8 KB heap blocks; a fragmented heap is asked for
+ *                  24,576 B   the same bytes in three holes
+ *   cache entries   1,920 B   48 x (name, address, size, stamp, kind, value)
  *   scratch        35,080 B   one patch, the largest patch an E1M1 texture
- *                             names (SKY1's, which the plane pass now composes);
- *                             also the flat slot and the sprite patch slot
+ *                             names (SKY1's, which the plane pass composes)
  *   level              0 B    in the flash build: the map's 46,508 B and the
  *                             directories' 20,742 B are pointers into the
  *                             mapping. 47,888 B in the RAM build.
+ *
+ * The old driver's 4,272 B sprite-patch slot is gone: a sprite patch is a cache
+ * entry now, and so is a flat.
  *
  * THE TWO MAP PATHS
  *
@@ -50,17 +54,13 @@
  *
  * THE SHARED SCRATCH, AND WHY IT IS SAFE HERE
  *
- * Three decoders produce small buffers that do not overlap in time: a patch
- * inside a texture compose, a flat, and a sprite patch. They share the 35,080 B
- * scratch with a single owner tag, so the resolver can never hand back a pointer
- * to a buffer some other decoder has since overwritten: a hit requires the owner
- * *and* the name to match, and every decode sets the owner. The one sequence that
- * could alias a live buffer -- a texture compose while a sprite patch is live --
- * is impossible in this frame order unless a masked mid texture is drawn during a
- * sprite's draw, which is exactly the case the probe counts in `hazards=` on the
- * summary line. A flat in the scratch when the sky is composed is not that case:
- * r_plane_draw() resolves every flat again immediately before it reads it, which
- * is why the counter watches the sprite patch only.
+ * The 35,080 B decode scratch is now a compose's patch buffer and nothing else.
+ * A compose reads one patch from the scratch and writes into a cache entry, so
+ * the two are distinct bytes. Flats and sprite patches used to share the scratch
+ * (with an owner tag and a `hazards=` counter watching the one order that could
+ * alias); D3.5 moved both into the residency cache, so the scratch has one user
+ * and the hazard cannot occur. `hazards=` is kept on the summary line and must
+ * stay 0.
  */
 #include "doomc/FrameDriver.h"
 
@@ -107,6 +107,47 @@ void frameProfileRecord(FrameProfileStats* stats, const FrameProfileSample& samp
     stats->maskedSum += sample.maskedMicros;
     stats->residencySum += sample.residencyMicros;
     stats->bytesSum += sample.bytesDecoded;
+
+    // D3.5's attribution: every field is folded here so no summary can read a
+    // counter the frame path forgot to fill.
+    stats->wallPixelsSum += sample.wallPixels;
+    stats->planePixelsSum += sample.planePixels;
+    stats->spritePixelsSum += sample.spritePixels;
+    stats->pixelsSum += sample.pixels;
+    stats->columnsSum += sample.wallColumns;
+    stats->fragmentsSum += sample.wallFragments;
+    stats->spansSum += sample.planeSpans;
+    stats->skyColumnsSum += sample.skyColumns;
+    stats->spriteColumnsSum += sample.spriteColumns;
+    stats->decodeSum += sample.decodeMicros;
+    stats->composeSum += sample.composeMicros;
+    stats->lookupSum += sample.lookupMicros;
+    stats->wallDecodeSum += sample.wallDecodeMicros;
+    stats->planeDecodeSum += sample.planeDecodeMicros;
+    stats->maskedDecodeSum += sample.maskedDecodeMicros;
+    stats->wallComposeSum += sample.wallComposeMicros;
+    stats->planeComposeSum += sample.planeComposeMicros;
+    stats->maskedComposeSum += sample.maskedComposeMicros;
+    stats->wallLookupSum += sample.wallLookupMicros;
+    stats->planeLookupSum += sample.planeLookupMicros;
+    stats->maskedLookupSum += sample.maskedLookupMicros;
+    stats->texHitsSum += sample.texHits;
+    stats->texMissesSum += sample.texMisses;
+    stats->flatHitsSum += sample.flatHits;
+    stats->flatMissesSum += sample.flatMisses;
+    stats->spriteHitsSum += sample.spriteHits;
+    stats->spriteMissesSum += sample.spriteMisses;
+    stats->texSetSum += sample.texSetCount;
+    stats->texSetBytesSum += sample.texSetBytes;
+    stats->flatSetSum += sample.flatSetCount;
+    stats->spriteSetSum += sample.spriteSetCount;
+    stats->spriteSetBytesSum += sample.spriteSetBytes;
+    if (sample.cacheBytes > stats->cacheBytesMax) {
+        stats->cacheBytesMax = sample.cacheBytes;
+    }
+    if (sample.cachePeakSlots > stats->cachePeakMax) {
+        stats->cachePeakMax = sample.cachePeakSlots;
+    }
 }
 
 std::uint32_t frameProfileMean(std::uint64_t sum, std::uint32_t samples) {
@@ -234,6 +275,157 @@ std::size_t frameProfileFormatBreakdown(const FrameProfileSample& sample, char* 
     return static_cast<std::size_t>(written);
 }
 
+std::size_t frameProfileFormatAttribution(const FrameProfileSample& sample, char* out,
+                                          std::size_t capacity) {
+    if (out == nullptr || capacity == 0u) {
+        return 0u;
+    }
+
+    const int written = std::snprintf(
+        out, capacity,
+        "FRAMEPROF,attr,frame=%02u,run=%u,pixels=%u,wall_pixels=%u,plane_pixels=%u,"
+        "sprite_pixels=%u,columns=%u,fragments=%u,plane_spans=%u,sky_columns=%u,"
+        "sprite_columns=%u,decode_us=%u,compose_us=%u,lookup_us=%u,wall_decode_us=%u,"
+        "plane_decode_us=%u,masked_decode_us=%u,wall_compose_us=%u,plane_compose_us=%u,"
+        "masked_compose_us=%u,wall_lookup_us=%u,plane_lookup_us=%u,masked_lookup_us=%u,"
+        "tex_hit=%u,tex_miss=%u,flat_hit=%u,flat_miss=%u,sprite_hit=%u,sprite_miss=%u,"
+        "tex_set=%u,tex_set_bytes=%u,flat_set=%u,sprite_set=%u,sprite_set_bytes=%u,"
+        "cache_bytes=%u,cache_peak=%u\n",
+        static_cast<unsigned>(sample.frame), static_cast<unsigned>(sample.run),
+        static_cast<unsigned>(sample.pixels), static_cast<unsigned>(sample.wallPixels),
+        static_cast<unsigned>(sample.planePixels), static_cast<unsigned>(sample.spritePixels),
+        static_cast<unsigned>(sample.wallColumns), static_cast<unsigned>(sample.wallFragments),
+        static_cast<unsigned>(sample.planeSpans), static_cast<unsigned>(sample.skyColumns),
+        static_cast<unsigned>(sample.spriteColumns), static_cast<unsigned>(sample.decodeMicros),
+        static_cast<unsigned>(sample.composeMicros), static_cast<unsigned>(sample.lookupMicros),
+        static_cast<unsigned>(sample.wallDecodeMicros),
+        static_cast<unsigned>(sample.planeDecodeMicros),
+        static_cast<unsigned>(sample.maskedDecodeMicros),
+        static_cast<unsigned>(sample.wallComposeMicros),
+        static_cast<unsigned>(sample.planeComposeMicros),
+        static_cast<unsigned>(sample.maskedComposeMicros),
+        static_cast<unsigned>(sample.wallLookupMicros),
+        static_cast<unsigned>(sample.planeLookupMicros),
+        static_cast<unsigned>(sample.maskedLookupMicros),
+        static_cast<unsigned>(sample.texHits), static_cast<unsigned>(sample.texMisses),
+        static_cast<unsigned>(sample.flatHits), static_cast<unsigned>(sample.flatMisses),
+        static_cast<unsigned>(sample.spriteHits), static_cast<unsigned>(sample.spriteMisses),
+        static_cast<unsigned>(sample.texSetCount), static_cast<unsigned>(sample.texSetBytes),
+        static_cast<unsigned>(sample.flatSetCount), static_cast<unsigned>(sample.spriteSetCount),
+        static_cast<unsigned>(sample.spriteSetBytes), static_cast<unsigned>(sample.cacheBytes),
+        static_cast<unsigned>(sample.cachePeakSlots));
+
+    if (written <= 0 || static_cast<std::size_t>(written) >= capacity) {
+        out[0] = '\0';
+        return 0u;
+    }
+    return static_cast<std::size_t>(written);
+}
+
+std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats, char* out,
+                                                 std::size_t capacity) {
+    if (out == nullptr || capacity == 0u) {
+        return 0u;
+    }
+
+    const std::uint32_t samples = stats.samples;
+    // The three raster remainders, each exclusive: the pass time less the decode,
+    // compose and lookup time measured inside that same pass. A negative result
+    // cannot happen (the buckets are subsets of the pass), but the clamp keeps a
+    // future miscount from printing a wrapped 32-bit number.
+    const std::uint32_t wallRaster = frameProfileMean(
+        stats.wallsSum > stats.wallDecodeSum + stats.wallComposeSum + stats.wallLookupSum
+            ? stats.wallsSum - stats.wallDecodeSum - stats.wallComposeSum - stats.wallLookupSum
+            : 0u,
+        samples);
+    const std::uint32_t planeRaster = frameProfileMean(
+        stats.planesSum > stats.planeDecodeSum + stats.planeComposeSum + stats.planeLookupSum
+            ? stats.planesSum - stats.planeDecodeSum - stats.planeComposeSum
+                  - stats.planeLookupSum
+            : 0u,
+        samples);
+    const std::uint32_t maskedRaster = frameProfileMean(
+        stats.maskedSum > stats.maskedDecodeSum + stats.maskedComposeSum + stats.maskedLookupSum
+            ? stats.maskedSum - stats.maskedDecodeSum - stats.maskedComposeSum
+                  - stats.maskedLookupSum
+            : 0u,
+        samples);
+    const std::uint32_t pixels = frameProfileMean(stats.pixelsSum, samples);
+    const std::uint32_t wallPixels = frameProfileMean(stats.wallPixelsSum, samples);
+    const std::uint32_t columns = frameProfileMean(stats.columnsSum, samples);
+    const std::uint32_t fragments = frameProfileMean(stats.fragmentsSum, samples);
+    const std::uint32_t spans = frameProfileMean(stats.spansSum, samples);
+    const std::uint32_t skyColumns = frameProfileMean(stats.skyColumnsSum, samples);
+    const std::uint32_t spriteColumns = frameProfileMean(stats.spriteColumnsSum, samples);
+
+    // Thousandths of a microsecond: 1,100 means 1.100 us per unit, which is the
+    // unit the D3.5 brief uses. A zero denominator reports 0, never a divide.
+    const std::uint32_t pixelNanos = wallPixels != 0u
+                                         ? frameProfilePermille(wallRaster, wallPixels) : 0u;
+    const std::uint32_t columnNanos = columns != 0u
+                                          ? frameProfilePermille(wallRaster, columns) : 0u;
+    const std::uint32_t fragmentNanos = fragments != 0u
+                                            ? frameProfilePermille(wallRaster, fragments) : 0u;
+
+    const int written = std::snprintf(
+        out, capacity,
+        "FRAMEPROF,attrsum,samples=%u,pixels=%u,wall_pixels=%u,plane_pixels=%u,"
+        "sprite_pixels=%u,columns=%u,fragments=%u,plane_spans=%u,sky_columns=%u,"
+        "sprite_columns=%u,decode_us=%u,compose_us=%u,lookup_us=%u,wall_decode_us=%u,"
+        "plane_decode_us=%u,masked_decode_us=%u,wall_compose_us=%u,plane_compose_us=%u,"
+        "masked_compose_us=%u,wall_lookup_us=%u,plane_lookup_us=%u,masked_lookup_us=%u,"
+        "wall_raster_us=%u,plane_raster_us=%u,masked_raster_us=%u,px_us_permille=%u,"
+        "col_us_permille=%u,frag_us_permille=%u,tex_hit=%u,tex_miss=%u,flat_hit=%u,"
+        "flat_miss=%u,sprite_hit=%u,sprite_miss=%u,tex_hit_permille=%u,flat_hit_permille=%u,"
+        "sprite_hit_permille=%u,tex_set=%u,tex_set_bytes=%u,flat_set=%u,sprite_set=%u,"
+        "sprite_set_bytes=%u,cache_bytes=%u,cache_peak=%u\n",
+        static_cast<unsigned>(samples), static_cast<unsigned>(pixels),
+        static_cast<unsigned>(wallPixels),
+        static_cast<unsigned>(frameProfileMean(stats.planePixelsSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.spritePixelsSum, samples)),
+        static_cast<unsigned>(columns), static_cast<unsigned>(fragments), static_cast<unsigned>(spans),
+        static_cast<unsigned>(skyColumns), static_cast<unsigned>(spriteColumns),
+        static_cast<unsigned>(frameProfileMean(stats.decodeSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.composeSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.lookupSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.wallDecodeSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.planeDecodeSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.maskedDecodeSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.wallComposeSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.planeComposeSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.maskedComposeSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.wallLookupSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.planeLookupSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.maskedLookupSum, samples)),
+        static_cast<unsigned>(wallRaster), static_cast<unsigned>(planeRaster),
+        static_cast<unsigned>(maskedRaster), static_cast<unsigned>(pixelNanos),
+        static_cast<unsigned>(columnNanos), static_cast<unsigned>(fragmentNanos),
+        static_cast<unsigned>(frameProfileMean(stats.texHitsSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.texMissesSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.flatHitsSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.flatMissesSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.spriteHitsSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.spriteMissesSum, samples)),
+        static_cast<unsigned>(frameProfilePermille(stats.texHitsSum,
+                                                   stats.texHitsSum + stats.texMissesSum)),
+        static_cast<unsigned>(frameProfilePermille(stats.flatHitsSum,
+                                                   stats.flatHitsSum + stats.flatMissesSum)),
+        static_cast<unsigned>(frameProfilePermille(stats.spriteHitsSum,
+                                                   stats.spriteHitsSum + stats.spriteMissesSum)),
+        static_cast<unsigned>(frameProfileMean(stats.texSetSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.texSetBytesSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.flatSetSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.spriteSetSum, samples)),
+        static_cast<unsigned>(frameProfileMean(stats.spriteSetBytesSum, samples)),
+        static_cast<unsigned>(stats.cacheBytesMax), static_cast<unsigned>(stats.cachePeakMax));
+
+    if (written <= 0 || static_cast<std::size_t>(written) >= capacity) {
+        out[0] = '\0';
+        return 0u;
+    }
+    return static_cast<std::size_t>(written);
+}
+
 }  // namespace doomc
 }  // namespace doom
 
@@ -335,33 +527,23 @@ constexpr std::size_t kLevelReleasedBytes = 20742u;
 constexpr std::size_t kLevelReleasedBytes = 46508u + 20742u;
 #endif
 
-/// One static graphics region, big enough for the buffer that has to live in
-/// .bss. 36,864 B holds the wall arena exactly and the 35,080 B scratch with
-/// 1,784 B to spare, so either can be the static one.
+/// One static graphics region. In the flash build it is the residency cache's
+/// first arena: 52 KB holds a 32,768 B texture beside a 16,384 B one, which the
+/// old 36,864 B two-slot arena could not, and the 20,480 B of `dram0_0_seg`
+/// headroom pays for it. The RAM build keeps 36,864 because its own 20,480 B
+/// static lump arena already spends that headroom.
+#if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
 constexpr std::size_t kStaticGraphicsBytes = 36864u;
-
-/// The composed-texture arena. Two slots, because a two-sided fragment resolves
-/// its upper and lower tier before the column loop and holds both: one slot would
-/// be a wrong frame, not a slow one. The extent is the measured peak pair over the
-/// 20 views -- 32,768 B (a 256-wide texture, stored with DOOM's 128-row column)
-/// plus 4,096 B (a 32-wide one) -- so 36,864 B total.
-///
-/// The two slots are packed from opposite ends: slot 0 starts at byte 0 and slot 1
-/// ends at the arena's last byte. Any pair whose sum fits therefore coexists,
-/// which a fixed 32,768/4,096 split does not: it refused BROWN144 (18,432 B) next
-/// to a 16,384 B wall on the board, a pair that needs 34,816 of the 36,864.
-constexpr std::size_t kWallArenaBytes = 36864u;
+#else
+constexpr std::size_t kStaticGraphicsBytes = 53248u;
+#endif
 
 /// One patch of a composite. 35,080 B is SKY1's largest patch, which the plane
 /// pass composes now that it runs; it is also larger than every wall texture's
 /// largest patch (17,544 B), so the wall pass and the masked pass share it. A
-/// flat (4,096 B) and a sprite patch (4,272 B) fit with room to spare.
+/// flat (4,096 B) and a sprite patch (4,272 B) are cache entries now and never
+/// touch this buffer.
 constexpr std::size_t kScratchBytes = 35080u;
-
-/// The graphics blocks: the wall arena and the decode scratch, side by side in one
-/// static region when both are static, or split between .bss and the heap by the
-/// placement the probe reports.
-constexpr std::size_t kGraphicsBlockBytes = kWallArenaBytes + kScratchBytes;
 
 /// Up to nine extra lump blocks from the heap: the blocks of the decoded level
 /// that the static arena does not hold, in the RAM build.
@@ -459,10 +641,10 @@ struct DriverState {
 /// The static half, and the only unconditional new .bss this file adds.
 DriverState gState;
 
-/// The two large blocks.
-std::uint8_t* gWallBytes = nullptr;
+/// The decode scratch, from the heap.
 std::uint8_t* gScratch = nullptr;
-std::uint8_t* gGraphics = nullptr;
+/// Bytes the cache's heap arenas added to the static block, printed by the mem line.
+int gCacheExtraBytes = 0;
 
 /// The extra lump blocks from the heap: the decoded level's blocks that the static
 /// arena does not hold. Each is 8,784 B or smaller.
@@ -480,13 +662,15 @@ r_sprite_t* gSprites = nullptr;
  * graphics are allocated one piece at a time -- see heapLump() and the placement
  * block in frameProbeRun() -- and each is released here exactly once.
  */
+void releaseCacheArenas();
+
 void releaseWorkingSet() {
-    gScratch = nullptr;
-    gWallBytes = nullptr;
-    if (gGraphics != nullptr) {
-        heap_caps_free(gGraphics);
-        gGraphics = nullptr;
+    if (gScratch != nullptr) {
+        heap_caps_free(gScratch);
+        gScratch = nullptr;
     }
+    releaseCacheArenas();
+    gCacheExtraBytes = 0;
     if (gSprites != nullptr) {
         heap_caps_free(gSprites);
         gSprites = nullptr;
@@ -556,57 +740,335 @@ int gStageCode = 0;
 /// time twice.
 int gDecodeDepth = 0;
 
-/// One composed-texture slot. `offset` is inside gWallBytes; `bytes` is
-/// width * 128; `stamp` orders the two so a resolve never evicts the entry the
-/// caller is about to use.
-struct WallSlot {
-    r_walltex_t tex = {};
-    r_name_t name = R_NAME_NONE;
-    std::uint32_t offset = 0;
-    std::uint32_t bytes = 0;
-    std::uint32_t stamp = 0;
-    bool used = false;
+// --- The residency cache (D3.5) ---------------------------------------------
+//
+// ONE caller-owned cache, three consumers. A composed wall texture, a flat and a
+// sprite patch are the same thing to a resolver -- a name and a block of bytes
+// that stays valid until the pass ends -- so one arena with one eviction rule
+// serves all three and the hit rate is measured on one number line.
+//
+// WHY IT IS SAFE WITHOUT THE RENDERER KNOWING
+//
+// r_segs.h requires a resolver's answer to stay valid until the pass returns,
+// and the D3.6 driver could not honour that: two slots were reused inside one
+// pass, which is why the passes re-resolved every tier and the second resolve
+// re-composed. The cache is what makes the contract true. It never moves bytes
+// (placement is first fit; entries are never compacted) and it never evicts an
+// entry it handed out in the current fragment: the last `kCachePinCount`
+// returns are pinned. A pass therefore re-resolves a texture and gets the same
+// pointer and the same bytes, at the cost of a linear search over at most 48
+// entries instead of a compose.
+//
+// CAPACITY AND EVICTION, IN BYTES
+//
+//   arena 0   the existing 36,864 B static block, exactly the old wall arena
+//   arena 1   up to 40,960 B from the heap, requested after the decode scratch
+//
+// One arena is not enough only because the two pools are not contiguous. The
+// allocation granule is 512 B, so a 32,768 B texture takes 64 granules; a
+// first-fit run plus per-entry LRU eviction is enough for the measured working
+// set (8 distinct wall textures, 6 flats, 33 sprite lumps, 127 KB in the worst
+// sampled view). A request that cannot be satisfied evicts the least recently
+// used unpinned entry and retries; if even that fails the resolver answers NULL,
+// which is the existing R_SEGS_ERR_TEXTURE_MISSING path, not a partial frame.
+//
+// The hit path is a name compare. The miss path composes into the arena and
+// records the entry; no decode is ever repeated for a name that is still
+// resident, across fragments, passes or frames.
+
+constexpr std::size_t kCacheGranuleBytes = 512u;
+constexpr int kCacheEntryCapacity = 48;
+constexpr int kCacheArenaCount = 4;
+constexpr std::size_t kCacheExtraStepBytes = 8192u;
+constexpr int kCacheExtraSteps = 3;
+constexpr int kCachePinCount = 3;
+
+enum CacheKind : std::uint8_t {
+    kCacheNone = 0,
+    kCacheWall = 1,
+    kCacheFlat = 2,
+    kCacheSprite = 3
 };
 
-WallSlot gWall[2];
-std::uint32_t gStamp = 0;
-int gNewest = -1;
+/// The three high bits select the arena and are never zero, so a valid placement
+/// can never collide with the 0 that means "nothing fits".
+constexpr int kCacheArenaShift = 29;
+constexpr std::uint32_t kCacheArenaMask = 0xE0000000u;
+constexpr std::uint32_t kCacheOffsetMask = ~kCacheArenaMask;
 
-/// The shared scratch's owner. A hit requires the owner *and* the name, so a
-/// pointer can never be handed back after another decoder overwrote it.
+struct CacheArena {
+    std::uint8_t* base;
+    std::uint32_t bytes;
+    std::uint32_t granules;
+    /// One bit per granule. 256 granules is 128 KB, twice the largest arena.
+    std::uint64_t map[4];
+};
+
+union CacheValue {
+    r_walltex_t tex;
+    r_flat_t flat;
+    r_sprite_patch_t patch;
+};
+
+struct CacheEntry {
+    r_name_t name;
+    std::uint32_t where;
+    std::uint32_t bytes;
+    std::uint32_t stamp;
+    std::uint8_t kind;
+    std::uint8_t used;
+    CacheValue value;
+};
+
+CacheArena gArena[kCacheArenaCount];
+CacheEntry gCache[kCacheEntryCapacity];
+std::uint32_t gCacheStamp = 0;
+int gPinned[kCachePinCount] = {-1, -1, -1};
+int gPinNext = 0;
+int gCachePeak = 0;
+
+/// Frees the heap arenas. The static arena 0 is not the heap's to free.
+void releaseCacheArenas() {
+    for (int arena = 1; arena < kCacheArenaCount; ++arena) {
+        if (gArena[arena].base != nullptr) {
+            heap_caps_free(gArena[arena].base);
+            gArena[arena].base = nullptr;
+            gArena[arena].bytes = 0u;
+            gArena[arena].granules = 0u;
+        }
+    }
+}
+
+void cacheReset() {
+    for (int index = 0; index < kCacheEntryCapacity; ++index) {
+        gCache[index].used = 0u;
+    }
+    for (int arena = 0; arena < kCacheArenaCount; ++arena) {
+        for (int word = 0; word < 4; ++word) {
+            gArena[arena].map[word] = 0u;
+        }
+    }
+    for (int index = 0; index < kCachePinCount; ++index) {
+        gPinned[index] = -1;
+    }
+    gPinNext = 0;
+    gCachePeak = 0;
+    gCacheStamp = 0u;
+}
+
+void cacheBindArena(int arena, std::uint8_t* base, std::size_t bytes) {
+    const std::size_t granules = bytes / kCacheGranuleBytes;
+    gArena[arena].base = base;
+    gArena[arena].bytes = static_cast<std::uint32_t>(granules * kCacheGranuleBytes);
+    gArena[arena].granules = static_cast<std::uint32_t>(granules);
+    for (int word = 0; word < 4; ++word) {
+        gArena[arena].map[word] = 0u;
+    }
+}
+
+std::uint32_t cacheCapacityBytes() {
+    std::uint32_t total = 0u;
+    for (int arena = 0; arena < kCacheArenaCount; ++arena) {
+        total += gArena[arena].bytes;
+    }
+    return total;
+}
+
+bool cacheIsPinned(int entry) {
+    for (int index = 0; index < kCachePinCount; ++index) {
+        if (gPinned[index] == entry) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void cachePin(int entry) {
+    for (int index = 0; index < kCachePinCount; ++index) {
+        if (gPinned[index] == entry) {
+            return;
+        }
+    }
+    gPinned[gPinNext] = entry;
+    gPinNext = (gPinNext + 1) % kCachePinCount;
+}
+
+/// r_tex_source_t::beginFragment: the renderer's fragment boundary.
 ///
-/// The sprite patch is NOT part of this sharing any more: R_DrawMasked() renders
-/// the masked mid textures a sprite hides *inside* that sprite's draw, so a
-/// compose can run while a sprite patch is live, and one 35,080 B scratch cannot
-/// hold both. D3.6 never saw it because the masked pass never ran; the board
-/// counts it in `hazards=`. The sprite patch therefore has its own buffer.
+/// Clearing the ring is what lets the cache evict a previous fragment's
+/// textures while protecting the two or three this fragment is about to read.
+/// Without the signal the ring can only be a guess, and a guess that keeps two
+/// 32 KB textures alive refuses a third.
+void cacheBeginFragment(void* context) {
+    (void)context;
+    for (int index = 0; index < kCachePinCount; ++index) {
+        gPinned[index] = -1;
+    }
+}
+
+void cacheReleaseGranules(int arena, std::uint32_t first, std::uint32_t count) {
+    for (std::uint32_t granule = first; granule < first + count; ++granule) {
+        gArena[arena].map[granule >> 6] &= ~(static_cast<std::uint64_t>(1u) << (granule & 63u));
+    }
+}
+
+/// Finds @p need consecutive free granules. Returns false when no run exists.
+bool cacheFindRun(int arena, std::uint32_t need, std::uint32_t* first) {
+    const CacheArena& zone = gArena[arena];
+    std::uint32_t run = 0u;
+
+    for (std::uint32_t granule = 0; granule < zone.granules; ++granule) {
+        const bool taken =
+            ((zone.map[granule >> 6] >> (granule & 63u)) & 1u) != 0u;
+        if (taken) {
+            run = 0u;
+            continue;
+        }
+        if (run == 0u) {
+            *first = granule;
+        }
+        ++run;
+        if (run == need) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Drops the least recently used entry that is not pinned. False when none.
+bool cacheEvictOne() {
+    int victim = -1;
+    for (int index = 0; index < kCacheEntryCapacity; ++index) {
+        if (gCache[index].used == 0u || cacheIsPinned(index)) {
+            continue;
+        }
+        if (victim < 0 || gCache[index].stamp < gCache[victim].stamp) {
+            victim = index;
+        }
+    }
+    if (victim < 0) {
+        return false;
+    }
+
+    const int arena = static_cast<int>((gCache[victim].where & kCacheArenaMask) >> kCacheArenaShift) - 1;
+    const std::uint32_t offset = gCache[victim].where & kCacheOffsetMask;
+    const std::uint32_t granules =
+        (gCache[victim].bytes + static_cast<std::uint32_t>(kCacheGranuleBytes) - 1u)
+        / static_cast<std::uint32_t>(kCacheGranuleBytes);
+    cacheReleaseGranules(arena, offset / static_cast<std::uint32_t>(kCacheGranuleBytes), granules);
+    gCache[victim].used = 0u;
+    return true;
+}
+
+/// Reserves @p bytes and returns the tagged address, or 0 when nothing fits.
+std::uint32_t cacheReserve(std::uint32_t bytes) {
+    const std::uint32_t need =
+        (bytes + static_cast<std::uint32_t>(kCacheGranuleBytes) - 1u)
+        / static_cast<std::uint32_t>(kCacheGranuleBytes);
+    if (need == 0u || need > 256u) {
+        return 0u;
+    }
+
+    for (int attempt = 0; attempt <= kCacheEntryCapacity; ++attempt) {
+        for (int arena = 0; arena < kCacheArenaCount; ++arena) {
+            std::uint32_t first = 0u;
+            if (cacheFindRun(arena, need, &first)) {
+                for (std::uint32_t granule = first; granule < first + need; ++granule) {
+                    gArena[arena].map[granule >> 6] |=
+                        static_cast<std::uint64_t>(1u) << (granule & 63u);
+                }
+                const std::uint32_t offset =
+                    first * static_cast<std::uint32_t>(kCacheGranuleBytes);
+                return (static_cast<std::uint32_t>(arena + 1) << kCacheArenaShift) | offset;
+            }
+        }
+        if (!cacheEvictOne()) {
+            return 0u;
+        }
+    }
+    return 0u;
+}
+
+/// Releases a reservation that never became an entry (a compose failure).
+void cacheRelease(std::uint32_t where, std::uint32_t bytes) {
+    if (where == 0u) {
+        return;
+    }
+    const int arena = static_cast<int>((where & kCacheArenaMask) >> kCacheArenaShift) - 1;
+    const std::uint32_t offset = where & kCacheOffsetMask;
+    const std::uint32_t granules =
+        (bytes + static_cast<std::uint32_t>(kCacheGranuleBytes) - 1u)
+        / static_cast<std::uint32_t>(kCacheGranuleBytes);
+    cacheReleaseGranules(arena, offset / static_cast<std::uint32_t>(kCacheGranuleBytes), granules);
+}
+
+CacheEntry* cacheFind(CacheKind kind, r_name_t name) {
+    for (int index = 0; index < kCacheEntryCapacity; ++index) {
+        if (gCache[index].used != 0u && gCache[index].kind == kind
+            && gCache[index].name == name) {
+            gCache[index].stamp = ++gCacheStamp;
+            cachePin(index);
+            return &gCache[index];
+        }
+    }
+    return nullptr;
+}
+
+/// Reserves an entry record for @p name in @p where. NULL when even an eviction
+/// cannot free a record (an eviction that would break a pinned pointer is refused).
+CacheEntry* cacheInsert(CacheKind kind, r_name_t name, std::uint32_t where,
+                        std::uint32_t bytes) {
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        for (int index = 0; index < kCacheEntryCapacity; ++index) {
+            if (gCache[index].used != 0u) {
+                continue;
+            }
+            gCache[index].used = 1u;
+            gCache[index].kind = static_cast<std::uint8_t>(kind);
+            gCache[index].name = name;
+            gCache[index].where = where;
+            gCache[index].bytes = bytes;
+            gCache[index].stamp = ++gCacheStamp;
+            {
+                int live = 0;
+                for (int entry = 0; entry < kCacheEntryCapacity; ++entry) {
+                    live += gCache[entry].used != 0u ? 1 : 0;
+                }
+                if (live > gCachePeak) {
+                    gCachePeak = live;
+                }
+            }
+            cachePin(index);
+            return &gCache[index];
+        }
+        if (!cacheEvictOne()) {
+            return nullptr;
+        }
+    }
+    return nullptr;
+}
+
+std::uint8_t* cacheAddress(std::uint32_t where) {
+    const int arena = static_cast<int>((where & kCacheArenaMask) >> kCacheArenaShift) - 1;
+    return gArena[arena].base + (where & kCacheOffsetMask);
+}
+
+/// The shared scratch's owner. The scratch now holds only a compose's patch
+/// bytes: flats and sprite patches live in the residency cache, so the old
+/// flat/scratch aliasing hazard cannot occur and `hazards=` must stay 0.
 enum ScratchOwner : std::uint8_t {
     kOwnerNone = 0,   ///< nothing valid in the scratch
-    kOwnerPatch = 1,  ///< a texture compose's patch bytes
-    kOwnerFlat = 2    ///< the flat slot
+    kOwnerPatch = 1   ///< a texture compose's patch bytes
 };
 
 std::uint8_t gScratchOwner = kOwnerNone;
-r_name_t gFlatName = R_NAME_NONE;
-r_flat_t gFlat = {};
 
-/// The sprite patch slot, separate from the shared scratch for the reason the
-/// owner tag documents. 4,272 B: the largest sprite patch the fixture names
-/// (ELECA0, type 48).
-alignas(8) std::uint8_t gSpritePatchBytes[kSpritePatchBytes];
-r_sprite_patch_t gSpritePatch = {nullptr, 0u};
-r_name_t gSpriteName = R_NAME_NONE;
-
-/// 1 while r_plane_draw() is running. The plane pass resolves flats and composes
-/// the sky in the same scan, and it re-resolves every flat immediately before it
-/// reads it, so a compose that finds a flat in the scratch there is the design.
-/// Anywhere else it is an aliasing violation, and `hazards=` counts it.
+/// 1 while r_plane_draw() is running; kept so `hazards=` keeps its meaning.
 int gPlanePass = 0;
 
-/// The aliasing violations the probe saw: a texture compose that took the shared
-/// scratch while a flat was live outside the plane pass. Must stay 0; a non-zero
-/// value means a pixel could have come from another buffer's bytes.
+/// The aliasing violations the probe saw. Must stay 0.
 std::uint32_t gHazards = 0;
+
 
 // --- Timing -----------------------------------------------------------------
 
@@ -656,6 +1118,10 @@ bool decodeLump(int lump, std::uint8_t* out, std::size_t capacity, std::uint32_t
     const int code = doom_whd_source_read_lump(&gWhd, lump, out, capacity, &required);
     --gDecodeDepth;
 
+    // The leaf time, always: a compose that decodes six patches wants each
+    // patch's inflate counted once, and `residency_us` keeps its older meaning
+    // (the outermost decoder only) so the baseline stays comparable.
+    gSample.decodeMicros += elapsedMicros(start);
     if (outermost) {
         gSample.residencyMicros += elapsedMicros(start);
     }
@@ -668,6 +1134,109 @@ bool decodeLump(int lump, std::uint8_t* out, std::size_t capacity, std::uint32_t
     gSample.bytesDecoded += required;
     return true;
 }
+
+/**
+ * @brief A tiny direct-mapped memo for the container's name -> lump scan.
+ *
+ * `whd_lump_index_for_name()` is a linear scan of 1,264 name-table entries, and
+ * the table lives in mapped flash; the scan costs tens of microseconds. The
+ * frame asks for the same ~120 names (66 wall patches, 22 flats, ~36 sprite
+ * lumps) thousands of times, so a memo is the difference between paying that
+ * scan per fetch and paying it once per name per boot. Names are compared in
+ * full, not by hash: a hash collision would resolve to the wrong lump, and a
+ * wrong lump is a wrong pixel.
+ *
+ * The name field is always the 9-byte NUL-terminated form this port passes
+ * around (`r_unpack_name` and PNAMES both produce 8 bytes plus a NUL), so the
+ * eight bytes after the terminator are padding, never a read past the buffer.
+ */
+struct NameLumpEntry {
+    std::uint8_t name[8];
+    std::int16_t lump;
+    std::uint8_t used;
+};
+
+constexpr int kNameLumpEntries = 128;
+NameLumpEntry gNameLumps[kNameLumpEntries];
+
+void clearNameLumps() {
+    for (int index = 0; index < kNameLumpEntries; ++index) {
+        gNameLumps[index].used = 0;
+    }
+}
+
+/// The container's name -> lump scan, memoised and timed.
+int lookupLumpIndex(const char* name) {
+    std::uint8_t key[8];
+    std::uint32_t hash = 2166136261u;
+    int index;
+
+    for (index = 0; index < 8; ++index) {
+        key[index] = static_cast<std::uint8_t>(name[index]);
+        hash = (hash ^ key[index]) * 16777619u;
+    }
+
+    NameLumpEntry& entry = gNameLumps[hash % kNameLumpEntries];
+    if (entry.used != 0u && std::memcmp(entry.name, key, sizeof key) == 0) {
+        return entry.lump;
+    }
+
+    const std::int64_t start = nowMicros();
+    const int lump = doom_whd_source_lump_index(&gWhd, name);
+    gSample.lookupMicros += elapsedMicros(start);
+
+    if (lump >= 0) {
+        std::memcpy(entry.name, key, sizeof key);
+        entry.lump = static_cast<std::int16_t>(lump);
+        entry.used = 1u;
+    }
+    return lump;
+}
+
+/**
+ * @brief One frame's distinct-name working set.
+ *
+ * Filled by the resolvers on a miss, cleared at the top of every frame. It is
+ * what says how many distinct textures, flats and sprite lumps a view actually
+ * asks for and how many bytes their composed forms cost -- the capacity a
+ * residency cache must have to make the next run of the same view free. The
+ * capacities are measured peaks (8 textures, 6 flats, 33 sprite lumps) with
+ * headroom, and they are template parameters so the three sets do not each pay
+ * for the largest one.
+ */
+template <int Capacity>
+struct NameSet {
+    r_name_t names[Capacity];
+    std::uint32_t bytes[Capacity];
+    int count;
+    std::uint32_t totalBytes;
+
+    void reset() {
+        count = 0;
+        totalBytes = 0u;
+    }
+
+    /// Adds @p name on its first sighting; returns true when it was new.
+    bool add(r_name_t name, std::uint32_t entryBytes) {
+        for (int index = 0; index < count; ++index) {
+            if (names[index] == name) {
+                return false;
+            }
+        }
+        if (count >= Capacity) {
+            return false;
+        }
+        names[count] = name;
+        bytes[count] = entryBytes;
+        ++count;
+        totalBytes += entryBytes;
+        return true;
+    }
+};
+
+NameSet<16> gTexSet;
+NameSet<12> gFlatSet;
+NameSet<40> gSpriteSet;
 
 /**
  * @brief Binds one lump as a pointer into the mapping, or reports that it is not raw.
@@ -696,17 +1265,11 @@ bool viewLump(int lump, const std::uint8_t** data, std::size_t* size) {
 r_error_t fetchPatch(void* user, const char* name, const std::uint8_t** data, std::size_t* size) {
     (void)user;
 
-    const int lump = doom_whd_source_lump_index(&gWhd, name);
+    const int lump = lookupLumpIndex(name);
     if (lump < 0) {
         return R_ERR_PATCH_FETCH;
     }
 
-    // The plane pass resolves every flat again immediately before it reads it, so
-    // a flat in the scratch there is the design. Anywhere else a flat still in the
-    // scratch means a compose is about to overwrite bytes someone may read.
-    if (gScratchOwner == kOwnerFlat && gPlanePass == 0) {
-        ++gHazards;
-    }
     gScratchOwner = kOwnerPatch;
 
     std::uint32_t required = 0u;
@@ -718,37 +1281,9 @@ r_error_t fetchPatch(void* user, const char* name, const std::uint8_t** data, st
     return R_ERR_OK;
 }
 
-/// True when a texture of @p bytes can live in @p slot beside whatever the other
-/// slot holds. A texture never has to fit beside itself: placing it releases the
-/// slot it is replacing.
-bool slotFits(int slot, std::uint32_t bytes) {
-    const int other = 1 - slot;
-    const std::uint32_t otherBytes = gWall[other].used ? gWall[other].bytes : 0u;
-    return bytes + otherBytes <= static_cast<std::uint32_t>(kWallArenaBytes);
-}
-
-/// Chooses the slot a texture of @p bytes goes in, or -1 when neither can hold it.
-/// The most recently returned slot is never the victim: a fragment resolves its
-/// tiers one after the other and then reads both.
-int wallVictim(std::uint32_t bytes) {
-    // An unused slot first, then the older of the two. `gNewest` is the slot
-    // handed out most recently and is skipped whenever there is an alternative,
-    // because a two-sided fragment resolves its upper and lower tier one after the
-    // other and reads both in the same column loop.
-    const int preferred = !gWall[0].used ? 0 : (!gWall[1].used ? 1 : (gNewest != 0 ? 0 : 1));
-    const int fallback = 1 - preferred;
-
-    if (slotFits(preferred, bytes)) {
-        return preferred;
-    }
-    if (slotFits(fallback, bytes)) {
-        return fallback;
-    }
-    return -1;
-}
-
 /**
- * @brief Composes one texture into a slot, in DOOM's column-major stored form.
+ * @brief Composes one texture into the residency cache, in DOOM's column-major
+ * stored form.
  *
  * r_texture_compose() writes `pixel(x, y)` at `x * height + y`, which is the
  * composite layout; the column writer wants DOOM's stored 128-row column, so the
@@ -757,18 +1292,13 @@ int wallVictim(std::uint32_t bytes) {
  * every remaining source, and the zeroing above a column's declared height cannot
  * reach a column not yet moved.
  */
-bool composeInto(int slot, const char* name, const r_texture_info_t& info) {
+bool composeInto(const char* name, const r_texture_info_t& info, std::uint8_t* base) {
     const std::size_t height = static_cast<std::size_t>(info.height);
-    const std::uint32_t bytes =
-        static_cast<std::uint32_t>(static_cast<std::uint32_t>(info.width) * kStoredColumnRows);
-    // Slot 0 grows up from the arena's first byte, slot 1 down from its last, so
-    // the pair only has to add up to the arena, not match a fixed split.
-    const std::uint32_t offset =
-        slot == 0 ? 0u : static_cast<std::uint32_t>(kWallArenaBytes - bytes);
-    std::uint8_t* base = gWallBytes + offset;
 
     const bool outermost = (gDecodeDepth == 0);
     const std::int64_t start = nowMicros();
+    const std::uint32_t decodeBefore = gSample.decodeMicros;
+    const std::uint32_t lookupBefore = gSample.lookupMicros;
 
     ++gDecodeDepth;
     const r_error_t error =
@@ -796,138 +1326,191 @@ bool composeInto(int slot, const char* name, const r_texture_info_t& info) {
         std::memset(destination + height, 0, kStoredColumnRows - height);
     }
 
-    WallSlot& entry = gWall[slot];
-    entry.name = r_pack_name(reinterpret_cast<const std::uint8_t*>(name));
-    entry.offset = offset;
-    entry.bytes = bytes;
-    entry.used = true;
-    entry.stamp = ++gStamp;
-    entry.tex.pixels = base;
-    entry.tex.mask = nullptr;
-    entry.tex.width = static_cast<std::int16_t>(info.width);
-    entry.tex.height = static_cast<std::int16_t>(info.height);
-    entry.tex.widthMask = r_texture_width_mask(info.width);
-    entry.tex.heightMask = static_cast<std::int16_t>(kStoredColumnRows - 1u);
-    gNewest = slot;
+    // The compose's own cost, exclusive: the fill and the in-place column
+    // expansion. The patch inflates and the name scans are their own buckets.
+    {
+        const std::uint32_t total = elapsedMicros(start);
+        const std::uint32_t nested = (gSample.decodeMicros - decodeBefore)
+                                     + (gSample.lookupMicros - lookupBefore);
+        gSample.composeMicros += total > nested ? total - nested : 0u;
+    }
+
     return true;
 }
 
 /// The most recent texture a resolve refused, and why: `lookup` (the name is not
-/// in the container's TEXTURE1), `slot` (the two live textures do not fit the
-/// arena) or `compose` (the patch fetch or the composite failed). Printed by
-/// `FRAMEPROF,error`, because "a texture is missing" is not a diagnosis.
+/// in the container's TEXTURE1), `slot` (no run of granules would hold it even
+/// after eviction) or `compose` (the patch fetch or the composite failed). Printed
+/// by `FRAMEPROF,error`, because "a texture is missing" is not a diagnosis.
 char gFailTexture[9] = {0};
 const char* gFailWhy = "none";
 
-/// r_tex_source_t::resolve: the naive wall policy, documented in the header.
+/// r_tex_source_t::resolve: compose into the cache, or answer from it.
 const r_walltex_t* resolveWall(void* context, r_name_t name) {
     (void)context;
 
     ++gSample.texResolves;
-    for (int index = 0; index < 2; ++index) {
-        if (gWall[index].used && gWall[index].name == name) {
-            gNewest = index;
-            return &gWall[index].tex;
-        }
+    if (CacheEntry* hit = cacheFind(kCacheWall, name)) {
+        ++gSample.texHits;
+        return &hit->value.tex;
     }
 
     ++gSample.texDecodes;
+    ++gSample.texMisses;
     char text[9];
     r_unpack_name(name, text);
     std::memcpy(gFailTexture, text, sizeof text);
 
     r_texture_info_t info;
-    if (r_texture_lookup(gTexture1, gTexture1Bytes, nullptr, 0u, text, &info) != R_ERR_OK) {
-        gFailWhy = "lookup";
-        return nullptr;
+    {
+        // The directory scan is a walk of a mapped-flash lump, not a decode, and
+        // it is charged to the lookup bucket so the compose cost stays honest.
+        const std::int64_t lookupStart = nowMicros();
+        const r_error_t lookup =
+            r_texture_lookup(gTexture1, gTexture1Bytes, nullptr, 0u, text, &info);
+        gSample.lookupMicros += elapsedMicros(lookupStart);
+        if (lookup != R_ERR_OK) {
+            gFailWhy = "lookup";
+            return nullptr;
+        }
     }
 
     const std::uint32_t bytes = static_cast<std::uint32_t>(info.width) * kStoredColumnRows;
-    const int slot = wallVictim(bytes);
-    if (slot < 0) {
-        // The frame's two live textures do not fit the arena. Reported by the
-        // caller as R_SEGS_ERR_TEXTURE_MISSING, which is honest: nothing was
-        // written for that tier.
+    (void)gTexSet.add(name, bytes);
+
+    const std::uint32_t where = cacheReserve(bytes);
+    if (where == 0u) {
+        // Even after evicting every unpinned entry no run of granules is big
+        // enough. Reported by the caller as R_SEGS_ERR_TEXTURE_MISSING, which is
+        // honest: nothing was written for that tier.
         gFailWhy = "slot";
         return nullptr;
     }
-    if (!composeInto(slot, text, info)) {
+    std::uint8_t* base = cacheAddress(where);
+    if (!composeInto(text, info, base)) {
+        cacheRelease(where, bytes);
         gFailWhy = "compose";
         return nullptr;
     }
-    return &gWall[slot].tex;
+
+    CacheEntry* entry = cacheInsert(kCacheWall, name, where, bytes);
+    if (entry == nullptr) {
+        cacheRelease(where, bytes);
+        gFailWhy = "table";
+        return nullptr;
+    }
+    entry->value.tex.pixels = base;
+    entry->value.tex.mask = nullptr;
+    entry->value.tex.width = static_cast<std::int16_t>(info.width);
+    entry->value.tex.height = static_cast<std::int16_t>(info.height);
+    entry->value.tex.widthMask = r_texture_width_mask(info.width);
+    entry->value.tex.heightMask = static_cast<std::int16_t>(kStoredColumnRows - 1u);
+    return &entry->value.tex;
 }
 
 // --- Flats and sprite patches -----------------------------------------------
 
-/// r_tex_source_t::resolveFlat: decode into the shared scratch, nothing more.
+/// r_tex_source_t::resolveFlat: decode into the residency cache, or answer from it.
 ///
-/// The scratch is also the patch buffer, so a compose takes it and invalidates the
-/// flat. That is safe by the order of the passes, not by luck: the plane pass
-/// resolves one flat per drawable plane and reads it before the next resolve, and
-/// the only compose it can reach is the sky's, in its own preflight. A violation
-/// is counted in `hazards=`, not assumed away.
+/// A flat is 4,096 B and the sampled views use at most six distinct ones, so the
+/// whole per-frame flat working set fits in the cache with room to spare. The
+/// decode scratch is now only a compose's patch buffer; a flat never touches it,
+/// which is why the old flat/patch aliasing hazard is gone.
 const r_flat_t* resolveFlat(void* context, r_name_t name) {
     (void)context;
 
     ++gSample.flatResolves;
-    if (gScratchOwner == kOwnerFlat && gFlatName == name) {
-        return &gFlat;
+    if (CacheEntry* hit = cacheFind(kCacheFlat, name)) {
+        ++gSample.flatHits;
+        return &hit->value.flat;
     }
 
     ++gSample.flatDecodes;
+    ++gSample.flatMisses;
     char text[9];
     r_unpack_name(name, text);
-    const int lump = doom_whd_source_lump_index(&gWhd, text);
+    const int lump = lookupLumpIndex(text);
     if (lump < 0) {
         return nullptr;
     }
+    (void)gFlatSet.add(name, static_cast<std::uint32_t>(kFlatBytes));
+
+    const std::uint32_t where = cacheReserve(static_cast<std::uint32_t>(kFlatBytes));
+    if (where == 0u) {
+        return nullptr;
+    }
+    std::uint8_t* base = cacheAddress(where);
     std::uint32_t used = 0u;
-    if (!decodeLump(lump, gScratch, kFlatBytes, &used)) {
+    if (!decodeLump(lump, base, kFlatBytes, &used)) {
+        cacheRelease(where, static_cast<std::uint32_t>(kFlatBytes));
         return nullptr;
     }
     if (used != kFlatBytes) {
+        cacheRelease(where, static_cast<std::uint32_t>(kFlatBytes));
         return nullptr;
     }
 
-    gScratchOwner = kOwnerFlat;
-    gFlatName = name;
-    gFlat.pixels = gScratch;
-    gFlat.width = R_FLAT_SIZE;
-    gFlat.height = R_FLAT_SIZE;
-    gFlat.widthMask = R_FLAT_SIZE - 1;
-    gFlat.heightMask = R_FLAT_SIZE - 1;
-    return &gFlat;
+    CacheEntry* entry = cacheInsert(kCacheFlat, name, where,
+                                    static_cast<std::uint32_t>(kFlatBytes));
+    if (entry == nullptr) {
+        cacheRelease(where, static_cast<std::uint32_t>(kFlatBytes));
+        return nullptr;
+    }
+    entry->value.flat.pixels = base;
+    entry->value.flat.width = R_FLAT_SIZE;
+    entry->value.flat.height = R_FLAT_SIZE;
+    entry->value.flat.widthMask = R_FLAT_SIZE - 1;
+    entry->value.flat.heightMask = R_FLAT_SIZE - 1;
+    return &entry->value.flat;
 }
 
 /// r_sprite_source_t::resolve: a sprite lump is its raw patch bytes, decoded into
-/// the sprite patch slot. It cannot share the scratch: R_DrawMasked() renders the
-/// masked mid textures a sprite hides inside that sprite's own draw, so a compose
-/// can take the scratch while the patch is live. The slot is one buffer because
-/// the pass resolves one sprite at a time; `gSpriteName` is the cache key.
+/// the residency cache. It cannot share the decode scratch: R_DrawMasked() renders
+/// the masked mid textures a sprite hides inside that sprite's own draw, so a
+/// compose can take the scratch while a patch is live. Each distinct lump gets its
+/// own cache entry, so the second preflight and the draw both answer from memory.
 const r_sprite_patch_t* resolveSprite(void* context, r_name_t lump) {
     (void)context;
 
     ++gSample.spriteResolves;
-    if (gSpriteName == lump) {
-        return &gSpritePatch;
+    if (CacheEntry* hit = cacheFind(kCacheSprite, lump)) {
+        ++gSample.spriteHits;
+        return &hit->value.patch;
     }
 
     ++gSample.spriteDecodes;
+    ++gSample.spriteMisses;
     char text[9];
     r_unpack_name(lump, text);
-    const int index = doom_whd_source_lump_index(&gWhd, text);
+    const int index = lookupLumpIndex(text);
     if (index < 0) {
         return nullptr;
     }
-    std::uint32_t used = 0u;
-    if (!decodeLump(index, gSpritePatchBytes, kSpritePatchBytes, &used)) {
+    const std::int32_t size = doom_whd_source_lump_size(&gWhd, index);
+    if (size <= 0 || static_cast<std::uint32_t>(size) > kSpritePatchBytes) {
         return nullptr;
     }
-    gSpriteName = lump;
-    gSpritePatch.data = gSpritePatchBytes;
-    gSpritePatch.size = static_cast<std::size_t>(used);
-    return &gSpritePatch;
+
+    const std::uint32_t where = cacheReserve(static_cast<std::uint32_t>(size));
+    if (where == 0u) {
+        return nullptr;
+    }
+    std::uint8_t* base = cacheAddress(where);
+    std::uint32_t used = 0u;
+    if (!decodeLump(index, base, static_cast<std::size_t>(size), &used)) {
+        cacheRelease(where, static_cast<std::uint32_t>(size));
+        return nullptr;
+    }
+    (void)gSpriteSet.add(lump, used);
+
+    CacheEntry* entry = cacheInsert(kCacheSprite, lump, where, used);
+    if (entry == nullptr) {
+        cacheRelease(where, static_cast<std::uint32_t>(size));
+        return nullptr;
+    }
+    entry->value.patch.data = base;
+    entry->value.patch.size = static_cast<std::size_t>(used);
+    return &entry->value.patch;
 }
 
 // --- The 20 sampled viewpoints ----------------------------------------------
@@ -1502,6 +2085,9 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     // The resolvers fold into gSample, so it is the per-run accumulator and is
     // cleared here rather than at the call site: one frame, one set of counters.
     gSample = FrameProfileSample{};
+    gTexSet.reset();
+    gFlatSet.reset();
+    gSpriteSet.reset();
 
     std::memset(pixels, 0xFF, static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
     std::memset(gState.covered, 0, sizeof gState.covered);
@@ -1511,6 +2097,10 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     driver->surface.planePixels = 0u;
     driver->surface.planeSpans = 0u;
     driver->surface.spritePixels = 0u;
+
+    std::uint32_t decodeMark = 0u;
+    std::uint32_t composeMark = 0u;
+    std::uint32_t lookupMark = 0u;
 
     std::int64_t start = nowMicros();
     driver->stage = "walk";
@@ -1522,13 +2112,25 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     sample->drawsegs = driver->view.drawsegCount;
     sample->drawsegOverflowed = driver->view.drawsegOverflowed;
 
-    // A pass owns the scratch for its duration only. Clearing the owner here is
-    // what keeps `hazards=` honest: the plane pass leaves a flat tagged in the
-    // scratch, and without this the masked pass's first sky/mid compose would look
-    // like an aliasing violation when it is only a stale tag.
-    gScratchOwner = kOwnerNone;
-    gFlatName = R_NAME_NONE;
+    // The wall pass's denominators, from the walk's own output: a drawseg is one
+    // fragment and its [x1, x2] span is the columns the loop will visit.
+    sample->wallFragments = driver->view.drawsegCount;
+    for (std::uint16_t index = 0u; index < driver->view.drawsegCount; ++index) {
+        const r_drawseg_t& drawseg = driver->view.storage.drawsegs[index];
+        if (drawseg.x2 >= drawseg.x1) {
+            sample->wallColumns =
+                static_cast<std::uint16_t>(sample->wallColumns + (drawseg.x2 - drawseg.x1 + 1));
+        }
+    }
 
+    // The decode scratch is a compose's patch buffer only. Its owner tag is still
+    // cleared here so a stale tag cannot survive a pass, but no flat or sprite
+    // patch lives there any more: the residency cache owns those.
+    gScratchOwner = kOwnerNone;
+
+    decodeMark = gSample.decodeMicros;
+    composeMark = gSample.composeMicros;
+    lookupMark = gSample.lookupMicros;
     start = nowMicros();
     driver->stage = "walls";
     const r_segs_error_t walls =
@@ -1538,17 +2140,22 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
         gStageCode = static_cast<int>(walls);
         return false;
     }
+    sample->wallDecodeMicros = gSample.decodeMicros - decodeMark;
+    sample->wallComposeMicros = gSample.composeMicros - composeMark;
+    sample->wallLookupMicros = gSample.lookupMicros - lookupMark;
+    sample->wallPixels = driver->surface.tierPixels[R_DRAW_TIER_MID]
+                         + driver->surface.tierPixels[R_DRAW_TIER_TOP]
+                         + driver->surface.tierPixels[R_DRAW_TIER_BOTTOM];
 
-    // The wall pass owns the two texture slots for its duration, and it is over.
-    // Clearing them is what lets the plane pass compose the sky: SKY1 is 32,768 B
-    // and only fits the 36,864 B arena beside something of at most 4,096 B, so a
-    // wall texture left cached from the previous pass would refuse it. The policy
-    // is "nothing beyond the current call", and a pass is a call; recomposing the
-    // sky or a masked mid texture costs decode time that `residency_us` reports.
-    gWall[0].used = false;
-    gWall[1].used = false;
-    gNewest = -1;
+    // The residency cache now holds the wall textures across the pass boundary:
+    // SKY1 is 32,768 B and the arena is 77,824 B, so a wall texture left resident
+    // is an asset, not the refusal it was when the arena was 36,864 B and the
+    // policy was "nothing beyond the current call". Nothing is cleared here; a
+    // texture is dropped only by the cache's own LRU rule.
 
+    decodeMark = gSample.decodeMicros;
+    composeMark = gSample.composeMicros;
+    lookupMark = gSample.lookupMicros;
     start = nowMicros();
     driver->stage = "planes";
     gPlanePass = 1;
@@ -1560,18 +2167,35 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
         gStageCode = static_cast<int>(planes);
         return false;
     }
+    sample->planeDecodeMicros = gSample.decodeMicros - decodeMark;
+    sample->planeComposeMicros = gSample.composeMicros - composeMark;
+    sample->planeLookupMicros = gSample.lookupMicros - lookupMark;
+    sample->planePixels = driver->surface.planePixels;
+    sample->planeSpans = driver->surface.planeSpans;
     for (std::uint16_t index = 0u; index < driver->view.storage.planes.count; ++index) {
-        if (driver->view.storage.planes.planes[index].minX
-            <= driver->view.storage.planes.planes[index].maxX) {
+        const r_visplane_t& plane = driver->view.storage.planes.planes[index];
+        if (plane.minX <= plane.maxX) {
             ++sample->planesDrawn;
+        }
+        // A sky plane draws one column per marked column, not a span, so its
+        // columns are the second denominator the plane pass needs.
+        if (params.skyPicNum != R_PLANE_NO_SKY && plane.picNum == params.skyPicNum) {
+            for (int column = plane.minX; column <= (int)plane.maxX; ++column) {
+                if (plane.top[column] != R_PLANE_EMPTY
+                    && plane.top[column] <= plane.bottom[column]) {
+                    ++sample->skyColumns;
+                }
+            }
         }
     }
     sample->planesAllocated = driver->view.storage.planes.count;
 
-    // The plane pass is over: its flat is dead and the tags go with it.
+    // The plane pass is over; its flat stays resident for the next view.
     gScratchOwner = kOwnerNone;
-    gFlatName = R_NAME_NONE;
 
+    decodeMark = gSample.decodeMicros;
+    composeMark = gSample.composeMicros;
+    lookupMark = gSample.lookupMicros;
     start = nowMicros();
     driver->stage = "sprites";
     const int spriteCount = buildSprites(&driver->map, &params);
@@ -1589,16 +2213,45 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
         gStageCode = static_cast<int>(masked);
         return false;
     }
+    sample->maskedDecodeMicros = gSample.decodeMicros - decodeMark;
+    sample->maskedComposeMicros = gSample.composeMicros - composeMark;
+    sample->maskedLookupMicros = gSample.lookupMicros - lookupMark;
+    sample->spritePixels = driver->surface.spritePixels;
     sample->spritesSubmitted = maskedStats.submitted;
     sample->spritesDrawn = maskedStats.drawn;
+    for (std::uint16_t index = 0u; index < maskedStats.drawn; ++index) {
+        const r_vissprite_t& vis = driver->view.storage.visSprites[index];
+        if (vis.x2 >= vis.x1) {
+            sample->spriteColumns =
+                static_cast<std::uint16_t>(sample->spriteColumns + (vis.x2 - vis.x1 + 1));
+        }
+    }
+
+    sample->pixels = sample->wallPixels + sample->planePixels + sample->spritePixels;
+    sample->cacheBytes = cacheCapacityBytes();
+    sample->cachePeakSlots = static_cast<std::uint16_t>(gCachePeak);
+    sample->texSetCount = static_cast<std::uint16_t>(gTexSet.count);
+    sample->texSetBytes = gTexSet.totalBytes;
+    sample->flatSetCount = static_cast<std::uint16_t>(gFlatSet.count);
+    sample->spriteSetCount = static_cast<std::uint16_t>(gSpriteSet.count);
+    sample->spriteSetBytes = gSpriteSet.totalBytes;
 
     sample->residencyMicros = gSample.residencyMicros;
+    sample->decodeMicros = gSample.decodeMicros;
+    sample->composeMicros = gSample.composeMicros;
+    sample->lookupMicros = gSample.lookupMicros;
     sample->texResolves = gSample.texResolves;
     sample->texDecodes = gSample.texDecodes;
+    sample->texHits = gSample.texHits;
+    sample->texMisses = gSample.texMisses;
     sample->flatResolves = gSample.flatResolves;
     sample->flatDecodes = gSample.flatDecodes;
+    sample->flatHits = gSample.flatHits;
+    sample->flatMisses = gSample.flatMisses;
     sample->spriteResolves = gSample.spriteResolves;
     sample->spriteDecodes = gSample.spriteDecodes;
+    sample->spriteHits = gSample.spriteHits;
+    sample->spriteMisses = gSample.spriteMisses;
     sample->bytesDecoded = gSample.bytesDecoded;
     sample->frameMicros = elapsedMicros(frameStart);
     driver->stage = "done";
@@ -1637,20 +2290,27 @@ void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore
     const std::size_t clipArrays = sizeof(gState.floorClip) + sizeof(gState.ceilingClip);
     const std::size_t clipBlocks = sizeof(gState.clipBlocks);
     const std::size_t spritePools = sizeof(gState.visSprites) + sizeof(gState.openingBlocks);
-    const std::size_t total = sizeof(DriverState) + gLevelRamUsed + kWallArenaBytes
-                              + kScratchBytes + sizeof(gSpritePatchBytes);
+    const std::size_t cacheEntries = sizeof(gCache);
+    const std::size_t total = sizeof(DriverState) + gLevelRamUsed + kStaticGraphicsBytes
+                              + kScratchBytes + cacheEntries
+                              + static_cast<std::size_t>(gCacheExtraBytes);
 
     std::snprintf(line, capacity,
                   "FRAMEPROF,mem,surface=engine8bpp,index_writes=1,present=no,no_rgb332=1,"
                   "arena=%s,lump_blocks=%u,wall_arena=%u,scratch=%u,sprite_patch=%u,"
+                  "cache_bytes=%u,cache_extra=%u,cache_entries=%u,"
                   "state_static=%u,drawsegs=%u,planes=%u,clip_ranges=%u,clip_arrays=%u,"
                   "clip_blocks=%u,sprite_pools=%u,covered=%u,driver_total=%u,drawseg_cap=%d,"
                   "plane_cap=%d,clip_block_cap=%d,vissprite_cap=%d,heap_before=%u,"
                   "heap_after_alloc=%u,map=%s,map_in_ram=%d,raw_views=%u,level_ram=%u,"
                   "level_released=%u,phases=4\n",
                   gPlacement, static_cast<unsigned>(gLumpBlockCount),
-                  static_cast<unsigned>(kWallArenaBytes), static_cast<unsigned>(kScratchBytes),
-                  static_cast<unsigned>(sizeof(gSpritePatchBytes)),
+                  static_cast<unsigned>(kStaticGraphicsBytes),
+                  static_cast<unsigned>(kScratchBytes),
+                  0u,
+                  static_cast<unsigned>(cacheCapacityBytes()),
+                  static_cast<unsigned>(gCacheExtraBytes),
+                  static_cast<unsigned>(cacheEntries),
                   static_cast<unsigned>(sizeof(DriverState)), static_cast<unsigned>(drawsegs),
                   static_cast<unsigned>(planes), static_cast<unsigned>(clipRanges),
                   static_cast<unsigned>(clipArrays), static_cast<unsigned>(clipBlocks),
@@ -1672,6 +2332,7 @@ void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore
 
 void frameProbeRun(std::uint8_t* surface, int width, int height) {
     char line[kFrameProfileLineCapacity];
+    char attrLine[kFrameAttributionLineCapacity];
 
     if (surface == nullptr || width < R_SCREEN_WIDTH || height < R_VIEW_HEIGHT) {
         std::snprintf(line, sizeof line, "FRAMEPROF,mem,surface=missing,need=%dx%d,have=%dx%d\n",
@@ -1691,6 +2352,8 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
         writeLine(line);
         return;
     }
+    // A new container, a new name table: the memo cannot outlive the mapping.
+    clearNameLumps();
 
     // --- The working set ----------------------------------------------------
     //
@@ -1700,50 +2363,29 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     const std::uint32_t heapBefore = static_cast<std::uint32_t>(esp_get_free_heap_size());
     const std::uint32_t largestBefore = static_cast<std::uint32_t>(
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    // --- Placement, tried in order and then reported ------------------------
+    // --- Placement, reported by `FRAMEPROF,mem` -----------------------------
     //
-    // The two graphics buffers are separate regions -- a compose reads a patch and
-    // writes a slot at the same time, but they are not one array -- so each can go
-    // where it fits instead of both competing for one hole. The admissible
-    // placements are tried in order and the one that succeeds is printed by
-    // `FRAMEPROF,mem`, so the choice is evidence and not luck:
+    // The residency cache's first arena is the static 36,864 B block that used to
+    // be the two-slot wall arena; the extra arenas are 8 KB heap blocks requested
+    // here, so `FRAMEPROF,mem` reports the capacity the run actually used. The
+    // decode scratch is always a heap block now: a compose reads a patch from the
+    // scratch and writes into a cache entry, so they can never be the same bytes.
     //
-    //   wall-static     wall arena in .bss (36,864), scratch in the heap (35,080)
-    //   scratch-static  scratch in .bss (35,080), wall arena in the heap (36,864)
-    //   heap-both       both from the heap, one request each
-    //
-    // No buffer is shrunk to make one of them fit; a placement either succeeds at
-    // the measured size or it does not.
-    gWallBytes = gStaticGraphics;
+    // Three 8 KB requests, not one 40 KB one: the heap beside the 35,080 B
+    // scratch is fragmented and the largest free block after the scratch is
+    // below 16 KB. The same bytes found in three small holes are three more
+    // granules the renderer can use. A small cache is slow, not wrong -- the LRU
+    // rule, the pinned returns and the pixel path are identical at every size.
+    // The RAM build keeps no extra arena: its heap is the control's.
+    cacheReset();
+    cacheBindArena(0, gStaticGraphics, kStaticGraphicsBytes);
     gScratch = static_cast<std::uint8_t*>(
         heap_caps_malloc(kScratchBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    if (gScratch != nullptr) {
-        gPlacement = "wall-static";
-    } else {
-        gWallBytes = nullptr;
-        gScratch = gStaticGraphics;
-        gWallBytes = static_cast<std::uint8_t*>(
-            heap_caps_malloc(kWallArenaBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-        if (gWallBytes != nullptr) {
-            gPlacement = "scratch-static";
-        } else {
-            gScratch = nullptr;
-            gWallBytes = static_cast<std::uint8_t*>(
-                heap_caps_malloc(kWallArenaBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-            gScratch = static_cast<std::uint8_t*>(
-                heap_caps_malloc(kScratchBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-            if (gWallBytes != nullptr && gScratch != nullptr) {
-                gPlacement = "heap-both";
-            }
-        }
-    }
-    if (gPlacement[0] == 'n') {
-        // Nothing is measured: say exactly which allocation is short and by how
-        // much, because that is the result this board produced.
+    if (gScratch == nullptr) {
         std::snprintf(line, sizeof line,
-                      "FRAMEPROF,setup,status=fail,reason=arena,placement=%s,"
+                      "FRAMEPROF,setup,status=fail,reason=arena,placement=scratch,"
                       "wall=%u,scratch=%u,heap=%u,largest=%u\n",
-                      gPlacement, static_cast<unsigned>(kWallArenaBytes),
+                      static_cast<unsigned>(kStaticGraphicsBytes),
                       static_cast<unsigned>(kScratchBytes),
                       static_cast<unsigned>(heapBefore), static_cast<unsigned>(largestBefore));
         writeLine(line);
@@ -1751,6 +2393,25 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
         doom_whd_source_close();
         return;
     }
+    gPlacement = "cache-static";
+#if !defined(PIXELROOT32_DOOM_MAP_IN_RAM)
+    // Three 8 KB attempts rather than one 40 KB request: the heap beside the
+    // 35,080 B scratch is fragmented, and the measured largest free block after
+    // the scratch is below 16 KB. The same bytes found in three small holes are
+    // three more granules the renderer can use. Each success binds the next
+    // arena; the first failure ends the loop because a later request cannot be
+    // larger than the one that just failed.
+    for (int extra = 0; extra < kCacheExtraSteps; ++extra) {
+        std::uint8_t* block = static_cast<std::uint8_t*>(
+            heap_caps_malloc(kCacheExtraStepBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        if (block == nullptr) {
+            break;
+        }
+        cacheBindArena(extra + 1, block, kCacheExtraStepBytes);
+        gCacheExtraBytes += static_cast<int>(kCacheExtraStepBytes);
+        gPlacement = "cache-static+heap";
+    }
+#endif
     const std::uint32_t heapAfterAlloc = static_cast<std::uint32_t>(esp_get_free_heap_size());
 
 
@@ -1911,6 +2572,7 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     driver.textures.resolveFlat = resolveFlat;
     driver.textures.flatContext = nullptr;
     driver.textures.skyTexture = r_pack_name(kSkyTextureName);
+    driver.textures.beginFragment = cacheBeginFragment;
     driver.sprites.resolve = resolveSprite;
     driver.sprites.context = nullptr;
     bindSurface(&driver, surface, width, height);
@@ -1964,6 +2626,8 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
 
             frameProfileRecord(&stats, sample);
             (void)FrameProfileReport<kFrameProbeEnabled>::frame(sample, hash, &writeLine);
+            emitFormatted(frameProfileFormatAttribution(sample, attrLine, sizeof attrLine),
+                          attrLine);
             if (isBreakdownView(frame)) {
                 emitFormatted(frameProfileFormatBreakdown(sample, line, sizeof line), line);
             }
@@ -1973,6 +2637,8 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     const std::uint32_t probeMicros = elapsedMicros(probeStart);
     emitFormatted(frameProfileFormatSummary(stats, kViewCount, kMeasuredRuns, line, sizeof line),
                   line);
+    emitFormatted(frameProfileFormatAttributionSummary(stats, attrLine, sizeof attrLine),
+                  attrLine);
 
     std::snprintf(line, sizeof line,
                   "FRAMEPROF,probe,total_us=%u,hazards=%u,sha256=ok,views=%d,runs=%d,"

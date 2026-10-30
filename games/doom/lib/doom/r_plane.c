@@ -296,26 +296,35 @@ static void map_plane(const r_view_state_t* state, r_draw_surface_t* surface,
     colormap = light->colormaps
                + (size_t)r_plane_light[lightRow][z] * (size_t)R_LIGHT_MAP_BYTES;
 
-    for (x = x1; x <= x2; ++x) {
-        /* R_DrawSpan's spot: the v coordinate is the high six bits of yfrac and
-         * the u coordinate the low six of xfrac, both wrapped inside the 64 x 64
-         * square by the masks the format hard-codes. */
-        const int spot = (int)(((yfrac >> (FRACBITS - 6)) & (63 * 64))
-                               + ((xfrac >> FRACBITS) & 63));
-        const size_t at = (size_t)x + (size_t)y * (size_t)surface->width;
+    {
+        uint8_t* destination =
+            surface->pixels + (size_t)x1 + (size_t)y * (size_t)surface->width;
+        uint8_t* maskAt = surface->planeMask != NULL
+                              ? surface->planeMask + (size_t)x1
+                                    + (size_t)y * (size_t)surface->width
+                              : NULL;
 
-        surface->pixels[at] = colormap[flat->pixels[spot]];
-        if (surface->planeMask != NULL) {
-            surface->planeMask[at] = 1u;
+        for (x = x1; x <= x2; ++x) {
+            /* R_DrawSpan's spot: the v coordinate is the high six bits of yfrac
+             * and the u coordinate the low six of xfrac, both wrapped inside the
+             * 64 x 64 square by the masks the format hard-codes. */
+            const int spot = (int)(((yfrac >> (FRACBITS - 6)) & (63 * 64))
+                                   + ((xfrac >> FRACBITS) & 63));
+
+            *destination++ = colormap[flat->pixels[spot]];
+            if (maskAt != NULL) {
+                *maskAt++ = 1u;
+            }
+            xfrac += xstep;
+            yfrac += ystep;
         }
-        if (surface->covered != NULL) {
+    }
+    if (surface->covered != NULL) {
+        for (x = x1; x <= x2; ++x) {
             surface->covered[x] = 1u;
         }
-        ++surface->planePixels;
-
-        xfrac += xstep;
-        yfrac += ystep;
     }
+    surface->planePixels += (uint32_t)(x2 - x1 + 1);
     ++surface->planeSpans;
 }
 
@@ -456,27 +465,58 @@ static void draw_sky_plane(const r_view_state_t* state, r_draw_surface_t* surfac
         frac = R_PLANE_SKY_TEXTURE_MID
                + (fixed_t)(yl - R_CENTER_Y) * R_PLANE_SKY_ISCALE;
 
-        for (row = yl; row <= yh; ++row) {
-            const size_t at = (size_t)x + (size_t)row * (size_t)surface->width;
+        {
+            const int stride = surface->width;
+            uint8_t* destination =
+                surface->pixels + (size_t)x + (size_t)yl * (size_t)stride;
+            uint8_t* maskAt = surface->planeMask != NULL
+                                  ? surface->planeMask + (size_t)x
+                                        + (size_t)yl * (size_t)stride
+                                  : NULL;
 
-            surface->pixels[at] = column[(frac >> FRACBITS) & sky->heightMask];
-            if (surface->planeMask != NULL) {
-                surface->planeMask[at] = 1u;
+            for (row = yl; row <= yh; ++row) {
+                *destination = column[(frac >> FRACBITS) & sky->heightMask];
+                if (maskAt != NULL) {
+                    *maskAt = 1u;
+                    maskAt += (size_t)stride;
+                }
+                destination += (size_t)stride;
+                frac += R_PLANE_SKY_ISCALE;
             }
-            if (surface->covered != NULL) {
-                surface->covered[x] = 1u;
-            }
-            ++surface->planePixels;
-            frac += R_PLANE_SKY_ISCALE;
         }
+        if (surface->covered != NULL) {
+            surface->covered[x] = 1u;
+        }
+        surface->planePixels += (uint32_t)(yh - yl + 1);
     }
 }
 
 /* Resolves and validates every drawable plane's flat (or sky texture) before a
- * byte is written. Anything that fails here leaves the frame untouched. */
+ * byte is written. Anything that fails here leaves the frame untouched.
+ *
+ * A flat already proved in this call is not resolved again: up to 22 planes
+ * share 6 distinct flats on the sampled views, and the second resolve used to
+ * decode the same 4,096 bytes for every plane that used it. One proof per name
+ * is enough because the flat resolver must answer consistently for the call,
+ * and the draw loop resolves the flat again before it reads it anyway. */
+#define R_PLANE_PREFLIGHT_MEMO 8
+
+static int flat_proven(r_name_t name, r_name_t* proven, int provenCount) {
+    int index;
+
+    for (index = 0; index < provenCount; ++index) {
+        if (proven[index] == name) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static r_plane_error_t preflight_planes(const r_view_state_t* state,
                                         const struct r_tex_source* textures) {
     unsigned index;
+    r_name_t proven[R_PLANE_PREFLIGHT_MEMO];
+    int provenCount = 0;
 
     for (index = 0; index < state->storage.planes.count; ++index) {
         const r_visplane_t* plane = &state->storage.planes.planes[index];
@@ -486,6 +526,9 @@ static r_plane_error_t preflight_planes(const r_view_state_t* state,
         }
         if (plane->minX < 0 || plane->maxX >= R_SCREEN_WIDTH) {
             return R_PLANE_ERR_PLANE_RANGE;
+        }
+        if (textures->beginFragment != NULL) {
+            textures->beginFragment(textures->context);
         }
         if (is_sky_plane(state, plane)) {
             const r_walltex_t* sky;
@@ -504,14 +547,21 @@ static r_plane_error_t preflight_planes(const r_view_state_t* state,
                 return R_PLANE_ERR_SKY_SHAPE;
             }
         } else {
-            const r_flat_t* flat =
-                textures->resolveFlat(textures->flatContext, plane->picNum);
+            const r_flat_t* flat;
 
+            if (flat_proven(plane->picNum, proven, provenCount)) {
+                continue;
+            }
+            flat = textures->resolveFlat(textures->flatContext, plane->picNum);
             if (flat == NULL) {
                 return R_PLANE_ERR_FLAT_MISSING;
             }
             if (!flat_is_usable(flat)) {
                 return R_PLANE_ERR_FLAT_SHAPE;
+            }
+            if (provenCount < R_PLANE_PREFLIGHT_MEMO) {
+                proven[provenCount] = plane->picNum;
+                ++provenCount;
             }
         }
     }
@@ -575,6 +625,9 @@ r_plane_error_t r_plane_draw(struct r_view_state* state, r_draw_surface_t* surfa
 
         if (plane->minX > plane->maxX) {
             continue;
+        }
+        if (textures->beginFragment != NULL) {
+            textures->beginFragment(textures->context);
         }
         if (is_sky_plane(state, plane)) {
             /* Preflight proved this resolves and is usable; a resolver that

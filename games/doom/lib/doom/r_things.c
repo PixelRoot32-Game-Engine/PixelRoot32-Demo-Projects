@@ -291,20 +291,26 @@ static void draw_post(r_draw_surface_t* surface, int x, int yl, int yh,
     }
 
     frac = textureMid + (fixed_t)((yl - R_CENTER_Y) * iscale);
-    for (row = yl; row <= yh; ++row) {
-        const size_t at = (size_t)x + (size_t)row * (size_t)surface->width;
+    {
+        const int stride = surface->width;
+        size_t at = (size_t)x + (size_t)yl * (size_t)stride;
+        const uint32_t count = (uint32_t)(yh - yl + 1);
 
-        surface->pixels[at] = colormap[pixels[(frac >> FRACBITS) & R_SPRITE_POST_MASK]];
-        if (pixelMask != NULL) {
-            pixelMask[at] = 1u;
+        for (row = yl; row <= yh; ++row) {
+            surface->pixels[at] =
+                colormap[pixels[(frac >> FRACBITS) & R_SPRITE_POST_MASK]];
+            if (pixelMask != NULL) {
+                pixelMask[at] = 1u;
+            }
+            at += (size_t)stride;
+            frac += iscale;
         }
         if (surface->covered != NULL) {
             surface->covered[x] = 1u;
         }
         if (written != NULL) {
-            ++(*written);
+            *written += count;
         }
-        frac += iscale;
     }
 }
 
@@ -680,11 +686,14 @@ r_things_error_t r_masked_emit(r_view_state_t* state, r_draw_surface_t* surface,
     for (index = 0; index < spriteCount; ++index) {
         const r_sprite_patch_t* patch = NULL;
         r_patch_info_t info;
-        r_things_error_t result =
-            resolve_patch(spriteSource, sprites[index].lump, &patch, &info);
         r_vissprite_t candidate;
         int cull = 0;
+        r_things_error_t result;
 
+        if (textures->beginFragment != NULL) {
+            textures->beginFragment(textures->context);
+        }
+        result = resolve_patch(spriteSource, sprites[index].lump, &patch, &info);
         if (result != R_THINGS_OK) {
             return result;
         }
@@ -748,7 +757,12 @@ r_things_error_t r_masked_emit(r_view_state_t* state, r_draw_surface_t* surface,
 
         /* The resolver answered in the preflight; a second answer that differs
          * breaks the r_sprite_source_t contract, and the sprite is skipped
-         * rather than dereferenced. */
+         * rather than dereferenced. The pin reset comes first, so the sprite
+         * patch this draw holds cannot be evicted by a masked mid texture the
+         * same draw composes. */
+        if (textures->beginFragment != NULL) {
+            textures->beginFragment(textures->context);
+        }
         if (resolve_patch(spriteSource, visList[index].sprite->lump, &patch, &info)
             != R_THINGS_OK) {
             continue;
@@ -762,6 +776,9 @@ r_things_error_t r_masked_emit(r_view_state_t* state, r_draw_surface_t* surface,
         r_drawseg_t* drawseg = &state->storage.drawsegs[index];
 
         if (drawseg->maskedTextureCol != R_DRAWSEG_NO_BLOCK) {
+            if (textures->beginFragment != NULL) {
+                textures->beginFragment(textures->context);
+            }
             render_masked_range(state, surface, textures, light, drawseg,
                                 drawseg->x1, drawseg->x2, pixelMask, &pixels);
         }
