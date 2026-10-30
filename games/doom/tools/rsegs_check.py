@@ -1,30 +1,34 @@
 #!/usr/bin/env python3
-"""Compare the C wall emitter against the Python oracle on the real WAD (D3.2).
+"""Compare the C renderer against the Python oracle on the real WAD (D3.2/D3.3).
 
 WHAT THIS PROVES
 
-``test/unit/test_rsegs`` pins the emitter on synthetic maps, textures and
-colormaps, because a CI machine has no WAD. This script is the other half: it
-compiles ``tools/rsegs_check.c`` -- which calls ``lib/doom/r_segs.c``,
-``r_light.c``, ``r_bsp.c``, ``r_plane.c``, ``r_tables.c``, ``r_data.c``,
+``test/unit/test_rsegs`` pins the wall and plane emitters on synthetic maps,
+textures, flats and colormaps, because a CI machine has no WAD. This script is the
+other half: it compiles ``tools/rsegs_check.c`` -- which calls ``lib/doom/r_segs.c``,
+``r_plane.c``, ``r_light.c``, ``r_bsp.c``, ``r_tables.c``, ``r_data.c``,
 ``doom_map.c`` and ``w_wad.c`` -- and compares its 20 sampled E1M1 frames, line
 for line, with ``tools/doom_ref.py --segs E1M1``, an independent implementation
-with its own WAD reader, map parser, tables, walk, texture compositor, colormap
-handling and column loop.
+with its own WAD reader, map parser, tables, walk, texture compositor, flat
+lookup, colormap handling, column loop and span maker.
 
 The compared lines are the protocol both sides document:
 
     SEGS <map> frames=<n>
-    frame NN: <sha256>          the pixel buffer followed by the covered mask
-    FRAMESTAT NN ...            counts, per-tier pixels and both partial hashes
-    SEGS-SUMMARY ...
+    frame NN: <sha256>          the wall pass's pixels followed by its coverage
+    FRAMESTAT NN ...            wall counts, per-tier pixels and both partial hashes
+    PLANESTAT NN ...            plane counts and the wall, plane-mask and frame hashes
+    SEGS-SUMMARY ...            the wall totals (unchanged from D3.2)
+    PLANE-SUMMARY ...           the plane totals
 
 A mismatch is localised in three steps instead of being reported as one hash: the
 frames are compared first, then the columns of the first differing frame
-(``--segs-detail``), then the rows of that column (``--segs-column``), so the
-report names the first divergent pixel and its column and row. Those two extra
-passes print decoded palette indices for one column; they are diagnostics of
-record and must not be committed.
+(``--segs-detail``), then the rows of that column (``--segs-column``). The COLUMN
+line carries both the wall column's hash and the finished frame's, and the ROW
+line carries the wall pixel, the final pixel, the wall coverage and the plane
+mask, so the report can name the first divergent pixel and say which pass wrote
+it. Those two extra passes print decoded palette indices for one column; they are
+diagnostics of record and must not be committed.
 
 USAGE
 
@@ -130,7 +134,7 @@ def first_difference(left: list[str], right: list[str]) -> tuple[int, str, str] 
 def differing_frames(left: list[str], right: list[str]) -> list[int]:
     frames: list[int] = []
     for a, b in zip(left, right):
-        if a.startswith("frame ") and a != b:
+        if a != b and (a.startswith("frame ") or a.startswith("PLANESTAT ")):
             frames.append(int(a.split()[1].rstrip(":")))
     return frames
 
@@ -191,6 +195,13 @@ def main(argv: list[str] | None = None) -> int:
                         column = index
                         break
                 if column is not None:
+                    c_parts = c_col.get(str(column), "").split()
+                    o_parts = o_col.get(str(column), "").split()
+                    wall_column = (len(c_parts) > 3 and len(o_parts) > 3
+                                   and c_parts[3] != o_parts[3])
+                    diagnostics.append(
+                        f"frame {frame}: first divergent column {column} "
+                        f"({'the wall pass' if wall_column else 'only the final frame, so the plane pass'})")
                     c_rows = protocol_lines(
                         run_c(executable, arguments.wad,
                               ["--column", f"{frame},{column}"]))
@@ -201,17 +212,37 @@ def main(argv: list[str] | None = None) -> int:
                     o_row = by_key(o_rows, "ROW", 3)
                     for row in range(200):
                         if c_row.get(str(row)) != o_row.get(str(row)):
+                            c_fields = c_row.get(str(row), "").split()
+                            o_fields = o_row.get(str(row), "").split()
+                            if len(c_fields) >= 8 and len(o_fields) >= 8:
+                                wall_c, frame_c = c_fields[4], c_fields[5]
+                                wall_o, frame_o = o_fields[4], o_fields[5]
+                                covered_c, mask_c = c_fields[6], c_fields[7]
+                                covered_o, mask_o = o_fields[6], o_fields[7]
+                                if wall_c != wall_o:
+                                    writer = ("the wall pass (its pixel differs "
+                                              "before the plane pass draws)")
+                                elif frame_c != frame_o and mask_c != "00":
+                                    writer = "the plane pass (its mask is 1 here)"
+                                elif frame_c != frame_o:
+                                    writer = ("the plane pass or its coverage: the "
+                                              "mask is 0, so the pass did not write here")
+                                else:
+                                    writer = ("the coverage records, not the pixels "
+                                              f"(wall covered {covered_c}/{covered_o}, "
+                                              f"plane mask {mask_c}/{mask_o})")
+                            else:
+                                writer = "an unparsable ROW line"
                             diagnostics.append(
                                 f"frame {frame}: first divergence at column {column} "
                                 f"row {row}: C {c_row.get(str(row))!r} "
-                                f"oracle {o_row.get(str(row))!r} "
-                                f"(ROW lines carry the two palette indices and the "
-                                f"covered byte: decoded WAD data, not for a commit)")
+                                f"oracle {o_row.get(str(row))!r} -> {writer} "
+                                f"(ROW lines carry decoded WAD bytes, not for a commit)")
                             break
                     else:
                         diagnostics.append(
                             f"frame {frame}: column {column} first diverges in the "
-                            f"covered byte, not in the pixels")
+                            f"coverage byte, not in the pixels")
     except RuntimeError as error:
         print(f"rsegs_check: {error}", file=sys.stderr)
         return EXIT_USAGE
@@ -219,7 +250,9 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(workdir, ignore_errors=True)
 
     for line in c_lines:
-        if line.startswith("frame ") or line.startswith("SEGS-SUMMARY") \
+        if line.startswith("frame ") or line.startswith("PLANESTAT ") \
+                or line.startswith("SEGS-SUMMARY") \
+                or line.startswith("PLANE-SUMMARY") \
                 or line.startswith("ERROR"):
             print(line)
 

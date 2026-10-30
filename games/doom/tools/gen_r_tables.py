@@ -50,6 +50,34 @@ FORMULAS (exactly the ones upstream's disabled initialisers state)
     rebuilds this table in R_ExecuteSetViewSize() because the view size can
     change; this port has one view size, so it is a constant like the rest.
 
+    r_plane_light[i][j] is R_InitLightTables()'s zlight[,] table, the plane
+    light (D3.3), reduced to the map index it selects:
+
+        startmap = ((LIGHTLEVELS-1-i)*2) * NUMCOLORMAPS / LIGHTLEVELS
+        scale    = FixedDiv((SCREENWIDTH/2)*FRACUNIT, (j+1)<<LIGHTZSHIFT)
+        scale  >>= LIGHTSCALESHIFT
+        level    = startmap - scale/DISTMAP
+        level    = clamp(level, 0, NUMCOLORMAPS-1)
+
+    It is not the wall table: its column is `distance >> LIGHTZSHIFT` (a
+    distance along the view ray), not `rw_scale >> LIGHTSCALESHIFT`, and its row
+    has no per-seg-axis correction. The difference is visible at the nearest
+    distances, where the plane table's row 0 starts at map 0 while the wall
+    table's row 0 starts at map 31.
+
+    r_plane_yslope[i] is R_ExecuteSetViewSize()'s
+
+        dy        = abs(((i - viewheight/2) << FRACBITS) + FRACUNIT/2)
+        yslope[i] = FixedDiv((viewwidth << detailshift)/2 * FRACUNIT, dy)
+
+    and r_plane_dist_scale[x] is its
+
+        cosadj          = abs(finecosine[xtoviewangle[x] >> ANGLETOFINESHIFT])
+        distscale[x]    = FixedDiv(FRACUNIT, cosadj)
+
+    Both are per-view-size constants in this port for the same reason as the
+    wall light table.
+
     viewangletox[i] is R_InitTextureMapping()'s table: tangent -> screen
     column, with the two fencepost passes that make column 0 and column 319
     reachable. xtoviewangle[x] is then the smallest view angle that maps to
@@ -97,6 +125,12 @@ VIEWWIDTH = SCREEN_WIDTH
 DETAILSHIFT = 0
 DISTMAP = 2
 
+# R_InitLightTables()/R_ExecuteSetViewSize() constants for the plane pass.
+LIGHTZSHIFT = 20
+MAXLIGHTZ = 128
+LIGHTSCALESHIFT = 12
+SCREEN_HEIGHT = 200
+
 
 def single(value: float) -> float:
     """Rounds a Python double to the nearest IEEE-754 single, as a C float cast."""
@@ -129,6 +163,50 @@ def light_level() -> list[list[int]]:
             level = startmap - j * SCREEN_WIDTH // (VIEWWIDTH << DETAILSHIFT) // DISTMAP
             row.append(max(0, min(NUMCOLORMAPS - 1, level)))
         table.append(row)
+    return table
+
+
+def fixed_div(a: int, b: int) -> int:
+    """DOOM's FixedDiv(): (a << 16) / b with the overflow gate, truncating."""
+    if (abs(a) >> 14) >= abs(b):
+        return -0x80000000 if (a ^ b) < 0 else 0x7FFFFFFF
+    if (a >= 0) == (b > 0):
+        return (a << FRACBITS) // b
+    return -((abs(a) << FRACBITS) // abs(b))
+
+
+def plane_light() -> list[list[int]]:
+    """R_InitLightTables()'s zlight[,] as colormap indices (D3.3)."""
+    table: list[list[int]] = []
+    for i in range(LIGHTLEVELS):
+        startmap = ((LIGHTLEVELS - 1 - i) * 2) * NUMCOLORMAPS // LIGHTLEVELS
+        row: list[int] = []
+        for j in range(MAXLIGHTZ):
+            scale = fixed_div((SCREEN_WIDTH // 2) * FRACUNIT, (j + 1) << LIGHTZSHIFT)
+            scale >>= LIGHTSCALESHIFT
+            level = startmap - scale // DISTMAP
+            row.append(max(0, min(NUMCOLORMAPS - 1, level)))
+        table.append(row)
+    return table
+
+
+def plane_yslope() -> list[int]:
+    """R_ExecuteSetViewSize()'s yslope[] (D3.3)."""
+    table: list[int] = []
+    for i in range(SCREEN_HEIGHT):
+        dy = abs(((i - SCREEN_HEIGHT // 2) << FRACBITS) + FRACUNIT // 2)
+        table.append(fixed_div((VIEWWIDTH << DETAILSHIFT) // 2 * FRACUNIT, dy))
+    return table
+
+
+def plane_dist_scale(xangles: list[int]) -> list[int]:
+    """R_ExecuteSetViewSize()'s distscale[] (D3.3)."""
+    sine = fine_sine()
+    table: list[int] = []
+    for x in range(SCREEN_WIDTH):
+        index = xangles[x] >> ANGLETOFINESHIFT
+        cosadj = abs(sine[index + FINEANGLES // 4])
+        table.append(fixed_div(FRACUNIT, cosadj))
     return table
 
 
@@ -207,6 +285,9 @@ def main() -> int:
 
     xangles = x_to_view_angle(columns)
     clip_angle = xangles[0]
+    zlight = plane_light()
+    yslope = plane_yslope()
+    distscale = plane_dist_scale(xangles)
 
     out: list[str] = []
     out.append("/*")
@@ -243,6 +324,23 @@ def main() -> int:
     for row in levels:
         out.append("    { " + ", ".join(str(value) for value in row) + " },")
     out.append("};")
+    out.append("")
+    out.append("/* R_InitLightTables()'s zlight[,] as colormap indices (D3.3). The row")
+    out.append(" * is the plane light number, the column is distance >> LIGHTZSHIFT")
+    out.append(" * clamped to MAXLIGHTZ-1, and the value indexes the 256-byte maps of")
+    out.append(" * the COLORMAP lump. It is not the wall table r_light_level holds. */")
+    out.append("const uint8_t r_plane_light[R_LIGHT_LEVELS][R_PLANE_LIGHT_Z_LEVELS] = {")
+    for row in zlight:
+        out.append("    { " + ", ".join(str(value) for value in row) + " },")
+    out.append("};")
+    out.append("")
+    out.append("/* R_ExecuteSetViewSize()'s yslope[]: map units of plane height per")
+    out.append(" * screen row's ray (D3.3). */")
+    out.extend(format_array("const fixed_t r_plane_yslope[R_VIEW_HEIGHT] = {", yslope, 8))
+    out.append("")
+    out.append("/* R_ExecuteSetViewSize()'s distscale[]: the reciprocal cosine that")
+    out.append(" * turns a row's perpendicular distance into a ray distance (D3.3). */")
+    out.extend(format_array("const fixed_t r_plane_dist_scale[R_SCREEN_WIDTH] = {", distscale, 8))
     out.append("")
 
     text = "\n".join(out) + "\n"

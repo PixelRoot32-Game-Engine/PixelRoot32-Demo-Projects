@@ -30,6 +30,25 @@
  *  - r_light_init validates the lump's layout and r_light_wall clamps the row;
  *  - the emitter rejects a surface smaller than the view before writing.
  *
+ * D3.3 adds the plane pass (r_plane.c), on hand-built visplanes rather than on a
+ * walked map, because the walk cannot produce the runs these cases need:
+ *
+ *  - one plane covering the whole surface draws every pixel and 200 spans;
+ *  - two disjoint column runs in one plane are two spans, and the gap between
+ *    them keeps the caller's bytes;
+ *  - a column whose top is below its bottom is skipped, with no pixel and no
+ *    span;
+ *  - a flat longer than 64 columns wraps with R_DrawSpan's `& 63`, asserted
+ *    against the documented span formula at every column;
+ *  - light level 0 and 255 select different plane maps (zlight, not the wall's
+ *    scalelight), and the expected map is the generated table's entry;
+ *  - the sky plane overwrites its columns with the sky texture's bytes and never
+ *    resolves a flat, while a non-sky plane draws its flat;
+ *  - two planes in index order do not share a span run;
+ *  - a missing flat, a misshapen flat, a missing sky texture and a malformed sky
+ *    texture each fail the call and leave the surface, plane mask and counters
+ *    byte for byte as they were.
+ *
  * The tests go through the public C API only. They never inspect the emitter's
  * internals, so an implementation that passes here is free to change them.
  */
@@ -251,6 +270,80 @@ const r_walltex_t* resolveTexture(void* context, r_name_t name) {
     return static_cast<const TextureTable*>(context)->find(name);
 }
 
+/* --- Flats and the flat resolver ----------------------------------------- */
+
+/*
+ * One flat: 64 x 64 raw bytes, exactly what R_DrawSpan addresses. `setSolid`
+ * gives every texel the same value, `setPattern` gives each texel its linear
+ * index (so a pixel's value is also its position in the flat), and the row/column
+ * accessor is there for tests that need a known value at one texel.
+ */
+struct TestFlat {
+    std::vector<std::uint8_t> pixels;
+    r_flat_t flat{};
+
+    void setSolid(std::uint8_t value) {
+        pixels.assign(64u * 64u, value);
+        flat.pixels = pixels.data();
+        flat.width = 64;
+        flat.height = 64;
+        flat.widthMask = 63;
+        flat.heightMask = 63;
+    }
+
+    void setPattern() {
+        pixels.resize(64u * 64u);
+        for (std::size_t i = 0; i < pixels.size(); ++i) {
+            pixels[i] = static_cast<std::uint8_t>(i & 0xFFu);
+        }
+        flat.pixels = pixels.data();
+        flat.width = 64;
+        flat.height = 64;
+        flat.widthMask = 63;
+        flat.heightMask = 63;
+    }
+
+    std::uint8_t at(int row, int column) const {
+        return pixels[static_cast<std::size_t>(row) * 64u
+                      + static_cast<std::size_t>(column)];
+    }
+};
+
+struct FlatEntry {
+    r_name_t name;
+    const r_flat_t* flat;
+};
+
+/// The residency policy of these tests: a fixed table of flat names. `lookups`
+/// counts the resolver calls, so a test can prove the sky path never asks for a
+/// flat.
+struct FlatTable {
+    std::vector<FlatEntry> entries;
+    int lookups = 0;
+
+    void add(const char* name, const r_flat_t* flat) {
+        std::array<std::uint8_t, 8> field{};
+        for (std::size_t i = 0; i < 8u && name[i] != '\0'; ++i) {
+            field[i] = static_cast<std::uint8_t>(name[i]);
+        }
+        entries.push_back({r_pack_name(field.data()), flat});
+    }
+
+    const r_flat_t* find(r_name_t name) {
+        ++lookups;
+        for (const FlatEntry& entry : entries) {
+            if (entry.name == name) {
+                return entry.flat;
+            }
+        }
+        return nullptr;
+    }
+};
+
+const r_flat_t* resolveFlat(void* context, r_name_t name) {
+    return static_cast<FlatTable*>(context)->find(name);
+}
+
 /* --- One view: storage, state, surface, light ---------------------------- */
 
 struct Fixture {
@@ -265,22 +358,28 @@ struct Fixture {
 
     std::vector<std::uint8_t> pixels;
     std::vector<std::uint8_t> covered;
+    std::vector<std::uint8_t> planeMask;
     r_draw_surface_t surface{};
     std::array<std::uint8_t, R_LIGHT_LUMP_MAPS * 256> colormap{};
     r_light_t light{};
     TextureTable textures{};
+    FlatTable flats{};
     r_tex_source_t source{};
 
     Fixture() {
         pixels.assign(kScreenWidth * kScreenHeight, kUncovered);
         covered.assign(kScreenWidth, 0u);
+        planeMask.assign(kScreenWidth * kScreenHeight, 0u);
         surface.pixels = pixels.data();
         surface.width = static_cast<std::int32_t>(kScreenWidth);
         surface.height = static_cast<std::int32_t>(kScreenHeight);
         surface.covered = covered.data();
+        surface.planeMask = planeMask.data();
         surface.tierPixels[R_DRAW_TIER_MID] = 0u;
         surface.tierPixels[R_DRAW_TIER_TOP] = 0u;
         surface.tierPixels[R_DRAW_TIER_BOTTOM] = 0u;
+        surface.planePixels = 0u;
+        surface.planeSpans = 0u;
 
         /* Map 0 is the identity (the brightest table) and map 31 inverts, so a
          * pixel's value says both which texel and which light table was used.
@@ -297,15 +396,22 @@ struct Fixture {
 
         source.resolve = resolveTexture;
         source.context = &textures;
+        source.resolveFlat = resolveFlat;
+        source.flatContext = &flats;
+        source.skyTexture = R_NAME_NONE;
     }
 
     void prefill(std::uint8_t value) {
         std::fill(pixels.begin(), pixels.end(), value);
         std::fill(covered.begin(), covered.end(), 0u);
+        std::fill(planeMask.begin(), planeMask.end(), 0u);
         surface.covered = covered.data();
+        surface.planeMask = planeMask.data();
         surface.tierPixels[R_DRAW_TIER_MID] = 0u;
         surface.tierPixels[R_DRAW_TIER_TOP] = 0u;
         surface.tierPixels[R_DRAW_TIER_BOTTOM] = 0u;
+        surface.planePixels = 0u;
+        surface.planeSpans = 0u;
     }
 
     r_bsp_error_t start() {
@@ -340,9 +446,18 @@ struct Fixture {
         return r_wall_emit(&view, &surface, &source, &light);
     }
 
+    r_plane_error_t drawPlanes() {
+        return r_plane_draw(&view, &surface, &source, &light);
+    }
+
     std::uint8_t at(int x, int y) const {
         return pixels[static_cast<std::size_t>(x)
                       + static_cast<std::size_t>(y) * kScreenWidth];
+    }
+
+    std::uint8_t maskAt(int x, int y) const {
+        return planeMask[static_cast<std::size_t>(x)
+                         + static_cast<std::size_t>(y) * kScreenWidth];
     }
 };
 
@@ -371,6 +486,58 @@ struct OneWall {
         map.addSubsector(1, 0);
     }
 };
+
+/* --- Hand-built visplanes ------------------------------------------------ */
+
+r_name_t packName(const char* name) {
+    std::array<std::uint8_t, 8> field{};
+
+    for (std::size_t i = 0; i < 8u && name[i] != '\0'; ++i) {
+        field[i] = static_cast<std::uint8_t>(name[i]);
+    }
+    return r_pack_name(field.data());
+}
+
+/*
+ * The plane pass reads the plane set the walk produced, so a test that needs a
+ * run the walk could not produce (a whole-surface plane, a plane with an empty
+ * column in the middle, a top below its own bottom) walks a trivial map for the
+ * viewpoint and then replaces the set. `state.params` is what
+ * r_bsp_render() left there: (0, 0, 41, 0), the same viewpoint every existing
+ * test uses.
+ */
+void clearPlanes(Fixture& fixture) {
+    fixture.view.storage.planes.count = 0;
+}
+
+r_visplane_t* addPlane(Fixture& fixture, fixed_t height, const char* picture,
+                       std::int16_t light) {
+    r_visplane_t* plane = &fixture.planes[fixture.view.storage.planes.count++];
+
+    std::memset(plane->top, 0xFF, sizeof plane->top);
+    std::memset(plane->bottom, 0xFF, sizeof plane->bottom);
+    plane->height = height;
+    plane->picNum = packName(picture);
+    plane->lightLevel = light;
+    plane->minX = static_cast<std::int16_t>(kScreenWidth);
+    plane->maxX = -1;
+    return plane;
+}
+
+void setRun(r_visplane_t* plane, int first, int last, int top, int bottom) {
+    for (int x = first; x <= last; ++x) {
+        plane->top[x] = static_cast<std::uint8_t>(top);
+        plane->bottom[x] = static_cast<std::uint8_t>(bottom);
+    }
+    if (first < plane->minX) {
+        plane->minX = static_cast<std::int16_t>(first);
+    }
+    if (last > plane->maxX) {
+        plane->maxX = static_cast<std::int16_t>(last);
+    }
+}
+
+const r_name_t kSkyTexture = packName("SKY1");
 
 /* --- Tests --------------------------------------------------------------- */
 
@@ -867,6 +1034,489 @@ void test_drawseg_records_the_three_range_values() {
     TEST_ASSERT_EQUAL_UINT32(ANG90, drawseg.rwCenterAngle);
 }
 
+/* --- D3.3: the plane pass ------------------------------------------------ */
+
+void test_a_single_plane_fills_the_whole_surface() {
+    Fixture fixture;
+    TestFlat flat;
+
+    flat.setSolid(0x37u);
+    fixture.flats.add("FLAT1", &flat.flat);
+    OneWall().build(fixture.mapBytes, 64, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+
+    clearPlanes(fixture);
+    setRun(addPlane(fixture, 0, "FLAT1", 255), 0, 319, 0, 199);
+    fixture.prefill(0x5Au);
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_OK, fixture.drawPlanes());
+
+    for (std::size_t y = 0; y < kScreenHeight; ++y) {
+        for (std::size_t x = 0; x < kScreenWidth; ++x) {
+            if (fixture.pixels[x + y * kScreenWidth] != 0x37u) {
+                TEST_FAIL_MESSAGE("a pixel of the full-surface plane is not the flat's texel");
+            }
+            TEST_ASSERT_EQUAL_UINT8(1u, fixture.planeMask[x + y * kScreenWidth]);
+        }
+    }
+    for (std::size_t x = 0; x < kScreenWidth; ++x) {
+        TEST_ASSERT_EQUAL_UINT8(1u, fixture.covered[x]);
+    }
+    // One span per row: the run is the same on all 200 rows.
+    TEST_ASSERT_EQUAL_UINT32(320u * 200u, fixture.surface.planePixels);
+    TEST_ASSERT_EQUAL_UINT32(200u, fixture.surface.planeSpans);
+    // The wall counters are not this pass's to touch.
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.tierPixels[R_DRAW_TIER_MID]);
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.tierPixels[R_DRAW_TIER_TOP]);
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.tierPixels[R_DRAW_TIER_BOTTOM]);
+}
+
+void test_two_disjoint_runs_in_one_plane_are_two_spans() {
+    Fixture fixture;
+    TestFlat flat;
+
+    flat.setSolid(0x21u);
+    fixture.flats.add("FLAT2", &flat.flat);
+    OneWall().build(fixture.mapBytes, 64, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+
+    clearPlanes(fixture);
+    {
+        r_visplane_t* plane = addPlane(fixture, 0, "FLAT2", 255);
+
+        setRun(plane, 10, 49, 10, 10);
+        setRun(plane, 100, 149, 10, 10);
+        TEST_ASSERT_EQUAL_INT16(10, plane->minX);
+        TEST_ASSERT_EQUAL_INT16(149, plane->maxX);
+    }
+    fixture.prefill(0x5Au);
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_OK, fixture.drawPlanes());
+
+    for (int x = 10; x <= 49; ++x) {
+        TEST_ASSERT_EQUAL_UINT8(0x21u, fixture.at(x, 10));
+        TEST_ASSERT_EQUAL_UINT8(1u, fixture.maskAt(x, 10));
+    }
+    for (int x = 100; x <= 149; ++x) {
+        TEST_ASSERT_EQUAL_UINT8(0x21u, fixture.at(x, 10));
+        TEST_ASSERT_EQUAL_UINT8(1u, fixture.maskAt(x, 10));
+    }
+    // The empty column between the runs closes one span and starts the other,
+    // and it is never written.
+    TEST_ASSERT_EQUAL_UINT8(0x5Au, fixture.at(75, 10));
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.maskAt(75, 10));
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.covered[75]);
+    TEST_ASSERT_EQUAL_UINT32(40u + 50u, fixture.surface.planePixels);
+    TEST_ASSERT_EQUAL_UINT32(2u, fixture.surface.planeSpans);
+}
+
+void test_a_column_with_top_below_its_bottom_is_skipped() {
+    Fixture fixture;
+    TestFlat flat;
+
+    flat.setSolid(0x31u);
+    fixture.flats.add("FLAT3", &flat.flat);
+    OneWall().build(fixture.mapBytes, 64, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+
+    clearPlanes(fixture);
+    // A marked column whose top is below its bottom: R_MakeSpans' `t1 <= b1`
+    // tests are false for it, so it is a break in the run, not a span.
+    setRun(addPlane(fixture, 0, "FLAT3", 255), 160, 160, 50, 40);
+    fixture.prefill(0x5Au);
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_OK, fixture.drawPlanes());
+
+    for (std::size_t i = 0; i < fixture.pixels.size(); ++i) {
+        TEST_ASSERT_EQUAL_UINT8(0x5Au, fixture.pixels[i]);
+        TEST_ASSERT_EQUAL_UINT8(0u, fixture.planeMask[i]);
+    }
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.planePixels);
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.planeSpans);
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.covered[160]);
+}
+
+void test_the_flat_wraps_at_sixty_four_texels() {
+    Fixture fixture;
+    TestFlat flat;
+
+    flat.setPattern();
+    fixture.flats.add("FLAT4", &flat.flat);
+    OneWall().build(fixture.mapBytes, 64, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+
+    clearPlanes(fixture);
+    setRun(addPlane(fixture, 0, "FLAT4", 255), 0, 319, 100, 100);
+    fixture.prefill(0x00u);
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_OK, fixture.drawPlanes());
+
+    // The documented span formula, column by column. A 320-column run crosses
+    // the 64-texel flat five times, so every pixel checks the `& 63` wrap.
+    const int y = 100;
+    const fixed_t planeHeight = 41 * kFracUnit;
+    const fixed_t distance = fixed_mul(planeHeight, r_plane_yslope[y]);
+    const fixed_t centerX = static_cast<fixed_t>(kScreenWidth / 2) << 16;
+    const unsigned baseIndex =
+        static_cast<unsigned>((0u - ANG90) >> ANGLETOFINESHIFT);
+    const fixed_t baseXScale =
+        fixed_div(r_fine_sine[baseIndex + FINEANGLES / 4], centerX);
+    const fixed_t baseYScale = -fixed_div(r_fine_sine[baseIndex], centerX);
+    const fixed_t xstep = fixed_mul(distance, baseXScale);
+    const fixed_t ystep = fixed_mul(distance, baseYScale);
+    const fixed_t length = fixed_mul(distance, r_plane_dist_scale[0]);
+    const unsigned index =
+        static_cast<unsigned>((0u + r_x_to_view_angle[0]) >> ANGLETOFINESHIFT);
+    fixed_t xfrac = fixed_mul(r_fine_sine[index + FINEANGLES / 4], length);
+    fixed_t yfrac = -fixed_mul(r_fine_sine[index], length);
+    int wraps = 0;
+    fixed_t previousV = (yfrac >> (FRACBITS - 6)) & (63 * 64);
+
+    for (int x = 0; x < static_cast<int>(kScreenWidth); ++x) {
+        const int spot =
+            static_cast<int>(((yfrac >> (FRACBITS - 6)) & (63 * 64))
+                             + ((xfrac >> FRACBITS) & 63));
+        const fixed_t v = (yfrac >> (FRACBITS - 6)) & (63 * 64);
+
+        TEST_ASSERT_EQUAL_UINT8(flat.pixels[static_cast<std::size_t>(spot)],
+                                fixture.at(x, y));
+        if (x > 0 && v < previousV) {
+            ++wraps;
+        }
+        previousV = v;
+        xfrac += xstep;
+        yfrac += ystep;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(wraps >= 4, "the run did not wrap the flat five times");
+    TEST_ASSERT_EQUAL_UINT32(320u, fixture.surface.planePixels);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.surface.planeSpans);
+}
+
+void test_plane_light_is_the_zlight_table_not_the_wall_table() {
+    Fixture bright;
+    Fixture dark;
+    TestFlat brightFlat;
+    TestFlat darkFlat;
+
+    brightFlat.setSolid(42u);
+    darkFlat.setSolid(42u);
+    bright.flats.add("FLAT5", &brightFlat.flat);
+    dark.flats.add("FLAT5", &darkFlat.flat);
+    OneWall().build(bright.mapBytes, 64, 100, -100, "STONE");
+    OneWall().build(dark.mapBytes, 64, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, bright.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, bright.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, dark.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, dark.walk(0, 0, 41 * kFracUnit, 0));
+
+    clearPlanes(bright);
+    setRun(addPlane(bright, 0, "FLAT5", 255), 0, 319, 100, 100);
+    clearPlanes(dark);
+    setRun(addPlane(dark, 0, "FLAT5", 0), 0, 319, 100, 100);
+    bright.prefill(0x00u);
+    dark.prefill(0x00u);
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_OK, bright.drawPlanes());
+    TEST_ASSERT_EQUAL_INT(R_PLANE_OK, dark.drawPlanes());
+
+    // The plane light's column is the row's distance >> LIGHTZSHIFT, not the
+    // wall's rw_scale >> LIGHTSCALESHIFT, and the table is zlight, not
+    // scalelight. Row 15 is full bright; row 0 at any real distance is the
+    // darkest map, which the test's colormap inverts.
+    const fixed_t distance =
+        fixed_mul(41 * kFracUnit, r_plane_yslope[100]);
+    unsigned z = static_cast<unsigned>(distance >> R_PLANE_LIGHT_Z_SHIFT);
+    if (z >= R_PLANE_LIGHT_Z_LEVELS) {
+        z = R_PLANE_LIGHT_Z_LEVELS - 1;
+    }
+    TEST_ASSERT_EQUAL_UINT8(0u, r_plane_light[15][z]);
+    TEST_ASSERT_EQUAL_UINT8(31u, r_plane_light[0][z]);
+    TEST_ASSERT_EQUAL_UINT8(42u, bright.at(160, 100));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<std::uint8_t>(255u - 42u),
+                            dark.at(160, 100));
+
+    // The two generated tables are not the same lookup. At its nearest column
+    // the plane table's row 0 is map 0; the wall table's row 0 is map 31 for
+    // every scale, which is the difference r_tables.h names.
+    TEST_ASSERT_EQUAL_UINT8(0u, r_plane_light[0][0]);
+    TEST_ASSERT_EQUAL_UINT8(31u, r_light_level[0][0]);
+    TEST_ASSERT_EQUAL_UINT8(31u, r_plane_light[0][R_PLANE_LIGHT_Z_LEVELS - 1]);
+}
+
+void test_the_sky_plane_draws_the_sky_texture_and_never_a_flat() {
+    Fixture fixture;
+    TestTexture sky;
+    TestFlat flat;
+
+    // A 256-wide, 128-row sky with a distinct byte at every (column, row).
+    sky.pixels.assign(256u * 128u, 0u);
+    for (int column = 0; column < 256; ++column) {
+        for (int row = 0; row < 128; ++row) {
+            sky.pixels[static_cast<std::size_t>(column) * 128u
+                       + static_cast<std::size_t>(row)] =
+                static_cast<std::uint8_t>((column * 3 + row * 7 + 1) & 0xFF);
+        }
+    }
+    sky.texture.pixels = sky.pixels.data();
+    sky.texture.mask = nullptr;
+    sky.texture.width = 256;
+    sky.texture.height = 128;
+    sky.texture.widthMask = r_texture_width_mask(256);
+    sky.texture.heightMask = 127;
+
+    flat.setSolid(0x11u);
+    fixture.textures.add("SKY1", &sky.texture);
+    fixture.flats.add("F_SKY1", &flat.flat);
+    fixture.source.skyTexture = kSkyTexture;
+
+    OneWall().build(fixture.mapBytes, 64, 100, -100, "STONE");
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0, kSky));
+
+    clearPlanes(fixture);
+    setRun(addPlane(fixture, 0, "F_SKY1", 0), 0, 319, 0, 9);
+    fixture.prefill(0xAAu);
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_OK, fixture.drawPlanes());
+
+    // The sky is drawn from the texture, column by column: the plane's flat
+    // picture was never resolved, and the pixels are the sky's bytes, not 0x11.
+    TEST_ASSERT_EQUAL_INT(0, fixture.flats.lookups);
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 0; x < static_cast<int>(kScreenWidth); ++x) {
+            const unsigned angle =
+                static_cast<unsigned>((0u + r_x_to_view_angle[x])
+                                      >> R_PLANE_SKY_ANGLE_SHIFT);
+            const int column = static_cast<int>(angle & 255u);
+            const int row = y & 127;
+            const std::uint8_t expected =
+                sky.pixels[static_cast<std::size_t>(column) * 128u
+                           + static_cast<std::size_t>(row)];
+
+            TEST_ASSERT_EQUAL_UINT8(expected, fixture.at(x, y));
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT32(320u * 10u, fixture.surface.planePixels);
+    // A sky column is R_DrawColumn, not R_MapPlane: it is not a span.
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.planeSpans);
+    TEST_ASSERT_EQUAL_UINT8(1u, fixture.covered[160]);
+
+    // The contrast: a plane with a non-sky picture draws its flat, and the sky
+    // texture is never needed.
+    Fixture other;
+    TestFlat otherFlat;
+
+    otherFlat.setSolid(0x11u);
+    other.flats.add("CEIL", &otherFlat.flat);
+    OneWall().build(other.mapBytes, 64, 100, -100, "STONE");
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, other.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, other.walk(0, 0, 41 * kFracUnit, 0, kSky));
+
+    clearPlanes(other);
+    setRun(addPlane(other, 0, "CEIL", 255), 0, 319, 0, 9);
+    other.prefill(0xAAu);
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_OK, other.drawPlanes());
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 0; x < static_cast<int>(kScreenWidth); ++x) {
+            TEST_ASSERT_EQUAL_UINT8(0x11u, other.at(x, y));
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT32(320u * 10u, other.surface.planePixels);
+    TEST_ASSERT_EQUAL_UINT32(10u, other.surface.planeSpans);
+}
+
+void test_two_planes_keep_their_own_runs_in_index_order() {
+    Fixture fixture;
+    TestFlat lower;
+    TestFlat later;
+
+    lower.setSolid(0x11u);
+    later.setSolid(0x22u);
+    fixture.flats.add("FLATA", &lower.flat);
+    fixture.flats.add("FLATB", &later.flat);
+    OneWall().build(fixture.mapBytes, 64, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+
+    clearPlanes(fixture);
+    setRun(addPlane(fixture, 0, "FLATA", 255), 0, 99, 10, 10);
+    setRun(addPlane(fixture, 0, "FLATB", 255), 200, 319, 10, 10);
+    fixture.prefill(0x5Au);
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_OK, fixture.drawPlanes());
+
+    for (int x = 0; x < 100; ++x) {
+        TEST_ASSERT_EQUAL_UINT8(0x11u, fixture.at(x, 10));
+    }
+    for (int x = 200; x < static_cast<int>(kScreenWidth); ++x) {
+        TEST_ASSERT_EQUAL_UINT8(0x22u, fixture.at(x, 10));
+    }
+    for (int x = 100; x < 200; ++x) {
+        TEST_ASSERT_EQUAL_UINT8(0x5Au, fixture.at(x, 10));
+    }
+    TEST_ASSERT_EQUAL_UINT32(100u + 120u, fixture.surface.planePixels);
+    TEST_ASSERT_EQUAL_UINT32(2u, fixture.surface.planeSpans);
+}
+
+void test_a_missing_flat_leaves_the_frame_untouched() {
+    Fixture fixture;
+
+    OneWall().build(fixture.mapBytes, 64, 100, -100, "STONE");
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+
+    clearPlanes(fixture);
+    setRun(addPlane(fixture, 0, "NOPE", 255), 0, 319, 0, 199);
+    fixture.prefill(0x5Au);
+    fixture.surface.planePixels = 123u;
+    fixture.surface.planeSpans = 456u;
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_ERR_FLAT_MISSING, fixture.drawPlanes());
+
+    for (std::size_t i = 0; i < fixture.pixels.size(); ++i) {
+        TEST_ASSERT_EQUAL_UINT8(0x5Au, fixture.pixels[i]);
+        TEST_ASSERT_EQUAL_UINT8(0u, fixture.planeMask[i]);
+    }
+    for (std::size_t x = 0; x < kScreenWidth; ++x) {
+        TEST_ASSERT_EQUAL_UINT8(0u, fixture.covered[x]);
+    }
+    TEST_ASSERT_EQUAL_UINT32(123u, fixture.surface.planePixels);
+    TEST_ASSERT_EQUAL_UINT32(456u, fixture.surface.planeSpans);
+}
+
+void test_a_misshapen_flat_leaves_the_frame_untouched() {
+    Fixture fixture;
+    TestFlat flat;
+
+    flat.setSolid(0x11u);
+    // Not 64 x 64: the flat's square is what `& 63` and `& 4032` address.
+    flat.flat.height = 32;
+    flat.flat.heightMask = 31;
+    fixture.flats.add("FLAT6", &flat.flat);
+    OneWall().build(fixture.mapBytes, 64, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+
+    clearPlanes(fixture);
+    setRun(addPlane(fixture, 0, "FLAT6", 255), 0, 319, 0, 199);
+    fixture.prefill(0x5Au);
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_ERR_FLAT_SHAPE, fixture.drawPlanes());
+    for (std::size_t i = 0; i < fixture.pixels.size(); ++i) {
+        TEST_ASSERT_EQUAL_UINT8(0x5Au, fixture.pixels[i]);
+        TEST_ASSERT_EQUAL_UINT8(0u, fixture.planeMask[i]);
+    }
+
+    // A width that is not 64 is the other unusable shape.
+    flat.flat.height = 64;
+    flat.flat.heightMask = 63;
+    flat.flat.width = 128;
+    flat.flat.widthMask = 127;
+    TEST_ASSERT_EQUAL_INT(R_PLANE_ERR_FLAT_SHAPE, fixture.drawPlanes());
+    for (std::size_t i = 0; i < fixture.pixels.size(); ++i) {
+        TEST_ASSERT_EQUAL_UINT8(0x5Au, fixture.pixels[i]);
+    }
+}
+
+void test_a_sky_plane_with_no_resolvable_texture_fails() {
+    Fixture fixture;
+    TestFlat flat;
+
+    flat.setSolid(0x11u);
+    fixture.flats.add("F_SKY1", &flat.flat);
+    OneWall().build(fixture.mapBytes, 64, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0, kSky));
+
+    clearPlanes(fixture);
+    setRun(addPlane(fixture, 0, "F_SKY1", 0), 0, 319, 0, 9);
+    fixture.prefill(0x5Au);
+
+    // The source names no sky texture: a sky picture with no texture is an
+    // error, not a blank ceiling.
+    TEST_ASSERT_EQUAL_INT(R_PLANE_ERR_SKY_MISSING, fixture.drawPlanes());
+    for (std::size_t i = 0; i < fixture.pixels.size(); ++i) {
+        TEST_ASSERT_EQUAL_UINT8(0x5Au, fixture.pixels[i]);
+    }
+
+    // The name is set but nothing resolves it.
+    fixture.source.skyTexture = kSkyTexture;
+    TEST_ASSERT_EQUAL_INT(R_PLANE_ERR_SKY_MISSING, fixture.drawPlanes());
+    for (std::size_t i = 0; i < fixture.pixels.size(); ++i) {
+        TEST_ASSERT_EQUAL_UINT8(0x5Au, fixture.pixels[i]);
+    }
+
+    // A resident texture whose column mask is not an AND mask is unusable.
+    TestTexture sky;
+
+    sky.setSolid(1u, 256, 128);
+    sky.texture.widthMask = 100;
+    fixture.textures.add("SKY1", &sky.texture);
+    TEST_ASSERT_EQUAL_INT(R_PLANE_ERR_SKY_SHAPE, fixture.drawPlanes());
+    for (std::size_t i = 0; i < fixture.pixels.size(); ++i) {
+        TEST_ASSERT_EQUAL_UINT8(0x5Au, fixture.pixels[i]);
+    }
+}
+
+void test_the_plane_pass_validates_its_arguments_before_writing() {
+    Fixture fixture;
+    TestFlat flat;
+
+    flat.setSolid(0x11u);
+    fixture.flats.add("FLAT7", &flat.flat);
+    OneWall().build(fixture.mapBytes, 64, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+
+    clearPlanes(fixture);
+    setRun(addPlane(fixture, 0, "FLAT7", 255), 0, 319, 0, 199);
+    fixture.prefill(0x5Au);
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_ERR_NULL_STATE,
+                          r_plane_draw(nullptr, &fixture.surface, &fixture.source,
+                                       &fixture.light));
+
+    fixture.surface.width = 160;
+    TEST_ASSERT_EQUAL_INT(R_PLANE_ERR_SURFACE_SIZE, fixture.drawPlanes());
+    fixture.surface.width = static_cast<std::int32_t>(kScreenWidth);
+
+    fixture.surface.pixels = nullptr;
+    TEST_ASSERT_EQUAL_INT(R_PLANE_ERR_SURFACE_PIXELS, fixture.drawPlanes());
+    fixture.surface.pixels = fixture.pixels.data();
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_ERR_NULL_SOURCE,
+                          r_plane_draw(&fixture.view, &fixture.surface, nullptr,
+                                       &fixture.light));
+
+    fixture.source.resolveFlat = nullptr;
+    TEST_ASSERT_EQUAL_INT(R_PLANE_ERR_NULL_RESOLVE, fixture.drawPlanes());
+    fixture.source.resolveFlat = resolveFlat;
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_ERR_NULL_LIGHT,
+                          r_plane_draw(&fixture.view, &fixture.surface,
+                                       &fixture.source, nullptr));
+
+    for (std::size_t i = 0; i < fixture.pixels.size(); ++i) {
+        TEST_ASSERT_EQUAL_UINT8(0x5Au, fixture.pixels[i]);
+    }
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.planePixels);
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.planeSpans);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -888,6 +1538,17 @@ int main(int argc, char** argv) {
     RUN_TEST(test_small_surface_is_rejected_before_any_write);
     RUN_TEST(test_light_init_validates_the_lump_layout);
     RUN_TEST(test_drawseg_records_the_three_range_values);
+    RUN_TEST(test_a_single_plane_fills_the_whole_surface);
+    RUN_TEST(test_two_disjoint_runs_in_one_plane_are_two_spans);
+    RUN_TEST(test_a_column_with_top_below_its_bottom_is_skipped);
+    RUN_TEST(test_the_flat_wraps_at_sixty_four_texels);
+    RUN_TEST(test_plane_light_is_the_zlight_table_not_the_wall_table);
+    RUN_TEST(test_the_sky_plane_draws_the_sky_texture_and_never_a_flat);
+    RUN_TEST(test_two_planes_keep_their_own_runs_in_index_order);
+    RUN_TEST(test_a_missing_flat_leaves_the_frame_untouched);
+    RUN_TEST(test_a_misshapen_flat_leaves_the_frame_untouched);
+    RUN_TEST(test_a_sky_plane_with_no_resolvable_texture_fails);
+    RUN_TEST(test_the_plane_pass_validates_its_arguments_before_writing);
 
     const int result = UNITY_END();
     test_teardown();

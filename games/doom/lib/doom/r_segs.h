@@ -110,10 +110,12 @@
  *     after the planes and the sprites and owns storage this pass does not
  *     have (upstream's openings[]). D3.4 decides it.
  *   - flats, sprites, the sky texture, the status bar, the palette, the present
- *     path. D3.3 and D3.4.
+ *     path. The plane pass (D3.3) draws the flats and the sky in r_plane.c;
+ *     sprites and the masked mid textures are D3.4.
  *   - any texture decoding or residency policy. A tier's texture arrives as an
  *     r_walltex_t through r_tex_source_t, and the *caller* decides where the
- *     bytes come from and which of them are resident.
+ *     bytes come from and which of them are resident. D3.3's flats use the same
+ *     source's resolveFlat, with the same rule.
  *   - any mutable global: the state is the caller's r_view_state_t, the surface
  *     is the caller's buffer, the light lump is the caller's bytes.
  *
@@ -210,10 +212,42 @@ typedef const r_walltex_t* (*r_tex_resolve_fn)(void* context, r_name_t name);
 /*
  * How a fragment finds its textures. `resolve` is required; `context` is handed
  * back unchanged and may be NULL.
+ *
+ * D3.3 (the plane pass) extends the same source with the two things a flat
+ * needs, so one struct describes everything one frame draws:
+ *
+ *   resolveFlat  Resolves a packed flat name to bytes, or NULL when the flat is
+ *                not resident. Called once per drawable plane in the pass's
+ *                preflight and once more when that plane is drawn -- never per
+ *                span and never per pixel. The returned flat must stay valid
+ *                until r_plane_draw() returns; the emitter copies nothing.
+ *                The policy behind the callback (a cache, a zone block, a
+ *                mapped flash region) is the caller's, exactly as it is for
+ *                wall textures. Answering NULL is a normal outcome and
+ *                produces R_PLANE_ERR_FLAT_MISSING, not a partial frame.
+ *   flatContext  The pointer handed to resolveFlat. It is separate from
+ *                `context` because a caller usually keeps flats and wall
+ *                textures in different stores; pass the same pointer in both
+ *                when it has one.
+ *   skyTexture   The packed name of the level's sky *texture* (upstream's
+ *                `skytexture`, "SKY1" for episode 1), or R_NAME_NONE when the
+ *                level has no sky. The sky plane is identified by its flat
+ *                (`plane->picNum == state->params.skyPicNum`), but it is drawn
+ *                from a wall texture, because DOOM stores the sky as one
+ *                (r_plane.c, sky path). A sky plane with no resolvable texture
+ *                is an error, not a blank ceiling.
+ *
+ * The wall pass reads only `resolve` and `context`; the plane pass reads only
+ * `resolveFlat`, `flatContext` and `skyTexture` (plus `resolve`/`context` for
+ * that one sky texture). A source that is used by only one pass may leave the
+ * other pass's fields NULL/NONE.
  */
 typedef struct r_tex_source {
     r_tex_resolve_fn resolve;
     void* context;
+    r_flat_resolve_fn resolveFlat;
+    void* flatContext;
+    r_name_t skyTexture;
 } r_tex_source_t;
 
 /* --- Error codes --------------------------------------------------------- */

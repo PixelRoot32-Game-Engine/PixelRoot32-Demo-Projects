@@ -19,13 +19,15 @@ prints every drawseg, every visplane and a hash of both, so
 protocols are independent: this file has its own map parser, its own tables,
 its own clip list and its own plane set.
 
-A third oracle, ``--segs NAME``, is D3.2's: it composes the wall textures, reads
-COLORMAP, and renders the wall-only frame for 20 sampled viewpoints -- four
-player/deathmatch start positions from THINGS against five view angles -- with
-its own column loop, and prints one SHA-256 per frame. ``tools/rsegs_check.py``
-compares those hashes with ``tools/rsegs_check.c``. It is written from upstream's
-r_segs.c/r_draw.c and from r_data.h's documented composition contract; it does
-not read the C emitter.
+A third oracle, ``--segs NAME``, is D3.2's and D3.3's: it composes the wall
+textures, reads COLORMAP and the flats, and renders the 20 sampled viewpoints --
+four player/deathmatch start positions from THINGS against five view angles --
+with its own wall column loop, span maker, plane light, flat lookup and sky path.
+It prints the wall hash (unchanged from D3.2), the plane-mask hash and the
+finished frame's hash. ``tools/rsegs_check.py`` compares them with
+``tools/rsegs_check.c``. It is written from upstream's r_segs.c/r_draw.c,
+r_plane.c/r_draw.c and from r_data.h's documented composition and flat
+contracts; it does not read the C emitters.
 
 INDEPENDENCE
 
@@ -1743,6 +1745,14 @@ STORED_COLUMN_HEIGHT = 128
 ML_DONTPEGTOP = 8
 ML_DONTPEGBOTTOM = 16
 
+# R_InitLightTables()/R_ExecuteSetViewSize() constants for the plane pass (D3.3).
+LIGHTZSHIFT = 20
+MAXLIGHTZ = 128
+ANGLETOSKYSHIFT = 22
+SKY_ISCALE = FRACUNIT
+SKY_TEXTUREMID = CENTER_Y << FRACBITS
+FLAT_SIZE = 64
+
 # The THINGS types that are a player or deathmatch start.
 PLAYER_START_TYPES = (1, 2, 3, 4, 11)
 
@@ -1761,6 +1771,45 @@ def _light_levels() -> tuple[tuple[int, ...], ...]:
 
 
 LIGHT_LEVEL = _light_levels()
+
+
+def _plane_light() -> tuple[tuple[int, ...], ...]:
+    """R_InitLightTables()'s zlight[,] as COLORMAP map indices (D3.3)."""
+    table: list[tuple[int, ...]] = []
+    for i in range(LIGHTLEVELS):
+        start_map = ((LIGHTLEVELS - 1 - i) * 2) * NUMCOLORMAPS // LIGHTLEVELS
+        row: list[int] = []
+        for j in range(MAXLIGHTZ):
+            scale = fixed_div((SCREEN_WIDTH // 2) * FRACUNIT, (j + 1) << LIGHTZSHIFT)
+            scale >>= LIGHTSCALESHIFT
+            level = start_map - scale // DISTMAP
+            row.append(0 if level < 0 else (NUMCOLORMAPS - 1 if level >= NUMCOLORMAPS else level))
+        table.append(tuple(row))
+    return tuple(table)
+
+
+def _plane_yslope() -> tuple[int, ...]:
+    """R_ExecuteSetViewSize()'s yslope[] (D3.3)."""
+    table: list[int] = []
+    for i in range(SCREEN_HEIGHT):
+        dy = abs(((i - SCREEN_HEIGHT // 2) << FRACBITS) + FRACUNIT // 2)
+        table.append(fixed_div((SCREEN_WIDTH // 2) * FRACUNIT, dy))
+    return tuple(table)
+
+
+def _plane_dist_scale() -> tuple[int, ...]:
+    """R_ExecuteSetViewSize()'s distscale[] (D3.3)."""
+    table: list[int] = []
+    for x in range(SCREEN_WIDTH):
+        cosadj = abs(FINE_SINE[(X_TO_VIEW_ANGLE[x] >> ANGLETOFINESHIFT)
+                               + FINEANGLES // 4])
+        table.append(fixed_div(FRACUNIT, cosadj))
+    return tuple(table)
+
+
+PLANE_LIGHT = _plane_light()
+YSLOPE = _plane_yslope()
+DISTSCALE = _plane_dist_scale()
 
 
 def light_row(lightnum: int) -> int:
@@ -1854,6 +1903,37 @@ class TextureLibrary:
         wall = WallTexture(texture.width, texture.height, pixels)
         self.cache[key] = wall
         return wall
+
+
+class Flat:
+    """One flat: 64 x 64 raw palette indices, row-major (r_data.h's format)."""
+
+    __slots__ = ("pixels",)
+
+    def __init__(self, name: str, data: bytes) -> None:
+        if len(data) != FLAT_SIZE * FLAT_SIZE:
+            raise FormatError(f"flat {name!r} is {len(data)} B, not 64 * 64")
+        self.pixels = data
+
+
+class FlatLibrary:
+    """Resolves flats by name from the WAD directory, like R_FlatNumForName()."""
+
+    def __init__(self, lumps: list[Lump]) -> None:
+        self.lumps = lumps
+        self.cache: dict[str, Flat] = {}
+
+    def get(self, name: str) -> Flat:
+        key = name.upper()
+        cached = self.cache.get(key)
+        if cached is not None:
+            return cached
+        index = first_index(self.lumps, key)
+        if index < 0:
+            raise FormatError(f"flat {name!r} is not a lump in this WAD")
+        flat = Flat(name, self.lumps[index].data)
+        self.cache[key] = flat
+        return flat
 
 
 def name_of(field: bytes) -> str:
@@ -2029,6 +2109,153 @@ def emit_walls(bsp: BspMap, drawsegs: list[dict], params: dict,
     return frame
 
 
+def emit_planes(planes: list[Visplane], params: dict, textures: TextureLibrary,
+                flats: FlatLibrary, colormaps: bytes, wall_pixels: bytes,
+                wall_covered: bytes) -> dict:
+    """R_DrawPlanes(): the span maker, R_MapPlane, R_DrawSpan and the sky path.
+
+    Written from upstream's r_plane.c (R_DrawPlanes, R_MakeSpans, R_MapPlane),
+    r_draw.c (R_DrawSpan), r_sky.c/r_main.c (the sky constants) and r_data.h's
+    flat contract. It reads the walk's plane records, never r_plane.c's C text.
+
+    The input surface is the wall pass's output, which this pass draws over. The
+    returned `mask` is one byte per pixel and says exactly where this pass wrote,
+    so a frame comparison can attribute a divergent pixel to a pass.
+    """
+    pixels = bytearray(wall_pixels)
+    covered = bytearray(wall_covered)
+    mask = bytearray(SCREEN_WIDTH * SCREEN_HEIGHT)
+
+    viewx = params["x"]
+    viewy = params["y"]
+    viewz = params["z"]
+    viewangle = params["angle"]
+    extralight = params["extralight"]
+    skyflat = params["sky"]
+    # E1M1 is episode 1, so the level's sky texture is SKY1 (the episode rule
+    # that sets upstream's `skytexture`). The C harness receives the same name
+    # through r_tex_source_t::skyTexture.
+    sky = textures.get("SKY1")
+
+    centerxfrac = (SCREEN_WIDTH // 2) << FRACBITS
+    base_angle = u32(viewangle - ANG90) >> ANGLETOFINESHIFT
+    basexscale = fixed_div(FINE_SINE[base_angle + FINEANGLES // 4], centerxfrac)
+    baseyscale = -fixed_div(FINE_SINE[base_angle], centerxfrac)
+
+    spanstart = [0] * SCREEN_HEIGHT
+    counters = {"planes": 0, "spans": 0, "pixels": 0}
+
+    def map_plane(y: int, x1: int, x2: int, planeheight: int, lightrow: int,
+                  flat: Flat) -> None:
+        if y < 0 or y >= SCREEN_HEIGHT or x1 < 0 or x2 >= SCREEN_WIDTH or x1 > x2:
+            return
+        distance = i32(fixed_mul(planeheight, YSLOPE[y]))
+        xstep = i32(fixed_mul(distance, basexscale))
+        ystep = i32(fixed_mul(distance, baseyscale))
+        length = i32(fixed_mul(distance, DISTSCALE[x1]))
+        index = u32(viewangle + X_TO_VIEW_ANGLE[x1]) >> ANGLETOFINESHIFT
+        xfrac = i32(viewx + i32(fixed_mul(FINE_SINE[index + FINEANGLES // 4], length)))
+        yfrac = i32(-viewy - i32(fixed_mul(FINE_SINE[index], length)))
+        z = distance >> LIGHTZSHIFT
+        if z >= MAXLIGHTZ:
+            z = MAXLIGHTZ - 1
+        colormap = PLANE_LIGHT[lightrow][z] * 256
+        counters["spans"] += 1
+        for x in range(x1, x2 + 1):
+            spot = ((yfrac >> (FRACBITS - 6)) & (63 * 64)) + ((xfrac >> FRACBITS) & 63)
+            at = y * SCREEN_WIDTH + x
+            pixels[at] = colormaps[colormap + flat.pixels[spot]]
+            mask[at] = 1
+            covered[x] = 1
+            counters["pixels"] += 1
+            xfrac = i32(xfrac + xstep)
+            yfrac = i32(yfrac + ystep)
+
+    def make_spans(x: int, t1: int, b1: int, t2: int, b2: int,
+                   planeheight: int, lightrow: int, flat: Flat) -> None:
+        # Upstream writes top[minx-1] and top[maxx+1] as 0xff sentinels; this
+        # pass passes the outside columns in as empty instead. An empty column's
+        # bottom is zero, which is what upstream's zero-initialised array holds
+        # where top is 0xff.
+        if t1 == 0xFF:
+            b1 = 0
+        if t2 == 0xFF:
+            b2 = 0
+        while t1 < t2 and t1 <= b1:
+            map_plane(t1, spanstart[t1], x - 1, planeheight, lightrow, flat)
+            t1 += 1
+        while b1 > b2 and b1 >= t1:
+            map_plane(b1, spanstart[b1], x - 1, planeheight, lightrow, flat)
+            b1 -= 1
+        while t2 < t1 and t2 <= b2:
+            spanstart[t2] = x
+            t2 += 1
+        while b2 > b1 and b2 >= t2:
+            spanstart[b2] = x
+            b2 -= 1
+
+    for plane in planes:
+        if plane.minx > plane.maxx:
+            continue
+        counters["planes"] += 1
+
+        if plane.pic == skyflat:
+            # Sky is always full bright (colormaps[0]) and does not go through
+            # the span maker: one R_DrawColumn per marked column.
+            for x in range(plane.minx, plane.maxx + 1):
+                yl = plane.top[x]
+                yh = plane.bottom[x]
+                if yl == 0xFF or yl > yh:
+                    continue
+                if yl < 0:
+                    yl = 0
+                if yh > SCREEN_HEIGHT - 1:
+                    yh = SCREEN_HEIGHT - 1
+                if yl > yh:
+                    continue
+                angle = u32(viewangle + X_TO_VIEW_ANGLE[x]) >> ANGLETOSKYSHIFT
+                column = (angle & sky.width_mask) * sky.column_height
+                frac = SKY_TEXTUREMID + (yl - CENTER_Y) * SKY_ISCALE
+                for row in range(yl, yh + 1):
+                    at = row * SCREEN_WIDTH + x
+                    pixels[at] = sky.pixels[
+                        column + ((frac >> FRACBITS) & (sky.column_height - 1))]
+                    mask[at] = 1
+                    covered[x] = 1
+                    counters["pixels"] += 1
+                    frac = i32(frac + SKY_ISCALE)
+            continue
+
+        flat = flats.get(name_of(plane.pic))
+        planeheight = abs(i32(plane.height - viewz))
+        light = (plane.light >> LIGHTSEGSHIFT) + extralight
+        if light >= LIGHTLEVELS:
+            light = LIGHTLEVELS - 1
+        if light < 0:
+            light = 0
+
+        stop = plane.maxx + 1
+        for x in range(plane.minx, stop + 1):
+            t1 = plane.top[x - 1] if x > plane.minx else 0xFF
+            b1 = plane.bottom[x - 1] if x > plane.minx else 0
+            t2 = plane.top[x] if x <= plane.maxx else 0xFF
+            b2 = plane.bottom[x] if x <= plane.maxx else 0
+            make_spans(x, t1, b1, t2, b2, planeheight, light, flat)
+
+    frame_hash = hashlib.sha256(bytes(pixels) + bytes(covered)).hexdigest()
+    plane_hash = hashlib.sha256(bytes(mask)).hexdigest()
+    return {
+        "pixels": bytes(pixels),
+        "covered": bytes(covered),
+        "mask": bytes(mask),
+        "planes": counters["planes"],
+        "spans": counters["spans"],
+        "plane_pixels": counters["pixels"],
+        "planehash": plane_hash,
+        "framehash": frame_hash,
+    }
+
+
 def floor_view(bsp: BspMap, x: int, y: int) -> dict:
     """A viewpoint at (x, y) with P_SpawnPlayer()'s z rule, angle 0."""
     subsector = bsp.ssectors[point_in_subsector(bsp, x, y)]
@@ -2071,6 +2298,7 @@ def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
                 column: tuple[int, int] | None = None) -> None:
     bsp = read_bsp_map(lumps, map_name)
     textures = TextureLibrary(lumps)
+    flats = FlatLibrary(lumps)
     colormap_index = first_index(lumps, "COLORMAP")
     if colormap_index < 0:
         raise FormatError("COLORMAP is not in this WAD")
@@ -2084,32 +2312,50 @@ def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
     for index, params in enumerate(views):
         state = WalkState(bsp, drawsegs, planes)
         state.render(params)
-        frame = emit_walls(bsp, state.drawsegs, params, textures, colormaps)
+        wall = emit_walls(bsp, state.drawsegs, params, textures, colormaps)
+        plane = emit_planes(state.planes, params, textures, flats, colormaps,
+                            wall["pixels"], wall["covered"])
+        frame = {
+            "wall": wall,
+            "plane": plane,
+        }
         frames.append(frame)
-        pixel_digest = hashlib.sha256(frame["pixels"]).hexdigest()
-        cover_digest = hashlib.sha256(frame["covered"]).hexdigest()
-        print(f"frame {index:02d}: {frame['digest']}")
-        print(f"FRAMESTAT {index:02d} drawsegs={frame['drawsegs']} "
-              f"columns={frame['covered_columns']} pixels={frame['pixels_written']} "
-              f"mid={frame['mid']} top={frame['top']} bottom={frame['bottom']} "
+        wall_hash = wall["digest"]
+        pixel_digest = hashlib.sha256(wall["pixels"]).hexdigest()
+        cover_digest = hashlib.sha256(wall["covered"]).hexdigest()
+        print(f"frame {index:02d}: {wall_hash}")
+        print(f"FRAMESTAT {index:02d} drawsegs={wall['drawsegs']} "
+              f"columns={wall['covered_columns']} pixels={wall['pixels_written']} "
+              f"mid={wall['mid']} top={wall['top']} bottom={wall['bottom']} "
               f"pixelhash={pixel_digest} coverhash={cover_digest}")
+        print(f"PLANESTAT {index:02d} planes={plane['planes']} spans={plane['spans']} "
+              f"plane_pixels={plane['plane_pixels']} wallhash={wall_hash} "
+              f"planehash={plane['planehash']} framehash={plane['framehash']}")
 
     print(f"SEGS-SUMMARY frames={len(frames)} "
-          f"drawsegs={sum(f['drawsegs'] for f in frames)} "
-          f"columns={sum(f['covered_columns'] for f in frames)} "
-          f"pixels={sum(f['pixels_written'] for f in frames)} "
-          f"mid={sum(f['mid'] for f in frames)} top={sum(f['top'] for f in frames)} "
-          f"bottom={sum(f['bottom'] for f in frames)}")
+          f"drawsegs={sum(f['wall']['drawsegs'] for f in frames)} "
+          f"columns={sum(f['wall']['covered_columns'] for f in frames)} "
+          f"pixels={sum(f['wall']['pixels_written'] for f in frames)} "
+          f"mid={sum(f['wall']['mid'] for f in frames)} "
+          f"top={sum(f['wall']['top'] for f in frames)} "
+          f"bottom={sum(f['wall']['bottom'] for f in frames)}")
+    print(f"PLANE-SUMMARY frames={len(frames)} "
+          f"planes={sum(f['plane']['planes'] for f in frames)} "
+          f"spans={sum(f['plane']['spans'] for f in frames)} "
+          f"plane_pixels={sum(f['plane']['plane_pixels'] for f in frames)}")
 
     if detail is not None:
         if detail < 0 or detail >= len(frames):
             raise InputError(f"--segs-detail {detail} is not a frame of this run")
         frame = frames[detail]
         for x in range(SCREEN_WIDTH):
-            column_hash = hashlib.sha256()
-            column_hash.update(frame["pixels"][x::SCREEN_WIDTH])
-            column_hash.update(frame["covered"][x:x + 1])
-            print(f"COLUMN {detail:02d} {x} {column_hash.hexdigest()}")
+            wall_hash = hashlib.sha256(
+                frame["wall"]["pixels"][x::SCREEN_WIDTH]
+                + frame["wall"]["covered"][x:x + 1]).hexdigest()
+            frame_hash = hashlib.sha256(
+                frame["plane"]["pixels"][x::SCREEN_WIDTH]
+                + frame["plane"]["covered"][x:x + 1]).hexdigest()
+            print(f"COLUMN {detail:02d} {x} {wall_hash} {frame_hash}")
 
     if column is not None:
         frame_index, x = column
@@ -2119,9 +2365,12 @@ def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
             raise InputError(f"--segs-column {x} is not a screen column")
         frame = frames[frame_index]
         for y in range(SCREEN_HEIGHT):
+            at = y * SCREEN_WIDTH + x
             print(f"ROW {frame_index:02d} {x} {y} "
-                  f"{frame['pixels'][y * SCREEN_WIDTH + x]:02x} "
-                  f"{frame['covered'][x]:02x}")
+                  f"{frame['wall']['pixels'][at]:02x} "
+                  f"{frame['plane']['pixels'][at]:02x} "
+                  f"{frame['wall']['covered'][x]:02x} "
+                  f"{frame['plane']['mask'][at]:02x}")
 
 
 # --- Command line -----------------------------------------------------------

@@ -122,6 +122,40 @@ static inline fixed_t r_fine_tangent_lookup(angle_t angle) {
  * selects: `colormaps + r_light_level[i][j] * 256`. */
 extern const uint8_t r_light_level[R_LIGHT_LEVELS][R_LIGHT_SCALE_LEVELS];
 
+/* --- The plane pass's per-view tables (D3.3) ----------------------------- */
+
+/*
+ * R_InitLightTables()'s zlight[,] and two of R_ExecuteSetViewSize()'s tables,
+ * reduced to the numbers R_MapPlane() and R_DrawSpan() read. Like the wall
+ * light table they depend only on the one view size this port has, so they are
+ * generated constants rather than per-frame state (2 KB + 800 B + 1.28 KB of
+ * flash, no DRAM).
+ *
+ *   r_plane_light[i][j]  zlight[i][j] as a COLORMAP map index. The row is the
+ *                        plane's light number (sector light >> LIGHTSEGSHIFT,
+ *                        plus extralight, clamped to LIGHTLEVELS); the column is
+ *                        `distance >> LIGHTZSHIFT`, clamped to MAXLIGHTZ - 1.
+ *                        It is NOT the wall's two-dimensional table: the column
+ *                        is the distance to the plane along the view ray, not a
+ *                        texture scale, and the row is one value per sector, not
+ *                        a per-seg-axis correction.
+ *   r_plane_yslope[i]    R_ExecuteSetViewSize()'s yslope[i]: the ratio between
+ *                        a row's ray distance and the plane's height difference,
+ *                        so R_MapPlane() reads
+ *                        `distance = FixedMul(abs(planeheight - viewz), yslope[i])`.
+ *   r_plane_dist_scale[x] R_ExecuteSetViewSize()'s distscale[x]:
+ *                        1 / |cos(xtoviewangle[x])|, the factor that turns a
+ *                        row's perpendicular distance into the distance along
+ *                        the column's ray. R_MapPlane() multiplies it by that
+ *                        distance at x1, the span's first column.
+ */
+#define R_PLANE_LIGHT_Z_SHIFT 20 /* LIGHTZSHIFT */
+#define R_PLANE_LIGHT_Z_LEVELS 128 /* MAXLIGHTZ */
+
+extern const uint8_t r_plane_light[R_LIGHT_LEVELS][R_PLANE_LIGHT_Z_LEVELS];
+extern const fixed_t r_plane_yslope[R_VIEW_HEIGHT];
+extern const fixed_t r_plane_dist_scale[R_SCREEN_WIDTH];
+
 /* atan() table: slope_div() -> binary angle. */
 extern const uint32_t r_tan_to_angle[SLOPERANGE + 1];
 

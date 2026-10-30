@@ -179,6 +179,29 @@ static inline int r_has_name(r_name_t packed) {
  * mid, upper and lower). It is what makes "the same pixels" and "the same tiers
  * in the same order" two separately checkable claims in the frame protocol; the
  * sum of the three is the number of pixels the pass wrote.
+ *
+ * THE PLANE PASS'S OWN RECORD
+ *
+ * The plane pass (D3.3) writes to the same surface after the wall pass, so the
+ * coverage mask alone can no longer say which pass produced a pixel. Three
+ * optional fields make that answerable without a second surface:
+ *
+ *   planeMask    one byte per pixel, row major, 1 where the plane pass wrote
+ *                and 0 elsewhere. NULL means "do not record". It is the only
+ *                per-pixel attribution the frame protocol needs: a pixel with
+ *                planeMask == 1 was written by the plane pass (ON TOP of
+ *                whatever the wall pass left there), and a pixel with
+ *                planeMask == 0 and covered[x] == 1 was written by the wall
+ *                pass. The plane pass clears it before writing, so it is a
+ *                complete record of one call.
+ *   planePixels  the number of pixels the plane pass wrote (the number of 1s in
+ *                planeMask when it is recorded).
+ *   planeSpans   the number of flat spans the plane pass emitted, i.e. the
+ *                number of R_MapPlane() calls. A sky column is not a span: it
+ *                is one R_DrawColumn() call per column in upstream's sky
+ *                branch, and it is counted only in planePixels.
+ *
+ * The wall pass ignores all three; r_wall_emit() neither clears nor reads them.
  */
 typedef struct r_draw_surface {
     uint8_t* pixels;
@@ -186,6 +209,9 @@ typedef struct r_draw_surface {
     int32_t height;
     uint8_t* covered;
     uint32_t tierPixels[R_DRAW_TIER_COUNT];
+    uint8_t* planeMask;
+    uint32_t planePixels;
+    uint32_t planeSpans;
 } r_draw_surface_t;
 
 #ifdef __cplusplus

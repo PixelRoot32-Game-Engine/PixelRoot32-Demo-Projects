@@ -1,12 +1,13 @@
 /*
- * Host harness for the real WAD (D3.2): walks E1M1's BSP and renders the 20
- * sampled wall-only frames through lib/doom/r_bsp.c + r_segs.c + r_light.c,
- * then prints one hash per frame.
+ * Host harness for the real WAD (D3.2/D3.3): walks E1M1's BSP and renders the
+ * 20 sampled frames through lib/doom/r_bsp.c + r_segs.c + r_plane.c +
+ * r_light.c, then prints one hash per pass per frame.
  *
  * This is a desktop tool, not firmware: it reads the WAD into malloc'd memory,
- * composes textures with r_data.c on demand and prints through stdio, none of
- * which the renderer does. tools/rsegs_check.py compiles it, runs it next to
- * tools/doom_ref.py --segs and diffs the two outputs.
+ * composes textures with r_data.c on demand, resolves flats straight out of the
+ * WAD, and prints through stdio, none of which the renderer does.
+ * tools/rsegs_check.py compiles it, runs it next to tools/doom_ref.py --segs and
+ * diffs the two outputs.
  *
  * THE 20 FRAMES (the same rule the oracle computes, stated here so neither has
  * to be read to compare them)
@@ -19,10 +20,10 @@
  *   z          the spawn rule: the floor of the subsector at (x, y) plus
  *              R_VIEWHEIGHT;
  *   surface    0xFF everywhere (an uncovered pixel), plus a per-column covered
- *              mask, cleared before each pass.
+ *              mask and a per-pixel plane mask, cleared before the frame.
  *
- * Because the walk depends on the texture/light path only through the emitter,
- * the drawsegs come from r_bsp_render() and the pixels from r_wall_emit().
+ * The walk comes from r_bsp_render(), the wall pixels from r_wall_emit() and the
+ * flats and sky from r_plane_draw().
  *
  * HASH PROTOCOL (identical to doom_ref.py; stated in both so neither has to be
  * read to compare them)
@@ -32,21 +33,36 @@
  *   COVERHASH the mask alone, so a disagreement about which columns were
  *   written cannot hide behind an all-0xFF column.
  *
+ *   wallhash   is that hash over the pixels and coverage as the wall pass left
+ *              them. It is the `frame NN:` line's value (unchanged from D3.2)
+ *              and it is repeated in PLANESTAT's wallhash field.
+ *   planehash  is SHA-256 over the 320*200 plane mask: 1 where the plane pass
+ *              wrote a pixel, 0 elsewhere. It says where the pass wrote,
+ *              independently of what it wrote.
+ *   framehash  is the same pixels-then-covered hash after the plane pass, i.e.
+ *              the finished frame.
+ *
  * Output lines:
  *
  *   SEGS <map> frames=<n>
- *   frame NN: <sha256>
+ *   frame NN: <wallhash>                       (unchanged from D3.2)
  *   FRAMESTAT NN drawsegs=<n> columns=<n> pixels=<n> mid=<n> top=<n> bottom=<n>
- *            pixelhash=<sha256> coverhash=<sha256>
- *   SEGS-SUMMARY frames=<n> drawsegs=<n> columns=<n> pixels=<n> mid=<n> top=<n>
- *            bottom=<n>
- *   COLUMN NN <x> <sha256>                 (only with --detail NN)
- *   ROW NN <x> <y> <pixel-hex> <covered>   (only with --column NN,X)
- *   ERROR <n>                              (only when the emitter failed)
+ *            pixelhash=<sha256> coverhash=<sha256>       (unchanged from D3.2)
+ *   PLANESTAT NN planes=<n> spans=<n> plane_pixels=<n> wallhash=<sha256>
+ *            planehash=<sha256> framehash=<sha256>
+ *   SEGS-SUMMARY <wall totals>                 (unchanged from D3.2)
+ *   PLANE-SUMMARY frames=<n> planes=<n> spans=<n> plane_pixels=<n>
+ *   COLUMN NN <x> <wall-column-sha256> <frame-column-sha256>   (--detail NN)
+ *   ROW NN <x> <y> <wall-pixel> <frame-pixel> <wall-covered> <plane-mask>
+ *                                                             (--column NN,X)
+ *   ERROR <n>                                  (only when a pass failed)
  *
- * No map coordinate, texture byte or palette index is printed except in the
- * ROW lines, which exist to localise a mismatch and are the only place a
- * decoded byte appears; nothing of that output is committed.
+ * `spans` counts R_MapPlane() calls only: the sky is one R_DrawColumn per column
+ * upstream, so those pixels are in plane_pixels but not in spans.
+ *
+ * No map coordinate, texture byte or palette index is printed except in the ROW
+ * lines, which exist to localise a mismatch and are the only place a decoded
+ * byte appears; nothing of that output is committed.
  *
  * Build:
  *   gcc -std=gnu99 -O2 -Wall -Wextra -Ilib/doom -o rsegs_check \
@@ -64,6 +80,7 @@
 #include "r_data.h"
 #include "r_defs.h"
 #include "r_light.h"
+#include "r_plane.h"
 #include "r_segs.h"
 #include "r_tables.h"
 #include "w_wad.h"
@@ -295,7 +312,10 @@ static r_clip_range_t g_clips[R_MAX_CLIP_SEGS];
 static int16_t g_floorClip[R_SCREEN_WIDTH];
 static int16_t g_ceilingClip[R_SCREEN_WIDTH];
 static uint8_t g_pixels[R_SCREEN_WIDTH * R_SCREEN_HEIGHT];
+static uint8_t g_planeMask[R_SCREEN_WIDTH * R_SCREEN_HEIGHT];
+static uint8_t g_wallPixels[R_SCREEN_WIDTH * R_SCREEN_HEIGHT];
 static uint8_t g_covered[R_SCREEN_WIDTH];
+static uint8_t g_wallCovered[R_SCREEN_WIDTH];
 
 /* --- Texture residency --------------------------------------------------- */
 
@@ -413,6 +433,62 @@ static const r_walltex_t* resolveTexture(void* context, r_name_t name) {
     return &entry->texture;
 }
 
+/* --- Flat residency ------------------------------------------------------ */
+
+/*
+ * The harness's flat policy, not the renderer's: a flat is the raw 4096-byte WAD
+ * lump, so the resolver only has to find it and prove its length. Nothing is
+ * copied and nothing is freed; the WAD buffer stays alive for the whole run.
+ */
+#define HARNESS_FLATS 32
+
+typedef struct flat_entry {
+    r_name_t name;
+    r_flat_t flat;
+} flat_entry_t;
+
+typedef struct flat_cache {
+    const wad_state_t* wad;
+    flat_entry_t entries[HARNESS_FLATS];
+    int count;
+} flat_cache_t;
+
+static const r_flat_t* resolveFlat(void* context, r_name_t name) {
+    flat_cache_t* cache = (flat_cache_t*)context;
+    flat_entry_t* entry;
+    char text[9];
+    int lump;
+    int index;
+
+    for (index = 0; index < cache->count; ++index) {
+        if (cache->entries[index].name == name) {
+            return &cache->entries[index].flat;
+        }
+    }
+    if (cache->count >= HARNESS_FLATS) {
+        return NULL;
+    }
+
+    r_unpack_name(name, text);
+    lump = W_CheckNumForName(cache->wad, text);
+    if (lump < 0) {
+        return NULL;
+    }
+    if ((size_t)W_LumpLength(cache->wad, lump) != R_FLAT_BYTES) {
+        return NULL;
+    }
+
+    entry = &cache->entries[cache->count];
+    entry->name = name;
+    entry->flat.pixels = W_LumpPointer(cache->wad, lump);
+    entry->flat.width = R_FLAT_SIZE;
+    entry->flat.height = R_FLAT_SIZE;
+    entry->flat.widthMask = R_FLAT_SIZE - 1;
+    entry->flat.heightMask = R_FLAT_SIZE - 1;
+    cache->count += 1;
+    return &entry->flat;
+}
+
 /* --- The 20 sampled viewpoints ------------------------------------------- */
 
 typedef struct frame_view {
@@ -425,6 +501,8 @@ typedef struct frame_view {
 #define FRAME_COUNT 20
 
 static const uint8_t kSkyName[8] = {'F', '_', 'S', 'K', 'Y', '1', 0, 0};
+/* The level's sky texture; episode 1 uses SKY1 (p_setup/g_game's episode rule). */
+static const uint8_t kSkyTextureName[8] = {'S', 'K', 'Y', '1', 0, 0, 0, 0};
 
 static int isPlayerStart(int16_t type) {
     return type == 1 || type == 2 || type == 3 || type == 4 || type == 11;
@@ -521,6 +599,30 @@ static void hashFrame(const uint8_t* pixels, size_t pixelBytes, const uint8_t* c
     digestToHex(digest, coverHash);
 }
 
+/* SHA-256 of one byte run, for the plane mask and the per-column diagnostics. */
+static void hashBytes(const uint8_t* bytes, size_t size, char out[65]) {
+    sha256_t context;
+    uint8_t digest[32];
+
+    sha256Init(&context);
+    sha256Update(&context, bytes, size);
+    sha256Final(&context, digest);
+    digestToHex(digest, out);
+}
+
+/* SHA-256 of two byte runs in order: the frame hash's pixels || covered. */
+static void hashTwo(const uint8_t* first, size_t firstSize, const uint8_t* second,
+                    size_t secondSize, char out[65]) {
+    sha256_t context;
+    uint8_t digest[32];
+
+    sha256Init(&context);
+    sha256Update(&context, first, firstSize);
+    sha256Update(&context, second, secondSize);
+    sha256Final(&context, digest);
+    digestToHex(digest, out);
+}
+
 /* --- main ---------------------------------------------------------------- */
 
 static uint8_t* readFile(const char* path, size_t* size) {
@@ -568,6 +670,7 @@ int main(int argc, char** argv) {
     r_draw_surface_t surface;
     r_light_t light;
     texture_cache_t cache;
+    flat_cache_t flatCache;
     r_tex_source_t texSource;
     frame_view_t frames[FRAME_COUNT];
     uint8_t* bytes;
@@ -584,12 +687,19 @@ int main(int argc, char** argv) {
     char combined[65];
     char pixelHash[65];
     char coverHash[65];
+    char planeHash[65];
+    char frameHash[65];
+    char wallColumnHash[65];
+    char frameColumnHash[65];
     uint32_t totalDrawsegs = 0u;
     uint32_t totalColumns = 0u;
     uint32_t totalPixels = 0u;
     uint32_t totalMid = 0u;
     uint32_t totalTop = 0u;
     uint32_t totalBottom = 0u;
+    uint32_t totalPlanes = 0u;
+    uint32_t totalSpans = 0u;
+    uint32_t totalPlanePixels = 0u;
 
     if (argc < 2) {
         fprintf(stderr, "usage: rsegs_check <path-to-WAD> [--detail N] "
@@ -690,10 +800,21 @@ int main(int argc, char** argv) {
 
     texSource.resolve = resolveTexture;
     texSource.context = &cache;
+    memset(&flatCache, 0, sizeof flatCache);
+    flatCache.wad = &wad;
+    texSource.resolveFlat = resolveFlat;
+    texSource.flatContext = &flatCache;
+    texSource.skyTexture = r_pack_name(kSkyTextureName);
     surface.pixels = g_pixels;
     surface.width = R_SCREEN_WIDTH;
     surface.height = R_VIEW_HEIGHT;
     surface.covered = g_covered;
+    surface.planeMask = g_planeMask;
+    surface.tierPixels[R_DRAW_TIER_MID] = 0u;
+    surface.tierPixels[R_DRAW_TIER_TOP] = 0u;
+    surface.tierPixels[R_DRAW_TIER_BOTTOM] = 0u;
+    surface.planePixels = 0u;
+    surface.planeSpans = 0u;
 
     printf("SEGS E1M1 frames=%d\n", FRAME_COUNT);
     for (frame = 0; frame < FRAME_COUNT; ++frame) {
@@ -718,6 +839,12 @@ int main(int argc, char** argv) {
 
         memset(g_pixels, 0xFF, sizeof g_pixels);
         memset(g_covered, 0, sizeof g_covered);
+        memset(g_planeMask, 0, sizeof g_planeMask);
+        surface.tierPixels[R_DRAW_TIER_MID] = 0u;
+        surface.tierPixels[R_DRAW_TIER_TOP] = 0u;
+        surface.tierPixels[R_DRAW_TIER_BOTTOM] = 0u;
+        surface.planePixels = 0u;
+        surface.planeSpans = 0u;
         result = r_wall_emit(&view, &surface, &texSource, &light);
         if (result != R_SEGS_OK) {
             printf("ERROR %d\n", (int)result);
@@ -729,8 +856,12 @@ int main(int argc, char** argv) {
         for (column = 0; column < R_SCREEN_WIDTH; ++column) {
             columns += g_covered[column] != 0u ? 1u : 0u;
         }
+        /* The wall pass's records, before the plane pass draws over them. */
         hashFrame(g_pixels, sizeof g_pixels, g_covered, sizeof g_covered, combined,
                   pixelHash, coverHash);
+        memcpy(g_wallPixels, g_pixels, sizeof g_pixels);
+        memcpy(g_wallCovered, g_covered, sizeof g_covered);
+
         printf("frame %02d: %s\n", frame, combined);
         printf("FRAMESTAT %02d drawsegs=%d columns=%u pixels=%u mid=%u top=%u "
                "bottom=%u pixelhash=%s coverhash=%s\n",
@@ -752,12 +883,54 @@ int main(int argc, char** argv) {
         totalTop += surface.tierPixels[R_DRAW_TIER_TOP];
         totalBottom += surface.tierPixels[R_DRAW_TIER_BOTTOM];
 
+        /* The plane pass, on top of the wall frame. */
+        {
+            r_plane_error_t planeResult =
+                r_plane_draw(&view, &surface, &texSource, &light);
+            uint16_t drawablePlanes = 0u;
+
+            if (planeResult != R_PLANE_OK) {
+                printf("ERROR %d\n", (int)planeResult);
+                freeTextures(&cache);
+                free(bytes);
+                return 2;
+            }
+            for (index = 0; index < view.storage.planes.count; ++index) {
+                if (view.storage.planes.planes[index].minX
+                    <= view.storage.planes.planes[index].maxX) {
+                    ++drawablePlanes;
+                }
+            }
+            hashBytes(g_planeMask, sizeof g_planeMask, planeHash);
+            hashTwo(g_pixels, sizeof g_pixels, g_covered, sizeof g_covered,
+                    frameHash);
+            printf("PLANESTAT %02d planes=%u spans=%u plane_pixels=%u "
+                   "wallhash=%s planehash=%s framehash=%s\n",
+                   frame, (unsigned)drawablePlanes,
+                   (unsigned)surface.planeSpans,
+                   (unsigned)surface.planePixels, combined, planeHash, frameHash);
+
+            totalPlanes += drawablePlanes;
+            totalSpans += surface.planeSpans;
+            totalPlanePixels += surface.planePixels;
+        }
+
         if (detail == frame) {
             for (column = 0; column < R_SCREEN_WIDTH; ++column) {
                 sha256_t context;
                 uint8_t digest[32];
-                char hex[65];
                 int row;
+
+                sha256Init(&context);
+                for (row = 0; row < R_SCREEN_HEIGHT; ++row) {
+                    const uint8_t pixel =
+                        g_wallPixels[row * R_SCREEN_WIDTH + column];
+
+                    sha256Update(&context, &pixel, 1u);
+                }
+                sha256Update(&context, &g_wallCovered[column], 1u);
+                sha256Final(&context, digest);
+                digestToHex(digest, wallColumnHash);
 
                 sha256Init(&context);
                 for (row = 0; row < R_SCREEN_HEIGHT; ++row) {
@@ -767,8 +940,10 @@ int main(int argc, char** argv) {
                 }
                 sha256Update(&context, &g_covered[column], 1u);
                 sha256Final(&context, digest);
-                digestToHex(digest, hex);
-                printf("COLUMN %02d %d %s\n", frame, column, hex);
+                digestToHex(digest, frameColumnHash);
+
+                printf("COLUMN %02d %d %s %s\n", frame, column, wallColumnHash,
+                       frameColumnHash);
             }
         }
         if (detailFrame == frame && detailColumn >= 0 &&
@@ -776,9 +951,14 @@ int main(int argc, char** argv) {
             int row;
 
             for (row = 0; row < R_SCREEN_HEIGHT; ++row) {
-                printf("ROW %02d %d %d %02x %02x\n", frame, detailColumn, row,
-                       (unsigned)g_pixels[row * R_SCREEN_WIDTH + detailColumn],
-                       (unsigned)g_covered[detailColumn]);
+                const size_t at = (size_t)row * R_SCREEN_WIDTH
+                                  + (size_t)detailColumn;
+
+                printf("ROW %02d %d %d %02x %02x %02x %02x\n", frame,
+                       detailColumn, row, (unsigned)g_wallPixels[at],
+                       (unsigned)g_pixels[at],
+                       (unsigned)g_wallCovered[detailColumn],
+                       (unsigned)g_planeMask[at]);
             }
         }
     }
@@ -788,6 +968,9 @@ int main(int argc, char** argv) {
            FRAME_COUNT, (unsigned)totalDrawsegs, (unsigned)totalColumns,
            (unsigned)totalPixels, (unsigned)totalMid, (unsigned)totalTop,
            (unsigned)totalBottom);
+    printf("PLANE-SUMMARY frames=%d planes=%u spans=%u plane_pixels=%u\n",
+           FRAME_COUNT, (unsigned)totalPlanes, (unsigned)totalSpans,
+           (unsigned)totalPlanePixels);
 
     freeTextures(&cache);
     free(bytes);
