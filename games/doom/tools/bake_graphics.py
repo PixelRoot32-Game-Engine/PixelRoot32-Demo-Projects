@@ -23,12 +23,15 @@ rows, with the rows above a shorter texture's declared height zeroed.
 WHAT "CORRECT" MEANS
 
 The acceptance test is not "it looks right": the C decoder (lib/doom/r_data.c)
-must produce exactly these bytes from the container's own patches. That is why
+must produce exactly these bytes from the SOURCE WAD's own patches. That is why
 --check-container compiles test/unit/test_baked/tool/bake_check.c against
 lib/doom/r_data.c and lib/doom/whd.c and compares every baked texture byte for
-byte, mask included. This module contains its own composer -- an independent
-implementation, like tools/doom_ref.py -- so a bug shared with the encoder is
-still caught by the C check.
+byte, mask included. The container no longer carries the wall patches -- D3.11
+drops them after the bake -- so the referee takes the WAD as a second path and
+composes from the original data; comparing against the container's own sources
+would be the container agreeing with itself. This module contains its own
+composer -- an independent implementation, like tools/doom_ref.py -- so a bug
+shared with the encoder is still caught by the C check.
 
 THE MANIFEST
 
@@ -63,7 +66,8 @@ as opaque, so a mask of 1 there is what keeps the finished frame byte-identical.
 
 USAGE
 
-    python tools/bake_graphics.py --check-container tools/DOOM1.whd
+    python tools/bake_graphics.py --check-container tools/DOOM1.whd \
+        --wad tools/DOOM1.WAD
 
 The encoder calls bake_level() and build_manifest() while packing; this file's
 command line is only the independent verifier.
@@ -776,13 +780,12 @@ def compile_harness(workdir: Path, compiler: str) -> Path:
     return executable
 
 
-def check_container(container: Path, compiler: str = "gcc") -> int:
-    """Compiles the C verifier, runs it on @p container and reports the result."""
-    root = project_root()
+def check_container(container: Path, wad: Path, compiler: str = "gcc") -> int:
+    """Compiles the C verifier, runs it on @p container and @p wad, and reports."""
     workdir = Path(tempfile.mkdtemp(prefix="bake_check_"))
     try:
         executable = compile_harness(workdir, compiler)
-        result = subprocess.run([str(executable), str(container)],
+        result = subprocess.run([str(executable), str(container), str(wad)],
                                 capture_output=True, text=True)
     except RuntimeError as error:
         print(f"bake_graphics: {error}", file=sys.stderr)
@@ -811,24 +814,33 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="bake_graphics.py",
         description="Verify that a PWHD container's baked wall/sky payloads equal what "
-                    "lib/doom/r_data.c composes from the container's own patches.",
+                    "lib/doom/r_data.c composes from the SOURCE WAD's own patches.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="The harness is compiled in a temporary directory and nothing is written "
-               "into the worktree.\n",
+               "into the worktree. The container no longer carries the wall patches: "
+               "D3.11 drops them after the bake, so --wad is the source of truth.\n",
     )
     parser.add_argument("--check-container", type=Path, metavar="PATH",
                         help="the PWHD container to check")
+    parser.add_argument("--wad", type=Path, metavar="PATH",
+                        help="the source WAD whose TEXTURE1, PNAMES and patches the "
+                             "referee composes from; required with --check-container")
     parser.add_argument("--cc", default="gcc", metavar="NAME",
                         help="C compiler to build the harness with (default: gcc)")
     arguments = parser.parse_args(argv)
 
     if arguments.check_container is None:
         parser.error("--check-container is required")
+    if arguments.wad is None:
+        parser.error("--wad is required: a baked container no longer carries its patches")
 
     if not arguments.check_container.is_file():
         print(f"bake_graphics: {arguments.check_container} is not a file", file=sys.stderr)
         return EXIT_USAGE
-    return check_container(arguments.check_container, arguments.cc)
+    if not arguments.wad.is_file():
+        print(f"bake_graphics: {arguments.wad} is not a file", file=sys.stderr)
+        return EXIT_USAGE
+    return check_container(arguments.check_container, arguments.wad, arguments.cc)
 
 
 if __name__ == "__main__":

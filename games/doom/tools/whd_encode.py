@@ -74,9 +74,11 @@ DEFLATE_WINDOW_BITS = -15
 DEFLATE_MEMORY_LEVEL = 9
 
 # The partition the shipped container is written to: partitions_wad.csv gives
-# `wad` 0x100000..0x400000 (D3.10), 3 MiB. --budget overrides it for a probe of
-# some other layout; every answer below is measured against whatever it is given.
-FLASH_BUDGET = 3_145_728
+# `wad` 0x0D0000..0x400000 (D3.11), 3,342,336 B. The app slot shrank to 768 KB
+# so the container gained 196,608 B without dropping a single Phase-5 lump.
+# --budget overrides it for a probe of some other layout; every answer below is
+# measured against whatever it is given.
+FLASH_BUDGET = 3_342_336
 
 WAD_HEADER_SIZE = 12
 WAD_DIRECTORY_ENTRY_SIZE = 16
@@ -94,6 +96,11 @@ LEVEL_LUMPS = (
     "REJECT",
     "BLOCKMAP",
 )
+
+# A baked-source drop may never touch these, even if PNAMES somehow names one:
+# the renderer maps TEXTURE1, PNAMES and COLORMAP in place, and TEXTURE2 is part
+# of the same namespace.
+PROTECTED_LUMP_NAMES = ("TEXTURE1", "TEXTURE2", "PNAMES", "COLORMAP")
 
 EXIT_OK = 0
 EXIT_INPUT = 1
@@ -315,6 +322,174 @@ def select_unused_sprites(lumps: list[Lump], names: list[str]) -> frozenset[int]
                      if lumps[index].name.upper()[:NAME_SIZE] not in kept)
 
 
+def _range_between(lumps: list[Lump], start_name: str, end_name: str) -> tuple[int, int] | None:
+    """The (start, end) indices of a marker pair, or None when either is absent."""
+    start = next((index for index, lump in enumerate(lumps)
+                  if lump.name.upper() == start_name), -1)
+    if start < 0:
+        return None
+    end = next((index for index in range(start + 1, len(lumps))
+                if lumps[index].name.upper() == end_name), -1)
+    if end < 0:
+        return None
+    return (start, end)
+
+
+def level_lump_indices(lumps: list[Lump], levels: list[str]) -> frozenset[int]:
+    """Every marker and ten data lumps of @p levels, as WAD directory indices."""
+    by_name: dict[str, int] = {}
+    for index, lump in enumerate(lumps):
+        by_name.setdefault(lump.name.upper()[:NAME_SIZE], index)
+    chosen: set[int] = set()
+    for level in levels:
+        marker = by_name.get(level.strip().upper()[:NAME_SIZE])
+        if marker is None:
+            continue
+        chosen.add(marker)
+        chosen.update(range(marker + 1, marker + 1 + len(LEVEL_LUMPS)))
+    return frozenset(chosen)
+
+
+def select_baked_source_patches(lumps: list[Lump], baked: bake.BakedSet,
+                                kept_indices: list[int]) -> frozenset[int]:
+    """The WAD indices of every wall patch lump the union bake composed.
+
+    A baked wall is a dense payload appended to the container; the patch lumps
+    it was composed from are no longer read at runtime. The sky is a baked
+    payload too, but its single SKY1 patch is deliberately kept: the reference
+    layout's 156-lump drop is the wall-composition set only. This resolves the
+    texture definitions and PNAMES exactly the way bake_graphics.bake_level did,
+    then returns every WAD lump carrying one of those names -- ``SW18_7``
+    appears twice in the shareware WAD, and both copies are patch sources.
+
+    @param kept_indices the WAD indices still in the pre-bake container, so a
+    patch already removed by --drop-lumps is reported as an ordering mistake
+    rather than silently skipped.
+    """
+    definitions = bake._texture_definitions(lumps)
+    pnames = bake._pnames(lumps)
+    patch_names: set[str] = set()
+    for item in baked.items:
+        # Wall textures only. The sky is a baked payload too, but the reference
+        # layout keeps its single SKY1 patch lump; the measured 156-lump drop is
+        # the wall-composition set (155 names, SW18_7 twice), so the sky patch is
+        # deliberately not part of it.
+        if item.kind != bake.KIND_WALL:
+            continue
+        texture = definitions.get(item.name.upper())
+        if texture is None:
+            raise InputError(
+                f"--drop-baked-sources: {item.name!r} is not in TEXTURE1/TEXTURE2")
+        for _origin_x, _origin_y, pindex in texture.patches:
+            if not 0 <= pindex < len(pnames):
+                raise InputError(
+                    f"--drop-baked-sources: PNAMES index {pindex} is out of range")
+            patch_names.add(pnames[pindex].upper()[:NAME_SIZE])
+    if not patch_names:
+        raise InputError("--drop-baked-sources: the bake consumed no patch lumps; "
+                         "the drop has to run after --bake")
+
+    kept = set(kept_indices)
+    chosen: set[int] = set()
+    for wad_index, lump in enumerate(lumps):
+        if lump.name.upper()[:NAME_SIZE] not in patch_names:
+            continue
+        if wad_index not in kept:
+            raise InputError(
+                f"--drop-baked-sources: patch {lump.name!r} was already dropped before "
+                f"the bake; the baked-source drop must run after --bake")
+        chosen.add(wad_index)
+    return frozenset(chosen)
+
+
+def drop_baked_source_lumps(
+        lumps: list[Lump], kept_indices: list[int], baked_lumps: list[Lump],
+        records: list[tuple[str, int, int, int, int, int]], baked: bake.BakedSet,
+        level_indices: frozenset[int], level: int,
+        selection: RawSelection) -> tuple[
+            list[Lump], list[tuple[str, int, int, int, int, int]], frozenset[int], int, int]:
+    """Drops the wall patch lumps a finished bake made redundant.
+
+    This runs strictly after build_baked_lumps(): the bake needs the source
+    patches to compose, and the manifest it just built points at the appended
+    dense payloads. Dropping a flat, a sprite patch, a mapped table, a level
+    lump or any manifest target is refused here, so the only lumps this can
+    remove are the patch-composition sources the bake itself consumed.
+
+    Indices are remapped: every source lump after a removed one moves down, and
+    every appended lump (the wall/sky payloads and the manifest) moves down by
+    the number of removed source lumps. The manifest is rebuilt so its records
+    still name the payloads they were built for.
+
+    @return (the final lumps, the rebuilt records, the remapped raw selection,
+    how many patches were dropped, and their stored bytes).
+    """
+    pre_bake_count = len(kept_indices)
+    chosen = select_baked_source_patches(lumps, baked, kept_indices)
+
+    sprite_range = _range_between(lumps, "S_START", "S_END")
+    flat_range = _range_between(lumps, "F_START", "F_END")
+    manifest_targets = {kept_indices[lump_index] for (*_rest, lump_index) in records
+                        if lump_index < pre_bake_count}
+
+    for wad_index in chosen:
+        lump = lumps[wad_index]
+        name = lump.name.upper()[:NAME_SIZE]
+        if name in PROTECTED_LUMP_NAMES:
+            raise InputError(f"--drop-baked-sources: {lump.name!r} is a mapped table, "
+                             f"not a baked source")
+        if sprite_range is not None and sprite_range[0] < wad_index < sprite_range[1]:
+            raise InputError(f"--drop-baked-sources: {lump.name!r} is a sprite patch")
+        if flat_range is not None and flat_range[0] < wad_index < flat_range[1]:
+            raise InputError(f"--drop-baked-sources: {lump.name!r} is a flat")
+        if wad_index in level_indices:
+            raise InputError(f"--drop-baked-sources: {lump.name!r} is a level lump")
+        if wad_index in manifest_targets:
+            raise InputError(f"--drop-baked-sources: {lump.name!r} is a manifest target")
+
+    position_of = {wad_index: position for position, wad_index in enumerate(kept_indices)}
+    removed_positions = frozenset(position_of[wad_index] for wad_index in chosen)
+
+    pos_map: dict[int, int] = {}
+    next_position = 0
+    for position in range(pre_bake_count):
+        if position in removed_positions:
+            continue
+        pos_map[position] = next_position
+        next_position += 1
+
+    final_lumps = [lump for position, lump in enumerate(baked_lumps)
+                   if position >= pre_bake_count or position not in removed_positions]
+    if final_lumps[-1].name != bake.MANIFEST_NAME:
+        raise InputError("--drop-baked-sources: the manifest is not the last appended lump")
+
+    final_records: list[tuple[str, int, int, int, int, int]] = []
+    for name, width, rows, flags, kind, lump_index in records:
+        if lump_index < pre_bake_count:
+            if lump_index in removed_positions:
+                raise InputError(f"--drop-baked-sources: {name!r} is a manifest target "
+                                 f"and cannot be dropped")
+            lump_index = pos_map[lump_index]
+        else:
+            lump_index -= len(removed_positions)
+        final_records.append((name, width, rows, flags, kind, lump_index))
+    final_lumps[-1] = Lump(bake.MANIFEST_NAME, bake.build_manifest(final_records))
+
+    final_selection: set[int] = set()
+    for index in selection.indices:
+        if index < pre_bake_count:
+            if index in removed_positions:
+                continue
+            final_selection.add(pos_map[index])
+        else:
+            final_selection.add(index - len(removed_positions))
+
+    dropped_stored = sum(
+        stored_size(lumps[wad_index].data, level) for wad_index in sorted(chosen))
+    return (final_lumps, final_records, frozenset(final_selection),
+            len(chosen), dropped_stored)
+
+
 def build_baked_lumps(lumps: list[Lump], kept: list[Lump], levels: list[str], sky: str,
                       sprite_names: list[str]) -> tuple[list[Lump], list[tuple[str, int, int, int, int, int]],
                                                           bake.BakedSet, int, set[int]]:
@@ -371,6 +546,14 @@ def deflate(blob: bytes, level: int) -> bytes:
         zlib.Z_DEFAULT_STRATEGY,
     )
     return compressor.compress(blob) + compressor.flush()
+
+
+def stored_size(blob: bytes, level: int) -> int:
+    """The bytes @p blob occupies under the encoder's stored/deflate rule."""
+    if not blob:
+        return 0
+    compressed = deflate(blob, level)
+    return len(compressed) if len(compressed) < len(blob) else len(blob)
 
 
 def encode_lump(index: int, lump: Lump, level: int, selection: RawSelection) -> EncodedLump:
@@ -598,6 +781,10 @@ def stats_report(container: bytes, encoded: list[EncodedLump], padding: list[int
                  baked_set: bake.BakedSet | None = None,
                  dropped_count: int = 0,
                  dropped_bytes: int = 0,
+                 dropped_sources: tuple[int, int] | None = None,
+                 sprite_count: int = 0,
+                 sprite_bytes: int = 0,
+                 sprite_named: int = 0,
                  budget: int = FLASH_BUDGET) -> str:
     """Renders the --stats block: sizes, budget, the raw split and the bake."""
     output_bytes = len(container)
@@ -662,6 +849,16 @@ def stats_report(container: bytes, encoded: list[EncodedLump], padding: list[int
         lines.append(
             f"  dropped          {dropped_count:,} lumps, {_format_bytes(dropped_bytes)} "
             f"removed by --drop-lumps/--drop-level/--drop-unused-sprites")
+    if dropped_sources is not None:
+        patch_count, patch_bytes = dropped_sources
+        lines.append(
+            f"  dropped sources  {patch_count:,} wall patches "
+            f"({_format_bytes(patch_bytes)} stored), 0 flats (0 B), "
+            f"0 sprite patches (0 B); 0 manifest targets")
+    if sprite_count:
+        lines.append(
+            f"  sprites          {sprite_count:,} sprite lumps present, "
+            f"{_format_bytes(sprite_bytes)} stored; {sprite_named:,} named by the bake")
     if baked_manifest is not None and baked_set is not None:
         lines.append(bake.manifest_line(baked_manifest))
         entries = bake.parse_manifest(baked_manifest)
@@ -735,6 +932,37 @@ def _raw_lump_by_name(container: bytes, name: str) -> bytes | None:
     return None
 
 
+def _sprite_totals(container: bytes) -> tuple[int, int]:
+    """(count, stored bytes) of the lumps between S_START and S_END.
+
+    The name table is one name per lump in this format, so the directory order
+    the builder wrote is the order the renderer sees. A container without the
+    markers answers (0, 0) rather than guessing.
+    """
+    num_lumps, name_count, directory_offset, name_table_offset, _data_offset, _total = \
+        struct.unpack_from("<IIIIII", container, 8)
+    name_by_index: dict[int, str] = {}
+    for entry_index in range(name_count):
+        entry = name_table_offset + entry_index * NAME_ENTRY_SIZE
+        name = container[entry:entry + NAME_SIZE].rstrip(b"\0").decode("latin-1").upper()
+        (lump_index,) = struct.unpack_from("<I", container, entry + 8)
+        name_by_index.setdefault(lump_index, name)
+
+    start = next((index for index in range(num_lumps)
+                  if name_by_index.get(index) == "S_START"), -1)
+    if start < 0:
+        return (0, 0)
+    end = next((index for index in range(start + 1, num_lumps)
+                if name_by_index.get(index) == "S_END"), -1)
+    if end < 0:
+        return (0, 0)
+    total = sum(
+        struct.unpack_from("<I", container,
+                           directory_offset + index * DIRECTORY_ENTRY_SIZE + 4)[0]
+        for index in range(start + 1, end))
+    return (end - start - 1, total)
+
+
 def container_stats_report(container: bytes, budget: int = FLASH_BUDGET) -> str:
     """Renders the --stats block for a container read back from disk.
 
@@ -789,6 +1017,11 @@ def container_stats_report(container: bytes, budget: int = FLASH_BUDGET) -> str:
     manifest = _raw_lump_by_name(container, bake.MANIFEST_NAME)
     if manifest is not None:
         lines.append(bake.manifest_line(manifest))
+    sprite_count, sprite_bytes = _sprite_totals(container)
+    if sprite_count:
+        lines.append(
+            f"  sprites          {sprite_count:,} sprite lumps present, "
+            f"{_format_bytes(sprite_bytes)} stored (all episode frames)")
     return "\n".join(lines)
 
 
@@ -834,25 +1067,40 @@ dropping and baking (both default off; the command records the choice):
                       insensitively. ``--drop-lumps 'DS*'`` removes the 55 PCM
                       sound effects this port can never play (APU synthesis
                       only), which frees about 389 KB of the container.
+                      ``--drop-lumps 'HELP1,HELP2,CREDIT'`` removes the three
+                      68,168 B full-screen help/credit pictures: the reference
+                      ports cut exactly those, and Phase 5 can redraw or omit
+                      them, so they are not carried by the shipped container.
   --drop-level LVL    remove a level marker and its ten data lumps.
   --drop-unused-sprites  with --bake, remove the S_START..S_END lumps the bake's
-                      sprite list does not name. The shareware WAD's 447
-                      unreferenced frames are 493 KB compressed and are the
-                      difference between the episode fitting and not.
+                      sprite list does not name. This is a measurement option,
+                      not the shipped shape: D3.11 keeps every episode sprite
+                      lump so Phase 4 animation can address the frames the
+                      frame-0 fixture does not name.
   --bake LVL[,LVL]    compose the union of those levels' wall textures and sky
                       into raw width*128 payloads, mark their flats and sprite
                       lumps raw, and append one ~PWBAKE~ manifest. One payload
                       per distinct texture, flat and sprite lump: the union is
                       deduplicated, not one bake per level. Requires TEXTURE1,
                       PNAMES and --sprite-list for the sprite names.
+  --drop-baked-sources  after --bake, remove the wall-composition patch lumps
+                      the bake flattened into dense payloads. It refuses to
+                      remove a flat, a sprite patch,
+                      TEXTURE1/TEXTURE2/PNAMES/COLORMAP, a level
+                      lump or any manifest target, and it runs strictly after the
+                      bake: the bake needs the patches, so naming it without
+                      --bake is an error, never an empty bake. The shipped
+                      container uses this for the 156 patch lumps
+                      (SW18_7 is two lumps) the nine-level union consumes.
   --sprite-list PATH  the sprite lumps the bake keeps: the generated .inc form
                       or one name per line.
   --sky NAME          the sky texture to bake (default SKY1).
 
 budget and proofs:
-  --budget BYTES   the wad partition the container must fit (default 3,145,728 B,
-                   the shipped 3 MiB partition). --stats reports total, spare and
-                   what each level would cost if it were baked alone.
+  --budget BYTES   the wad partition the container must fit (default 3,342,336 B,
+                   the shipped partitions_wad.csv: 0x0D0000..0x400000). --stats
+                   reports total, spare and what each level would cost if it
+                   were baked alone.
 
 --check:
   a WAD input is rebuilt and every lump is compared byte for byte, raw ones
@@ -916,10 +1164,14 @@ exit codes:
                         help="bake the union of these levels' wall textures, sky, flats "
                              "and sprite lumps into raw payloads plus one manifest; "
                              "repeatable, comma separated")
+    parser.add_argument("--drop-baked-sources", action="store_true",
+                        help="after --bake, remove the wall-composition patch lumps "
+                             "the bake consumed; refuses flats, sprite patches, mapped "
+                             "tables, level lumps and manifest targets")
     parser.add_argument("--drop-unused-sprites", action="store_true",
-                        help="with --bake, drop every S_START..S_END lump the bake's "
-                             "sprite list does not name (the shareware WAD's 447 "
-                             "frame-0-unreachable animation frames)")
+                        help="measurement option only: with --bake, drop every "
+                             "S_START..S_END lump the bake's sprite list does not name. "
+                             "The shipped container keeps every sprite frame")
     parser.add_argument("--sky", default=None, metavar="NAME",
                         help="sky texture to bake (default SKY1)")
     parser.add_argument("--budget", type=int, default=FLASH_BUDGET, metavar="BYTES",
@@ -1028,7 +1280,7 @@ def check_levels(arguments: argparse.Namespace, parser: argparse.ArgumentParser)
     if (arguments.output is not None or arguments.check or arguments.raw
             or arguments.raw_level or arguments.drop_lumps or arguments.drop_level
             or arguments.bake or arguments.sprite_list or arguments.sky is not None
-            or arguments.drop_unused_sprites):
+            or arguments.drop_unused_sprites or arguments.drop_baked_sources):
         parser.error("--check-levels reads a container as it is; it writes nothing "
                      "and selects nothing")
 
@@ -1176,21 +1428,38 @@ def main(argv: list[str] | None = None) -> int:
             dropped = dropped | select_unused_sprites(lumps, sprite_names)
 
         kept = [lump for index, lump in enumerate(lumps) if index not in dropped]
+        kept_wad_indices = [index for index in range(len(lumps)) if index not in dropped]
         selection = select_raw(kept, raw_names, raw_levels)
 
         baked = None
         baked_manifest = None
         wad_kept = kept
+        dropped_patch_count = 0
+        dropped_patch_bytes = 0
         if bake_levels:
             dropped_keys = {level.strip().upper()[:NAME_SIZE] for level in drop_levels}
             for level in bake_levels:
                 if level.strip().upper()[:NAME_SIZE] in dropped_keys:
                     raise InputError("--bake: a level cannot be both baked and dropped")
-            kept, _records, baked, _appended, baked_raw = build_baked_lumps(
+            kept, records, baked, appended_count, baked_raw = build_baked_lumps(
                 lumps, kept, bake_levels, arguments.sky or "SKY1", sprite_names)
             selection = RawSelection(selection.indices | frozenset(baked_raw),
                                      selection.level_indices, selection.level_name)
+            if arguments.drop_baked_sources:
+                # Strictly after the bake: the bake needed every source patch to
+                # compose, and the manifest it just built points at the appended
+                # dense payloads. Running this before the bake would starve it.
+                kept, records, final_selection, dropped_patch_count, dropped_patch_bytes = \
+                    drop_baked_source_lumps(
+                        lumps, kept_wad_indices, kept, records, baked,
+                        level_lump_indices(lumps, list(SHAREWARE_LEVELS)),
+                        arguments.level, selection)
+                selection = RawSelection(final_selection, selection.level_indices,
+                                         selection.level_name)
+                wad_kept = kept[:len(kept) - appended_count]
             baked_manifest = next(lump.data for lump in kept if lump.name == bake.MANIFEST_NAME)
+        elif arguments.drop_baked_sources:
+            raise InputError("--drop-baked-sources is a bake decision: pass --bake")
     except (InputError, bake.BakeError) as error:
         print(f"whd_encode: {error}", file=sys.stderr)
         return EXIT_INPUT
@@ -1200,12 +1469,29 @@ def main(argv: list[str] | None = None) -> int:
     dropped_bytes = sum(len(lumps[index].data) for index in dropped)
     container, encoded, padding = build_container(kept, arguments.level, source_crc, selection)
 
+    # Every sprite lump between the markers is present: the 36 the frame-0 bake
+    # marks raw and the rest as compressed frames Phase 4 can address later.
+    sprite_count = 0
+    sprite_bytes = 0
+    sprite_range = _range_between(lumps, "S_START", "S_END")
+    if sprite_range is not None:
+        sprite_name_set = {lumps[index].name.upper()[:NAME_SIZE]
+                           for index in range(sprite_range[0] + 1, sprite_range[1])}
+        for index, lump in enumerate(wad_kept):
+            if lump.name.upper()[:NAME_SIZE] in sprite_name_set:
+                sprite_count += 1
+                sprite_bytes += encoded[index].stored_size
+    sprite_named = len(baked.sprite_names) if baked is not None else 0
+
     if arguments.stats or arguments.check:
         print(f"{arguments.input}: {len(lumps):,} lumps, {_format_bytes(source_bytes)}")
         print(stats_report(container, encoded, padding, source_bytes, identification, selection,
                            baked_manifest=baked_manifest, baked_set=baked,
                            dropped_count=len(dropped), dropped_bytes=dropped_bytes,
-                           budget=arguments.budget))
+                           dropped_sources=((dropped_patch_count, dropped_patch_bytes)
+                                            if dropped_patch_count else None),
+                           sprite_count=sprite_count, sprite_bytes=sprite_bytes,
+                           sprite_named=sprite_named, budget=arguments.budget))
 
     if arguments.check:
         try:
@@ -1236,10 +1522,11 @@ def check_container(arguments: argparse.Namespace,
     """``--check`` on a container: verify it, and compare against its source WAD."""
     if (arguments.raw or arguments.raw_level or arguments.drop_lumps
             or arguments.drop_level or arguments.bake or arguments.sprite_list
-            or arguments.sky is not None or arguments.drop_unused_sprites):
+            or arguments.sky is not None or arguments.drop_unused_sprites
+            or arguments.drop_baked_sources):
         parser.error("--raw, --raw-level, --drop-lumps, --drop-level, --bake, "
-                     "--sprite-list and --drop-unused-sprites select what to write; "
-                     "a container is checked as it is")
+                     "--sprite-list, --drop-unused-sprites and --drop-baked-sources "
+                     "select what to write; a container is checked as it is")
 
     try:
         container = arguments.input.read_bytes()

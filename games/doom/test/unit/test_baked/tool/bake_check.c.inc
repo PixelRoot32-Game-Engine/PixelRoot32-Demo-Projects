@@ -1,7 +1,7 @@
 /*
- * The baked-graphics referee: composes every baked texture from the container's
- * own patches through lib/doom/r_data.c and compares the result byte for byte
- * with the raw payload the encoder wrote.
+ * The baked-graphics referee: composes every baked texture from the SOURCE
+ * WAD's own patches through lib/doom/r_data.c and compares the result byte for
+ * byte with the raw payload the container's encoder wrote.
  *
  * WHY THIS IS C AND NOT PYTHON
  *
@@ -9,21 +9,29 @@
  * with tools/doom_ref.py. A second Python composer would still be a second
  * Python composer. The only implementation that can prove the bake is the one
  * the board runs: this harness links lib/doom/r_data.c (the C decoder) and
- * lib/doom/whd.c (the container reader), decodes the patches out of the
- * container itself, composes, expands to the 128-row stored form, and compares
- * pixels and mask.
+ * lib/doom/whd.c (the container reader), decodes the patches out of the source
+ * WAD, composes, expands to the 128-row stored form, and compares pixels and
+ * mask.
+ *
+ * WHY THE PATCHES COME FROM THE WAD, NOT THE CONTAINER
+ *
+ * D3.11 drops the wall-composition patch lumps the bake consumed: their bytes
+ * live on only as the dense width*128 payloads. Composing from the container
+ * would be composing from the thing under test. Reading TEXTURE1, PNAMES and
+ * every patch from the original WAD keeps the proof honest: a C composition of
+ * the original data must equal the stored payload.
  *
  * INPUT
  *
- * One PWHD container. The manifest lump "~PWBAKE~" says what was baked; the
- * container still holds TEXTURE1, PNAMES and every patch the baked textures
- * name. Nothing else is read and nothing is written.
+ * One PWHD container and the source WAD. The manifest lump "~PWBAKE~" says what
+ * was baked; the container supplies the baked payloads, the WAD supplies
+ * TEXTURE1, PNAMES and the patches. Nothing is written.
  *
  * OUTPUT
  *
  * One BAKECHECK line with the counts, and one MISMATCH line per difference with
  * the first differing byte offset. Exit 0 when every baked texture matched,
- * 1 when at least one differed, 2 when the container could not be read.
+ * 1 when at least one differed, 2 when either file could not be read.
  *
  * This file is compiled by tools/bake_graphics.py, not by PlatformIO: it lives
  * under test/unit/test_baked/tool/ and env:baked_test ignores that directory.
@@ -53,7 +61,20 @@
 
 #define STORED_ROWS 128u
 #define FLAT_BYTES 4096u
-#define PATCH_SCRATCH_BYTES 68168u
+
+/* One WAD directory entry: the name, and a view into the mapped file. */
+typedef struct wad_lump {
+    char name[9];
+    const uint8_t* data;
+    uint32_t size;
+} wad_lump_t;
+
+typedef struct wad_file {
+    uint8_t* bytes;
+    size_t size;
+    wad_lump_t* lumps;
+    uint32_t count;
+} wad_file_t;
 
 typedef struct manifest_entry {
     char name[9];
@@ -105,50 +126,102 @@ static uint8_t* read_file(const char* path, size_t* size) {
     return bytes;
 }
 
+/* Case-insensitive comparison of the WAD's fixed eight-character names. */
+static int wad_name_equal(const char* left, const char* right) {
+    size_t index;
+    for (index = 0u; index < 8u; ++index) {
+        char a = left[index];
+        char b = right[index];
+        if (a >= 'a' && a <= 'z') {
+            a = (char)(a - 32);
+        }
+        if (b >= 'a' && b <= 'z') {
+            b = (char)(b - 32);
+        }
+        if (a != b) {
+            return 0;
+        }
+        if (a == '\0') {
+            return 1;
+        }
+    }
+    return 1;
+}
+
+/* Reads the source WAD's directory into a view over the mapped file. */
+static int wad_open(const char* path, wad_file_t* wad) {
+    uint32_t count;
+    uint32_t directory;
+    uint32_t index;
+
+    memset(wad, 0, sizeof *wad);
+    wad->bytes = read_file(path, &wad->size);
+    if (wad->bytes == NULL) {
+        return 0;
+    }
+    if (wad->size < 12u
+        || (memcmp(wad->bytes, "IWAD", 4u) != 0
+            && memcmp(wad->bytes, "PWAD", 4u) != 0)) {
+        return 0;
+    }
+    count = le32(wad->bytes + 4);
+    directory = le32(wad->bytes + 8);
+    if (directory < 12u
+        || (size_t)directory + (size_t)count * 16u > wad->size) {
+        return 0;
+    }
+    wad->lumps = (wad_lump_t*)calloc(count == 0u ? 1u : count, sizeof(wad_lump_t));
+    if (wad->lumps == NULL) {
+        return 0;
+    }
+    for (index = 0u; index < count; ++index) {
+        const uint8_t* at = wad->bytes + directory + (size_t)index * 16u;
+        const uint32_t position = le32(at);
+        const uint32_t size = le32(at + 4);
+        wad_lump_t* lump = &wad->lumps[index];
+        if ((size_t)position + (size_t)size > wad->size) {
+            return 0;
+        }
+        memcpy(lump->name, at + 8, 8u);
+        lump->name[8] = '\0';
+        lump->data = wad->bytes + position;
+        lump->size = size;
+    }
+    wad->count = count;
+    return 1;
+}
+
+static void wad_close(wad_file_t* wad) {
+    free(wad->lumps);
+    free(wad->bytes);
+    memset(wad, 0, sizeof *wad);
+}
+
+static const wad_lump_t* wad_find(const wad_file_t* wad, const char* name) {
+    uint32_t index;
+    for (index = 0u; index < wad->count; ++index) {
+        if (wad_name_equal(wad->lumps[index].name, name)) {
+            return &wad->lumps[index];
+        }
+    }
+    return NULL;
+}
+
 typedef struct fetch_context {
-    const whd_state_t* state;
-    uint8_t* scratch;
-    size_t scratchBytes;
+    const wad_file_t* wad;
 } fetch_context_t;
 
 static r_error_t fetch_patch(void* user, const char* name, const uint8_t** data,
                              size_t* size) {
-    fetch_context_t* context = (fetch_context_t*)user;
-    const int lump = whd_lump_index_for_name(context->state, name);
-    uint32_t required = 0u;
+    const fetch_context_t* context = (const fetch_context_t*)user;
+    const wad_lump_t* lump = wad_find(context->wad, name);
 
-    if (lump < 0) {
+    if (lump == NULL) {
         return R_ERR_PATCH_FETCH;
     }
-    if (whd_read_lump(context->state, lump, context->scratch, context->scratchBytes,
-                      &required) != WHD_ERR_OK) {
-        return R_ERR_PATCH_FETCH;
-    }
-    *data = context->scratch;
-    *size = (size_t)required;
+    *data = lump->data;
+    *size = (size_t)lump->size;
     return R_ERR_OK;
-}
-
-/* Reads a lump into a fresh buffer. The caller owns the result. */
-static uint8_t* read_lump(const whd_state_t* state, int lump, size_t* size) {
-    const int32_t declared = whd_lump_size(state, lump);
-    uint32_t required = 0u;
-    uint8_t* bytes;
-
-    if (declared <= 0) {
-        return NULL;
-    }
-    bytes = (uint8_t*)malloc((size_t)declared);
-    if (bytes == NULL) {
-        return NULL;
-    }
-    if (whd_read_lump(state, lump, bytes, (size_t)declared, &required) != WHD_ERR_OK
-        || required != (uint32_t)declared) {
-        free(bytes);
-        return NULL;
-    }
-    *size = (size_t)declared;
-    return bytes;
 }
 
 static int parse_manifest(const uint8_t* data, size_t size, manifest_entry_t** entries,
@@ -234,15 +307,11 @@ int main(int argc, char** argv) {
     size_t containerBytes = 0u;
     uint8_t* container;
     whd_state_t state;
+    wad_file_t wad;
     manifest_entry_t* entries = NULL;
     uint32_t count = 0u;
-    uint8_t* texture1 = NULL;
-    size_t texture1Bytes = 0u;
-    uint8_t* pnames = NULL;
-    size_t pnamesBytes = 0u;
-    uint8_t* scratch = NULL;
-    int textureLump;
-    int pnamesLump;
+    const wad_lump_t* texture1;
+    const wad_lump_t* pnames;
     int manifestLump;
     const uint8_t* manifestData = NULL;
     uint32_t manifestBytes = 0u;
@@ -255,8 +324,8 @@ int main(int argc, char** argv) {
     uint32_t mismatches = 0u;
     uint64_t bakedBytes = 0u;
 
-    if (argc != 2) {
-        fprintf(stderr, "usage: bake_check <container>\n");
+    if (argc != 3) {
+        fprintf(stderr, "usage: bake_check <container> <source-wad>\n");
         return 2;
     }
     container = read_file(argv[1], &containerBytes);
@@ -269,37 +338,37 @@ int main(int argc, char** argv) {
         free(container);
         return 2;
     }
+    if (!wad_open(argv[2], &wad)) {
+        fprintf(stderr, "bake_check: cannot read the source WAD %s\n", argv[2]);
+        wad_close(&wad);
+        free(container);
+        return 2;
+    }
 
     manifestLump = whd_lump_index_for_name(&state, MANIFEST_NAME);
     if (manifestLump < 0
         || whd_lump_view(&state, manifestLump, &manifestData, &manifestBytes) != WHD_ERR_OK) {
         fprintf(stderr, "bake_check: no raw " MANIFEST_NAME " lump\n");
+        wad_close(&wad);
         free(container);
         return 2;
     }
     if (!parse_manifest(manifestData, manifestBytes, &entries, &count)) {
         fprintf(stderr, "bake_check: the manifest is malformed\n");
+        wad_close(&wad);
         free(container);
         return 2;
     }
 
-    textureLump = whd_lump_index_for_name(&state, "TEXTURE1");
-    pnamesLump = whd_lump_index_for_name(&state, "PNAMES");
-    if (textureLump < 0 || pnamesLump < 0) {
-        fprintf(stderr, "bake_check: TEXTURE1 or PNAMES is missing\n");
+    /* TEXTURE1, PNAMES and every patch come from the source WAD, never from the
+     * container: a baked payload that agreed with its own dropped sources would
+     * prove nothing. */
+    texture1 = wad_find(&wad, "TEXTURE1");
+    pnames = wad_find(&wad, "PNAMES");
+    if (texture1 == NULL || pnames == NULL) {
+        fprintf(stderr, "bake_check: TEXTURE1 or PNAMES is missing from the WAD\n");
         free(entries);
-        free(container);
-        return 2;
-    }
-    texture1 = read_lump(&state, textureLump, &texture1Bytes);
-    pnames = read_lump(&state, pnamesLump, &pnamesBytes);
-    scratch = (uint8_t*)malloc(PATCH_SCRATCH_BYTES);
-    if (texture1 == NULL || pnames == NULL || scratch == NULL) {
-        fprintf(stderr, "bake_check: cannot allocate the decode scratch\n");
-        free(texture1);
-        free(pnames);
-        free(scratch);
-        free(entries);
+        wad_close(&wad);
         free(container);
         return 2;
     }
@@ -351,8 +420,8 @@ int main(int argc, char** argv) {
                 continue;
             }
 
-            if (r_texture_lookup(texture1, texture1Bytes, NULL, 0u, entry->name, &info)
-                != R_ERR_OK
+            if (r_texture_lookup(texture1->data, (size_t)texture1->size, NULL, 0u,
+                                 entry->name, &info) != R_ERR_OK
                 || info.width != (int32_t)entry->width
                 || info.height != (int32_t)entry->rows) {
                 printf("MISMATCH kind=lookup name=%s offset=0 baked=00 decoded=00\n",
@@ -364,10 +433,9 @@ int main(int argc, char** argv) {
                 free(storedMask);
                 continue;
             }
-            fetchContext.state = &state;
-            fetchContext.scratch = scratch;
-            fetchContext.scratchBytes = PATCH_SCRATCH_BYTES;
-            if (r_texture_compose(&info, pnames, pnamesBytes, fetch_patch, &fetchContext,
+            fetchContext.wad = &wad;
+            if (r_texture_compose(&info, pnames->data, (size_t)pnames->size,
+                                  fetch_patch, &fetchContext,
                                   pixels, surfaceBytes, mask, hasMask ? surfaceBytes : 0u,
                                   &required) != R_ERR_OK
                 || required != surfaceBytes) {
@@ -435,9 +503,7 @@ int main(int argc, char** argv) {
            (unsigned long)flats, (unsigned long)sprites, (unsigned long)compared,
            (unsigned long)mismatches, (unsigned long)bakedBytes);
 
-    free(texture1);
-    free(pnames);
-    free(scratch);
+    wad_close(&wad);
     free(entries);
     free(container);
     return mismatches == 0u ? 0 : 1;

@@ -1,28 +1,30 @@
 # Partition table for env:esp32dev_ILI9341_wad and every container-reading build
-# (D3.10; the layout D0.5 wrote down and D3.10 repartitioned).
+# (D3.10; the layout D0.5 wrote down and D3.10 repartitioned, D3.11 widened again).
 #
 # The demo's own copy of the table. The bench keeps its own file because it is a
-# separate PlatformIO project; this copy exists so the DOOM project never depends
-# on a directory it does not own. One layout, two projects, and a change to the
-# layout has to be made in both places.
+# separate PlatformIO project with its own 2 MB container probe; this copy exists
+# so the DOOM project never depends on a directory it does not own. A change to
+# this episode layout is made here, not in the bench.
 #
 #   nvs       0x009000 .. 0x00F000        24 KB  (unchanged; the bootloader's)
-#   factory   0x010000 .. 0x100000       960 KB  app (0xF0000 = 983,040 B)
-#   wad       0x100000 .. 0x400000         3 MB  the mmap'd PWHD container
+#   factory   0x010000 .. 0x0D0000       768 KB  app (0xC0000 = 786,432 B)
+#   wad       0x0D0000 .. 0x400000   3,342,336 B  the mmap'd PWHD container
 #
-# WHY 960 KB OF APP AND 3 MB OF CONTAINER
+# WHY 768 KB OF APP AND 3,342,336 B OF CONTAINER
 #
 # D3.8 measured the shipped image at 356,837 B, and the slot it sat in was
-# 1,984 KB. The whole shareware episode needs a 1.5 MB union bake plus 848 KB of
-# raw map lumps, which the 2 MB container slot could not hold. Moving 1 MB from
-# the app to the container is what makes the episode fit; the image keeps 626 KB
-# of headroom in the new slot (63.7 %), which is the room Phases 4-6 grow into.
+# 1,984 KB. D3.10 moved 1 MB from the app to the container so the whole episode
+# could fit, at the price of dropping 447 sprite frames. D3.11 brings every
+# sprite back; the 960 KB app slot was 626 KB of unused headroom paying for it,
+# so the app drops to 768 KB. That still leaves the 356,837 B shipped image
+# 429,595 B of headroom (54.6 %), and the container gains 196,608 B: the episode
+# lands at 3,211,696 B with 130,640 B spare for Phase 4 animation.
 #
-# The split is 960 KB, not 1,024 KB, because a 64 KB-aligned boundary at 0x100000
-# puts the container on exactly 3 MiB (0x300000) and the table ends exactly at
-# 0x400000. Every offset and size in the app and wad rows is 64 KB aligned, and
-# the only unaligned row is `nvs`, whose 0x9000 offset the bootloader fixes and
-# which this task does not touch.
+# The split is 768 KB, not 704 KB, because 0x0D0000 is exactly 13 x 64 KB, so
+# the container starts page-aligned, and the table still ends exactly at
+# 0x400000. Every offset and size in the factory and wad rows is 64 KB aligned,
+# and the only unaligned row is `nvs`, whose 0x9000 offset the bootloader fixes
+# and which this task does not touch.
 #
 # There is deliberately no OTA and no spiffs slot: a 4 MB part cannot carry a
 # second app image and the container at the same time, and the container is the
@@ -33,8 +35,8 @@
 #
 # Subtype 0x40 is the first custom data subtype. WhdSource finds the partition
 # by label, so the number only has to be unique in this table. The container is
-# flashed at 0x100000; see tools/make_container.ps1 for the exact command.
+# flashed at 0x0D0000; see tools/make_container.ps1 for the exact command.
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,     0x9000,   0x6000,
-factory,  app,  factory, 0x10000,  0xF0000,
-wad,      data, 0x40,    0x100000, 0x300000,
+factory,  app,  factory, 0x10000,  0xC0000,
+wad,      data, 0x40,    0xD0000,  0x330000,
