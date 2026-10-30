@@ -50,13 +50,15 @@ const int I2S_LRCK = 21;
 const int I2S_DOUT = 19;
 
 // The six buttons on the board, in the engine's fixed order: Up, Down, Left,
-// Right, A, B.
+// Right, A, B, Start, Select.
 const int BTN_UP = 32;
 const int BTN_DOWN = 33;
 const int BTN_LEFT = 25;
 const int BTN_RIGHT = 26;
 const int BTN_A = 27;
 const int BTN_B = 13;
+const int BTN_PIN_START = 34;
+const int BTN_PIN_SELECT = 35;
 
 pr32::drivers::esp32::ESP32_I2S_AudioBackend audioBackend(I2S_BCLK, I2S_LRCK, I2S_DOUT, 22050);
 
@@ -71,7 +73,7 @@ pr32::graphics::DisplayConfig config(
     Y_OFF_SET
 );
 
-pr32::input::InputConfig inputConfig(BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_A, BTN_B);
+pr32::input::InputConfig inputConfig(BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_A, BTN_B, BTN_PIN_START, BTN_PIN_SELECT);
 
 pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate());
 
