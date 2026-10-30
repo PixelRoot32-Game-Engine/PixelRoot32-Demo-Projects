@@ -5,16 +5,16 @@
  * WHY THIS EXISTS NEXT TO WadSource
  *
  * WadSource maps the same partition and opens w_wad.h over a raw WAD. A raw WAD
- * can never be there: the shareware DOOM1.WAD is 4,196,020 B, larger than the
- * whole 4 MB chip, and the partition is 2 MB. What the image at 0x200000 holds
- * is the PWHD container from lib/doom/whd.h -- 1,913,167 B for the same 1264
- * lumps. So this file is WadSource's shape over the container reader, and both
- * adapters exist because both readers do.
+ * cannot be there: the shareware DOOM1.WAD is 4,196,020 B, which is most of the
+ * whole 4 MB chip. What the image at 0x100000 holds is the PWHD container from
+ * lib/doom/whd.h -- 2,999,544 B carrying the whole E1M1..E1M9 episode in a 3 MiB
+ * partition. So this file is WadSource's shape over the container reader, and
+ * both adapters exist because both readers do.
  *
  * THE ONE PLACE THIS IS NOT A FORWARD
  *
  * whd_open() accepts a buffer only when the header's totalSize equals the size
- * handed to it. The partition is 2,097,152 B and the container inside it is
+ * handed to it. The partition is 3,145,728 B and the container inside it is
  * smaller; the rest of the partition is erased flash, not container bytes. So
  * open() reads totalSize from the header (offset 28, the field whd.h documents)
  * and gives the reader exactly that many bytes. The consequence is deliberate:
@@ -43,10 +43,10 @@
  * MMU page is 64 KB. The container's own length is read from its header, so the
  * adapter maps one page, reads totalSize, and then maps exactly
  * `alignUp(totalSize, 64 KB)` starting at the container's page-aligned offset --
- * 31 pages for the 1,963,174 B container, not all 32 of the 2 MB partition. The
- * base handed to whd_open() is the window's first byte plus the delta between
- * the container's offset and that window's start, and every whd_lump_view()
- * pointer falls inside the window. The container starts at the partition's first
+ * 46 pages for the 2,999,544 B episode container, not all 48 of the 3 MiB
+ * partition. The base handed to whd_open() is the window's first byte plus the
+ * delta between the container's offset and that window's start, and every
+ * whd_lump_view() pointer falls inside the window. The container starts at the partition's first
  * byte today, so the delta is zero; it is written out anyway because it is the
  * subtraction that makes a raw view's address arithmetic one line instead of a
  * hidden assumption.
@@ -165,7 +165,7 @@ void doom_whd_source_close(void);
  * @brief Returns the mapped byte count: how much flash this adapter mapped.
  *
  * This is the window covering the container, rounded up to the 64 KB MMU page --
- * 2,031,616 B for the 1,963,174 B container, not the 2 MB partition. The
+ * 3,014,656 B for the 2,999,544 B episode container, not the 3 MiB partition. The
  * container's own length is the accepted reader's @c state->size, and the
  * remainder of the window is the rest of the last page. 0 when nothing is
  * mapped, so the same call answers "how much did we map" and "is anything
