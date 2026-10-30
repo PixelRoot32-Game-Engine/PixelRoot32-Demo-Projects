@@ -10,6 +10,26 @@
  *   visplanes  the floor and ceiling planes the walk marked, ready for the span
  *              emitter (D3.3) to fill.
  *
+ * THE WHOLE FRAME, IN ORDER (D3.4 closes the list)
+ *
+ *  1. r_bsp_render()        the walk: drawsegs and the plane marks.
+ *  2. r_wall_emit()         the wall tiers. It also takes the snapshot of the
+ *                           clip arrays each drawseg needs for sprite clipping
+ *                           and records the texture column of every two-sided
+ *                           line's mid texture, because both are read from the
+ *                           clip arrays as the column loop leaves them.
+ *  3. r_plane_draw()        floors, ceilings and the sky.
+ *  4. r_masked_emit()       sprites and the deferred masked mid textures, in
+ *                           upstream's R_DrawMasked() order: a sorted sprite
+ *                           list drawn back to front, each sprite first
+ *                           rendering the masked mids the drawsegs behind it
+ *                           recorded, then the untouched remainders far to
+ *                           near.
+ *
+ * Steps 2 to 4 are separate calls so each can be measured and diffed on its
+ * own; the order is not optional and every pass documents what it expects from
+ * the one before it.
+ *
  * WHAT THIS LAYER DOES NOT DO
  *
  * No texture lookup, no colormap, no pixel is written. The column and span
@@ -54,12 +74,12 @@
  * Everything is caller-owned. At the default DOOM capacities (R_MAX_DRAWSEGS
  * drawsegs, R_MAX_CLIP_SEGS clip posts, 64 visplanes) one view costs:
  *
- *   drawsegs      256 * sizeof(r_drawseg_t)               = 12,288 B
+ *   drawsegs      256 * sizeof(r_drawseg_t)               = 13,312 B
  *   visplanes      64 * sizeof(r_visplane_t)              = 42,496 B
  *   clip posts     32 * sizeof(r_clip_range_t)            =    256 B
  *   column clips  2 * 320 * sizeof(int16_t)               =  1,280 B
  *   ---------------------------------------------------------------
- *   total                                                 56,320 B
+ *   total                                                 57,344 B
  *
  * The visplanes dominate, exactly as DOOM's own visplane_t does (two 320-byte
  * arrays per plane). A caller that has measured its level may pass a smaller
@@ -67,6 +87,11 @@
  * capacity that is too small is reported as R_BSP_ERR_VISPLANE_OVERFLOW, never
  * written past. The projection tables are `const` in flash and cost no DRAM
  * (r_tables.h).
+ *
+ * The three D3.4 pools (the sprite list, the sprite clip blocks and the masked
+ * opening blocks) are *not* in that total: they belong to the two passes that
+ * read them, and their capacities are the caller's. They are listed in
+ * r_view_storage_t and their measured peak use is in the D3.4 report.
  *
  * THE WALL FRAGMENT, AND WHY IT IS NOT STORED
  *
@@ -82,13 +107,16 @@
  * What lives in the drawseg and what lives in the fragment is a deliberate
  * divergence from upstream's boundary, and it is decided by a byte count:
  *
- *   in r_drawseg_t (12,288 B for the 256-entry array, 48 B each)
+ *   in r_drawseg_t (13,312 B for the 256-entry array, 52 B each)
  *     seg, x1, x2, scale1, scale2, scaleStep, silhouette, bottomSilhouette,
- *     topSilhouette, lightLevel, lightNum, rwDistance, rwOffset, rwCenterAngle
- *   in r_wall_fragment_t (168 B on the stack, one fragment at a time)
+ *     topSilhouette, lightLevel, lightNum, rwDistance, rwOffset, rwCenterAngle,
+ *     plus D3.4's three clip fields (sprTopClip, sprBottomClip,
+ *     maskedTextureCol) in the padding the old layout had
+ *   in r_wall_fragment_t (170 B on the stack, one fragment at a time)
  *     everything above, plus worldTop/worldBottom/worldHigh/worldLow, the three
  *     texturemids, the topfrac/bottomfrac/pixhigh/pixlow steppers,
- *     markFloor/markCeiling and the wallTop/wallMid/wallBottom tier flags
+ *     markFloor/markCeiling, the wallTop/wallMid/wallBottom tier flags and the
+ *     two "solid clip" flags the sprite clip arrays need
  *
  * Only the column emitter ever reads the second group, and it is 75 B of fields
  * (76 after padding): storing it per drawseg would cost 19,456 B of DRAM for one
@@ -105,7 +133,10 @@
  * a second implementation of the highest-risk sign and orientation math in the
  * port.
  *
- * 36 B -> 48 B per drawseg, so 9,216 B -> 12,288 B for the array.
+ * 36 B -> 48 B -> 52 B per drawseg, so 9,216 B -> 12,288 B -> 13,312 B for the
+ * array. D3.4's three int16_t clip fields fit in the two padding bytes the old
+ * layout had after x2 plus the four bytes the struct grows by; appending them
+ * naively would have cost 56.
  *
  * ERROR BEHAVIOUR
  *
@@ -206,13 +237,40 @@ typedef struct r_view_params {
 /* --- Drawseg ------------------------------------------------------------- */
 
 /*
+ * A drawseg's clip fields are block indices into the caller's clip pool
+ * (r_view_storage_t::clipBlocks), or R_DRAWSEG_NO_BLOCK when the drawseg has no
+ * such clip. Two blocks are reserved and shared:
+ *
+ *   R_DRAWSEG_CLIP_TOP      every column is R_VIEW_HEIGHT (upstream's
+ *                           `sprtopclip = screenheightarray`)
+ *   R_DRAWSEG_CLIP_BOTTOM   every column is -1 (upstream's
+ *                           `sprbottomclip = negonearray`)
+ *
+ * They are the two global arrays upstream shares between every solid
+ * drawseg, stored once instead of once per fragment. A block holds
+ * R_SCREEN_WIDTH int16_t entries; a fragment's block holds its own columns at
+ * offsets 0 .. x2-x1, so a consumer reads `block[x - ds->x1]`. The constant
+ * blocks hold the same value in every entry, which makes the offset
+ * irrelevant and is exactly what the shared arrays meant.
+ */
+#define R_DRAWSEG_NO_BLOCK ((int16_t)-1)
+#define R_DRAWSEG_CLIP_TOP ((int16_t)0)
+#define R_DRAWSEG_CLIP_BOTTOM ((int16_t)1)
+#define R_DRAWSEG_RESERVED_BLOCKS 2
+
+/* The value that says "this masked column has already been drawn". Upstream's
+ * MAXSHORT, written into openings[] by R_RenderMaskedSegRange(). */
+#define R_MASKED_COLUMN_USED ((int16_t)32767)
+
+/*
  * One visible wall fragment, in screen columns [x1, x2] inclusive.
  *
  * Upstream's drawseg_t also carries `maskedtexturecol` and the two sprite
- * clipping arrays. They are *not* here on purpose: they are storage into
- * upstream's `openings[]` and are only read by the sprite pass (D3.4), which
- * owns that storage decision. See the file header for the byte-count reason the
- * per-column fragment state is a stack local instead of a field.
+ * clipping arrays. This port records the same three things as *block indices*
+ * into the caller's pools (D3.4) instead of as pointers into a global
+ * `openings[]`: an index cannot go stale if the storage moves, costs two bytes
+ * instead of four on the ESP32, and makes a capacity overflow a reported error
+ * instead of a silent write past the array.
  *
  * Field by field, and where it comes from:
  *
@@ -223,13 +281,27 @@ typedef struct r_view_params {
  *   x1, x2           first and last screen column, inclusive. R_StoreWallRange
  *                    stores `start` and `stop` after the clip posts have
  *                    removed the covered pieces.
+ *   sprTopClip       R_DrawSegRange's `sprtopclip`: the block of ceilingclip[]
+ *                    values this fragment leaves for a sprite behind it, or
+ *                    R_DRAWSEG_CLIP_TOP / R_DRAWSEG_NO_BLOCK. Written by
+ *                    r_wall_emit(), not by the walk, because the values are the
+ *                    clip arrays after the column loop has run.
+ *   sprBottomClip    the same for floorclip[].
+ *   maskedTextureCol the block of texture columns a two-sided line's masked mid
+ *                    texture recorded, or R_DRAWSEG_NO_BLOCK. Each entry is the
+ *                    texture column of one screen column, exactly upstream's
+ *                    `maskedtexturecol[x]`, and is overwritten with
+ *                    R_MASKED_COLUMN_USED once drawn.
  *   scale1, scale2  16.16 texture scale at x1 and x2, from
  *                    R_ScaleFromGlobalAngle(); scale2 equals scale1 when the
  *                    fragment is one column wide.
  *   scaleStep        (scale2 - scale1) / (x2 - x1), the per-column step the
  *                    emitter adds. 0 for a one-column fragment.
  *   silhouette      R_SIL_NONE/BOTTOM/TOP/BOTH: which of the wall's edges a
- *                    sprite behind it can be clipped against.
+ *                    sprite behind it can be clipped against. The walk stores
+ *                    the geometric silhouette; r_wall_emit() adds the two bits
+ *                    a masked mid texture forces, which is where upstream adds
+ *                    them too (R_StoreWallRange's tail).
  *   bottomSilhouette `bsilheight`: the world z a sprite's bottom may not go
  *                    below, or INT32_MAX when the whole column is solid.
  *   topSilhouette    `tsilheight`: the world z a sprite's top may not go above,
@@ -254,11 +326,20 @@ typedef struct r_view_params {
  *                    xtoviewangle[x] to it and shifts by ANGLETOFINESHIFT to
  *                    index r_fine_tangent[], and the relative form is what keeps
  *                    that index inside [0, FINEANGLES/2).
+ *
+ * PACKING. The three int16_t clip fields are placed in the two bytes of padding
+ * the old 48-byte layout had after x2 and the four bytes the struct grows by,
+ * so sizeof stays at 52 bytes rather than the 56 a naive append would cost.
+ * The test suite pins the number. Field order is not an ABI: the struct is
+ * caller-owned and never compared as a blob.
  */
 typedef struct r_drawseg {
     uint16_t seg;
     int16_t x1;
     int16_t x2;
+    int16_t sprTopClip;
+    int16_t sprBottomClip;
+    int16_t maskedTextureCol;
     fixed_t scale1;
     fixed_t scale2;
     fixed_t scaleStep;
@@ -350,6 +431,13 @@ typedef struct r_wall_fragment {
     uint8_t markFloor;
     uint8_t markCeiling;
     uint8_t silhouette;
+    /* The two "closed for sprites" cases of R_StoreWallRange: the back sector's
+     * ceiling is at or below the front floor (bottom solid), or its floor is at
+     * or above the front ceiling (top solid). Upstream answers them by pointing
+     * sprtopclip/sprbottomclip at the shared full-height arrays; this port sets
+     * a flag so r_wall_emit() can point at the shared constant blocks. */
+    uint8_t clipTopSolid;
+    uint8_t clipBottomSolid;
     int16_t lightLevel;
     int16_t lightNum;
     fixed_t bottomSilhouette;
@@ -377,7 +465,29 @@ typedef struct r_clip_range {
  * posts a 320-wide view can need. drawsegs may be smaller than R_MAX_DRAWSEGS;
  * going over sets `drawsegOverflowed` and drops further fragments, exactly as
  * upstream's `if (ds_p == &drawsegs[MAXDRAWSEGS]) return;` does.
+ *
+ * THE THREE D3.4 POOLS
+ *
+ *   visSprites        one r_vissprite_t (r_things.h) per projected sprite,
+ *                     i.e. upstream's `vissprites[MAXVISSPRITES]`. The walk does
+ *                     not touch it; only the masked pass does.
+ *   clipBlocks        `clipBlockCapacity` blocks of R_SCREEN_WIDTH int16_t,
+ *                     the sprite clip arrays (upstream's
+ *                     `sprtopclip`/`sprbottomclip` storage). Blocks 0 and 1 are
+ *                     reserved for the two constant clip arrays
+ *                     (R_DRAWSEG_CLIP_TOP / R_DRAWSEG_CLIP_BOTTOM).
+ *   openingBlocks     `openingBlockCapacity` blocks of R_SCREEN_WIDTH int16_t,
+ *                     the deferred masked mid texture columns (upstream's
+ *                     `openings[]`).
+ *
+ * r_bsp_init() deliberately ignores these three: the walk neither reads nor
+ * writes them, and a walk-only caller (the D3.1 harness) must keep compiling
+ * without them. The passes that own them validate the pointers and the
+ * capacities before writing a pixel, and report a capacity that is too small
+ * instead of overrunning it.
  */
+struct r_vissprite; /* r_things.h: the projected sprite record */
+
 typedef struct r_view_storage {
     r_drawseg_t* drawsegs;
     uint16_t drawsegCapacity;
@@ -386,6 +496,13 @@ typedef struct r_view_storage {
     uint16_t clipRangeCapacity;
     int16_t* floorClip;   /* R_SCREEN_WIDTH entries */
     int16_t* ceilingClip; /* R_SCREEN_WIDTH entries */
+    /* D3.4: the pass-owned pools. See above. */
+    struct r_vissprite* visSprites;
+    uint16_t visSpriteCapacity;
+    int16_t* clipBlocks;
+    uint16_t clipBlockCapacity;
+    int16_t* openingBlocks;
+    uint16_t openingBlockCapacity;
 } r_view_storage_t;
 
 /*
@@ -406,6 +523,15 @@ typedef struct r_view_state {
     uint16_t drawsegCount;
     uint16_t drawsegOverflowed;
     r_bsp_error_t error;
+
+    /* Result of the D3.4 clip capture, valid after a successful r_wall_emit():
+     * 1 when every drawseg's clip blocks and masked columns are recorded, 0
+     * after a walk (so the masked pass can refuse a frame whose walls were
+     * never emitted). `clipBlocksUsed` and `openingBlocksUsed` are the peak
+     * block counts that pass allocated, reserved blocks included. */
+    uint8_t clipCaptured;
+    uint16_t clipBlocksUsed;
+    uint16_t openingBlocksUsed;
 
     /* INTERNAL: walk state. */
     r_view_params_t params;

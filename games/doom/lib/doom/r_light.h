@@ -48,6 +48,42 @@
  * the whole documented layout anyway, because a lump of the wrong length is a
  * damaged WAD and reporting it here is cheaper than reading past a table later.
  *
+ * THE THIRD LOOKUP: SPRITES (D3.4)
+ *
+ * A sprite's table is chosen by R_ProjectSprite() (r_things.c):
+ *
+ *     index = xscale >> LIGHTSCALESHIFT;            // detailshift is 0 here
+ *     if (index >= MAXLIGHTSCALE) index = MAXLIGHTSCALE-1;
+ *     vis->colormap = spritelights[index];
+ *
+ * and `spritelights` is not a separate array. R_AddSprites() (r_things.c) sets
+ * it to `scalelight[lightnum]`, with
+ *
+ *     lightnum = (sector->lightlevel >> LIGHTSEGSHIFT) + extralight;
+ *
+ * clamped to [0, LIGHTLEVELS). So a sprite reads the *same* generated table a
+ * wall reads, but through a different pair of coordinates:
+ *
+ *   row     the sprite's own sector light, with no per-seg-axis correction
+ *           (there is no seg: a sprite is a point). A wall adds -1 for a
+ *           horizontal seg and +1 for a vertical one; a sprite never does.
+ *   column  the sprite's projection scale `xscale = projection / tz`, not the
+ *           wall's `rw_scale`. Both are "texels per pixel", but xscale is
+ *           computed from the sprite's distance alone, so a sprite and the wall
+ *           it stands in front of can read adjacent columns.
+ *
+ * It is not the plane lookup either: zlight's column is a *distance*
+ * (`distance >> LIGHTZSHIFT`, clamped to MAXLIGHTZ-1), not a scale, and a plane
+ * has one light row for the whole plane with no per-object selection.
+ *
+ * NOTE ON THE REFERENCE. There is no `R_InitSpriteLights` in linuxdoom-1.10;
+ * `spritelights` is the row pointer R_AddSprites() installs, and the table it
+ * points into is scalelight (R_ExecuteSetViewSize). The D3.4 brief expected a
+ * separate distance-based table there; this port implements what the cited
+ * source actually does, because a third table would not match vanilla pixels.
+ * The consequence for the build is that no new generated table is needed: the
+ * sprite row is r_light_level's, and the flash cost of this decision is 0 B.
+ *
  * This is C99 only: <stddef.h> and <stdint.h>, no allocation, no globals (the
  * one table it reads is const), no stdio, no floating point.
  */
@@ -189,6 +225,25 @@ static inline const uint8_t* r_light_wall(const r_light_t* light, int lightnum,
 static inline const uint8_t* r_light_wall_level(const r_light_t* light,
                                                 int lightnum) {
     return r_light_wall(light, lightnum, 0);
+}
+
+/**
+ * @brief The table one sprite column draws through (R_ProjectSprite).
+ *
+ * The arithmetic is R_light_wall's by construction -- the same row and column
+ * maps exist -- but the inputs are the sprite's: @p lightnum must be
+ * `(spriteLightLevel >> R_LIGHT_SEG_SHIFT) + extralight` with no seg-axis
+ * correction, and @p scale must be the sprite's projection scale `xscale`, not
+ * a wall's `rw_scale`. The function exists as a separate name so the two
+ * callers cannot silently swap their coordinates, and so the difference is
+ * documented where the lookup lives.
+ *
+ * A full-bright sprite does not call this at all: upstream uses `colormaps`
+ * (map 0), and the caller passes that pointer directly.
+ */
+static inline const uint8_t* r_light_sprite(const r_light_t* light, int lightnum,
+                                            fixed_t scale) {
+    return r_light_wall(light, lightnum, scale);
 }
 
 #ifdef __cplusplus

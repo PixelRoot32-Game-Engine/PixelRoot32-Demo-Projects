@@ -56,6 +56,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
+#include <utility>
 #include <vector>
 
 #include <unity.h>
@@ -66,6 +68,7 @@
 #include "r_plane.h"
 #include "r_segs.h"
 #include "r_tables.h"
+#include "r_things.h"
 
 #include "../../test_config.h"
 
@@ -344,6 +347,106 @@ const r_flat_t* resolveFlat(void* context, r_name_t name) {
     return static_cast<FlatTable*>(context)->find(name);
 }
 
+/* --- Sprite patches and the sprite resolver (D3.4) ----------------------- */
+
+/*
+ * A patch built byte for byte: `patch_t` header, the column-offset table with
+ * the four zero bytes DOOM writes between columns, then one normalised post
+ * chain per column. Every sprite in this suite is a column of solid bands, so a
+ * pixel's value says which texture column and which post row drew it.
+ */
+struct TestPatch {
+    std::vector<std::uint8_t> data;
+    r_sprite_patch_t patch{};
+
+    /// One post per column covering every row; `values[x]` is column x's texel.
+    void setBands(const std::vector<std::uint8_t>& values, int height, int left,
+                  int top) {
+        build(static_cast<int>(values.size()), height, left, top,
+              [&](int column) {
+                  return std::vector<std::pair<int, std::vector<std::uint8_t>>>{
+                      {0, std::vector<std::uint8_t>(
+                              static_cast<std::size_t>(height), values[column])}};
+              });
+    }
+
+    /// A solid patch: every texel of every column is `value`.
+    void setSolid(std::uint8_t value, int width, int height, int left, int top) {
+        setBands(std::vector<std::uint8_t>(static_cast<std::size_t>(width), value),
+                 height, left, top);
+    }
+
+    /// The general form: per column, a list of (topdelta, pixels) posts.
+    void build(int width, int height, int left, int top,
+               const std::function<std::vector<std::pair<int, std::vector<std::uint8_t>>>(
+                   int)>& column) {
+        std::vector<std::uint8_t> body;
+        std::vector<std::int32_t> offsets(static_cast<std::size_t>(width));
+
+        putLe16(data, static_cast<std::int16_t>(width));
+        putLe16(data, static_cast<std::int16_t>(height));
+        putLe16(data, static_cast<std::int16_t>(left));
+        putLe16(data, static_cast<std::int16_t>(top));
+        const std::size_t tableEnd = 8u + static_cast<std::size_t>(width) * 4u;
+
+        for (int x = 0; x < width; ++x) {
+            offsets[static_cast<std::size_t>(x)] =
+                static_cast<std::int32_t>(tableEnd + body.size());
+            for (const auto& post : column(x)) {
+                body.push_back(static_cast<std::uint8_t>(post.first));
+                body.push_back(static_cast<std::uint8_t>(post.second.size()));
+                body.push_back(0u);
+                body.insert(body.end(), post.second.begin(), post.second.end());
+                body.push_back(0u);
+            }
+            body.push_back(0xFFu);
+        }
+
+        for (std::int32_t offset : offsets) {
+            data.push_back(static_cast<std::uint8_t>(offset & 0xFF));
+            data.push_back(static_cast<std::uint8_t>((offset >> 8) & 0xFF));
+            data.push_back(static_cast<std::uint8_t>((offset >> 16) & 0xFF));
+            data.push_back(static_cast<std::uint8_t>((offset >> 24) & 0xFF));
+        }
+        data.insert(data.end(), body.begin(), body.end());
+        patch.data = data.data();
+        patch.size = data.size();
+    }
+};
+
+struct SpriteEntry {
+    r_name_t name;
+    const r_sprite_patch_t* patch;
+};
+
+/// The tests' sprite residency policy: a fixed table of lump names.
+struct SpriteTable {
+    std::vector<SpriteEntry> entries;
+    int lookups = 0;
+
+    void add(const char* name, const r_sprite_patch_t* patch) {
+        std::array<std::uint8_t, 8> field{};
+        for (std::size_t i = 0; i < 8u && name[i] != '\0'; ++i) {
+            field[i] = static_cast<std::uint8_t>(name[i]);
+        }
+        entries.push_back({r_pack_name(field.data()), patch});
+    }
+
+    const r_sprite_patch_t* find(r_name_t name) {
+        ++lookups;
+        for (const SpriteEntry& entry : entries) {
+            if (entry.name == name) {
+                return entry.patch;
+            }
+        }
+        return nullptr;
+    }
+};
+
+const r_sprite_patch_t* resolveSprite(void* context, r_name_t name) {
+    return static_cast<SpriteTable*>(context)->find(name);
+}
+
 /* --- One view: storage, state, surface, light ---------------------------- */
 
 struct Fixture {
@@ -354,32 +457,42 @@ struct Fixture {
     std::array<r_clip_range_t, R_MAX_CLIP_SEGS> clips{};
     std::array<std::int16_t, kScreenWidth> floorClip{};
     std::array<std::int16_t, kScreenWidth> ceilingClip{};
+    std::array<r_vissprite_t, 16> visSprites{};
+    std::array<std::int16_t, 32u * kScreenWidth> clipBlocks{};
+    std::array<std::int16_t, 8u * kScreenWidth> openingBlocks{};
     r_view_state_t view{};
 
     std::vector<std::uint8_t> pixels;
     std::vector<std::uint8_t> covered;
     std::vector<std::uint8_t> planeMask;
+    std::vector<std::uint8_t> spriteMask;
     r_draw_surface_t surface{};
     std::array<std::uint8_t, R_LIGHT_LUMP_MAPS * 256> colormap{};
     r_light_t light{};
     TextureTable textures{};
     FlatTable flats{};
+    SpriteTable sprites{};
     r_tex_source_t source{};
+    r_sprite_source_t spriteSource{};
+    r_masked_stats_t stats{};
 
     Fixture() {
         pixels.assign(kScreenWidth * kScreenHeight, kUncovered);
         covered.assign(kScreenWidth, 0u);
         planeMask.assign(kScreenWidth * kScreenHeight, 0u);
+        spriteMask.assign(kScreenWidth * kScreenHeight, 0u);
         surface.pixels = pixels.data();
         surface.width = static_cast<std::int32_t>(kScreenWidth);
         surface.height = static_cast<std::int32_t>(kScreenHeight);
         surface.covered = covered.data();
         surface.planeMask = planeMask.data();
+        surface.spriteMask = spriteMask.data();
         surface.tierPixels[R_DRAW_TIER_MID] = 0u;
         surface.tierPixels[R_DRAW_TIER_TOP] = 0u;
         surface.tierPixels[R_DRAW_TIER_BOTTOM] = 0u;
         surface.planePixels = 0u;
         surface.planeSpans = 0u;
+        surface.spritePixels = 0u;
 
         /* Map 0 is the identity (the brightest table) and map 31 inverts, so a
          * pixel's value says both which texel and which light table was used.
@@ -399,19 +512,24 @@ struct Fixture {
         source.resolveFlat = resolveFlat;
         source.flatContext = &flats;
         source.skyTexture = R_NAME_NONE;
+        spriteSource.resolve = resolveSprite;
+        spriteSource.context = &sprites;
     }
 
     void prefill(std::uint8_t value) {
         std::fill(pixels.begin(), pixels.end(), value);
         std::fill(covered.begin(), covered.end(), 0u);
         std::fill(planeMask.begin(), planeMask.end(), 0u);
+        std::fill(spriteMask.begin(), spriteMask.end(), 0u);
         surface.covered = covered.data();
         surface.planeMask = planeMask.data();
+        surface.spriteMask = spriteMask.data();
         surface.tierPixels[R_DRAW_TIER_MID] = 0u;
         surface.tierPixels[R_DRAW_TIER_TOP] = 0u;
         surface.tierPixels[R_DRAW_TIER_BOTTOM] = 0u;
         surface.planePixels = 0u;
         surface.planeSpans = 0u;
+        surface.spritePixels = 0u;
     }
 
     r_bsp_error_t start() {
@@ -426,6 +544,12 @@ struct Fixture {
         storage.clipRangeCapacity = static_cast<std::uint16_t>(clips.size());
         storage.floorClip = floorClip.data();
         storage.ceilingClip = ceilingClip.data();
+        storage.visSprites = visSprites.data();
+        storage.visSpriteCapacity = static_cast<std::uint16_t>(visSprites.size());
+        storage.clipBlocks = clipBlocks.data();
+        storage.clipBlockCapacity = 32u;
+        storage.openingBlocks = openingBlocks.data();
+        storage.openingBlockCapacity = 8u;
         return r_bsp_init(&view, &map, &storage);
     }
 
@@ -448,6 +572,11 @@ struct Fixture {
 
     r_plane_error_t drawPlanes() {
         return r_plane_draw(&view, &surface, &source, &light);
+    }
+
+    r_things_error_t drawMasked(const r_sprite_t* list, std::uint16_t count) {
+        return r_masked_emit(&view, &surface, &source, &light, list, count,
+                             &spriteSource, &stats);
     }
 
     std::uint8_t at(int x, int y) const {
@@ -1519,6 +1648,557 @@ void test_the_plane_pass_validates_its_arguments_before_writing() {
 
 }  // namespace
 
+/* --- D3.4: sprites and the masked mid textures -------------------------- */
+
+r_sprite_t makeSprite(fixed_t x, fixed_t y, fixed_t z, const char* lump) {
+    r_sprite_t sprite{};
+
+    sprite.x = x;
+    sprite.y = y;
+    sprite.z = z;
+    sprite.angle = 0;
+    sprite.lump = packName(lump);
+    sprite.lightLevel = 255;  // row 15, map 0: the identity colormap
+    sprite.flip = 0;
+    sprite.fullbright = 0;
+    sprite.noClip = 0;
+    return sprite;
+}
+
+int countValue(const Fixture& fixture, std::uint8_t value) {
+    int count = 0;
+
+    for (std::uint8_t pixel : fixture.pixels) {
+        count += pixel == value ? 1 : 0;
+    }
+    return count;
+}
+
+/// The bounding box of one texel value in the surface, for assertions that do
+/// not want to re-derive DOOM's projection arithmetic in the test.
+struct ValueBox {
+    int x1 = 100000;
+    int x2 = -1;
+    int y1 = 100000;
+    int y2 = -1;
+    int count = 0;
+
+    int width() const { return x2 - x1 + 1; }
+    int height() const { return y2 - y1 + 1; }
+};
+
+ValueBox findValue(const Fixture& fixture, std::uint8_t value) {
+    ValueBox box;
+
+    for (int y = 0; y < static_cast<int>(kScreenHeight); ++y) {
+        for (int x = 0; x < static_cast<int>(kScreenWidth); ++x) {
+            if (fixture.at(x, y) != value) {
+                continue;
+            }
+            box.x1 = x < box.x1 ? x : box.x1;
+            box.x2 = x > box.x2 ? x : box.x2;
+            box.y1 = y < box.y1 ? y : box.y1;
+            box.y2 = y > box.y2 ? y : box.y2;
+            ++box.count;
+        }
+    }
+    return box;
+}
+
+void test_a_sprite_is_projected_and_drawn_over_the_wall_behind_it() {
+    Fixture fixture;
+    TestTexture wall;
+    TestPatch patch;
+
+    wall.setSolid(7u, 8, 8);
+    fixture.textures.add("STONE", &wall.texture);
+    patch.setSolid(42u, 8, 16, 4, 16);
+    fixture.sprites.add("SPRTA0", &patch.patch);
+    OneWall().build(fixture.mapBytes, 200, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+
+    // The wall at x=200 is behind the sprite at x=64, so it must not clip it:
+    // this is the ordering half of the test. The patch's 8 x 16 shape at scale
+    // 160/64 = 2.5 projects to columns 150..169 and rows 80..119.
+    {
+        r_sprite_t sprite = makeSprite(64 * kFracUnit, 0, 33 * kFracUnit, "SPRTA0");
+
+        TEST_ASSERT_EQUAL_INT(R_THINGS_OK, fixture.drawMasked(&sprite, 1u));
+        TEST_ASSERT_EQUAL_UINT16(1u, fixture.stats.submitted);
+        TEST_ASSERT_EQUAL_UINT16(1u, fixture.stats.drawn);
+        TEST_ASSERT_EQUAL_UINT16(0u, fixture.stats.backface);
+    }
+    // The patch is solid, so its pixels are one rectangle. Its exact edges are
+    // DOOM's projection; what the pass owes is a rectangle of the right shape
+    // with the wall visible on all four sides.
+    const ValueBox box = findValue(fixture, 42u);
+
+    TEST_ASSERT_TRUE(box.width() >= 19 && box.width() <= 21);
+    TEST_ASSERT_TRUE(box.height() >= 39 && box.height() <= 42);
+    TEST_ASSERT_EQUAL_INT(box.width() * box.height(), box.count);
+    TEST_ASSERT_EQUAL_UINT32(static_cast<std::uint32_t>(box.count),
+                             fixture.surface.spritePixels);
+    TEST_ASSERT_EQUAL_UINT8(7u, fixture.at(box.x1 - 1, (box.y1 + box.y2) / 2));
+    TEST_ASSERT_EQUAL_UINT8(7u, fixture.at(box.x2 + 1, (box.y1 + box.y2) / 2));
+    TEST_ASSERT_EQUAL_UINT8(7u, fixture.at((box.x1 + box.x2) / 2, box.y1 - 1));
+    TEST_ASSERT_EQUAL_UINT8(7u, fixture.at((box.x1 + box.x2) / 2, box.y2 + 1));
+    TEST_ASSERT_EQUAL_UINT8(1u, fixture.covered[160]);
+    TEST_ASSERT_EQUAL_UINT8(1u, fixture.spriteMask[160u + 100u * kScreenWidth]);
+}
+
+void test_a_nearer_wall_clips_exactly_the_columns_it_covers() {
+    Fixture fixture;
+    TestTexture wall;
+    TestPatch patch;
+
+    wall.setSolid(7u, 8, 8);
+    fixture.textures.add("STONE", &wall.texture);
+    patch.setSolid(42u, 8, 16, 4, 16);
+    fixture.sprites.add("SPRTA0", &patch.patch);
+
+    MapBuilder& map = fixture.mapBytes;
+    const std::uint16_t sector = map.addSector(0, 128, "FLOOR0", "CEIL0", 255);
+    const std::uint16_t v1 = map.addVertex(50, 4);
+    const std::uint16_t v2 = map.addVertex(50, -1);
+    const std::uint16_t side = map.addSide(0, 0, "-", "-", "STONE", sector);
+    const std::uint16_t line = map.addLine(v1, v2, 0, side);
+    map.addSeg(v1, v2, 49152u, line, 0);
+    map.addSubsector(1, 0);
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+
+    const r_drawseg_t* near = &fixture.view.storage.drawsegs[0];
+    const int wallX1 = near->x1;
+    const int wallX2 = near->x2;
+
+    // A single-sided line is the shared constant pair, never a per-fragment
+    // copy: that is the D3.4 clip capture's first case.
+    TEST_ASSERT_EQUAL_INT16(R_DRAWSEG_CLIP_TOP, near->sprTopClip);
+    TEST_ASSERT_EQUAL_INT16(R_DRAWSEG_CLIP_BOTTOM, near->sprBottomClip);
+    TEST_ASSERT_EQUAL_UINT8(R_SIL_BOTH, near->silhouette);
+
+    r_sprite_t sprite = makeSprite(100 * kFracUnit, 0, 33 * kFracUnit, "SPRTA0");
+
+    TEST_ASSERT_EQUAL_INT(R_THINGS_OK, fixture.drawMasked(&sprite, 1u));
+    TEST_ASSERT_EQUAL_UINT16(1u, fixture.stats.drawn);
+
+    // The sprite spans columns 153..165 at scale 160/100 = 1.6. Wherever the
+    // near wall's columns reach, its texel wins; everywhere else the sprite's
+    // 42 does. Exactly the covered columns are cut, and no others.
+    int visible = 0;
+    int clipped = 0;
+
+    for (int x = 140; x <= 180; ++x) {
+        const std::uint8_t value = fixture.at(x, 100);
+
+        if (x >= wallX1 && x <= wallX2) {
+            if (value == 42u) {
+                TEST_FAIL_MESSAGE("a column covered by the near wall kept the sprite");
+            }
+            if (value == 7u) {
+                ++clipped;
+            }
+        } else if (value == 42u) {
+            ++visible;
+        }
+    }
+    TEST_ASSERT_TRUE(visible > 0);
+    TEST_ASSERT_TRUE(clipped > 0);
+    TEST_ASSERT_EQUAL_UINT32(static_cast<std::uint32_t>(visible) * 25u,
+                             fixture.surface.spritePixels);
+}
+
+void test_a_sprite_behind_a_solid_wall_writes_nothing() {
+    Fixture fixture;
+    TestTexture wall;
+    TestPatch patch;
+
+    wall.setSolid(7u, 8, 8);
+    fixture.textures.add("STONE", &wall.texture);
+    patch.setSolid(42u, 8, 16, 4, 16);
+    fixture.sprites.add("SPRTA0", &patch.patch);
+    OneWall().build(fixture.mapBytes, 50, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+
+    r_sprite_t sprite = makeSprite(100 * kFracUnit, 0, 33 * kFracUnit, "SPRTA0");
+
+    TEST_ASSERT_EQUAL_INT(R_THINGS_OK, fixture.drawMasked(&sprite, 1u));
+    TEST_ASSERT_EQUAL_UINT16(1u, fixture.stats.drawn);
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.spritePixels);
+    TEST_ASSERT_EQUAL_INT(0, countValue(fixture, 42u));
+    // The wall covers the frame; not one pixel moved.
+    TEST_ASSERT_EQUAL_INT(320 * 200, countValue(fixture, 7u));
+}
+
+void test_a_sprite_in_front_of_a_two_sided_line_is_not_clipped() {
+    Fixture fixture;
+    TestTexture top;
+    TestTexture bottom;
+    TestTexture far;
+    TestPatch patch;
+
+    top.setSolid(11u, 8, 8);
+    bottom.setSolid(22u, 8, 8);
+    far.setSolid(33u, 8, 8);
+    fixture.textures.add("TOPTX", &top.texture);
+    fixture.textures.add("BOTTXT", &bottom.texture);
+    fixture.textures.add("FARTX", &far.texture);
+    patch.setSolid(42u, 8, 16, 4, 16);
+    fixture.sprites.add("SPRTA0", &patch.patch);
+
+    MapBuilder& map = fixture.mapBytes;
+    const std::uint16_t frontSector = map.addSector(16, 128, "FLOOR0", "CEIL0", 255);
+    const std::uint16_t backSector = map.addSector(0, 128, "FLOOR1", "CEIL1", 255);
+    const std::uint16_t nearV1 = map.addVertex(64, 100);
+    const std::uint16_t nearV2 = map.addVertex(64, -100);
+    const std::uint16_t side0 = map.addSide(0, 0, "TOPTX", "BOTTXT", "-", frontSector);
+    const std::uint16_t side1 = map.addSide(0, 0, "-", "-", "-", backSector);
+    const std::uint16_t nearLine = map.addLine(nearV1, nearV2, DOOM_ML_TWOSIDED, side0, side1);
+    map.addSeg(nearV1, nearV2, 49152u, nearLine, 0);
+    const std::uint16_t solidSector = map.addSector(0, 128, "FLOOR0", "CEIL0", 255);
+    const std::uint16_t farV1 = map.addVertex(128, 200);
+    const std::uint16_t farV2 = map.addVertex(128, -200);
+    const std::uint16_t farSide = map.addSide(0, 0, "-", "-", "FARTX", solidSector);
+    const std::uint16_t farLine = map.addLine(farV1, farV2, 0, farSide);
+    map.addSeg(farV1, farV2, 49152u, farLine, 0);
+    map.addSubsector(2, 0);
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+
+    // A two-sided line with a step down forces a per-fragment copy of the
+    // bottom clip array; that is the capture's second case, and it is what
+    // would clip a sprite behind the line. The near line is the first seg.
+    const r_drawseg_t* near = nullptr;
+    for (std::uint16_t i = 0; i < fixture.view.drawsegCount; ++i) {
+        if (fixture.view.storage.drawsegs[i].seg == 0u) {
+            near = &fixture.view.storage.drawsegs[i];
+        }
+    }
+    TEST_ASSERT_NOT_NULL(near);
+    TEST_ASSERT_EQUAL_UINT8(R_SIL_BOTTOM, near->silhouette);
+    TEST_ASSERT_EQUAL_INT16(R_DRAWSEG_NO_BLOCK, near->sprTopClip);
+    TEST_ASSERT_TRUE(near->sprBottomClip >= R_DRAWSEG_RESERVED_BLOCKS);
+
+    r_sprite_t sprite = makeSprite(32 * kFracUnit, 0, 33 * kFracUnit, "SPRTA0");
+
+    TEST_ASSERT_EQUAL_INT(R_THINGS_OK, fixture.drawMasked(&sprite, 1u));
+    // scale 160/32: a rectangle about 41 columns by 80 rows, all in front of
+    // the line and its tiers, so no clip may touch it.
+    const ValueBox box = findValue(fixture, 42u);
+
+    TEST_ASSERT_TRUE(box.width() >= 40 && box.width() <= 42);
+    TEST_ASSERT_TRUE(box.height() >= 79 && box.height() <= 82);
+    TEST_ASSERT_EQUAL_INT(box.width() * box.height(), box.count);
+    TEST_ASSERT_EQUAL_UINT32(static_cast<std::uint32_t>(box.count),
+                             fixture.surface.spritePixels);
+    TEST_ASSERT_TRUE(box.x1 <= 140);
+}
+
+void test_a_flipped_sprite_mirrors_its_texture_columns() {
+    Fixture fixture;
+    TestTexture wall;
+    TestPatch patch;
+    const std::vector<std::uint8_t> bands{10u, 11u, 12u, 13u,
+                                          14u, 15u, 16u, 17u};
+
+    wall.setSolid(7u, 8, 8);
+    fixture.textures.add("STONE", &wall.texture);
+    patch.setBands(bands, 16, 4, 16);
+    fixture.sprites.add("BANDS0", &patch.patch);
+    OneWall().build(fixture.mapBytes, 200, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+
+    r_sprite_t sprite = makeSprite(64 * kFracUnit, 0, 33 * kFracUnit, "BANDS0");
+
+    TEST_ASSERT_EQUAL_INT(R_THINGS_OK, fixture.drawMasked(&sprite, 1u));
+    // Unflipped, the leftmost column shows texture column 0 and the third
+    // column is still column 0 (frac advances by 1/2.5 per screen column).
+    TEST_ASSERT_EQUAL_UINT8(10u, fixture.at(150, 100));
+    TEST_ASSERT_EQUAL_UINT8(10u, fixture.at(152, 100));
+    TEST_ASSERT_EQUAL_UINT8(11u, fixture.at(153, 100));
+
+    fixture.prefill(kUncovered);
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+    sprite.flip = 1;
+    TEST_ASSERT_EQUAL_INT(R_THINGS_OK, fixture.drawMasked(&sprite, 1u));
+    // Mirrored: the leftmost column is texture column 7, then 6, then 5.
+    TEST_ASSERT_EQUAL_UINT8(17u, fixture.at(150, 100));
+    TEST_ASSERT_EQUAL_UINT8(16u, fixture.at(151, 100));
+    TEST_ASSERT_EQUAL_UINT8(15u, fixture.at(153, 100));
+    // The last column's frac lands below zero texels, which RANGECHECK would
+    // report and this port skips; the column keeps the wall behind it.
+    TEST_ASSERT_EQUAL_UINT8(7u, fixture.at(169, 100));
+    TEST_ASSERT_EQUAL_UINT32(18u * 41u, fixture.surface.spritePixels);
+}
+
+void test_a_masked_mid_texture_is_deferred_and_orders_against_sprites_and_flats() {
+    Fixture fixture;
+    TestTexture mid;
+    TestPatch nearPatch;
+    TestPatch farPatch;
+    std::vector<std::uint8_t> mask;
+
+    // A mid texture with a transparent lower half: the texels rows 0..3 are
+    // opaque, 4..7 are holes, so a sprite behind the line shows through them.
+    mid.setSolid(33u, 8, 8);
+    mask.assign(8u * 8u, 0u);
+    for (std::size_t x = 0; x < 8u; ++x) {
+        for (std::size_t y = 0; y < 4u; ++y) {
+            mask[x * 8u + y] = 1u;
+        }
+    }
+    mid.setMask(std::move(mask));
+    fixture.textures.add("MIDTX", &mid.texture);
+    nearPatch.setSolid(42u, 8, 16, 4, 16);
+    farPatch.setSolid(55u, 8, 16, 4, 16);
+    fixture.sprites.add("NEARA0", &nearPatch.patch);
+    fixture.sprites.add("FARA0", &farPatch.patch);
+
+    MapBuilder& map = fixture.mapBytes;
+    const std::uint16_t front = map.addSector(0, 128, "FLOOR0", "CEIL0", 255);
+    const std::uint16_t back = map.addSector(32, 72, "FLOOR1", "CEIL1", 255);
+    const std::uint16_t v1 = map.addVertex(64, 100);
+    const std::uint16_t v2 = map.addVertex(64, -100);
+    const std::uint16_t side0 = map.addSide(0, 0, "-", "-", "MIDTX", front);
+    const std::uint16_t side1 = map.addSide(0, 0, "-", "-", "-", back);
+    const std::uint16_t line = map.addLine(v1, v2, DOOM_ML_TWOSIDED, side0, side1);
+    map.addSeg(v1, v2, 49152u, line, 0);
+    map.addSubsector(1, 0);
+
+    TestFlat flat;
+    flat.setSolid(5u);
+    fixture.flats.add("FLAT0", &flat.flat);
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_UINT16(1u, fixture.view.drawsegCount);
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+
+    // The masked texture is recorded, not drawn: the wall pass leaves the
+    // surface as it found it, and its column values are in an opening block.
+    TEST_ASSERT_NOT_EQUAL(R_DRAWSEG_NO_BLOCK,
+                          fixture.view.storage.drawsegs[0].maskedTextureCol);    TEST_ASSERT_EQUAL_INT(0, countValue(fixture, 33u));
+    TEST_ASSERT_EQUAL_UINT8(R_SIL_BOTH, fixture.view.storage.drawsegs[0].silhouette);
+
+    // A flat everywhere, so "over the flats" is measurable.
+    clearPlanes(fixture);
+    r_visplane_t* plane = addPlane(fixture, 0, "FLAT0", 255);
+    setRun(plane, 0, static_cast<int>(kScreenWidth) - 1, 0,
+           static_cast<int>(kScreenHeight) - 1);
+    TEST_ASSERT_EQUAL_INT(R_PLANE_OK, fixture.drawPlanes());
+    TEST_ASSERT_EQUAL_UINT8(5u, fixture.at(10, 100));
+
+    r_sprite_t sprites[2];
+    sprites[0] = makeSprite(32 * kFracUnit, 0, 33 * kFracUnit, "NEARA0");
+    sprites[1] = makeSprite(128 * kFracUnit, 40 * kFracUnit, 33 * kFracUnit, "FARA0");
+    TEST_ASSERT_EQUAL_INT(R_THINGS_OK, fixture.drawMasked(sprites, 2u));
+    TEST_ASSERT_EQUAL_UINT16(2u, fixture.stats.drawn);
+
+    // Column 10 covers no sprite: the mid is over the flat, with its opaque
+    // half at 33 and its holes showing the flat's 5.
+    bool midOpaque = false;
+    bool midHole = false;
+    for (int y = 0; y < static_cast<int>(kScreenHeight); ++y) {
+        if (fixture.at(10, y) == 33u) {
+            midOpaque = true;
+        }
+        if (fixture.at(10, y) == 5u) {
+            midHole = true;
+        }
+    }
+    TEST_ASSERT_TRUE(midOpaque);
+    TEST_ASSERT_TRUE(midHole);
+
+    // Column 110 is the far sprite's: the mid is in front of it, so 33 sits
+    // over some of its rows while its holes show the sprite's 55.
+    bool farShows = false;
+    bool midOverFar = false;
+    for (int y = 60; y <= 140; ++y) {
+        farShows = farShows || fixture.at(110, y) == 55u;
+        midOverFar = midOverFar || fixture.at(110, y) == 33u;
+    }
+    TEST_ASSERT_TRUE(farShows);
+    TEST_ASSERT_TRUE(midOverFar);
+
+    // Column 160 is the near sprite's (140..179): it is in front of the line,
+    // so the near sprite is drawn over the mid.
+    TEST_ASSERT_EQUAL_UINT8(42u, fixture.at(160, 100));
+}
+
+void test_a_sprite_post_gap_leaves_the_buffer_untouched() {
+    Fixture fixture;
+    TestTexture wall;
+    TestPatch patch;
+
+    wall.setSolid(7u, 8, 8);
+    fixture.textures.add("STONE", &wall.texture);
+    // Two posts with a four-row gap: rows 4..7 of every column are transparent.
+    patch.build(8, 16, 4, 16, [](int) {
+        return std::vector<std::pair<int, std::vector<std::uint8_t>>>{
+            {0, std::vector<std::uint8_t>(4u, 42u)},
+            {8, std::vector<std::uint8_t>(4u, 43u)}};
+    });
+    fixture.sprites.add("GAPA0", &patch.patch);
+    OneWall().build(fixture.mapBytes, 200, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+
+    r_sprite_t sprite = makeSprite(64 * kFracUnit, 0, 33 * kFracUnit, "GAPA0");
+
+    TEST_ASSERT_EQUAL_INT(R_THINGS_OK, fixture.drawMasked(&sprite, 1u));
+    // Two posts with a four-row gap: the first post's band is 42, the gap keeps
+    // the wall's 7, and the second post's band is 43.
+    const ValueBox first = findValue(fixture, 42u);
+    const ValueBox second = findValue(fixture, 43u);
+
+    TEST_ASSERT_TRUE(first.count > 0);
+    TEST_ASSERT_TRUE(second.count > 0);
+    TEST_ASSERT_EQUAL_INT(first.x1, second.x1);
+    TEST_ASSERT_EQUAL_INT(first.x2, second.x2);
+    TEST_ASSERT_TRUE(second.y1 > first.y2);
+    for (int x = first.x1; x <= first.x2; ++x) {
+        for (int y = first.y2 + 1; y < second.y1; ++y) {
+            if (fixture.at(x, y) != 7u) {
+                TEST_FAIL_MESSAGE("the transparent gap did not keep the wall");
+            }
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT32(static_cast<std::uint32_t>(first.count + second.count),
+                             fixture.surface.spritePixels);
+}
+
+void test_a_nonresident_sprite_leaves_the_frame_untouched() {
+    Fixture fixture;
+    TestTexture wall;
+
+    wall.setSolid(7u, 8, 8);
+    fixture.textures.add("STONE", &wall.texture);
+    OneWall().build(fixture.mapBytes, 200, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+    fixture.prefill(0xAAu);
+
+    r_sprite_t sprite = makeSprite(64 * kFracUnit, 0, 33 * kFracUnit, "MISSING0");
+
+    TEST_ASSERT_EQUAL_INT(R_THINGS_ERR_SPRITE_MISSING,
+                          fixture.drawMasked(&sprite, 1u));
+    TEST_ASSERT_EQUAL_INT(320 * 200, countValue(fixture, 0xAAu));
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.spritePixels);
+}
+
+void test_a_vis_sprite_overflow_fails_before_any_write() {
+    Fixture fixture;
+    TestTexture wall;
+    TestPatch patch;
+
+    wall.setSolid(7u, 8, 8);
+    fixture.textures.add("STONE", &wall.texture);
+    patch.setSolid(42u, 8, 16, 4, 16);
+    fixture.sprites.add("SPRTA0", &patch.patch);
+    OneWall().build(fixture.mapBytes, 200, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+    fixture.view.storage.visSpriteCapacity = 1u;
+    fixture.prefill(0xAAu);
+
+    r_sprite_t sprites[2];
+    sprites[0] = makeSprite(64 * kFracUnit, 0, 33 * kFracUnit, "SPRTA0");
+    sprites[1] = makeSprite(96 * kFracUnit, 0, 33 * kFracUnit, "SPRTA0");
+
+    TEST_ASSERT_EQUAL_INT(R_THINGS_ERR_VISSPRITE_OVERFLOW,
+                          fixture.drawMasked(sprites, 2u));
+    TEST_ASSERT_EQUAL_INT(320 * 200, countValue(fixture, 0xAAu));
+}
+
+void test_a_clip_pool_that_cannot_hold_the_frame_is_reported_before_writing() {
+    Fixture fixture;
+    TestTexture top;
+    TestTexture bottom;
+    TestTexture far;
+
+    top.setSolid(11u, 8, 8);
+    bottom.setSolid(22u, 8, 8);
+    far.setSolid(33u, 8, 8);
+    fixture.textures.add("TOPTX", &top.texture);
+    fixture.textures.add("BOTTXT", &bottom.texture);
+    fixture.textures.add("FARTX", &far.texture);
+
+    MapBuilder& map = fixture.mapBytes;
+    const std::uint16_t front = map.addSector(16, 128, "FLOOR0", "CEIL0", 255);
+    const std::uint16_t back = map.addSector(0, 128, "FLOOR1", "CEIL1", 255);
+    const std::uint16_t nearV1 = map.addVertex(64, 100);
+    const std::uint16_t nearV2 = map.addVertex(64, -100);
+    const std::uint16_t side0 = map.addSide(0, 0, "TOPTX", "BOTTXT", "-", front);
+    const std::uint16_t side1 = map.addSide(0, 0, "-", "-", "-", back);
+    const std::uint16_t nearLine =
+        map.addLine(nearV1, nearV2, DOOM_ML_TWOSIDED, side0, side1);
+    map.addSeg(nearV1, nearV2, 49152u, nearLine, 0);
+    map.addSubsector(1, 0);
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    // Only the two reserved constant blocks fit: the two-sided line's copies
+    // cannot, and that is a reported error with the surface untouched.
+    fixture.view.storage.clipBlockCapacity = R_DRAWSEG_RESERVED_BLOCKS;
+    fixture.prefill(0xAAu);
+
+    TEST_ASSERT_EQUAL_INT(R_SEGS_ERR_SMALL_CLIP_POOL, fixture.emit());
+    TEST_ASSERT_EQUAL_INT(320 * 200, countValue(fixture, 0xAAu));
+}
+
+void test_a_back_face_sprite_and_a_zero_span_sprite_draw_nothing() {
+    Fixture fixture;
+    TestTexture wall;
+    TestPatch patch;
+
+    wall.setSolid(7u, 8, 8);
+    fixture.textures.add("STONE", &wall.texture);
+    patch.setSolid(42u, 8, 16, 4, 16);
+    fixture.sprites.add("SPRTA0", &patch.patch);
+    OneWall().build(fixture.mapBytes, 200, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+    fixture.prefill(kUncovered);
+
+    r_sprite_t sprites[2];
+    sprites[0] = makeSprite(-64 * kFracUnit, 0, 33 * kFracUnit, "SPRTA0");
+    sprites[1] = makeSprite(64 * kFracUnit, -68 * kFracUnit, 33 * kFracUnit,
+                            "SPRTA0");
+
+    TEST_ASSERT_EQUAL_INT(R_THINGS_OK, fixture.drawMasked(sprites, 2u));
+    TEST_ASSERT_EQUAL_UINT16(2u, fixture.stats.submitted);
+    TEST_ASSERT_EQUAL_UINT16(1u, fixture.stats.backface);
+    TEST_ASSERT_EQUAL_UINT16(1u, fixture.stats.zerospan);
+    TEST_ASSERT_EQUAL_UINT16(0u, fixture.stats.drawn);
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.spritePixels);
+    TEST_ASSERT_EQUAL_INT(320 * 200, countValue(fixture, kUncovered));
+}
+
+void test_the_drawseg_layout_is_unchanged_at_fifty_two_bytes() {
+    TEST_ASSERT_EQUAL_UINT32(52u, static_cast<std::uint32_t>(sizeof(r_drawseg_t)));
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -1549,6 +2229,20 @@ int main(int argc, char** argv) {
     RUN_TEST(test_a_misshapen_flat_leaves_the_frame_untouched);
     RUN_TEST(test_a_sky_plane_with_no_resolvable_texture_fails);
     RUN_TEST(test_the_plane_pass_validates_its_arguments_before_writing);
+
+    // D3.4: the sprite pass and the masked mid textures.
+    RUN_TEST(test_a_sprite_is_projected_and_drawn_over_the_wall_behind_it);
+    RUN_TEST(test_a_nearer_wall_clips_exactly_the_columns_it_covers);
+    RUN_TEST(test_a_sprite_behind_a_solid_wall_writes_nothing);
+    RUN_TEST(test_a_sprite_in_front_of_a_two_sided_line_is_not_clipped);
+    RUN_TEST(test_a_flipped_sprite_mirrors_its_texture_columns);
+    RUN_TEST(test_a_masked_mid_texture_is_deferred_and_orders_against_sprites_and_flats);
+    RUN_TEST(test_a_sprite_post_gap_leaves_the_buffer_untouched);
+    RUN_TEST(test_a_nonresident_sprite_leaves_the_frame_untouched);
+    RUN_TEST(test_a_vis_sprite_overflow_fails_before_any_write);
+    RUN_TEST(test_a_clip_pool_that_cannot_hold_the_frame_is_reported_before_writing);
+    RUN_TEST(test_a_back_face_sprite_and_a_zero_span_sprite_draw_nothing);
+    RUN_TEST(test_the_drawseg_layout_is_unchanged_at_fifty_two_bytes);
 
     const int result = UNITY_END();
     test_teardown();

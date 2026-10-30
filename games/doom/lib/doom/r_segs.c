@@ -62,7 +62,7 @@
 
 /* Everything the column loop assumes about a texture, proved once per fragment
  * before a pixel is written. See R_SEGS_ERR_TEXTURE_SHAPE in r_segs.h. */
-static int texture_is_usable(const r_walltex_t* texture) {
+int r_walltex_is_usable(const r_walltex_t* texture) {
     if (texture == NULL || texture->pixels == NULL) {
         return 0;
     }
@@ -96,7 +96,7 @@ static r_segs_error_t resolve_tier(const r_tex_source_t* textures, r_name_t name
     if (texture == NULL) {
         return R_SEGS_ERR_TEXTURE_MISSING;
     }
-    if (!texture_is_usable(texture)) {
+    if (!r_walltex_is_usable(texture)) {
         return R_SEGS_ERR_TEXTURE_SHAPE;
     }
     *out = texture;
@@ -132,7 +132,83 @@ static r_segs_error_t preflight_fragment(const r_view_state_t* state,
             return result;
         }
     }
+    /* The deferred masked mid texture of a two-sided line. It is not drawn here,
+     * but it must be resident before the first wall pixel is written, because
+     * the masked pass that draws it runs later and cannot undo a frame. */
+    if (fragment.hasBack && r_has_name(fragment.midTexture)) {
+        result = resolve_tier(textures, fragment.midTexture, &texture);
+        if (result != R_SEGS_OK) {
+            return result;
+        }
+    }
     return R_SEGS_OK;
+}
+
+/* --- Pool demand (D3.4) --------------------------------------------------- */
+
+/*
+ * The blocks this frame needs, computed from the same predicate the save step
+ * uses and *before* the first pixel. The two reserved constant blocks are always
+ * counted, so a storage that cannot hold them is rejected even for a frame with
+ * no drawsegs.
+ */
+static r_segs_error_t plan_pools(const r_view_state_t* state, uint16_t* clipBlocks,
+                                 uint16_t* openingBlocks) {
+    uint16_t index;
+
+    *clipBlocks = R_DRAWSEG_RESERVED_BLOCKS;
+    *openingBlocks = 0;
+
+    for (index = 0; index < state->drawsegCount; ++index) {
+        r_wall_fragment_t fragment;
+        int silhouette;
+        int masked;
+
+        r_wall_fragment_open(state->map, &state->params,
+                             state->storage.drawsegs[index].seg, &fragment);
+        masked = fragment.hasBack && r_has_name(fragment.midTexture) ? 1 : 0;
+        silhouette = fragment.silhouette;
+        if (masked) {
+            /* R_StoreWallRange's tail: a masked texture forces both edges. */
+            silhouette |= R_SIL_BOTH;
+            *openingBlocks = (uint16_t)(*openingBlocks + 1u);
+        }
+        if (fragment.hasBack) {
+            if (!fragment.clipTopSolid && (silhouette & R_SIL_TOP) != 0) {
+                *clipBlocks = (uint16_t)(*clipBlocks + 1u);
+            }
+            if (!fragment.clipBottomSolid && (silhouette & R_SIL_BOTTOM) != 0) {
+                *clipBlocks = (uint16_t)(*clipBlocks + 1u);
+            }
+        }
+    }
+    return R_SEGS_OK;
+}
+
+/* Copies one fragment's clip array into a pool block, fragment-relative:
+ * block[x - x1] is clip[x], which is what every consumer indexes. */
+static void save_clip_block(int16_t* pool, uint16_t block, const int16_t* clip,
+                            int x1, int x2) {
+    int16_t* destination = pool + (size_t)block * (size_t)R_SCREEN_WIDTH;
+    int x;
+
+    for (x = x1; x <= x2; ++x) {
+        destination[x - x1] = clip[x];
+    }
+}
+
+/* Fills the two shared constant blocks. Upstream's screenheightarray and
+ * negonearray are global and initialised once; here the block content is a view
+ * constant, so it is rewritten whenever a frame starts. */
+static void fill_constant_clip_blocks(int16_t* pool) {
+    int x;
+
+    for (x = 0; x < R_SCREEN_WIDTH; ++x) {
+        pool[(size_t)R_DRAWSEG_CLIP_TOP * (size_t)R_SCREEN_WIDTH + (size_t)x] =
+            (int16_t)R_VIEW_HEIGHT;
+        pool[(size_t)R_DRAWSEG_CLIP_BOTTOM * (size_t)R_SCREEN_WIDTH + (size_t)x] =
+            -1;
+    }
 }
 
 /* --- One column of one tier (R_DrawColumn) ------------------------------- */
@@ -146,11 +222,11 @@ static r_segs_error_t preflight_fragment(const r_view_state_t* state,
  * rw_scale to at least 256, so dc_iscale is at most 0xFFFFFFFF/256 = 16,777,215,
  * and the largest row offset from centery is R_CENTER_Y = 100.
  */
-static void draw_column(r_draw_surface_t* surface, int x, int yl, int yh,
-                        fixed_t textureMid, fixed_t iscale,
-                        const uint8_t* column, int16_t heightMask,
-                        const uint8_t* mask, const uint8_t* colormap,
-                        uint32_t* written) {
+void r_column_draw(r_draw_surface_t* surface, int x, int yl, int yh,
+                   fixed_t textureMid, fixed_t iscale, const uint8_t* column,
+                   int16_t heightMask, const uint8_t* mask,
+                   const uint8_t* colormap, uint8_t* pixelMask,
+                   uint32_t* written) {
     fixed_t frac;
     int row;
 
@@ -180,12 +256,18 @@ static void draw_column(r_draw_surface_t* surface, int x, int yl, int yh,
         const int texel = (int)((frac >> FRACBITS) & heightMask);
 
         if (mask == NULL || mask[texel] != 0u) {
-            surface->pixels[x + (size_t)row * (size_t)surface->width] =
-                colormap[column[texel]];
+            const size_t at = (size_t)x + (size_t)row * (size_t)surface->width;
+
+            surface->pixels[at] = colormap[column[texel]];
+            if (pixelMask != NULL) {
+                pixelMask[at] = 1u;
+            }
             if (surface->covered != NULL) {
                 surface->covered[x] = 1u;
             }
-            ++(*written);
+            if (written != NULL) {
+                ++(*written);
+            }
         }
         frac += iscale;
     }
@@ -207,7 +289,7 @@ static fixed_t column_iscale(fixed_t scale) {
 
 static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface,
                           const r_tex_source_t* textures, const r_light_t* light,
-                          const r_drawseg_t* drawseg) {
+                          const r_drawseg_t* drawseg, int16_t* maskedColumns) {
     r_wall_fragment_t fragment;
     const r_walltex_t* mid = NULL;
     const r_walltex_t* top = NULL;
@@ -286,8 +368,10 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
         }
 
         /* "texturecolumn and lighting are independent of wall tiers" -- computed
-         * once per column, from the scale *before* it advances. */
-        if (fragment.wallMid || fragment.wallTop || fragment.wallBottom) {
+         * once per column, from the scale *before* it advances. A masked mid
+         * texture also needs it (segtextured includes maskedtexture upstream). */
+        if (fragment.wallMid || fragment.wallTop || fragment.wallBottom
+            || maskedColumns != NULL) {
             const angle_t angle = fragment.centerAngle + r_x_to_view_angle[x];
             fixed_t texturecolumn =
                 fragment.offset
@@ -301,11 +385,11 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
 
         if (fragment.wallMid) {
             /* Single sided line: the middle texture covers the fragment. */
-            draw_column(surface, x, yl, yh, fragment.midTextureMid, iscale,
-                        mid->pixels + (size_t)(textureColumn & mid->widthMask)
-                                          * (size_t)(mid->heightMask + 1),
-                        mid->heightMask, mid->mask, colormap,
-                        &tierPixels[R_DRAW_TIER_MID]);
+            r_column_draw(surface, x, yl, yh, fragment.midTextureMid, iscale,
+                          mid->pixels + (size_t)(textureColumn & mid->widthMask)
+                                            * (size_t)(mid->heightMask + 1),
+                          mid->heightMask, mid->mask, colormap, NULL,
+                          &tierPixels[R_DRAW_TIER_MID]);
             ceilingclip[x] = (int16_t)R_VIEW_HEIGHT;
             floorclip[x] = -1;
         } else {
@@ -317,13 +401,13 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
                     midRow = floorclip[x] - 1;
                 }
                 if (midRow >= yl) {
-                    draw_column(surface, x, yl, midRow, fragment.topTextureMid,
-                                iscale,
-                                top->pixels
-                                    + (size_t)(textureColumn & top->widthMask)
-                                          * (size_t)(top->heightMask + 1),
-                                top->heightMask, top->mask, colormap,
-                                &tierPixels[R_DRAW_TIER_TOP]);
+                    r_column_draw(surface, x, yl, midRow, fragment.topTextureMid,
+                                  iscale,
+                                  top->pixels
+                                      + (size_t)(textureColumn & top->widthMask)
+                                            * (size_t)(top->heightMask + 1),
+                                  top->heightMask, top->mask, colormap, NULL,
+                                  &tierPixels[R_DRAW_TIER_TOP]);
                     ceilingclip[x] = (int16_t)midRow;
                 } else {
                     ceilingclip[x] = (int16_t)(yl - 1);
@@ -340,19 +424,26 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
                     midRow = ceilingclip[x] + 1;
                 }
                 if (midRow <= yh) {
-                    draw_column(surface, x, midRow, yh, fragment.bottomTextureMid,
-                                iscale,
-                                bottom->pixels
-                                    + (size_t)(textureColumn & bottom->widthMask)
-                                          * (size_t)(bottom->heightMask + 1),
-                                bottom->heightMask, bottom->mask, colormap,
-                                &tierPixels[R_DRAW_TIER_BOTTOM]);
+                    r_column_draw(surface, x, midRow, yh, fragment.bottomTextureMid,
+                                  iscale,
+                                  bottom->pixels
+                                      + (size_t)(textureColumn & bottom->widthMask)
+                                            * (size_t)(bottom->heightMask + 1),
+                                  bottom->heightMask, bottom->mask, colormap, NULL,
+                                  &tierPixels[R_DRAW_TIER_BOTTOM]);
                     floorclip[x] = (int16_t)midRow;
                 } else {
                     floorclip[x] = (int16_t)(yh + 1);
                 }
             } else if (fragment.markFloor) {
                 floorclip[x] = (int16_t)(yh + 1);
+            }
+
+            /* "save texturecol for backdrawing of masked mid texture": the
+             * column value, truncated to 16 bits exactly as upstream's
+             * `short maskedtexturecol[]` truncates it. */
+            if (maskedColumns != NULL) {
+                maskedColumns[x - fragment.x1] = (int16_t)textureColumn;
             }
         }
 
@@ -369,6 +460,12 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
                            const r_light_t* light) {
     r_segs_error_t result;
     uint16_t index;
+    uint16_t clipBlocks = 0u;
+    uint16_t openingBlocks = 0u;
+    uint16_t nextClipBlock = R_DRAWSEG_RESERVED_BLOCKS;
+    uint16_t nextOpeningBlock = 0u;
+    int16_t* clipPool;
+    int16_t* openingPool;
     int column;
 
     if (state == NULL) {
@@ -395,15 +492,33 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
     if (light == NULL || light->colormaps == NULL) {
         return R_SEGS_ERR_NULL_LIGHT;
     }
+    if (state->storage.clipBlocks == NULL) {
+        return R_SEGS_ERR_NULL_CLIP_POOL;
+    }
+    clipPool = state->storage.clipBlocks;
+    openingPool = state->storage.openingBlocks;
 
     /* Nothing is written until every texture the pass will draw is resident and
-     * well formed. */
+     * well formed, and every block the clip capture needs exists. */
     for (index = 0; index < state->drawsegCount; ++index) {
         result = preflight_fragment(state, textures,
                                     &state->storage.drawsegs[index]);
         if (result != R_SEGS_OK) {
             return result;
         }
+    }
+    result = plan_pools(state, &clipBlocks, &openingBlocks);
+    if (result != R_SEGS_OK) {
+        return result;
+    }
+    if (state->storage.clipBlockCapacity < clipBlocks) {
+        return R_SEGS_ERR_SMALL_CLIP_POOL;
+    }
+    if (openingBlocks > 0u
+        && (openingPool == NULL
+            || state->storage.openingBlockCapacity < openingBlocks)) {
+        return openingPool == NULL ? R_SEGS_ERR_NULL_OPENING_POOL
+                                   : R_SEGS_ERR_SMALL_OPENING_POOL;
     }
 
     /* R_ClearPlanes()' opening/closing determination, and this pass's records. */
@@ -417,10 +532,82 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
     surface->tierPixels[R_DRAW_TIER_MID] = 0u;
     surface->tierPixels[R_DRAW_TIER_TOP] = 0u;
     surface->tierPixels[R_DRAW_TIER_BOTTOM] = 0u;
+    fill_constant_clip_blocks(clipPool);
 
     for (index = 0; index < state->drawsegCount; ++index) {
-        emit_fragment(state, surface, textures, light,
-                      &state->storage.drawsegs[index]);
+        r_drawseg_t* drawseg = &state->storage.drawsegs[index];
+        r_wall_fragment_t fragment;
+        int16_t* maskedColumns = NULL;
+        int masked;
+        int silhouette;
+        int16_t topBlock = R_DRAWSEG_NO_BLOCK;
+        int16_t bottomBlock = R_DRAWSEG_NO_BLOCK;
+        int16_t maskedBlock = R_DRAWSEG_NO_BLOCK;
+
+        r_wall_fragment_open(state->map, &state->params, drawseg->seg, &fragment);
+        masked = fragment.hasBack && r_has_name(fragment.midTexture) ? 1 : 0;
+        if (masked) {
+            maskedBlock = (int16_t)nextOpeningBlock;
+            maskedColumns = openingPool
+                            + (size_t)nextOpeningBlock * (size_t)R_SCREEN_WIDTH;
+            nextOpeningBlock = (uint16_t)(nextOpeningBlock + 1u);
+            /* Every entry starts unused, so the masked pass can tell a column
+             * the loop wrote from one outside [x1, x2]. */
+            for (column = 0; column < R_SCREEN_WIDTH; ++column) {
+                maskedColumns[column] = R_MASKED_COLUMN_USED;
+            }
+        }
+
+        emit_fragment(state, surface, textures, light, drawseg, maskedColumns);
+
+        /* R_StoreWallRange's tail: the clip arrays as the column loop left
+         * them, then the edges a masked texture forces. */
+        silhouette = fragment.silhouette;
+        if (fragment.hasBack) {
+            if (fragment.clipTopSolid) {
+                topBlock = R_DRAWSEG_CLIP_TOP;
+            } else if (!masked && (silhouette & R_SIL_TOP) == 0) {
+                topBlock = R_DRAWSEG_NO_BLOCK;
+            } else {
+                topBlock = (int16_t)nextClipBlock;
+                save_clip_block(clipPool, nextClipBlock, state->storage.ceilingClip,
+                                drawseg->x1, drawseg->x2);
+                nextClipBlock = (uint16_t)(nextClipBlock + 1u);
+            }
+            if (fragment.clipBottomSolid) {
+                bottomBlock = R_DRAWSEG_CLIP_BOTTOM;
+            } else if (!masked && (silhouette & R_SIL_BOTTOM) == 0) {
+                bottomBlock = R_DRAWSEG_NO_BLOCK;
+            } else {
+                bottomBlock = (int16_t)nextClipBlock;
+                save_clip_block(clipPool, nextClipBlock, state->storage.floorClip,
+                                drawseg->x1, drawseg->x2);
+                nextClipBlock = (uint16_t)(nextClipBlock + 1u);
+            }
+        } else {
+            topBlock = R_DRAWSEG_CLIP_TOP;
+            bottomBlock = R_DRAWSEG_CLIP_BOTTOM;
+        }
+
+        if (masked) {
+            if ((silhouette & R_SIL_TOP) == 0) {
+                silhouette |= R_SIL_TOP;
+                drawseg->topSilhouette = INT32_MIN;
+            }
+            if ((silhouette & R_SIL_BOTTOM) == 0) {
+                silhouette |= R_SIL_BOTTOM;
+                drawseg->bottomSilhouette = INT32_MAX;
+            }
+        }
+
+        drawseg->silhouette = (uint8_t)silhouette;
+        drawseg->sprTopClip = topBlock;
+        drawseg->sprBottomClip = bottomBlock;
+        drawseg->maskedTextureCol = maskedBlock;
     }
+
+    state->clipBlocksUsed = nextClipBlock;
+    state->openingBlocksUsed = nextOpeningBlock;
+    state->clipCaptured = 1;
     return R_SEGS_OK;
 }

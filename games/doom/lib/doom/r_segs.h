@@ -105,10 +105,11 @@
  *
  * WHAT IS DELIBERATELY NOT HERE
  *
- *   - the masked mid texture of a two-sided line. R_RenderSegLoop() does not
- *     draw it; it records the texture column for R_DrawMasked(), which runs
- *     after the planes and the sprites and owns storage this pass does not
- *     have (upstream's openings[]). D3.4 decides it.
+ *   - the masked mid texture of a two-sided line is not *drawn*: R_RenderSegLoop()
+ *     does not draw it either. D3.4 records its texture column here, because this
+ *     is the pass that runs the column loop, and draws it in r_things.c's
+ *     R_DrawMasked() after the planes. The storage (upstream's openings[]) is a
+ *     caller-owned pool in r_view_storage_t.
  *   - flats, sprites, the sky texture, the status bar, the palette, the present
  *     path. The plane pass (D3.3) draws the flats and the sky in r_plane.c;
  *     sprites and the masked mid textures are D3.4.
@@ -118,6 +119,41 @@
  *     source's resolveFlat, with the same rule.
  *   - any mutable global: the state is the caller's r_view_state_t, the surface
  *     is the caller's buffer, the light lump is the caller's bytes.
+ *
+ * THE CLIP CAPTURE AND THE MASKED RECORDING (D3.4)
+ *
+ * Upstream's R_StoreWallRange(), after R_RenderSegLoop() has run, copies the
+ * clip arrays into openings[] for every drawseg a sprite behind it may be
+ * clipped against, records the texture column of each two-sided line's mid
+ * texture *during* the loop, and then completes the drawseg's silhouette with
+ * the two edges the masked texture forces. This file does the same, in the same
+ * place, because it is the pass that reproduces the clip array updates:
+ *
+ *   top clip     if the fragment is not single-sided and is not one of the two
+ *                "closed" cases, and (the geometric silhouette has SIL_TOP or
+ *                the line has a masked mid texture), the current ceilingclip[]
+ *                over [x1, x2] is copied into a clip block.
+ *                A single-sided line, and a closed two-sided one, answer with
+ *                the shared constant block R_DRAWSEG_CLIP_TOP instead (upstream
+ *                points at `screenheightarray`).
+ *   bottom clip  the same for floorclip[] and R_DRAWSEG_CLIP_BOTTOM
+ *                (`negonearray`).
+ *   masked mid   a two-sided line whose sidedef names a mid texture gets one
+ *                opening block; the column loop writes each column's texture
+ *                column into it, exactly `maskedtexturecol[rw_x] = texturecolumn`.
+ *                A column is consumed (set to R_MASKED_COLUMN_USED) when the
+ *                masked mid is drawn, which is how R_DrawMasked() avoids
+ *                drawing it twice.
+ *   silhouette   a masked mid forces both edges: if the geometric silhouette
+ *                did not have SIL_TOP it gains it and `tsilheight` becomes
+ *                INT32_MIN; the same for SIL_BOTTOM and INT32_MAX. This happens
+ *                in this pass, not in the walk, so the D3.1 drawseg record and
+ *                its oracle stay byte-identical.
+ *
+ * The pool demand is computed in the preflight, before the first pixel, from the
+ * same predicate the save uses. A pool that cannot hold the frame's blocks is
+ * therefore a reported error with the surface untouched, never an overrun, and
+ * the column loop itself allocates nothing.
  *
  * ERROR CONTRACT
  *
@@ -196,6 +232,16 @@ typedef struct r_walltex {
 } r_walltex_t;
 
 /**
+ * @brief True when a resolved texture has the geometry the column writer needs.
+ *
+ * The shape contract r_segs.c's preflight applies to a wall tier, exposed so the
+ * masked mid texture (r_things.c) cannot disagree with it: non-NULL pixels,
+ * width and height at least 1, a heightMask that is 2^k - 1 and at least
+ * height - 1, and a widthMask equal to r_texture_width_mask(width).
+ */
+int r_walltex_is_usable(const r_walltex_t* texture);
+
+/**
  * @brief Resolves a packed texture name to bytes, or NULL when not resident.
  *
  * Called once per tier per fragment (twice per fragment in total, once to prove
@@ -269,9 +315,17 @@ typedef struct r_tex_source {
  *                                height - 1 (the stored column would not hold
  *                                the texture), or a widthMask that is not
  *                                r_texture_width_mask(width)
+ *   R_SEGS_ERR_NULL_CLIP_POOL    storage.clipBlocks is NULL
+ *   R_SEGS_ERR_SMALL_CLIP_POOL   clipBlockCapacity cannot hold the reserved
+ *                                blocks plus the blocks this frame needs
+ *   R_SEGS_ERR_NULL_OPENING_POOL openingBlocks is NULL while a two-sided line
+ *                                has a masked mid texture
+ *   R_SEGS_ERR_SMALL_OPENING_POOL openingBlockCapacity cannot hold the masked
+ *                                columns this frame needs
  *
  * Every code is returned before the first pixel write, so the surface, its
- * coverage record and its tier counters are untouched on any failure.
+ * coverage record and its tier counters are untouched on any failure. The
+ * clip-pool codes also leave every drawseg's clip fields untouched.
  */
 typedef enum r_segs_error {
     R_SEGS_OK = 0,
@@ -284,7 +338,11 @@ typedef enum r_segs_error {
     R_SEGS_ERR_NULL_RESOLVE = 7,
     R_SEGS_ERR_NULL_LIGHT = 8,
     R_SEGS_ERR_TEXTURE_MISSING = 9,
-    R_SEGS_ERR_TEXTURE_SHAPE = 10
+    R_SEGS_ERR_TEXTURE_SHAPE = 10,
+    R_SEGS_ERR_NULL_CLIP_POOL = 11,
+    R_SEGS_ERR_SMALL_CLIP_POOL = 12,
+    R_SEGS_ERR_NULL_OPENING_POOL = 13,
+    R_SEGS_ERR_SMALL_OPENING_POOL = 14
 } r_segs_error_t;
 
 /* --- Public API ---------------------------------------------------------- */
@@ -312,6 +370,12 @@ typedef enum r_segs_error {
  * and then set to 1 for every column that received at least one pixel;
  * `surface->tierPixels[]` is cleared and counts the pixels each tier wrote.
  *
+ * It also completes the drawsegs for the masked pass: see "THE CLIP CAPTURE AND
+ * THE MASKED RECORDING" in this file's header. On success it sets
+ * `state->clipCaptured`, and reports `state->clipBlocksUsed` /
+ * `state->openingBlocksUsed`. On any error those fields keep their previous
+ * values and no drawseg is modified.
+ *
  * @param state    A state whose r_bsp_render() has run.
  * @param surface  The destination surface and its coverage counters.
  * @param textures How to resolve a tier's packed texture name.
@@ -322,6 +386,27 @@ typedef enum r_segs_error {
 r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
                            const r_tex_source_t* textures,
                            const r_light_t* light);
+
+/**
+ * @brief One texture column, the write R_DrawColumn() performs.
+ *
+ * Shared by the wall pass and by the masked mid textures (r_things.c), so the
+ * vertical wrap, the transparency mask, the colormap read and the counter
+ * update have one implementation. Rows are clipped to the view and to
+ * `surface->height`; the caller has already applied its own clip arrays.
+ *
+ * @param column    The texture's column, dense, `heightMask + 1` rows.
+ * @param heightMask The stored column's wrap mask (2^k - 1).
+ * @param mask      Optional per-texel opacity, 0 = leave the pixel alone.
+ * @param colormap  One 256-byte COLORMAP table.
+ * @param pixelMask Optional per-pixel record set to 1 where a pixel is written.
+ * @param written   Optional counter advanced by the number of pixels written.
+ */
+void r_column_draw(r_draw_surface_t* surface, int x, int yl, int yh,
+                   fixed_t textureMid, fixed_t iscale, const uint8_t* column,
+                   int16_t heightMask, const uint8_t* mask,
+                   const uint8_t* colormap, uint8_t* pixelMask,
+                   uint32_t* written);
 
 #ifdef __cplusplus
 } /* extern "C" */

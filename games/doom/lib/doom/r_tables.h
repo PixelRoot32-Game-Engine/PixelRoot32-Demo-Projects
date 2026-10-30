@@ -119,7 +119,23 @@ static inline fixed_t r_fine_tangent_lookup(angle_t angle) {
 #define R_LIGHT_MAPS 32         /* NUMCOLORMAPS: usable 256-byte maps */
 
 /* r_light_level[row][column] is the COLORMAP map index that (lightnum, scale)
- * selects: `colormaps + r_light_level[i][j] * 256`. */
+ * selects: `colormaps + r_light_level[i][j] * 256`.
+ *
+ * One table, three passes. r_light.h documents the two coordinates each one
+ * supplies:
+ *
+ *   walls    row from the front sector's light with the seg-axis correction;
+ *            column from the fragment's rw_scale.
+ *   sprites  row from the sprite's own sector light, no axis correction; column
+ *            from the sprite's projection scale xscale (R_ProjectSprite).
+ *   planes   not this table at all: r_plane_light below is zlight, whose column
+ *            is a distance rather than a scale.
+ *
+ * There is no third sprite table to generate. linuxdoom-1.10 has no
+ * R_InitSpriteLights(): `spritelights` in r_things.c is a row pointer that
+ * R_AddSprites() sets to `scalelight[lightnum]`, so a sprite reads this array.
+ * The D3.4 brief expected a separate table; the reference source is the
+ * authority and this port follows it, which also costs no flash. */
 extern const uint8_t r_light_level[R_LIGHT_LEVELS][R_LIGHT_SCALE_LEVELS];
 
 /* --- The plane pass's per-view tables (D3.3) ----------------------------- */

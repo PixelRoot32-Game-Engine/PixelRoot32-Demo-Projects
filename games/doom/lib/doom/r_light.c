@@ -13,8 +13,10 @@
  * R_ExecuteSetViewSize()) is not here: it depends only on SCREENWIDTH and the
  * view size, both fixed in this port, so it is generated into r_tables.c with
  * the projection tables (tools/gen_r_tables.py) and read through
- * r_light_level. This file therefore holds validation and no state beyond the
- * pointer the caller gave it.
+ * r_light_level. Walls, planes and sprites all end up reading that one table or
+ * zlight; r_light.h documents which two coordinates each pass supplies. This
+ * file therefore holds validation and no state beyond the pointer the caller
+ * gave it.
  *
  * This is C99 only: no allocation, no globals, no stdio, no floating point.
  */

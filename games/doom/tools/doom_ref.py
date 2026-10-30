@@ -90,6 +90,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import e1m1_sprites
+
 # --- Format constants (the 1993 WAD, as r_data.h documents it) --------------
 
 WAD_HEADER_SIZE = 12
@@ -1108,6 +1110,7 @@ class WalkState:
         bottom_sil = INT32_MAX
         top_sil = INT32_MIN
         markfloor = markceiling = 0
+        clip_top_solid = clip_bottom_solid = 0
 
         if back is None:
             wall_mid = 1 if has_texture(side["mid"]) else 0
@@ -1129,9 +1132,11 @@ class WalkState:
             if back["ceiling"] <= front["floor"]:
                 bottom_sil = INT32_MAX
                 silhouette |= 1
+                clip_bottom_solid = 1
             if back["floor"] >= front["ceiling"]:
                 top_sil = INT32_MIN
                 silhouette |= 2
+                clip_top_solid = 1
 
             worldhigh = back["ceiling"] - self.viewz
             worldlow = back["floor"] - self.viewz
@@ -1252,6 +1257,8 @@ class WalkState:
             "markfloor": markfloor,
             "markceiling": markceiling,
             "has_back": back is not None,
+            "clip_top_solid": clip_top_solid,
+            "clip_bottom_solid": clip_bottom_solid,
             "flags": line["flags"],
             "side": side,
         })
@@ -1875,6 +1882,7 @@ class TextureLibrary:
                 self.definitions.setdefault(texture.name.upper(), texture)
         self.patches: dict[int, Patch] = {}
         self.cache: dict[str, WallTexture] = {}
+        self.sprite_patches: dict[str, Patch] = {}
 
     def _patch(self, index: int) -> Patch:
         cached = self.patches.get(index)
@@ -1903,6 +1911,19 @@ class TextureLibrary:
         wall = WallTexture(texture.width, texture.height, pixels)
         self.cache[key] = wall
         return wall
+
+    def sprite_patch(self, name: str) -> Patch:
+        """A sprite lump, parsed with the same validator patches use (D3.4)."""
+        key = name.upper()
+        cached = self.sprite_patches.get(key)
+        if cached is not None:
+            return cached
+        index = first_index(self.lumps, key)
+        if index < 0:
+            raise FormatError(f"sprite lump {key!r} is not in this WAD")
+        patch = parse_patch(key, self.lumps[index].data)
+        self.sprite_patches[key] = patch
+        return patch
 
 
 class Flat:
@@ -1952,6 +1973,7 @@ def emit_walls(bsp: BspMap, drawsegs: list[dict], params: dict,
     floorclip = [VIEW_HEIGHT] * SCREEN_WIDTH
     ceilingclip = [-1] * SCREEN_WIDTH
     counts = {"mid": 0, "top": 0, "bottom": 0}
+    records: list[dict] = []
     tangent = _TANGENT
     half_angles = FINEANGLES // 2
     half_mask = half_angles - 1
@@ -2036,6 +2058,8 @@ def emit_walls(bsp: BspMap, drawsegs: list[dict], params: dict,
         wall_mid = ds["wall_mid"]
         wall_top = ds["wall_top"]
         wall_bottom = ds["wall_bottom"]
+        masked = ds["has_back"] and has_texture(side["mid"])
+        masked_cols = ([0] * (ds["x2"] - ds["x1"] + 1)) if masked else None
 
         for x in range(ds["x1"], ds["x2"] + 1):
             yl = (top_frac + HEIGHTUNIT - 1) >> HEIGHTBITS
@@ -2048,7 +2072,7 @@ def emit_walls(bsp: BspMap, drawsegs: list[dict], params: dict,
             colormap = 0
             iscale = 0
             texture_column = 0
-            if wall_mid or wall_top or wall_bottom:
+            if wall_mid or wall_top or wall_bottom or masked:
                 angle = u32(center_angle + X_TO_VIEW_ANGLE[x])
                 texture_column = i32(texture_offset - fixed_mul(
                     tangent[(angle >> ANGLETOFINESHIFT) & half_mask], distance)) >> FRACBITS
@@ -2088,9 +2112,48 @@ def emit_walls(bsp: BspMap, drawsegs: list[dict], params: dict,
                 elif ds["markfloor"]:
                     floorclip[x] = yh + 1
 
+                if masked_cols is not None:
+                    masked_cols[x - ds["x1"]] = texture_column
+
             scale += scalestep
             top_frac += top_step
             bottom_frac += bottom_step
+
+        # R_StoreWallRange's tail, as the clip capture and the masked record
+        # (D3.4). "const" is the shared all-viewheight/all--1 array; None means
+        # the drawseg has no such block (upstream's NULL pointer).
+        silhouette = ds["silhouette"]
+        top_sil = ds["top"]
+        bottom_sil = ds["bottom"]
+        clip_top = None
+        clip_bottom = None
+        if ds["has_back"]:
+            if ds["clip_top_solid"]:
+                clip_top = "const"
+            elif masked or (silhouette & 2):
+                clip_top = tuple(ceilingclip[ds["x1"]:ds["x2"] + 1])
+            if ds["clip_bottom_solid"]:
+                clip_bottom = "const"
+            elif masked or (silhouette & 1):
+                clip_bottom = tuple(floorclip[ds["x1"]:ds["x2"] + 1])
+        else:
+            clip_top = "const"
+            clip_bottom = "const"
+        if masked:
+            if not (silhouette & 2):
+                silhouette |= 2
+                top_sil = INT32_MIN
+            if not (silhouette & 1):
+                silhouette |= 1
+                bottom_sil = INT32_MAX
+        records.append({
+            "masked": masked_cols,
+            "top": clip_top,
+            "bottom": clip_bottom,
+            "silhouette": silhouette,
+            "top_sil": top_sil,
+            "bottom_sil": bottom_sil,
+        })
 
     digest = hashlib.sha256()
     digest.update(bytes(pixels))
@@ -2104,6 +2167,7 @@ def emit_walls(bsp: BspMap, drawsegs: list[dict], params: dict,
         "top": counts["top"],
         "bottom": counts["bottom"],
         "digest": digest.hexdigest(),
+        "segs": records,
     }
     frame["pixels_written"] = counts["mid"] + counts["top"] + counts["bottom"]
     return frame
@@ -2256,6 +2320,349 @@ def emit_planes(planes: list[Visplane], params: dict, textures: TextureLibrary,
     }
 
 
+# --- D3.4: sprites and the masked mid textures ------------------------------
+#
+# Written from r_things.c's R_ProjectSprite / R_SortVisSprites / R_DrawSprite /
+# R_DrawVisSprite / R_DrawMaskedColumn, r_segs.c's R_RenderMaskedSegRange and
+# r_light.h's sprite row. It reads the wall pass's recorded clip arrays, never
+# r_things.c's C text.
+
+SPRITE_MINZ = 4 << FRACBITS
+SPRITE_CLIP_UNSET = -2
+MASKED_COLUMN_USED = 32767
+POST_MASK = 127
+
+
+def sprite_list(bsp: BspMap, params: dict,
+                tables: dict[str, dict[int, e1m1_sprites.FrameTable]]) -> list[dict]:
+    """The fixture's sprite list for one viewpoint.
+
+    Every THINGS record the info.c transcription covers becomes one sprite: its
+    position, the sector floor it stands on (P_SpawnMapThing's ONFLOORZ), the
+    angle P_SpawnMapThing derives, the lump and flip R_ProjectSprite's rotation
+    rule selects, and the sector's light level.
+    """
+    sprites: list[dict] = []
+    for thing in bsp.things:
+        rule = e1m1_sprites.rule_for(thing["type"])
+        if rule is None:
+            continue
+        x = _fixed16(thing["x"])
+        y = _fixed16(thing["y"])
+        subsector = bsp.ssectors[point_in_subsector(bsp, x, y)]
+        seg = bsp.segs[subsector["firstseg"]]
+        line = bsp.linedefs[seg["linedef"]]
+        side = bsp.sidedefs[line["side0"] if seg["side"] == 0 else line["side1"]]
+        sector = bsp.sectors[side["sector"]]
+        angle = e1m1_sprites.thing_angle(thing["angle"])
+        rotation = e1m1_sprites.rotation_for(params["x"], params["y"], x, y, angle)
+        lump, flip = e1m1_sprites.select_sprite(tables, rule.sprite, rule.frame,
+                                                rotation)
+        sprites.append({
+            "x": x, "y": y, "z": sector["floor"], "angle": angle,
+            "lump": lump, "flip": flip, "fullbright": rule.fullbright,
+            "light": sector["light"], "noclip": False,
+        })
+    return sprites
+
+
+def project_sprites(bsp: BspMap, params: dict, sprites: list[dict],
+                    textures: TextureLibrary) -> tuple[list[dict], dict]:
+    """R_ProjectSprite over a caller list; returns (accepted, counters)."""
+    viewx = params["x"]
+    viewy = params["y"]
+    viewz = params["z"]
+    viewangle = params["angle"]
+    extralight = params["extralight"]
+    viewsin = FINE_SINE[viewangle >> ANGLETOFINESHIFT]
+    viewcos = FINE_SINE[(viewangle >> ANGLETOFINESHIFT) + FINEANGLES // 4]
+    centerxfrac = (SCREEN_WIDTH // 2) << FRACBITS
+    stats = {"submitted": len(sprites), "backface": 0, "frustum": 0,
+             "zerospan": 0}
+    accepted: list[dict] = []
+
+    for sprite in sprites:
+        patch = textures.sprite_patch(sprite["lump"])
+        trx = i32(sprite["x"] - viewx)
+        try_y = i32(sprite["y"] - viewy)
+        gxt = fixed_mul(trx, viewcos)
+        gyt = -fixed_mul(try_y, viewsin)
+        tz = i32(gxt - gyt)
+        if tz < SPRITE_MINZ:
+            stats["backface"] += 1
+            continue
+        xscale = fixed_div(centerxfrac, tz)
+
+        gxt = -fixed_mul(trx, viewsin)
+        gyt = fixed_mul(try_y, viewcos)
+        tx = i32(-(gyt + gxt))
+        if abs(tx) > i32(tz << 2):
+            stats["frustum"] += 1
+            continue
+
+        tx = i32(tx - (patch.left_offset << FRACBITS))
+        x1 = i32(centerxfrac + fixed_mul(tx, xscale)) >> FRACBITS
+        if x1 > SCREEN_WIDTH:
+            stats["frustum"] += 1
+            continue
+        tx = i32(tx + (patch.width << FRACBITS))
+        x2 = (i32(centerxfrac + fixed_mul(tx, xscale)) >> FRACBITS) - 1
+        if x2 < 0:
+            stats["frustum"] += 1
+            continue
+
+        gzt = i32(sprite["z"] + (patch.top_offset << FRACBITS))
+        iscale = fixed_div(FRACUNIT, xscale)
+        if sprite["flip"]:
+            startfrac = (patch.width - 1) << FRACBITS
+            xiscale = -iscale
+        else:
+            startfrac = 0
+            xiscale = iscale
+        stored_x1 = 0 if x1 < 0 else x1
+        stored_x2 = SCREEN_WIDTH - 1 if x2 >= SCREEN_WIDTH else x2
+        if stored_x1 > x1:
+            startfrac = i32(startfrac + xiscale * (stored_x1 - x1))
+        if stored_x1 > stored_x2:
+            stats["zerospan"] += 1
+            continue
+
+        lightnum = light_row((sprite["light"] >> LIGHTSEGSHIFT) + extralight)
+        accepted.append({
+            "sprite": sprite, "patch": patch, "scale": xscale,
+            "xiscale": xiscale, "startfrac": startfrac,
+            "texturemid": i32(gzt - viewz), "gx": sprite["x"],
+            "gy": sprite["y"], "gz": sprite["z"], "gzt": gzt,
+            "x1": stored_x1, "x2": stored_x2, "lightnum": lightnum,
+        })
+
+    stats["drawn"] = len(accepted)
+    return accepted, stats
+
+
+def sort_vissprites(accepted: list[dict]) -> None:
+    """R_SortVisSprites(): ascending scale, stable for equal scales."""
+    for i in range(len(accepted)):
+        best = i
+        best_scale = accepted[i]["scale"]
+        for j in range(i + 1, len(accepted)):
+            if accepted[j]["scale"] < best_scale:
+                best_scale = accepted[j]["scale"]
+                best = j
+        if best != i:
+            chosen = accepted.pop(best)
+            accepted.insert(i, chosen)
+
+
+def point_on_seg_side(bsp: BspMap, seg_index: int, x: int, y: int) -> int:
+    """R_PointOnSegSide(), the sign-bit shortcut included."""
+    seg = bsp.segs[seg_index]
+    v1 = bsp.vertexes[seg["v1"]]
+    v2 = bsp.vertexes[seg["v2"]]
+    lx, ly = v1["x"], v1["y"]
+    ldx = i32(v2["x"] - lx)
+    ldy = i32(v2["y"] - ly)
+    if ldx == 0:
+        if x <= lx:
+            return 1 if ldy > 0 else 0
+        return 1 if ldy < 0 else 0
+    if ldy == 0:
+        if y <= ly:
+            return 1 if ldx < 0 else 0
+        return 1 if ldx > 0 else 0
+    dx = i32(x - lx)
+    dy = i32(y - ly)
+    if ((ldy ^ ldx ^ dx ^ dy) & 0x80000000):
+        return 1 if ((ldy ^ dx) & 0x80000000) else 0
+    left = fixed_mul(ldy >> FRACBITS, dx)
+    right = fixed_mul(dy, ldx >> FRACBITS)
+    return 0 if right < left else 1
+
+
+def emit_masked(bsp: BspMap, drawsegs: list[dict], wall: dict, plane: dict,
+                params: dict, textures: TextureLibrary, colormaps: bytes,
+                sprites: list[dict],
+                tables: dict[str, dict[int, "e1m1_sprites.FrameTable"]]) -> dict:
+    """R_DrawMasked(): sprites back to front, masked mids interleaved, then the
+    untouched mid columns far to near, on top of the plane pass's frame."""
+    pixels = bytearray(plane["pixels"])
+    covered = bytearray(plane["covered"])
+    mask = bytearray(SCREEN_WIDTH * SCREEN_HEIGHT)
+    records = wall["segs"]
+    viewz = params["z"]
+    counters = {"sprite_pixels": 0}
+
+    def write_column(x: int, yl: int, yh: int, texture_mid: int, iscale: int,
+                     column: bytes, height_mask: int, colormap: int) -> None:
+        if yl > yh:
+            return
+        if yl < 0:
+            yl = 0
+        if yh > VIEW_HEIGHT - 1:
+            yh = VIEW_HEIGHT - 1
+        if yl > yh:
+            return
+        frac = i32(texture_mid + (yl - CENTER_Y) * iscale)
+        for y in range(yl, yh + 1):
+            spot = colormaps[colormap + column[(frac >> FRACBITS) & height_mask]]
+            at = y * SCREEN_WIDTH + x
+            pixels[at] = spot
+            mask[at] = 1
+            covered[x] = 1
+            counters["sprite_pixels"] += 1
+            frac = i32(frac + iscale)
+
+    def render_masked(ds_index: int, x1: int, x2: int) -> None:
+        record = records[ds_index]
+        if record["masked"] is None:
+            return
+        ds = drawsegs[ds_index]
+        texture = textures.get(name_of(ds["side"]["mid"]))
+        if ds["flags"] & ML_DONTPEGBOTTOM:
+            floor = max(ds["bottom16"], ds["low16"])
+            texture_mid = i32(floor + (texture.height << FRACBITS))
+        else:
+            texture_mid = min(ds["top16"], ds["high16"])
+        texture_mid = i32(texture_mid + ds["side"]["rowoffset"])
+
+        scale = i32(ds["scale1"] + (x1 - ds["x1"]) * ds["scalestep"])
+        for x in range(x1, x2 + 1):
+            column = record["masked"][x - ds["x1"]]
+            if column != MASKED_COLUMN_USED:
+                if record["top"] is None or record["top"] == "const":
+                    yl = (VIEW_HEIGHT if record["top"] == "const" else -1) + 1
+                else:
+                    yl = record["top"][x - ds["x1"]] + 1
+                if record["bottom"] is None or record["bottom"] == "const":
+                    yh = (-1 if record["bottom"] == "const" else VIEW_HEIGHT) - 1
+                else:
+                    yh = record["bottom"][x - ds["x1"]] - 1
+                colormap = LIGHT_LEVEL[light_row(ds["lightnum"])][light_column(scale)] * 256
+                iscale = 0xFFFFFFFF // (scale & 0xFFFFFFFF) if (scale & 0xFFFFFFFF) else INT32_MAX
+                write_column(x, yl, yh, texture_mid, iscale, texture.pixels,
+                             texture.column_height - 1, colormap)
+                record["masked"][x - ds["x1"]] = MASKED_COLUMN_USED
+            scale = i32(scale + ds["scalestep"])
+
+    def draw_sprite(vis: dict) -> None:
+        sprite = vis["sprite"]
+        patch = vis["patch"]
+        clipbot = [SPRITE_CLIP_UNSET] * SCREEN_WIDTH
+        cliptop = [SPRITE_CLIP_UNSET] * SCREEN_WIDTH
+        if not sprite["noclip"]:
+            for ds_index in range(len(drawsegs) - 1, -1, -1):
+                ds = drawsegs[ds_index]
+                record = records[ds_index]
+                if ds["x1"] > vis["x2"] or ds["x2"] < vis["x1"]:
+                    continue
+                if record["silhouette"] == 0 and record["masked"] is None:
+                    continue
+                r1 = max(ds["x1"], vis["x1"])
+                r2 = min(ds["x2"], vis["x2"])
+                if ds["scale1"] > ds["scale2"]:
+                    lowscale, scale = ds["scale2"], ds["scale1"]
+                else:
+                    lowscale, scale = ds["scale1"], ds["scale2"]
+                if (scale < vis["scale"]
+                        or (lowscale < vis["scale"]
+                            and not point_on_seg_side(bsp, ds["seg"], vis["gx"],
+                                                      vis["gy"]))):
+                    if record["masked"] is not None:
+                        render_masked(ds_index, r1, r2)
+                    continue
+                silhouette = record["silhouette"]
+                if vis["gz"] >= record["bottom_sil"]:
+                    silhouette &= ~1
+                if vis["gzt"] <= record["top_sil"]:
+                    silhouette &= ~2
+                if silhouette in (1, 2, 3):
+                    for x in range(r1, r2 + 1):
+                        if silhouette & 1 and clipbot[x] == SPRITE_CLIP_UNSET:
+                            clipbot[x] = (-1 if record["bottom"] == "const"
+                                          else record["bottom"][x - ds["x1"]])
+                        if silhouette & 2 and cliptop[x] == SPRITE_CLIP_UNSET:
+                            cliptop[x] = (VIEW_HEIGHT if record["top"] == "const"
+                                          else record["top"][x - ds["x1"]])
+        for x in range(vis["x1"], vis["x2"] + 1):
+            if clipbot[x] == SPRITE_CLIP_UNSET:
+                clipbot[x] = VIEW_HEIGHT
+            if cliptop[x] == SPRITE_CLIP_UNSET:
+                cliptop[x] = -1
+
+        if sprite["fullbright"]:
+            colormap = 0
+        else:
+            colormap = LIGHT_LEVEL[vis["lightnum"]][light_column(vis["scale"])] * 256
+        iscale = abs(vis["xiscale"])
+        spryscale = vis["scale"]
+        sprtopscreen = i32(CENTER_Y_FRAC - fixed_mul(vis["texturemid"], spryscale))
+        frac = vis["startfrac"]
+        for x in range(vis["x1"], vis["x2"] + 1):
+            texture_column = frac >> FRACBITS
+            if 0 <= texture_column < patch.width:
+                stream = patch.columns[texture_column]
+                at = 0
+                while stream[at] != POST_END:
+                    topdelta = stream[at]
+                    length = stream[at + 1]
+                    run = stream[at + 3:at + 3 + length]
+                    topscreen = i32(sprtopscreen + spryscale * topdelta)
+                    bottomscreen = i32(topscreen + spryscale * length)
+                    yl = (topscreen + FRACUNIT - 1) >> FRACBITS
+                    yh = (bottomscreen - 1) >> FRACBITS
+                    if yh >= clipbot[x]:
+                        yh = clipbot[x] - 1
+                    if yl <= cliptop[x]:
+                        yl = cliptop[x] + 1
+                    if yl <= yh:
+                        post_mid = i32(vis["texturemid"] - (topdelta << FRACBITS))
+                        if yl < 0:
+                            yl = 0
+                        if yh > VIEW_HEIGHT - 1:
+                            yh = VIEW_HEIGHT - 1
+                        pfrac = i32(post_mid + (yl - CENTER_Y) * iscale)
+                        for y in range(yl, yh + 1):
+                            at_pixel = y * SCREEN_WIDTH + x
+                            pixels[at_pixel] = colormaps[
+                                colormap + run[(pfrac >> FRACBITS) & POST_MASK]]
+                            mask[at_pixel] = 1
+                            covered[x] = 1
+                            counters["sprite_pixels"] += 1
+                            pfrac = i32(pfrac + iscale)
+                    at += length + 4
+            frac = i32(frac + vis["xiscale"])
+
+    accepted, stats = project_sprites(bsp, params, sprites, textures)
+    sort_vissprites(accepted)
+    for vis in accepted:
+        draw_sprite(vis)
+
+    for ds_index in range(len(drawsegs) - 1, -1, -1):
+        if records[ds_index]["masked"] is not None:
+            render_masked(ds_index, drawsegs[ds_index]["x1"], drawsegs[ds_index]["x2"])
+
+    clip_blocks = 2  # R_DRAWSEG_CLIP_TOP and R_DRAWSEG_CLIP_BOTTOM
+    opening_blocks = 0
+    for record in records:
+        if isinstance(record["top"], tuple):
+            clip_blocks += 1
+        if isinstance(record["bottom"], tuple):
+            clip_blocks += 1
+        if record["masked"] is not None:
+            opening_blocks += 1
+    stats["clip_blocks"] = clip_blocks
+    stats["opening_blocks"] = opening_blocks
+    return {
+        "pixels": bytes(pixels),
+        "covered": bytes(covered),
+        "mask": bytes(mask),
+        "sprhash": hashlib.sha256(bytes(mask)).hexdigest(),
+        "framehash": hashlib.sha256(bytes(pixels) + bytes(covered)).hexdigest(),
+        "sprite_pixels": counters["sprite_pixels"],
+        "stats": stats,
+    }
+
+
 def floor_view(bsp: BspMap, x: int, y: int) -> dict:
     """A viewpoint at (x, y) with P_SpawnPlayer()'s z rule, angle 0."""
     subsector = bsp.ssectors[point_in_subsector(bsp, x, y)]
@@ -2307,6 +2714,7 @@ def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
         raise FormatError(f"COLORMAP is {len(colormaps)} B, not 34 * 256")
 
     views = frame_views(bsp)
+    tables = e1m1_sprites.build_sprite_tables(lump.name for lump in lumps)
     print(f"SEGS {map_name} frames={len(views)}")
     frames: list[dict] = []
     for index, params in enumerate(views):
@@ -2315,14 +2723,19 @@ def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
         wall = emit_walls(bsp, state.drawsegs, params, textures, colormaps)
         plane = emit_planes(state.planes, params, textures, flats, colormaps,
                             wall["pixels"], wall["covered"])
+        sprites = sprite_list(bsp, params, tables)
+        masked = emit_masked(bsp, state.drawsegs, wall, plane, params, textures,
+                             colormaps, sprites, tables)
         frame = {
             "wall": wall,
             "plane": plane,
+            "masked": masked,
         }
         frames.append(frame)
         wall_hash = wall["digest"]
         pixel_digest = hashlib.sha256(wall["pixels"]).hexdigest()
         cover_digest = hashlib.sha256(wall["covered"]).hexdigest()
+        stats = masked["stats"]
         print(f"frame {index:02d}: {wall_hash}")
         print(f"FRAMESTAT {index:02d} drawsegs={wall['drawsegs']} "
               f"columns={wall['covered_columns']} pixels={wall['pixels_written']} "
@@ -2331,6 +2744,13 @@ def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
         print(f"PLANESTAT {index:02d} planes={plane['planes']} spans={plane['spans']} "
               f"plane_pixels={plane['plane_pixels']} wallhash={wall_hash} "
               f"planehash={plane['planehash']} framehash={plane['framehash']}")
+        print(f"SPRSTAT {index:02d} sprites={stats['submitted']} "
+              f"drawn={stats['drawn']} backface={stats['backface']} "
+              f"frustum={stats['frustum']} zerospan={stats['zerospan']} "
+              f"sprite_pixels={masked['sprite_pixels']} "
+              f"clip_blocks={stats['clip_blocks']} "
+              f"opening_blocks={stats['opening_blocks']} "
+              f"sprhash={masked['sprhash']} framehash={masked['framehash']}")
 
     print(f"SEGS-SUMMARY frames={len(frames)} "
           f"drawsegs={sum(f['wall']['drawsegs'] for f in frames)} "
@@ -2343,6 +2763,15 @@ def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
           f"planes={sum(f['plane']['planes'] for f in frames)} "
           f"spans={sum(f['plane']['spans'] for f in frames)} "
           f"plane_pixels={sum(f['plane']['plane_pixels'] for f in frames)}")
+    print(f"SPR-SUMMARY frames={len(frames)} "
+          f"sprites={sum(f['masked']['stats']['submitted'] for f in frames)} "
+          f"drawn={sum(f['masked']['stats']['drawn'] for f in frames)} "
+          f"backface={sum(f['masked']['stats']['backface'] for f in frames)} "
+          f"frustum={sum(f['masked']['stats']['frustum'] for f in frames)} "
+          f"zerospan={sum(f['masked']['stats']['zerospan'] for f in frames)} "
+          f"sprite_pixels={sum(f['masked']['sprite_pixels'] for f in frames)} "
+          f"clip_blocks_peak={max(f['masked']['stats']['clip_blocks'] for f in frames)} "
+          f"opening_blocks_peak={max(f['masked']['stats']['opening_blocks'] for f in frames)}")
 
     if detail is not None:
         if detail < 0 or detail >= len(frames):
@@ -2353,8 +2782,8 @@ def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
                 frame["wall"]["pixels"][x::SCREEN_WIDTH]
                 + frame["wall"]["covered"][x:x + 1]).hexdigest()
             frame_hash = hashlib.sha256(
-                frame["plane"]["pixels"][x::SCREEN_WIDTH]
-                + frame["plane"]["covered"][x:x + 1]).hexdigest()
+                frame["masked"]["pixels"][x::SCREEN_WIDTH]
+                + frame["masked"]["covered"][x:x + 1]).hexdigest()
             print(f"COLUMN {detail:02d} {x} {wall_hash} {frame_hash}")
 
     if column is not None:
@@ -2368,9 +2797,9 @@ def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
             at = y * SCREEN_WIDTH + x
             print(f"ROW {frame_index:02d} {x} {y} "
                   f"{frame['wall']['pixels'][at]:02x} "
-                  f"{frame['plane']['pixels'][at]:02x} "
+                  f"{frame['masked']['pixels'][at]:02x} "
                   f"{frame['wall']['covered'][x]:02x} "
-                  f"{frame['plane']['mask'][at]:02x}")
+                  f"{frame['masked']['mask'][at]:02x}")
 
 
 # --- Command line -----------------------------------------------------------

@@ -51,6 +51,8 @@ extern "C" {
 #define R_VIEW_HEIGHT R_SCREEN_HEIGHT
 #define R_CENTER_Y (R_VIEW_HEIGHT / 2)
 #define R_CENTER_Y_FRAC (((fixed_t)R_CENTER_Y) << FRACBITS)
+#define R_CENTER_X (R_SCREEN_WIDTH / 2)
+#define R_CENTER_X_FRAC (((fixed_t)R_CENTER_X) << FRACBITS)
 
 /* DOOM's field of view, in fine angles. 2048 of 8192 is 90 degrees, which is
  * the horizontal arc the view-angle-to-column table flattens onto 320 px. */
@@ -202,6 +204,25 @@ static inline int r_has_name(r_name_t packed) {
  *                branch, and it is counted only in planePixels.
  *
  * The wall pass ignores all three; r_wall_emit() neither clears nor reads them.
+ *
+ * THE MASKED PASS'S OWN RECORD (D3.4)
+ *
+ * That pass (r_things.c) draws sprites and the deferred masked mid textures,
+ * both through post chains and therefore both partially transparent. The plane
+ * mask cannot attribute those pixels: the pass writes after the planes and a
+ * transparent texel writes nothing. Two more optional fields give the frame
+ * protocol the same answer it has for the other two passes:
+ *
+ *   spriteMask   one byte per pixel, row major, 1 where the masked pass wrote
+ *                and 0 elsewhere. NULL means "do not record". It is cleared by
+ *                the pass before the first write, so it is a complete record of
+ *                one call, and a pixel with spriteMask == 1 is the topmost
+ *                writer of the finished frame.
+ *   spritePixels the number of pixels the masked pass wrote (the number of 1s
+ *                in spriteMask when it is recorded).
+ *
+ * The earlier passes ignore both; r_wall_emit() and r_plane_draw() neither
+ * clear nor read them.
  */
 typedef struct r_draw_surface {
     uint8_t* pixels;
@@ -212,6 +233,8 @@ typedef struct r_draw_surface {
     uint8_t* planeMask;
     uint32_t planePixels;
     uint32_t planeSpans;
+    uint8_t* spriteMask;
+    uint32_t spritePixels;
 } r_draw_surface_t;
 
 #ifdef __cplusplus

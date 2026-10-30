@@ -50,6 +50,12 @@ FORMULAS (exactly the ones upstream's disabled initialisers state)
     rebuilds this table in R_ExecuteSetViewSize() because the view size can
     change; this port has one view size, so it is a constant like the rest.
 
+    That same table is the sprite light (D3.4): R_ProjectSprite() indexes
+    `spritelights[xscale >> LIGHTSCALESHIFT]`, and `spritelights` is the row
+    R_AddSprites() installs from `scalelight[lightnum]`. linuxdoom-1.10 has no
+    R_InitSpriteLights(), so there is no third table here and no flash to spend:
+    r_light.h states the two coordinates and how they differ from the wall's.
+
     r_plane_light[i][j] is R_InitLightTables()'s zlight[,] table, the plane
     light (D3.3), reduced to the map index it selects:
 

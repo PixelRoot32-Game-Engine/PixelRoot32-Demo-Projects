@@ -3,14 +3,16 @@
 
 WHAT THIS PROVES
 
-``test/unit/test_rsegs`` pins the wall and plane emitters on synthetic maps,
-textures, flats and colormaps, because a CI machine has no WAD. This script is the
-other half: it compiles ``tools/rsegs_check.c`` -- which calls ``lib/doom/r_segs.c``,
-``r_plane.c``, ``r_light.c``, ``r_bsp.c``, ``r_tables.c``, ``r_data.c``,
-``doom_map.c`` and ``w_wad.c`` -- and compares its 20 sampled E1M1 frames, line
-for line, with ``tools/doom_ref.py --segs E1M1``, an independent implementation
-with its own WAD reader, map parser, tables, walk, texture compositor, flat
-lookup, colormap handling, column loop and span maker.
+``test/unit/test_rsegs`` pins the wall, plane, sprite and masked passes on
+synthetic maps, textures, flats and sprite patches, because a CI machine has no
+WAD. This script is the other half: it compiles ``tools/rsegs_check.c`` -- which
+calls ``lib/doom/r_segs.c``, ``r_plane.c``, ``r_things.c``, ``r_light.c``,
+``r_bsp.c``, ``r_tables.c``, ``r_data.c``, ``doom_map.c`` and ``w_wad.c`` -- and
+compares its 20 sampled E1M1 frames, line for line, with
+``tools/doom_ref.py --segs E1M1``, an independent implementation with its own
+WAD reader, map parser, tables, walk, texture compositor, flat lookup, colormap
+handling, column loop, span maker, sprite projection, sprite sort, sprite clip
+seed and patch walker.
 
 The compared lines are the protocol both sides document:
 
@@ -18,17 +20,28 @@ The compared lines are the protocol both sides document:
     frame NN: <sha256>          the wall pass's pixels followed by its coverage
     FRAMESTAT NN ...            wall counts, per-tier pixels and both partial hashes
     PLANESTAT NN ...            plane counts and the wall, plane-mask and frame hashes
+    SPRSTAT NN ...              sprite counters, the pool peaks, the masked-pass
+                                mask hash and the finished frame's hash (D3.4)
     SEGS-SUMMARY ...            the wall totals (unchanged from D3.2)
     PLANE-SUMMARY ...           the plane totals
+    SPR-SUMMARY ...             the sprite totals and the audited pool peaks
+
+What changed in D3.4, and why: the `frame NN:`, FRAMESTAT, PLANESTAT and both
+older SUMMARY lines are byte-for-byte what D3.2/D3.3 printed. SPRSTAT and
+SPR-SUMMARY are appended. `--segs-detail` and `--segs-column` now report the
+*finished* frame (after the masked pass) rather than the frame after the planes,
+because that is the frame a reader is comparing; the ROW mask field is the
+masked pass's mask instead of the plane pass's, and the wall fields are
+unchanged.
 
 A mismatch is localised in three steps instead of being reported as one hash: the
 frames are compared first, then the columns of the first differing frame
 (``--segs-detail``), then the rows of that column (``--segs-column``). The COLUMN
 line carries both the wall column's hash and the finished frame's, and the ROW
-line carries the wall pixel, the final pixel, the wall coverage and the plane
-mask, so the report can name the first divergent pixel and say which pass wrote
-it. Those two extra passes print decoded palette indices for one column; they are
-diagnostics of record and must not be committed.
+line carries the wall pixel, the final pixel, the wall coverage and the masked
+pass's mask, so the report can name the first divergent pixel and say which pass
+wrote it. Those two extra passes print decoded palette indices for one column;
+they are diagnostics of record and must not be committed.
 
 USAGE
 
@@ -83,6 +96,7 @@ def compile_harness(workdir: Path, compiler: str) -> Path:
         str(root / "lib" / "doom" / "r_light.c"),
         str(root / "lib" / "doom" / "r_bsp.c"),
         str(root / "lib" / "doom" / "r_plane.c"),
+        str(root / "lib" / "doom" / "r_things.c"),
         str(root / "lib" / "doom" / "r_tables.c"),
         str(root / "lib" / "doom" / "r_data.c"),
         str(root / "lib" / "doom" / "doom_map.c"),
@@ -134,7 +148,8 @@ def first_difference(left: list[str], right: list[str]) -> tuple[int, str, str] 
 def differing_frames(left: list[str], right: list[str]) -> list[int]:
     frames: list[int] = []
     for a, b in zip(left, right):
-        if a != b and (a.startswith("frame ") or a.startswith("PLANESTAT ")):
+        if a != b and (a.startswith("frame ") or a.startswith("PLANESTAT ")
+                       or a.startswith("SPRSTAT ")):
             frames.append(int(a.split()[1].rstrip(":")))
     return frames
 
@@ -150,8 +165,9 @@ def by_key(lines: list[str], prefix: str, key_at: int) -> dict[str, str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="rsegs_check.py",
-        description="Compare lib/doom/r_segs.c against tools/doom_ref.py on the "
-                    "20 sampled wall-only frames of a real WAD's E1M1.",
+        description="Compare the four DOOM software-renderer passes (walls, planes, "
+                    "sprites, masked mids) against tools/doom_ref.py on the 20 "
+                    "sampled frames of a real WAD's E1M1.",
         epilog="The harness is built in a temporary directory and nothing is written "
                "into the worktree.\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -223,14 +239,15 @@ def main(argv: list[str] | None = None) -> int:
                                     writer = ("the wall pass (its pixel differs "
                                               "before the plane pass draws)")
                                 elif frame_c != frame_o and mask_c != "00":
-                                    writer = "the plane pass (its mask is 1 here)"
+                                    writer = ("the plane or masked pass (a later "
+                                              "pass wrote this pixel)")
                                 elif frame_c != frame_o:
-                                    writer = ("the plane pass or its coverage: the "
-                                              "mask is 0, so the pass did not write here")
+                                    writer = ("a later pass, by coverage: its mask "
+                                              "is 0, so it did not write here")
                                 else:
                                     writer = ("the coverage records, not the pixels "
                                               f"(wall covered {covered_c}/{covered_o}, "
-                                              f"plane mask {mask_c}/{mask_o})")
+                                              f"later mask {mask_c}/{mask_o})")
                             else:
                                 writer = "an unparsable ROW line"
                             diagnostics.append(
@@ -251,8 +268,10 @@ def main(argv: list[str] | None = None) -> int:
 
     for line in c_lines:
         if line.startswith("frame ") or line.startswith("PLANESTAT ") \
+                or line.startswith("SPRSTAT ") \
                 or line.startswith("SEGS-SUMMARY") \
                 or line.startswith("PLANE-SUMMARY") \
+                or line.startswith("SPR-SUMMARY") \
                 or line.startswith("ERROR"):
             print(line)
 

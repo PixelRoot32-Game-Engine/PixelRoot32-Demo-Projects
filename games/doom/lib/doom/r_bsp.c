@@ -31,9 +31,10 @@
  *   3. The plane set has a checked capacity (r_plane.c), for the same reason.
  *   4. fixed_div() is integer division, not the double division of upstream's
  *      FixedDiv2(). m_fixed.h documents the one-unit worst case.
- *   5. Sprite clipping arrays and masked-texture columns are not recorded.
- *      They live in upstream's openings[] and are only read by D3.4/D3.2; the
- *      drawseg struct is documented with that omission.
+ *   5. Sprite clipping arrays and masked-texture columns are not recorded by
+ *      the walk: they are r_wall_emit()'s (D3.4), which read the clip arrays
+ *      after its column loop. The drawseg stores them as block indices into
+ *      caller-owned pools; the walk only initialises them to "none".
  *   6. The clip-list "crunch" is written as a removal (`start+1 .. next` are
  *      deleted and the tail shifts down) instead of upstream's pointer walk
  *      `while (next++ != newend) *++start = *next;`. Upstream's loop copies
@@ -48,11 +49,6 @@
 #include "r_bsp.h"
 
 #include "r_tables.h"
-
-/* The projection constant R_ExecuteSetViewSize() derives for the fixed
- * 320x200 view: centerx == 160, projection == centerx << 16. The vertical
- * centre is R_CENTER_Y_FRAC (r_defs.h), the one place a HUD would move. */
-#define R_CENTER_X_FRAC (((fixed_t)(R_SCREEN_WIDTH / 2)) << FRACBITS)
 
 /* The eight name bytes of the sky flat, written out so no string literal is
  * read past its terminator. */
@@ -548,10 +544,12 @@ void r_wall_fragment_open(const doom_map_t* map, const r_view_params_t* view,
         if (back.ceilingHeight <= front.floorHeight) {
             out->bottomSilhouette = INT32_MAX;
             out->silhouette |= R_SIL_BOTTOM;
+            out->clipBottomSolid = 1;
         }
         if (back.floorHeight >= front.ceilingHeight) {
             out->topSilhouette = INT32_MIN;
             out->silhouette |= R_SIL_TOP;
+            out->clipTopSolid = 1;
         }
 
         worldhigh = back.ceilingHeight - view->z;
@@ -726,6 +724,12 @@ static void store_wall_range(r_view_state_t* state, int start, int stop) {
     drawseg->rwDistance = fragment.distance;
     drawseg->rwOffset = fragment.offset;
     drawseg->rwCenterAngle = fragment.centerAngle;
+    /* D3.4 owns these three: r_wall_emit() fills them from the clip arrays as
+     * its column loop leaves them. The walk stores the "none" value so a
+     * drawseg that was never emitted cannot be read as a clip. */
+    drawseg->sprTopClip = R_DRAWSEG_NO_BLOCK;
+    drawseg->sprBottomClip = R_DRAWSEG_NO_BLOCK;
+    drawseg->maskedTextureCol = R_DRAWSEG_NO_BLOCK;
     state->drawsegCount = (uint16_t)(state->drawsegCount + 1);
 }
 
@@ -1089,6 +1093,9 @@ r_bsp_error_t r_bsp_render(r_view_state_t* state, const r_view_params_t* params)
     state->error = R_BSP_OK;
     state->drawsegCount = 0;
     state->drawsegOverflowed = 0;
+    state->clipCaptured = 0;
+    state->clipBlocksUsed = 0;
+    state->openingBlocksUsed = 0;
     state->params = *params;
     r_plane_clear(&state->storage.planes);
     clear_clip_segs(state);
