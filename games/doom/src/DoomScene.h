@@ -45,6 +45,16 @@ namespace doom {
  *    line is the serial witness for the simulation's clock until the real game
  *    loop exists.
  *
+ * A fourth, one-shot record comes from the C <-> C++ link probe: `init()` calls
+ * `doom_link_probe_run()` from `lib/doom`, a C translation unit that calls the
+ * bridge in `src/doomc`, which reaches this port's palette table and the
+ * engine's console and returns a value the C side verifies. It prints exactly
+ * one `LINK,status=ok,checksum=0x%08X` line (or `status=fail`, with the same
+ * fields) through the same console as every other line here, so the boot log
+ * states whether the build model the DOOM core needs actually links. Like the
+ * other event lines it is compiled out of the frame-log build, whose stream is
+ * pure CSV.
+ *
  * Nothing on screen depends on a frame counter or an animation phase. The
  * pattern is a pure function of the surface size, the palette and the pressed
  * set, so a still frame is always the same frame.

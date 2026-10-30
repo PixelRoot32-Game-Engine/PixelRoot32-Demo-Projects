@@ -1,7 +1,7 @@
 #include "DoomScene.h"
 
-#include <platforms/PlatformLog.h>
-
+#include "doom_link_probe.h"
+#include "doomc/DoomConsole.h"
 #include "palette/DoomPalette.h"
 
 #include <cstddef>
@@ -108,14 +108,18 @@ static_assert(sizeof(kInkColors) / sizeof(kInkColors[0]) == static_cast<std::siz
 /**
  * @brief Write one already-formatted line to the engine's console.
  *
- * `logging::platformPrint()` is the engine's cross-platform primitive: the
- * Arduino core's Serial on the device, stdout on the simulator. It is always
- * compiled in, unlike `logging::log()`, whose output is gated behind
- * `PIXELROOT32_DEBUG_MODE`; these lines are part of the shell contract on
- * every build.
+ * Delegates to `doomc::writeLine()`, the port's own console symbol, which calls
+ * `pixelroot32::core::logging::platformPrint()`: the Arduino core's Serial on
+ * the device, stdout on the simulator. It is always compiled in, unlike
+ * `logging::log()`, whose output is gated behind `PIXELROOT32_DEBUG_MODE`;
+ * these lines are part of the shell contract on every build.
+ *
+ * The delegation is not decoration. The C <-> C++ bridge writes its `LINK,...`
+ * record through the same symbol (`src/doomc/DoomLinkBridge.cpp`), so the one
+ * line produced from C has exactly the path the lines produced here have.
  */
 void writeConsoleLine(const char* line) {
-    pixelroot32::core::logging::platformPrint(line);
+    doomc::writeLine(line);
 }
 
 /**
@@ -455,6 +459,20 @@ void DoomScene::init() {
     // story: Phase 2 replaces the synthetic source with the WAD's PLAYPAL lump
     // and nothing else in the frame path changes.
     palette::init();
+
+#if !defined(PIXELROOT32_DOOM_FRAME_LOG)
+    // The C <-> C++ link probe: one C translation unit calls a C++ bridge that
+    // calls this port's palette and the engine's console, and the value it
+    // sends across comes back verified. It prints exactly one
+    // `LINK,status=...,checksum=0x...` line, through the same console as the
+    // lines above and below, so a maintainer reading the boot log sees whether
+    // the DOOM core's build model links before the core exists.
+    //
+    // Runs after palette::init() because the probe reads the palette table, and
+    // it is compiled out of the frame-log build for the reason stated there:
+    // that environment's stream is pure `FRAME,...` CSV with one writer.
+    doom_link_probe_run();
+#endif  // !PIXELROOT32_DOOM_FRAME_LOG
 
     // Anchors the tic clock at the scene's first microsecond sample, which is
     // tic 0. The sentinel makes the first update() report it, so the serial
