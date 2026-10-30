@@ -73,6 +73,15 @@ namespace doom {
  * only under the flag, so the shipped builds are byte-for-byte behaviourally
  * unchanged and take no extra microsecond samples.
  *
+ * `PIXELROOT32_DOOM_WAD_PROBE` adds D2.3's storage probe: `init()` opens the
+ * `wad` partition through `doomc/WhdSource.h`, prints one `WAD,status=...` line
+ * and one `LUMP,name=...,index=...,size=...` line per resolved lump name, then
+ * releases the mapping. It proves the boot path reads the compressed container
+ * from flash and resolves real lump names against it. It lives in its own build
+ * environment (`env:esp32dev_ILI9341_wad`), which is also the only environment
+ * that selects `partitions_wad.csv`; every shipped environment keeps the default
+ * table and the original boot log.
+ *
  * The logical surface is a constant here on purpose. DOOM's renderer is
  * column-indexed: `distscale[SCREENWIDTH]`, `visplane_t::top[SCREENWIDTH]`,
  * `floorclip` / `ceilingclip` and the status bar layout all assume 320x200.

@@ -2,6 +2,11 @@
 
 #include "doom_link_probe.h"
 #include "doomc/DoomConsole.h"
+
+#if defined(PIXELROOT32_DOOM_WAD_PROBE)
+#include "doomc/WhdSource.h"
+#endif
+
 #include "palette/DoomPalette.h"
 
 #include <cstddef>
@@ -444,6 +449,81 @@ void paintPaletteTestFrame(Renderer& renderer) {
 
 #endif  // PIXELROOT32_DOOM_PALETTE_TEST
 
+// --- Container probe (D2.3) -------------------------------------------------
+
+#if defined(PIXELROOT32_DOOM_WAD_PROBE)
+
+/**
+ * @brief The lumps the probe resolves, in the order it reports them.
+ *
+ * The six are one of each kind the port will need: the palette and the colour
+ * map (Phase 2's first read), ENDOOM (the fixed 4000 B screen), E1M1 (a map
+ * marker with no bytes of its own), DEMO1 (the largest demo, a real DEFLATE
+ * payload) and TEXTURE1 (a composite), so a directory that accepted the image
+ * but shifted its names is caught here.
+ *
+ * NOSUCHXX is the control: it is not in DOOM1.WAD, so the line it produces must
+ * be `index=-1`. A lookup that resolves everything -- a comparison that always
+ * matches, an index read from the wrong field -- fails on that line alone.
+ */
+const char* const kProbeLumpNames[] = {
+    "PLAYPAL", "COLORMAP", "ENDOOM", "E1M1", "DEMO1", "TEXTURE1", "NOSUCHXX",
+};
+
+/**
+ * @brief Reports the storage chain, once, at boot: mapping, lumps, names, sizes.
+ *
+ * One `WAD,...` line says whether the `wad` partition mapped and the container
+ * inside it was accepted, then one `LUMP,...` line per name says what the
+ * directory answers. No payload is decoded: the largest lump of DOOM1.WAD is
+ * 68,168 B and the board's task stack is a fraction of that, so a decode here
+ * would be a stack overflow waiting for a build flag. The size each line prints
+ * is the number a later layer must allocate for -- which is the fact this probe
+ * exists to establish.
+ *
+ * The mapping is released before returning. Nothing below needs it, and a probe
+ * that left 2 MB of flash mapped would be a state its caller never asked for.
+ */
+void reportContainerProbe() {
+    whd_state_t state;
+    const int openCode = doom_whd_source_open(&state);
+
+    // Longest line this function writes is a resolved lump with a 10-digit size,
+    // about 52 bytes in the worst case; the buffer leaves room for two more
+    // decimal fields before snprintf could ever truncate.
+    char line[80];
+
+    if (openCode != DOOM_WHD_SOURCE_OK) {
+        std::snprintf(line, sizeof line, "WAD,status=fail,code=%d\n", openCode);
+        writeConsoleLine(line);
+        return;
+    }
+
+    std::snprintf(line, sizeof line, "WAD,status=ok,lumps=%u,container=%u\n",
+                  static_cast<unsigned>(doom_whd_source_lump_count(&state)),
+                  static_cast<unsigned>(doom_whd_source_mapped_size()));
+    writeConsoleLine(line);
+
+    for (std::size_t index = 0; index < sizeof kProbeLumpNames / sizeof kProbeLumpNames[0];
+         ++index) {
+        const char* const name = kProbeLumpNames[index];
+        const int lump = doom_whd_source_lump_index(&state, name);
+
+        if (lump < 0) {
+            std::snprintf(line, sizeof line, "LUMP,name=%s,index=-1\n", name);
+        } else {
+            std::snprintf(line, sizeof line, "LUMP,name=%s,index=%u,size=%u\n", name,
+                          static_cast<unsigned>(lump),
+                          static_cast<unsigned>(doom_whd_source_lump_size(&state, lump)));
+        }
+        writeConsoleLine(line);
+    }
+
+    doom_whd_source_close();
+}
+
+#endif  // PIXELROOT32_DOOM_WAD_PROBE
+
 }  // namespace
 
 void DoomScene::init() {
@@ -473,6 +553,19 @@ void DoomScene::init() {
     // that environment's stream is pure `FRAME,...` CSV with one writer.
     doom_link_probe_run();
 #endif  // !PIXELROOT32_DOOM_FRAME_LOG
+
+#if defined(PIXELROOT32_DOOM_WAD_PROBE)
+    // D2.3's storage probe, compiled only into env:esp32dev_ILI9341_wad: opens
+    // the `wad` partition through the container adapter and prints one
+    // `WAD,status=...` line plus one `LUMP,...` line per resolved name. It runs
+    // after palette::init() and inside init()'s once-per-scene contract, so the
+    // boot log carries exactly one record of the chain and no frame repeats it.
+    //
+    // No frame-log guard here: the two flags never meet. env:esp32dev_ILI9341_wad
+    // exists to read these lines, and the frame-log environment exists to keep
+    // its stream pure CSV.
+    reportContainerProbe();
+#endif  // PIXELROOT32_DOOM_WAD_PROBE
 
     // Anchors the tic clock at the scene's first microsecond sample, which is
     // tic 0. The sentinel makes the first update() report it, so the serial
