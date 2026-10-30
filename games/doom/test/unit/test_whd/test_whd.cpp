@@ -40,6 +40,12 @@ constexpr std::size_t kNameSize = 8u;
 
 constexpr std::uint8_t kMethodStored = 0u;
 constexpr std::uint8_t kMethodDeflate = 1u;
+constexpr std::uint8_t kMethodRaw = 2u;
+
+/// The two versions the format defines, and the alignment a RAW payload carries.
+constexpr std::uint16_t kVersionOne = 1u;
+constexpr std::uint16_t kVersionTwo = 2u;
+constexpr std::size_t kRawAlignment = 4u;
 
 void putLe16(std::uint8_t* at, std::uint16_t value) {
     at[0] = static_cast<std::uint8_t>(value & 0xFFu);
@@ -74,12 +80,31 @@ LumpSpec storedLump(const char* name, const std::vector<std::uint8_t>& bytes) {
                     kMethodStored};
 }
 
+/// A RAW lump: the payload is the lump, and the builder pads in front of it so
+/// the payload starts on a 4-byte boundary, exactly as tools/whd_encode.py does.
+LumpSpec rawLump(const char* name, const std::vector<std::uint8_t>& bytes) {
+    return LumpSpec{name, bytes, static_cast<std::uint32_t>(bytes.size()),
+                    kMethodRaw};
+}
+
+/// The padding the format allows in front of entry @p index: enough zero bytes
+/// to put its payload on a kRawAlignment boundary. Zero for every other method.
+std::size_t paddingBefore(const std::vector<LumpSpec>& lumps, std::size_t index,
+                          std::uint32_t payloadCursor) {
+    if (lumps[index].method != kMethodRaw) {
+        return 0u;
+    }
+    return static_cast<std::size_t>(
+        (kRawAlignment - (payloadCursor % kRawAlignment)) % kRawAlignment);
+}
+
 /// Builds a container: header, directory, name table, then the payloads in
-/// declaration order. Tests that need a malformed image patch one field of the
-/// returned vector afterwards; the patch sites are documented in the test that
-/// uses them.
+/// declaration order, with the RAW alignment padding in front of each raw one.
+/// Tests that need a malformed image patch one field of the returned vector
+/// afterwards; the patch sites are documented in the test that uses them.
 std::vector<std::uint8_t> buildContainer(const std::vector<LumpSpec>& lumps,
-                                         std::uint32_t sourceCrc = 0u) {
+                                         std::uint32_t sourceCrc = 0u,
+                                         std::uint16_t version = kVersionOne) {
     const std::uint32_t numLumps = static_cast<std::uint32_t>(lumps.size());
     const std::uint32_t directoryOffset = static_cast<std::uint32_t>(kHeaderSize);
     const std::uint32_t nameTableOffset =
@@ -87,33 +112,39 @@ std::vector<std::uint8_t> buildContainer(const std::vector<LumpSpec>& lumps,
     const std::uint32_t dataOffset =
         static_cast<std::uint32_t>(nameTableOffset + lumps.size() * kNameEntrySize);
 
-    std::uint32_t totalSize = dataOffset;
-    for (const LumpSpec& lump : lumps) {
-        totalSize += static_cast<std::uint32_t>(lump.payload.size());
+    std::vector<std::uint32_t> offsets(lumps.size(), 0u);
+    std::vector<std::size_t> padding(lumps.size(), 0u);
+    std::uint32_t payloadCursor = 0u;
+    for (std::size_t index = 0; index < lumps.size(); ++index) {
+        const std::size_t pad = paddingBefore(lumps, index, payloadCursor);
+        padding[index] = pad;
+        payloadCursor += static_cast<std::uint32_t>(pad);
+        offsets[index] = payloadCursor;
+        payloadCursor += static_cast<std::uint32_t>(lumps[index].payload.size());
     }
 
-    std::vector<std::uint8_t> container(totalSize, 0u);
+    std::vector<std::uint8_t> container(static_cast<std::size_t>(dataOffset) + payloadCursor,
+                                        0u);
 
     container[0] = static_cast<std::uint8_t>('P');
     container[1] = static_cast<std::uint8_t>('W');
     container[2] = static_cast<std::uint8_t>('H');
     container[3] = static_cast<std::uint8_t>('D');
-    putLe16(&container[4], 1u);
+    putLe16(&container[4], version);
     putLe16(&container[6], 0u);
     putLe32(&container[8], numLumps);
     putLe32(&container[12], numLumps);
     putLe32(&container[16], directoryOffset);
     putLe32(&container[20], nameTableOffset);
     putLe32(&container[24], dataOffset);
-    putLe32(&container[28], totalSize);
+    putLe32(&container[28], static_cast<std::uint32_t>(container.size()));
     putLe32(&container[32], sourceCrc);
     putLe32(&container[36], 0u);
 
-    std::uint32_t cursor = dataOffset;
     for (std::size_t index = 0; index < lumps.size(); ++index) {
         const LumpSpec& lump = lumps[index];
         std::uint8_t* entry = &container[directoryOffset + index * kDirectoryEntrySize];
-        putLe32(entry, cursor - dataOffset);
+        putLe32(entry, offsets[index]);
         putLe32(entry + 4, static_cast<std::uint32_t>(lump.payload.size()));
         putLe32(entry + 8, lump.uncompressedSize);
         entry[12] = lump.method;
@@ -129,6 +160,7 @@ std::vector<std::uint8_t> buildContainer(const std::vector<LumpSpec>& lumps,
         }
         putLe32(name + 8, static_cast<std::uint32_t>(index));
 
+        std::size_t cursor = static_cast<std::size_t>(dataOffset + offsets[index]);
         for (const std::uint8_t value : lump.payload) {
             container[cursor] = value;
             ++cursor;
@@ -145,6 +177,16 @@ std::uint8_t* directoryEntryAt(std::vector<std::uint8_t>& container, std::size_t
 
 std::uint8_t* nameEntryAt(std::vector<std::uint8_t>& container, std::size_t index) {
     return container.data() + le32At(container.data() + 20) + index * kNameEntrySize;
+}
+
+/// The data area's start, read from the header the way a consumer would.
+std::uint32_t dataOffsetOf(const std::vector<std::uint8_t>& container) {
+    return le32At(container.data() + 24);
+}
+
+/// One entry's payloadOffset, read from the directory.
+std::uint32_t payloadOffsetOf(const std::vector<std::uint8_t>& container, std::size_t index) {
+    return le32At(container.data() + kHeaderSize + index * kDirectoryEntrySize);
 }
 
 // --- RFC 1951 bit writer -----------------------------------------------------
@@ -797,11 +839,18 @@ void test_declared_total_size_mismatch_is_rejected(void) {
     TEST_ASSERT_EQUAL_INT(WHD_ERR_TOTAL_SIZE, whd_open(&state, container.data(), container.size()));
 }
 
-void test_unsupported_version_is_rejected(void) {
+// The reader accepts the versions it knows and nothing above them. Version 2 is
+// what tools/whd_encode.py writes now; version 1 still opens (the suite's other
+// cases are all version 1), and a third version is not this reader's format.
+void test_version_three_is_rejected(void) {
     std::vector<std::uint8_t> container = buildContainer({storedLump("LUMP", {1u})});
-    putLe16(&container[4], 2u);
+    putLe16(&container[4], 3u);
     whd_state_t state;
 
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_VERSION, whd_open(&state, container.data(), container.size()));
+
+    // The boundary is a maximum, not a set: version 0 is as unknown as 3.
+    putLe16(&container[4], 0u);
     TEST_ASSERT_EQUAL_INT(WHD_ERR_VERSION, whd_open(&state, container.data(), container.size()));
 }
 
@@ -870,7 +919,7 @@ void test_overlapping_lump_payloads_are_rejected(void) {
 
 void test_unknown_method_is_rejected(void) {
     std::vector<std::uint8_t> container = buildContainer({storedLump("LUMP", {1u})});
-    directoryEntryAt(container, 0)[12] = 2u;
+    directoryEntryAt(container, 0)[12] = 3u;  // only 0, 1 and 2 are methods
     whd_state_t state;
 
     TEST_ASSERT_EQUAL_INT(WHD_ERR_METHOD, whd_open(&state, container.data(), container.size()));
@@ -1013,6 +1062,221 @@ void test_failed_open_clears_previous_reader(void) {
     TEST_ASSERT_EQUAL_UINT8(3u, out[2]);
 }
 
+// --- Method 2: raw, page-mappable lumps (version 2) --------------------------
+
+// A raw entry is semantically a stored one: reading it the way every caller
+// reads a lump returns the bytes, byte for byte.
+void test_raw_lump_reads_back_identically_through_read_lump(void) {
+    std::vector<std::uint8_t> bytes(37u);
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        bytes[index] = static_cast<std::uint8_t>(0x40u + index);
+    }
+    // A stored lump of an odd size in front, so the raw payload has to be padded
+    // to reach its boundary -- the shape a real container has.
+    const std::vector<std::uint8_t> container = buildContainer(
+        {storedLump("BEFORE", {0xAAu}), rawLump("COLOURMAP", bytes)}, 0u, kVersionTwo);
+    whd_state_t state;
+
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_open(&state, container.data(), container.size()));
+    TEST_ASSERT_EQUAL_INT32(37, whd_lump_size(&state, 1));
+    TEST_ASSERT_EQUAL_INT32(37, whd_lump_stored_size(&state, 1));
+
+    std::vector<std::uint8_t> out(bytes.size(), 0u);
+    std::uint32_t required = 0u;
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK,
+                          whd_read_lump(&state, 1, out.data(), out.size(), &required));
+    TEST_ASSERT_EQUAL_UINT32(37u, required);
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        TEST_ASSERT_EQUAL_UINT8(bytes[index], out[index]);
+    }
+
+    // And a deflated lump in the same container still decodes: one method does
+    // not disturb the other.
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_open(&state, container.data(), container.size()));
+}
+
+// The point of the method: the view is a pointer *inside the container*, at the
+// directory's own payload offset, and it costs no copy at all. The test proves
+// "no copy" by writing through the container's mutable bytes and seeing the view
+// change -- a copy would not move.
+void test_raw_lump_view_points_into_the_container(void) {
+    std::vector<std::uint8_t> bytes(21u);
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        bytes[index] = static_cast<std::uint8_t>(index + 1u);
+    }
+    std::vector<std::uint8_t> container = buildContainer(
+        {storedLump("SMALL", {1u, 2u, 3u}), rawLump("NODES", bytes)}, 0u, kVersionTwo);
+    whd_state_t state;
+
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_open(&state, container.data(), container.size()));
+
+    int isRaw = 0;
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_lump_is_raw(&state, 1, &isRaw));
+    TEST_ASSERT_EQUAL_INT(1, isRaw);
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_lump_is_raw(&state, 0, &isRaw));
+    TEST_ASSERT_EQUAL_INT(0, isRaw);
+
+    const std::uint8_t* view = nullptr;
+    std::uint32_t size = 0u;
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_lump_view(&state, 1, &view, &size));
+    TEST_ASSERT_EQUAL_UINT32(21u, size);
+    TEST_ASSERT_NOT_NULL(view);
+    // Inside the container, at the exact offset the directory names, and on the
+    // boundary the method promises.
+    TEST_ASSERT_TRUE(view >= container.data());
+    TEST_ASSERT_TRUE(view < container.data() + container.size());
+    TEST_ASSERT_EQUAL_UINT32(
+        payloadOffsetOf(container, 1),
+        static_cast<std::uint32_t>(view - (container.data() + dataOffsetOf(container))));
+    TEST_ASSERT_EQUAL_UINT32(
+        0u, static_cast<std::uint32_t>(view - container.data()) % kRawAlignment);
+
+    // Same bytes, no copy: the container is the storage.
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        TEST_ASSERT_EQUAL_UINT8(bytes[index], view[index]);
+    }
+    container[static_cast<std::size_t>(view - container.data()) + 4u] = 0xE7u;
+    TEST_ASSERT_EQUAL_UINT8(0xE7u, view[4]);
+}
+
+// A view exists only for a raw lump. Stored and deflated lumps answer NOT_RAW so
+// the caller's fallback is explicit, and a bad index or a null out parameter is
+// still distinguished from it.
+void test_lump_view_refuses_stored_and_deflated_lumps(void) {
+    const std::vector<std::uint8_t> stream = overlappingMatchStream();
+    const std::vector<std::uint8_t> container = buildContainer(
+        {storedLump("STORED", {9u, 8u, 7u}), deflateLump("PATCH", stream, 12u)},
+        0u, kVersionTwo);
+    whd_state_t state;
+
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_open(&state, container.data(), container.size()));
+
+    const std::uint8_t* view = reinterpret_cast<const std::uint8_t*>(&container);
+    std::uint32_t size = 99u;
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_NOT_RAW, whd_lump_view(&state, 0, &view, &size));
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_NOT_RAW, whd_lump_view(&state, 1, &view, &size));
+    // A refused view writes neither out parameter.
+    TEST_ASSERT_TRUE(view == reinterpret_cast<const std::uint8_t*>(&container));
+    TEST_ASSERT_EQUAL_UINT32(99u, size);
+
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_LUMP_INDEX, whd_lump_view(&state, 2, &view, &size));
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_LUMP_INDEX, whd_lump_view(&state, -1, &view, &size));
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_NULL_OUTPUT, whd_lump_view(&state, 0, nullptr, &size));
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_NULL_STATE,
+                          whd_lump_view(nullptr, 0, &view, &size));
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_NULL_STATE, whd_lump_is_raw(nullptr, 0, nullptr));
+}
+
+// Version 1 is not deprecated: a container written before method 2 existed still
+// opens, and every lump still decodes.
+void test_version_one_container_still_opens_and_decodes(void) {
+    const std::vector<std::uint8_t> stream = overlappingMatchStream();
+    const std::vector<std::uint8_t> container = buildContainer(
+        {storedLump("THINGS", {1u, 2u, 3u, 4u, 5u}),
+         deflateLump("SEGS", stream, 12u)},
+        0u, kVersionOne);
+    whd_state_t state;
+
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_open(&state, container.data(), container.size()));
+    TEST_ASSERT_EQUAL_INT32(2, whd_lump_count(&state));
+
+    std::uint8_t out[12] = {0u};
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_read_lump(&state, 0, out, 5u, nullptr));
+    TEST_ASSERT_EQUAL_UINT8(1u, out[0]);
+    TEST_ASSERT_EQUAL_UINT8(5u, out[4]);
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_read_lump(&state, 1, out, sizeof out, nullptr));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<std::uint8_t>('A'), out[0]);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<std::uint8_t>('D'), out[11]);
+
+    // Method 2 is a version 2 promise, so a version 1 container that declares it
+    // is rejected as an unknown method rather than trusted.
+    std::vector<std::uint8_t> mixed =
+        buildContainer({storedLump("ONE", {1u}), rawLump("TWO", {2u})}, 0u, kVersionTwo);
+    putLe16(&mixed[4], kVersionOne);
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_METHOD, whd_open(&state, mixed.data(), mixed.size()));
+}
+
+// The alignment is the guarantee, so an unaligned raw payload is a directory
+// failure and not a silent copy: a reader that copied would hide the broken
+// promise that a caller maps against.
+void test_unaligned_raw_payload_is_rejected(void) {
+    std::vector<std::uint8_t> container = buildContainer(
+        {storedLump("ODD", {1u, 2u, 3u}), rawLump("SIDEDEFS", {4u, 5u, 6u, 7u})},
+        0u, kVersionTwo);
+    // The builder put the raw payload at offset 4; move the entry one byte back so
+    // it starts at 3, which is unaligned. The sizes are untouched, so alignment
+    // is the only rule left for the entry to break.
+    TEST_ASSERT_EQUAL_UINT32(4u, payloadOffsetOf(container, 1));
+    putLe32(directoryEntryAt(container, 1), 3u);
+    whd_state_t state;
+
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_BAD_DIRECTORY,
+                          whd_open(&state, container.data(), container.size()));
+
+    // A gap that is not padding is the same failure: a four-byte gap in front of
+    // an aligned raw payload is more than the format allows.
+    std::vector<std::uint8_t> shifted = buildContainer(
+        {storedLump("HEAD", {1u, 2u, 3u, 4u}), rawLump("SEGS", {5u, 6u, 7u, 8u}),
+         storedLump("TAIL", {9u, 10u, 11u, 12u})},
+        0u, kVersionTwo);
+    putLe32(directoryEntryAt(shifted, 1), 8u);   // gap of 4, payload still in range
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_BAD_DIRECTORY,
+                          whd_open(&state, shifted.data(), shifted.size()));
+}
+
+// A raw entry means "the payload is the lump", so its two sizes must agree -- the
+// same rule as stored, and the same code.
+void test_raw_entry_with_mismatched_sizes_is_rejected(void) {
+    std::vector<std::uint8_t> container = buildContainer(
+        {rawLump("NODES", {1u, 2u, 3u, 4u})}, 0u, kVersionTwo);
+    putLe32(directoryEntryAt(container, 0) + 8, 3u);
+    whd_state_t state;
+
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_STORED_SIZE,
+                          whd_open(&state, container.data(), container.size()));
+}
+
+// The padding in front of a raw payload belongs to no lump: it shifts no offset,
+// it is at most three bytes, and every lump on either side of it still reads at
+// the offset its own size implies.
+void test_padding_before_a_raw_payload_shifts_no_offset(void) {
+    // A stored DEFLATE block of two bytes is seven payload bytes, so the cursor
+    // sits at 7 and the raw entry after it needs exactly one padding byte.
+    const std::vector<std::uint8_t> stream = storedBlockStream({0x10u, 0x20u});
+    TEST_ASSERT_EQUAL_UINT32(7u, static_cast<std::uint32_t>(stream.size()));
+    const std::vector<std::uint8_t> container = buildContainer(
+        {deflateLump("DEFLATED", stream, 2u), rawLump("VERTEXES", {0xA1u, 0xA2u}),
+         storedLump("AFTER", {0xB1u, 0xB2u, 0xB3u})},
+        0u, kVersionTwo);
+    whd_state_t state;
+
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_open(&state, container.data(), container.size()));
+
+    const std::uint32_t rawOffset = payloadOffsetOf(container, 1);
+    const std::uint32_t afterOffset = payloadOffsetOf(container, 2);
+
+    TEST_ASSERT_EQUAL_UINT32(8u, rawOffset);          // 7 bytes, padded up to 8
+    TEST_ASSERT_EQUAL_UINT32(rawOffset + 2u, afterOffset);
+    // The one padding byte is zero and is not part of either lump.
+    TEST_ASSERT_EQUAL_UINT8(0u, container[dataOffsetOf(container) + 7u]);
+
+    std::uint8_t out[3] = {0u};
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_read_lump(&state, 0, out, 2u, nullptr));
+    TEST_ASSERT_EQUAL_UINT8(0x10u, out[0]);
+    TEST_ASSERT_EQUAL_UINT8(0x20u, out[1]);
+
+    const std::uint8_t* view = nullptr;
+    std::uint32_t size = 0u;
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_lump_view(&state, 1, &view, &size));
+    TEST_ASSERT_EQUAL_UINT32(2u, size);
+    TEST_ASSERT_EQUAL_UINT8(0xA1u, view[0]);
+    TEST_ASSERT_EQUAL_UINT8(0xA2u, view[1]);
+
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_read_lump(&state, 2, out, sizeof out, nullptr));
+    TEST_ASSERT_EQUAL_UINT8(0xB1u, out[0]);
+    TEST_ASSERT_EQUAL_UINT8(0xB3u, out[2]);
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -1038,7 +1302,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_too_small_buffer_is_rejected);
     RUN_TEST(test_truncated_container_is_rejected);
     RUN_TEST(test_declared_total_size_mismatch_is_rejected);
-    RUN_TEST(test_unsupported_version_is_rejected);
+    RUN_TEST(test_version_three_is_rejected);
     RUN_TEST(test_nonzero_reserved_field_is_rejected);
     RUN_TEST(test_directory_offset_mismatch_is_rejected);
     RUN_TEST(test_name_table_out_of_range_is_rejected);
@@ -1057,6 +1321,14 @@ int main(int argc, char** argv) {
     RUN_TEST(test_corrupt_payload_is_reported);
     RUN_TEST(test_uncompressed_size_mismatch_is_reported);
     RUN_TEST(test_failed_open_clears_previous_reader);
+
+    RUN_TEST(test_raw_lump_reads_back_identically_through_read_lump);
+    RUN_TEST(test_raw_lump_view_points_into_the_container);
+    RUN_TEST(test_lump_view_refuses_stored_and_deflated_lumps);
+    RUN_TEST(test_version_one_container_still_opens_and_decodes);
+    RUN_TEST(test_unaligned_raw_payload_is_rejected);
+    RUN_TEST(test_raw_entry_with_mismatched_sizes_is_rejected);
+    RUN_TEST(test_padding_before_a_raw_payload_shifts_no_offset);
 
     const int result = UNITY_END();
     test_teardown();

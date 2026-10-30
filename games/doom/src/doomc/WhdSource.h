@@ -27,12 +27,37 @@
  *   1. state == NULL                          ERR_STATE_NULL
  *   2. a mapping is already live              ERR_ALREADY_OPEN
  *   3. no `wad` data partition in this image  ERR_PARTITION_MISSING
- *   4. esp_partition_mmap() fails             ERR_MMAP_FAILED
- *   5. mapping is shorter than a header       ERR_CONTAINER_INVALID (released)
+ *   4. the header page does not map           ERR_MMAP_FAILED
+ *   5. the header page is shorter than a
+ *      header                                 ERR_CONTAINER_INVALID (released)
  *   6. totalSize is under 40 or over the
- *      mapping                                ERR_CONTAINER_INVALID (released)
- *   7. whd_open() rejects the image           ERR_CONTAINER_INVALID (released)
- *   8. accepted: the mapping stays live       OK
+ *      partition                              ERR_CONTAINER_INVALID (released)
+ *   7. the window covering the container does
+ *      not map                                ERR_MMAP_FAILED (released)
+ *   8. whd_open() rejects the image           ERR_CONTAINER_INVALID (released)
+ *   9. accepted: the mapping stays live       OK
+ *
+ * WHAT IS MAPPED, AND WHY IT IS A WINDOW AND NOT THE PARTITION
+ *
+ * `esp_partition_mmap()` only maps a page-aligned region, and the ESP32's data
+ * MMU page is 64 KB. The container's own length is read from its header, so the
+ * adapter maps one page, reads totalSize, and then maps exactly
+ * `alignUp(totalSize, 64 KB)` starting at the container's page-aligned offset --
+ * 31 pages for the 1,963,174 B container, not all 32 of the 2 MB partition. The
+ * base handed to whd_open() is the window's first byte plus the delta between
+ * the container's offset and that window's start, and every whd_lump_view()
+ * pointer falls inside the window. The container starts at the partition's first
+ * byte today, so the delta is zero; it is written out anyway because it is the
+ * subtraction that makes a raw view's address arithmetic one line instead of a
+ * hidden assumption.
+ *
+ * THE RAW VIEW
+ *
+ * doom_whd_source_lump_view() is whd_lump_view() with the adapter's codes, and
+ * it costs nothing beyond the mapping that is already live: a RAW lump's payload
+ * is a pointer into the window, so E1M1's map is read in place instead of being
+ * decoded into DRAM. A lump that is stored or deflated answers ERR_NOT_RAW and
+ * the caller decodes it the way it always did.
  *
  * Nothing here writes to the console. WadSource logs because it is also the
  * thing a maintainer pokes from the bench; this adapter is opened by whatever
@@ -42,7 +67,7 @@
  * The mapping is read-only and lives until doom_whd_source_close(). The reader
  * state is owned by the caller, exactly as whd.h requires, so the accessors take
  * it as an argument and this file keeps no view of it -- the only state it owns
- * is the mapping handle.
+ * is the mapping handle and the window's address.
  *
  * Everything is C-callable: this header is valid C and every entry point is
  * `extern "C"`, so the DOOM core can read the container without knowing that
@@ -91,6 +116,10 @@ extern "C" {
  *   DOOM_WHD_SOURCE_ERR_DECODE            the payload is malformed or does not
  *                                         decode to its declared size
  *                                         (WHD_ERR_CORRUPT_PAYLOAD)
+ *   DOOM_WHD_SOURCE_ERR_NOT_RAW           a view was asked for a lump that is
+ *                                         stored or deflated, so no pointer into
+ *                                         the mapping exists for it
+ *                                         (WHD_ERR_NOT_RAW)
  */
 #define DOOM_WHD_SOURCE_OK 0
 #define DOOM_WHD_SOURCE_ERR_STATE_NULL 1
@@ -103,6 +132,7 @@ extern "C" {
 #define DOOM_WHD_SOURCE_ERR_NULL_OUTPUT 8
 #define DOOM_WHD_SOURCE_ERR_BUFFER_TOO_SMALL 9
 #define DOOM_WHD_SOURCE_ERR_DECODE 10
+#define DOOM_WHD_SOURCE_ERR_NOT_RAW 11
 
 /* --- Public API ---------------------------------------------------------- */
 
@@ -134,15 +164,64 @@ void doom_whd_source_close(void);
 /**
  * @brief Returns the mapped byte count: how much flash this adapter mapped.
  *
- * This is the partition size, not the container length. The container is
- * shorter than the partition -- the remainder is erased flash -- and its own
- * length is the accepted reader's @c state->size. 0 when nothing is mapped, so
- * the same call answers "how much did we map" and "is anything mapped".
+ * This is the window covering the container, rounded up to the 64 KB MMU page --
+ * 2,031,616 B for the 1,963,174 B container, not the 2 MB partition. The
+ * container's own length is the accepted reader's @c state->size, and the
+ * remainder of the window is the rest of the last page. 0 when nothing is
+ * mapped, so the same call answers "how much did we map" and "is anything
+ * mapped".
  *
  * @return Bytes mapped, or 0 when no mapping is live (including every host
  *         build, which maps nothing).
  */
 uint32_t doom_whd_source_mapped_size(void);
+
+/**
+ * @brief The first byte of the container inside the live mapping.
+ *
+ * The address `whd_open()` was given, which is also the base every
+ * doom_whd_source_lump_view() pointer falls inside. NULL when nothing is mapped
+ * (including every host build).
+ *
+ * The pointer is the mapping's: it must not be written through, and it is
+ * invalid after doom_whd_source_close().
+ */
+const uint8_t* doom_whd_source_base(void);
+
+/**
+ * @brief Tells a caller whether a lump can be viewed instead of decoded.
+ *
+ * Forwards whd_lump_is_raw(): true exactly when the directory entry's method is
+ * WHD_METHOD_RAW, so the payload is the lump and starts on a 4-byte boundary
+ * inside the mapping.
+ *
+ * @param state Open reader.
+ * @param lump  Lump index.
+ * @param out   Receives 1 for a raw lump, 0 otherwise; untouched on failure.
+ * @return DOOM_WHD_SOURCE_OK, ERR_STATE_NULL, ERR_LUMP_INDEX or ERR_NULL_OUTPUT.
+ */
+int doom_whd_source_lump_is_raw(const whd_state_t* state, int lump, int* out);
+
+/**
+ * @brief Hands out a raw lump as a pointer into the mapped flash, with no copy.
+ *
+ * This is the point of the RAW section: the lump's bytes are read in place, so
+ * the level's map stops costing DRAM. Nothing is decoded and nothing is
+ * allocated. The pointer is valid until doom_whd_source_close().
+ *
+ * Every other method answers DOOM_WHD_SOURCE_ERR_NOT_RAW -- stored and deflated
+ * alike -- so a caller that needs the bytes of a compressed lump takes
+ * doom_whd_source_read_lump() and pays the decode, explicitly.
+ *
+ * @param state Open reader.
+ * @param lump  Lump index.
+ * @param data  Receives the lump's first byte; untouched on failure.
+ * @param size  Receives the lump's size; untouched on failure.
+ * @return DOOM_WHD_SOURCE_OK, ERR_NOT_RAW, ERR_STATE_NULL, ERR_LUMP_INDEX,
+ *         ERR_NULL_OUTPUT or ERR_UNAVAILABLE on a host build that maps nothing.
+ */
+int doom_whd_source_lump_view(const whd_state_t* state, int lump, const uint8_t** data,
+                              uint32_t* size);
 
 /**
  * @brief How many lumps the container holds.

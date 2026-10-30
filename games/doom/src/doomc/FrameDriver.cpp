@@ -1,6 +1,6 @@
 /*
- * D3.6's frame driver: see FrameDriver.h for the residency policy, the frame
- * order, the 20 views, the hash protocol and the exact line formats.
+ * D3.7's frame driver: see FrameDriver.h for the four phases, the two map paths,
+ * the 20 views, the hash protocol and the exact line formats.
  *
  * The file has two halves and no third one, the same shape FlashProfile.cpp uses
  * for the same reason.
@@ -14,50 +14,53 @@
  * pays nothing for the arithmetic existing.
  *
  * The second half is the board driver and only exists when
- * `PIXELROOT32_DOOM_FRAME_PROBE` is defined (`env:esp32dev_ILI9341_frame`). It is
- * the only code in this project that renders a whole frame on the board, and it
- * is deliberately the *naive* driver: no cache, no reuse, no residency policy
- * beyond "the current call". Improving it is D3.5's job, and D3.5 measures
- * against the numbers this file prints.
+ * `PIXELROOT32_DOOM_FRAME_PROBE` is defined (`env:esp32dev_ILI9341_frame` and
+ * `env:esp32dev_ILI9341_frameram`). It is the only code in this project that
+ * renders a whole frame on the board, and it is deliberately the *naive* driver:
+ * no cache, no reuse, no residency policy beyond "the current call". Improving it
+ * is D3.5's job, and D3.5 measures against the numbers this file prints.
  *
- * WHAT THE NAIVE POLICY COSTS IN BYTES, AND WHY THAT MATTERS MORE THAN IT LOOKS
+ * WHAT THE NAIVE POLICY COSTS IN BYTES, AND WHERE THOSE BYTES COME FROM NOW
  *
  * Every buffer below is static .bss, because the task stack is 8 KB and the
- * largest E1M1 patch alone is 28,080 B. The total is printed by the probe's own
+ * largest E1M1 patch alone is 35,080 B. The total is printed by the probe's own
  * `FRAMEPROF,mem` line from `sizeof`-derived constants, so the RAM cost is a
  * reported number and not an estimate:
  *
- *   lump arena     68,640 B   E1M1's renderer lumps (REJECT and BLOCKMAP
- *                             excluded: the renderer never reads them), TEXTURE1,
- *                             PNAMES, COLORMAP
+ *   walk state     33,184 B   drawsegs 2,080, visplanes 14,608, clip posts 256,
+ *                             floorclip/ceilingclip 1,280, clip blocks 9,600,
+ *                             opening blocks 640, vis sprites 4,400, covered 320
  *   wall arena     36,864 B   two composed textures: 32,768 + 4,096, the
  *                             measured peak pair sum over the 20 views
- *   scratch        28,080 B   one patch, the largest patch an E1M1 texture
- *                             names (W17_1, TEKWALL1/TEKWALL3); also the flat
- *                             slot and the sprite patch slot, see below
- *   drawsegs        3,328 B   64 x 52 B (measured peak 39)
- *   visplanes      42,496 B   64 x 664 B (measured peak 22 allocated)
- *   clip ranges       256 B   32 x 8 B
- *   clip arrays     1,280 B   floorclip[] and ceilingclip[], 320 shorts each
- *   vis sprites     4,400 B   100 x 44 B (measured peak 97 accepted)
- *   clip blocks     9,600 B   15 x 320 shorts (measured peak 15, reserved two
- *                             included)
- *   opening blocks    640 B   1 x 320 shorts (measured peak 0)
- *   covered           320 B   one byte per column, for the frame hash
+ *   scratch        35,080 B   one patch, the largest patch an E1M1 texture
+ *                             names (SKY1's, which the plane pass now composes);
+ *                             also the flat slot and the sprite patch slot
+ *   level              0 B    in the flash build: the map's 46,508 B and the
+ *                             directories' 20,742 B are pointers into the
+ *                             mapping. 47,888 B in the RAM build.
+ *
+ * THE TWO MAP PATHS
+ *
+ * `PIXELROOT32_DOOM_MAP_IN_RAM=1` decodes the map lumps into RAM, which is what
+ * D3.6 did and what the A/B needs as its control; without it the map's lumps are
+ * raw container entries and `doom_whd_source_lump_view()` hands out the mapped
+ * bytes with no copy at all. The three graphics directories stay raw in both
+ * builds on purpose: they are read-only tables, not the map, and holding them
+ * constant isolates the one variable the A/B is about.
  *
  * THE SHARED SCRATCH, AND WHY IT IS SAFE HERE
  *
  * Three decoders produce small buffers that do not overlap in time: a patch
- * inside a texture compose, a flat, and a sprite patch. They share the 28,080 B
+ * inside a texture compose, a flat, and a sprite patch. They share the 35,080 B
  * scratch with a single owner tag, so the resolver can never hand back a pointer
  * to a buffer some other decoder has since overwritten: a hit requires the owner
  * *and* the name to match, and every decode sets the owner. The one sequence that
  * could alias a live buffer -- a texture compose while a sprite patch is live --
  * is impossible in this frame order unless a masked mid texture is drawn during a
  * sprite's draw, which is exactly the case the probe counts in `hazards=` on the
- * summary line. E1M1's 20 views record zero opening blocks and resolve no masked
- * mid textures, so the counter reads 0; a non-zero value would mean the sharing
- * was unsafe for that view and the pixels could differ.
+ * summary line. A flat in the scratch when the sky is composed is not that case:
+ * r_plane_draw() resolves every flat again immediately before it reads it, which
+ * is why the counter watches the sprite patch only.
  */
 #include "doomc/FrameDriver.h"
 
@@ -305,11 +308,6 @@ constexpr int kClipRangeCapacity = 32;
 /// pass snapshots every drawseg's clip arrays before it knows what will be drawn.
 constexpr int kClipBlockCapacity = 15;
 
-/// How many distinct wall textures a level may name before the subset refuses to
-/// be built. E1M1 names 32; 48 is the same headroom the flash profile's name
-/// lists use.
-constexpr int kTextureNameCapacity = 48;
-
 /// The masked pass's pools, at their measured peaks: 97 accepted vis-sprite
 /// entries (100 here) and zero recorded masked-mid columns (one block here, so a
 /// view that records one allocates it instead of failing). Both are static,
@@ -318,69 +316,66 @@ constexpr int kVisspriteCapacity = 100;
 constexpr int kOpeningBlockCapacity = 1;
 
 /// One THINGS record per sprite the level can place; E1M1's fixture resolves 129.
-constexpr int kSpriteCapacity = 132;
+constexpr int kSpriteCapacity = 130;
 
 // --- Buffer sizes -----------------------------------------------------------
 
 /// E1M1's renderer lumps minus THINGS (LINEDEFS 6,650 + SIDEDEFS 19,440 +
 /// VERTEXES 1,868 + SEGS 8,784 + SSECTORS 948 + NODES 6,608 + SECTORS 2,210 =
-/// 46,508), the TEXTURE1 *subset* (the 32 definitions E1M1 names, ~1.8 KB rather
-/// than the directory's 9,234), PNAMES 2,804 and COLORMAP 8,704. Each of those is
-/// its own heap block (see heapLump()), so this is only the expected total: 10
-/// blocks, 59,816 B, printed as `lump_bytes=` once the setup has run. Three
-/// things are deliberately absent:
+/// 46,508). In the RAM build these are decoded, one block each; in the flash build
+/// they are pointers into the container. THINGS (1,380) is a view in both builds.
 ///
-///   REJECT (904) and BLOCKMAP (6,922) are the simulation's, and doom_map.h
-///   states the renderer never reads them; THINGS (1,380) is read once, at setup,
-///   to build the 20 viewpoints, so it is decoded into the shared scratch and the
-///   map's view of it is cleared before the first frame (see buildFrames()).
-constexpr std::size_t kLumpArenaBytes = 59816u;
+/// `kLevelReleasedBytes` is what a frame stops costing DRAM: the 46,508 B of map
+/// plus the 20,742 B of COLORMAP, TEXTURE1 and PNAMES (8,704 + 9,234 + 2,804) in
+/// the flash build, and only the directories in the RAM build, which still decodes
+/// the map. `FRAMEPROF,mem` prints it, so "the level costs nothing" is a number.
+#if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
+constexpr std::size_t kLevelReleasedBytes = 20742u;
+#else
+constexpr std::size_t kLevelReleasedBytes = 46508u + 20742u;
+#endif
 
-/// How many blocks `kLumpArenaBytes` is split into: the seven map lumps,
-/// the TEXTURE1 subset, PNAMES and COLORMAP.
-constexpr int kLumpBlocks = 7 + 3;
-
-/// The block reserved for the TEXTURE1 subset. E1M1's 32 definitions need 1,796 B;
-/// this is the size rounded up so a level with a few more textures still builds.
-constexpr std::size_t kTextureSubsetBytes = 2048u;
-
-
-
-/// One static graphics region, big enough for whichever of the two buffers has to
-/// live in .bss. 36,864 B holds the wall arena exactly and the scratch with 1,784 B
-/// to spare.
+/// One static graphics region, big enough for the buffer that has to live in
+/// .bss. 36,864 B holds the wall arena exactly and the 35,080 B scratch with
+/// 1,784 B to spare, so either can be the static one.
 constexpr std::size_t kStaticGraphicsBytes = 36864u;
 
 /// The composed-texture arena. Two slots, because a two-sided fragment resolves
-/// its upper and lower tier before the column loop and holds both: one slot
-/// would be a wrong frame, not a slow one. The sizes are the measured peak pair
-/// over the 20 views -- 32,768 B (a 256-wide texture, stored with DOOM's 128-row
-/// column) plus 4,096 B (a 32-wide one) -- so 36,864 B total.
+/// its upper and lower tier before the column loop and holds both: one slot would
+/// be a wrong frame, not a slow one. The extent is the measured peak pair over the
+/// 20 views -- 32,768 B (a 256-wide texture, stored with DOOM's 128-row column)
+/// plus 4,096 B (a 32-wide one) -- so 36,864 B total.
+///
+/// The two slots are packed from opposite ends: slot 0 starts at byte 0 and slot 1
+/// ends at the arena's last byte. Any pair whose sum fits therefore coexists,
+/// which a fixed 32,768/4,096 split does not: it refused BROWN144 (18,432 B) next
+/// to a 16,384 B wall on the board, a pair that needs 34,816 of the 36,864.
 constexpr std::size_t kWallArenaBytes = 36864u;
-constexpr std::size_t kWallSlotABytes = 32768u;
-constexpr std::size_t kWallSlotBBytes = 4096u;
 
-/// One patch of a composite: the largest patch among the wall textures the 20 views
-/// resolve (TEKWALL4's, 17,544 B). The sky's patches are larger -- SKY1 is composed
-/// from four 256-wide patches and its largest is 35,080 B -- and that 17,536 B is
-/// what decides whether the plane pass can run here. See the phase note on
-/// renderOnce().
-constexpr std::size_t kScratchBytes = 17544u;
+/// One patch of a composite. 35,080 B is SKY1's largest patch, which the plane
+/// pass composes now that it runs; it is also larger than every wall texture's
+/// largest patch (17,544 B), so the wall pass and the masked pass share it. A
+/// flat (4,096 B) and a sprite patch (4,272 B) fit with room to spare.
+constexpr std::size_t kScratchBytes = 35080u;
 
 /// The graphics blocks: the wall arena and the decode scratch, side by side in one
-/// static region. Static, not heap, because the heap's holes cannot take them
-/// together and the static area can: 28,144 B of walk state plus these 54,408 B is
-/// 82,552 B of the 94,916 B this image has left in `dram0_0_seg`.
+/// static region when both are static, or split between .bss and the heap by the
+/// placement the probe reports.
 constexpr std::size_t kGraphicsBlockBytes = kWallArenaBytes + kScratchBytes;
 
-/// Up to eight extra lump blocks from the heap, sized 6,650 B or smaller each.
-constexpr int kExtraLumpBlocks = 8;
+/// Up to nine extra lump blocks from the heap: the blocks of the decoded level
+/// that the static arena does not hold, in the RAM build.
+constexpr int kExtraLumpBlocks = 9;
 
-/// How much of the level the static arena holds: the five biggest lump blocks
-/// (SIDEDEFS 19,440, SEGS 8,784, COLORMAP 8,704, LINEDEFS 6,650, NODES 6,608 =
-/// 50,186). The rest (PNAMES, SECTORS, VERTEXES, the texture subset, SSECTORS =
-/// 9,630) go to the eight extra blocks kExtraLumpBlocks allows.
-constexpr std::size_t kStaticLumpBytes = 23200u;
+#if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
+/// How much of the decoded level the static arena holds. `dram0_0_seg` is
+/// 124,068 B and this build's other .bss is 101,640 B (the flash build's 97,368
+/// plus the 4,272 B sprite patch), so 22,428 B is the hard ceiling; 20,480 leaves
+/// slack for the framework. It holds SIDEDEFS (19,448) and SSECTORS (952) and
+/// sends the rest -- 30,070 B -- to the heap, which the probe's `heap_before`
+/// shows has room.
+constexpr std::size_t kStaticLumpBytes = 20480u;
+#endif
 
 /// The static region this image can use for data: `dram0_0_seg` is 124,068 B
 /// (0x3ffb0000 + 0xdb5c, len 0x2c200 - 0xdb5c) and the image used ~29 KB of it
@@ -412,41 +407,35 @@ constexpr int kAngleCount = 5;
 constexpr std::uint8_t kSkyFlatName[8] = {'F', '_', 'S', 'K', 'Y', '1', 0, 0};
 constexpr std::uint8_t kSkyTextureName[8] = {'S', 'K', 'Y', '1', 0, 0, 0, 0};
 
-/// Which of the level's lumps the driver loads: E1M1 is the zero-byte marker and
+/// Which of the level's lumps the driver keeps. E1M1 is the zero-byte marker and
 /// the ten data lumps follow it in WAD order (THINGS LINEDEFS SIDEDEFS VERTEXES
-/// SEGS SSECTORS NODES SECTORS REJECT BLOCKMAP), so index 9 (REJECT) and 10
-/// (BLOCKMAP) are the two the renderer never reads.
+/// SEGS SSECTORS NODES SECTORS REJECT BLOCKMAP). REJECT and BLOCKMAP are the
+/// simulation's and the renderer never reads them, so the slots from
+/// DOOM_MAP_REJECT on are left empty and nothing is bound or decoded for them.
 constexpr int kMapLumpCount = 1 + DOOM_MAP_LUMP_COUNT;
-constexpr int kFirstSkippedMapLump = 9;
+constexpr int kFirstSkippedMapLump = DOOM_MAP_REJECT;
 
 // --- Static buffers ---------------------------------------------------------
 
 /*
- * WHERE THE BUFFERS LIVE, AND WHY IT IS TWO POOLS
+ * WHERE THE BUFFERS LIVE, AND WHY IT IS STILL TWO POOLS
  *
  * The two pools on this board are not additive and neither alone is enough, so
- * the split below is a measurement, not a preference. Both numbers are printed by
- * the probe and neither is estimated:
+ * the split below is a measurement, not a preference:
  *
  *   dram0_0_seg   the static data region the linker enforces: 124,068 B
- *                 (0x3ffb0000 + 0xdb5c, len 0x2c200 - 0xdb5c). This image uses
- *                 ~33 KB of it, so ~91 KB is free for new .bss. The all-static
- *                 form of this file overflowed the region by 104,696 B.
- *   the heap      what is left of DRAM after the static data, measured at
- *                 156,916 B with the display path live when this probe starts.
+ *                 (0x3ffb0000 + 0xdb5c, len 0x2c200 - 0xdb5c). D3.6's build used
+ *                 120,536 B of it, leaving 3,532 B; removing the 23,200 B decoded
+ *                 level arena is what makes room for the 17,536 B the plane pass
+ *                 adds to the scratch.
+ *   the heap      what is left of DRAM after the static data. With the display
+ *                 path live the probe reports ~48 KB free and one hole of ~47 KB;
+ *                 that hole is where the scratch goes.
  *
- * 195,904 B of buffers do not fit in either. So the part that is fixed for the
- * life of the image -- the walk's state, the D3.4 pools, the coverage record --
- * is .bss, which cannot fail at runtime; and the part that is the level's
- * working set -- the decoded lumps and the two composed textures -- is one
- * `heap_caps_malloc` block, 133,584 B, the same primitive the engine's own drawer
- * uses for its buffers rather than `malloc`/`new`. The block is freed before
- * `frameProbeRun()` returns and the free heap is printed again afterwards, so a
- * probe that held 133 KB of a 157 KB heap is not a state it leaves behind.
- *
- * `DriverState` above is the static half; `DriverWorkingSet` below is the
- * allocated one. The split is also what makes the numbers honest: a "static
- * arena" that cannot be linked is not a policy, it is a compile error.
+ * `DriverState` is the static half; the wall arena and the scratch are the
+ * placement half, reported by `FRAMEPROF,mem` so which pool served them is a
+ * printed number. The decoded level is a third case: .bss in the RAM build (its
+ * own array), absent in the flash build because the container is the storage.
  */
 
 /// The static half: the walk state, the clip-block pool and the coverage record.
@@ -462,45 +451,34 @@ struct DriverState {
     alignas(8) int16_t openingBlocks[kOpeningBlockCapacity * R_SCREEN_WIDTH];
     alignas(8) r_vissprite_t visSprites[kVisspriteCapacity];
     /// The per-column coverage record the frame hash needs: an uncovered column
-    /// is 0xFF, a real palette index, so the pixels alone cannot say whether a
-    /// column was written.
+    /// is 0, a real palette index writes 1, so the pixels alone cannot say
+    /// whether a column was written.
     alignas(8) std::uint8_t covered[R_SCREEN_WIDTH];
 };
 
-/// The allocated half: the level's working set, in three blocks.
-struct DriverWorkingSet {
-    /// E1M1's renderer lumps (REJECT, BLOCKMAP and THINGS excluded) plus the
-    /// TEXTURE1 subset, PNAMES and COLORMAP; `gLumpArenaUsed` is the realized
-    /// Two composed textures, 32,768 + 4,096. Allocated as `gWallBytes`.
-    std::size_t wallBytes = kWallArenaBytes;
-    /// One patch or one flat at a time. Allocated as `gScratch`.
-    std::size_t scratchBytes = kScratchBytes;
-};
-
-/// The static half, and the only new .bss this file adds.
+/// The static half, and the only unconditional new .bss this file adds.
 DriverState gState;
 
-/// The two large blocks and the one big request they are carved from.
+/// The two large blocks.
 std::uint8_t* gWallBytes = nullptr;
 std::uint8_t* gScratch = nullptr;
 std::uint8_t* gGraphics = nullptr;
-/// Up to eight extra lump blocks from the heap, for the lumps the static arena
-/// does not hold. Each is 6,650 B or smaller, which the heap's small holes serve.
+
+/// The extra lump blocks from the heap: the decoded level's blocks that the static
+/// arena does not hold. Each is 8,784 B or smaller.
 std::uint8_t* gLumpBlocks[kExtraLumpBlocks] = {};
 int gLumpBlockCount = 0;
 
-/// The sprite list, from the heap: 132 records of 32 B, where the static region has
-/// no room left for it.
+/// The sprite list, from the heap: 130 records, where the static region has no
+/// room left for it.
 r_sprite_t* gSprites = nullptr;
 
 /**
  * @brief Releases whatever the probe took. Safe on any subset.
  *
- * The map lumps and the two graphics directories are allocated one per lump (see
- * heapLump()), because even at boot the heap has no single hole large enough for
- * all of them together: with the display path live it reports 134,924 B free and
- * 110,580 B in its largest block, and one 59,824 B request already fails. Each
- * block is 19,440 B or smaller, which the heap does have.
+ * The heap has no single hole large enough for every block, so the level and the
+ * graphics are allocated one piece at a time -- see heapLump() and the placement
+ * block in frameProbeRun() -- and each is released here exactly once.
  */
 void releaseWorkingSet() {
     gScratch = nullptr;
@@ -520,29 +498,42 @@ void releaseWorkingSet() {
     gLumpBlockCount = 0;
 }
 
-/// How many bytes of the lump arena the setup committed.
-std::size_t gLumpArenaUsed = 0;
+/// How many bytes of the level the setup committed to RAM: 0 in the flash build,
+/// the decoded map's size in the RAM build. Printed as `level_ram=`.
+std::size_t gLevelRamUsed = 0;
 
-/// The decoded lumps and the three graphics directories: a static arena, because
-/// the static region has room while the heap does not. `dram0_0_seg` is 124,068 B
-/// and this image used ~29 KB of it before this file; the walk state (26 KB) and
-/// these 59,816 B still fit. The alternative -- one heap block per lump -- was
-/// tried and failed: the heap's 134,924 B is 110,580 B in one hole and the rest in
-/// pieces smaller than a 6-8 KB lump needs.
+#if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
+/// The static part of the decoded level. `PIXELROOT32_DOOM_MAP_IN_RAM` is the
+/// A/B's control: it keeps D3.6's data path (the map decoded into DRAM) so the
+/// two builds differ in exactly one thing.
 alignas(8) std::uint8_t gLumpArena[kStaticLumpBytes];
+#endif
 
 /// The one graphics buffer that has to be static; which one is decided at boot.
 alignas(8) std::uint8_t gStaticGraphics[kStaticGraphicsBytes];
-
 
 /// The placement the probe ended up using, printed by `FRAMEPROF,mem`:
 /// "wall-static", "scratch-static" or "heap-both".
 const char* gPlacement = "none";
 
+/// The map path this build uses, printed by every `FRAMEPROF,mem` and
+/// `FRAMEPROF,setup` line so a captured log says which of the two it is.
+#if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
+const char* const kMapPath = "ram";
+#else
+const char* const kMapPath = "flash";
+#endif
 
 // --- Reader and per-frame state ---------------------------------------------
 
 whd_state_t gWhd;
+
+/// How many lumps the setup got as mapped pointers instead of decoded bytes, and
+/// how many it asked for and had to refuse because the container is not raw.
+/// Printed by `FRAMEPROF,setup`, so a container regenerated without the raw
+/// section says so instead of quietly costing RAM.
+std::uint32_t gRawViews = 0;
+std::uint32_t gNotRaw = 0;
 
 const std::uint8_t* gTexture1 = nullptr;
 std::size_t gTexture1Bytes = 0;
@@ -555,6 +546,10 @@ r_light_t gLight = {};
 /// The measured sample being filled. Every resolver folds into it, so a counter
 /// cannot be written by one pass and forgotten by the next.
 FrameProfileSample gSample;
+
+/// The error code of the pass that refused the last frame, printed by
+/// `FRAMEPROF,error` so a refusal names the code instead of only the stage.
+int gStageCode = 0;
 
 /// How deep the decode call stack is. Only the outermost decode adds to
 /// residencyMicros, so a compose that decodes six patches does not count their
@@ -579,26 +574,38 @@ int gNewest = -1;
 
 /// The shared scratch's owner. A hit requires the owner *and* the name, so a
 /// pointer can never be handed back after another decoder overwrote it.
+///
+/// The sprite patch is NOT part of this sharing any more: R_DrawMasked() renders
+/// the masked mid textures a sprite hides *inside* that sprite's draw, so a
+/// compose can run while a sprite patch is live, and one 35,080 B scratch cannot
+/// hold both. D3.6 never saw it because the masked pass never ran; the board
+/// counts it in `hazards=`. The sprite patch therefore has its own buffer.
 enum ScratchOwner : std::uint8_t {
     kOwnerNone = 0,   ///< nothing valid in the scratch
     kOwnerPatch = 1,  ///< a texture compose's patch bytes
-    kOwnerFlat = 2,   ///< the flat slot
-    kOwnerSprite = 3  ///< the sprite patch slot
+    kOwnerFlat = 2    ///< the flat slot
 };
 
 std::uint8_t gScratchOwner = kOwnerNone;
 r_name_t gFlatName = R_NAME_NONE;
 r_flat_t gFlat = {};
+
+/// The sprite patch slot, separate from the shared scratch for the reason the
+/// owner tag documents. 4,272 B: the largest sprite patch the fixture names
+/// (ELECA0, type 48).
+alignas(8) std::uint8_t gSpritePatchBytes[kSpritePatchBytes];
 r_sprite_patch_t gSpritePatch = {nullptr, 0u};
 r_name_t gSpriteName = R_NAME_NONE;
 
-/// The aliasing violations the probe saw: a texture compose that took the scratch
-/// while a flat or a sprite patch was still live in it. The plane pass resolves one
-/// flat per drawable plane and reads it before the next resolve; the masked pass
-/// resolves one sprite patch per sprite and reads it before the next. The only
-/// compose either can reach is the sky's, in the plane pass's preflight. This must
-/// stay 0; a non-zero value means the sharing was unsafe and a pixel could have
-/// come from another buffer's bytes.
+/// 1 while r_plane_draw() is running. The plane pass resolves flats and composes
+/// the sky in the same scan, and it re-resolves every flat immediately before it
+/// reads it, so a compose that finds a flat in the scratch there is the design.
+/// Anywhere else it is an aliasing violation, and `hazards=` counts it.
+int gPlanePass = 0;
+
+/// The aliasing violations the probe saw: a texture compose that took the shared
+/// scratch while a flat was live outside the plane pass. Must stay 0; a non-zero
+/// value means a pixel could have come from another buffer's bytes.
 std::uint32_t gHazards = 0;
 
 // --- Timing -----------------------------------------------------------------
@@ -662,6 +669,27 @@ bool decodeLump(int lump, std::uint8_t* out, std::size_t capacity, std::uint32_t
     return true;
 }
 
+/**
+ * @brief Binds one lump as a pointer into the mapping, or reports that it is not raw.
+ *
+ * No decode, no copy, no allocation: this is the whole reason the container grew
+ * a raw section. It costs no measured time either -- a mapped read is as cheap as
+ * a RAM read until the flash cache misses, and the miss is charged to whichever
+ * pass touches the bytes, which is the number the A/B is after.
+ */
+bool viewLump(int lump, const std::uint8_t** data, std::size_t* size) {
+    std::uint32_t bytes = 0u;
+    if (doom_whd_source_lump_view(&gWhd, lump, data, &bytes) != DOOM_WHD_SOURCE_OK) {
+        ++gNotRaw;
+        *data = nullptr;
+        *size = 0u;
+        return false;
+    }
+    *size = static_cast<std::size_t>(bytes);
+    ++gRawViews;
+    return true;
+}
+
 // --- Wall textures ----------------------------------------------------------
 
 /// r_texture_compose()'s patch resolver: a PNAMES name is a lump name.
@@ -673,11 +701,10 @@ r_error_t fetchPatch(void* user, const char* name, const std::uint8_t** data, st
         return R_ERR_PATCH_FETCH;
     }
 
-    // A compose takes the scratch, which is also the flat slot. The plane pass
-    // resolves one flat per plane and reads it before the next resolve, and the
-    // only compose it can reach is the sky's in its preflight, so this must never
-    // fire; it is counted rather than assumed away.
-    if (gScratchOwner == kOwnerFlat || gScratchOwner == kOwnerSprite) {
+    // The plane pass resolves every flat again immediately before it reads it, so
+    // a flat in the scratch there is the design. Anywhere else a flat still in the
+    // scratch means a compose is about to overwrite bytes someone may read.
+    if (gScratchOwner == kOwnerFlat && gPlanePass == 0) {
         ++gHazards;
     }
     gScratchOwner = kOwnerPatch;
@@ -691,32 +718,31 @@ r_error_t fetchPatch(void* user, const char* name, const std::uint8_t** data, st
     return R_ERR_OK;
 }
 
-/// Chooses the slot a texture of @p bytes competes for, or -1 when neither can
-/// hold it. The most recently returned slot is never the victim: a fragment
-/// resolves its tiers one after the other and then reads both.
+/// True when a texture of @p bytes can live in @p slot beside whatever the other
+/// slot holds. A texture never has to fit beside itself: placing it releases the
+/// slot it is replacing.
+bool slotFits(int slot, std::uint32_t bytes) {
+    const int other = 1 - slot;
+    const std::uint32_t otherBytes = gWall[other].used ? gWall[other].bytes : 0u;
+    return bytes + otherBytes <= static_cast<std::uint32_t>(kWallArenaBytes);
+}
+
+/// Chooses the slot a texture of @p bytes goes in, or -1 when neither can hold it.
+/// The most recently returned slot is never the victim: a fragment resolves its
+/// tiers one after the other and then reads both.
 int wallVictim(std::uint32_t bytes) {
-    // `gNewest` is the slot handed out most recently. It is never the victim: a
-    // two-sided fragment resolves its upper and lower tier one after the other
-    // and reads both in the same column loop.
-    const int victim = (!gWall[0].used || gNewest != 0) ? 0 : 1;
+    // An unused slot first, then the older of the two. `gNewest` is the slot
+    // handed out most recently and is skipped whenever there is an alternative,
+    // because a two-sided fragment resolves its upper and lower tier one after the
+    // other and reads both in the same column loop.
+    const int preferred = !gWall[0].used ? 0 : (!gWall[1].used ? 1 : (gNewest != 0 ? 0 : 1));
+    const int fallback = 1 - preferred;
 
-    const std::uint32_t extent = victim == 0 ? kWallSlotABytes : kWallSlotBBytes;
-    if (bytes <= extent) {
-        return victim;
+    if (slotFits(preferred, bytes)) {
+        return preferred;
     }
-
-    // The victim's fixed extent is too small. The survivor is the live sibling;
-    // when it fits slot B it can be moved down and slot A freed for the new
-    // texture. A pair that still cannot fit is refused, not truncated.
-    const int other = 1 - victim;
-    if (victim == 1 && bytes <= kWallSlotABytes && gWall[other].used
-        && gWall[other].bytes <= kWallSlotBBytes) {
-        std::memmove(gWallBytes + kWallSlotBBytes, gWallBytes + gWall[other].offset,
-                     gWall[other].bytes);
-        gWall[other].offset = static_cast<std::uint32_t>(kWallSlotBBytes);
-        gWall[other].tex.pixels = gWallBytes + kWallSlotBBytes;
-        gWall[0].used = false;
-        return 0;
+    if (slotFits(fallback, bytes)) {
+        return fallback;
     }
     return -1;
 }
@@ -735,7 +761,10 @@ bool composeInto(int slot, const char* name, const r_texture_info_t& info) {
     const std::size_t height = static_cast<std::size_t>(info.height);
     const std::uint32_t bytes =
         static_cast<std::uint32_t>(static_cast<std::uint32_t>(info.width) * kStoredColumnRows);
-    const std::uint32_t offset = slot == 0 ? 0u : static_cast<std::uint32_t>(kWallSlotABytes);
+    // Slot 0 grows up from the arena's first byte, slot 1 down from its last, so
+    // the pair only has to add up to the arena, not match a fixed split.
+    const std::uint32_t offset =
+        slot == 0 ? 0u : static_cast<std::uint32_t>(kWallArenaBytes - bytes);
     std::uint8_t* base = gWallBytes + offset;
 
     const bool outermost = (gDecodeDepth == 0);
@@ -783,6 +812,13 @@ bool composeInto(int slot, const char* name, const r_texture_info_t& info) {
     return true;
 }
 
+/// The most recent texture a resolve refused, and why: `lookup` (the name is not
+/// in the container's TEXTURE1), `slot` (the two live textures do not fit the
+/// arena) or `compose` (the patch fetch or the composite failed). Printed by
+/// `FRAMEPROF,error`, because "a texture is missing" is not a diagnosis.
+char gFailTexture[9] = {0};
+const char* gFailWhy = "none";
+
 /// r_tex_source_t::resolve: the naive wall policy, documented in the header.
 const r_walltex_t* resolveWall(void* context, r_name_t name) {
     (void)context;
@@ -798,9 +834,11 @@ const r_walltex_t* resolveWall(void* context, r_name_t name) {
     ++gSample.texDecodes;
     char text[9];
     r_unpack_name(name, text);
+    std::memcpy(gFailTexture, text, sizeof text);
 
     r_texture_info_t info;
     if (r_texture_lookup(gTexture1, gTexture1Bytes, nullptr, 0u, text, &info) != R_ERR_OK) {
+        gFailWhy = "lookup";
         return nullptr;
     }
 
@@ -810,9 +848,11 @@ const r_walltex_t* resolveWall(void* context, r_name_t name) {
         // The frame's two live textures do not fit the arena. Reported by the
         // caller as R_SEGS_ERR_TEXTURE_MISSING, which is honest: nothing was
         // written for that tier.
+        gFailWhy = "slot";
         return nullptr;
     }
     if (!composeInto(slot, text, info)) {
+        gFailWhy = "compose";
         return nullptr;
     }
     return &gWall[slot].tex;
@@ -861,14 +901,15 @@ const r_flat_t* resolveFlat(void* context, r_name_t name) {
 }
 
 /// r_sprite_source_t::resolve: a sprite lump is its raw patch bytes, decoded into
-/// the scratch. The masked pass resolves one sprite at a time, so one buffer is
-/// enough; a compose running while a patch is live is the interleaving the shared
-/// scratch cannot serve, and it is counted in `hazards=`.
+/// the sprite patch slot. It cannot share the scratch: R_DrawMasked() renders the
+/// masked mid textures a sprite hides inside that sprite's own draw, so a compose
+/// can take the scratch while the patch is live. The slot is one buffer because
+/// the pass resolves one sprite at a time; `gSpriteName` is the cache key.
 const r_sprite_patch_t* resolveSprite(void* context, r_name_t lump) {
     (void)context;
 
     ++gSample.spriteResolves;
-    if (gScratchOwner == kOwnerSprite && gSpriteName == lump) {
+    if (gSpriteName == lump) {
         return &gSpritePatch;
     }
 
@@ -880,12 +921,11 @@ const r_sprite_patch_t* resolveSprite(void* context, r_name_t lump) {
         return nullptr;
     }
     std::uint32_t used = 0u;
-    if (!decodeLump(index, gScratch, kSpritePatchBytes, &used)) {
+    if (!decodeLump(index, gSpritePatchBytes, kSpritePatchBytes, &used)) {
         return nullptr;
     }
-    gScratchOwner = kOwnerSprite;
     gSpriteName = lump;
-    gSpritePatch.data = gScratch;
+    gSpritePatch.data = gSpritePatchBytes;
     gSpritePatch.size = static_cast<std::size_t>(used);
     return &gSpritePatch;
 }
@@ -1273,22 +1313,22 @@ bool sha256SelfTest() {
 
 /// Allocates one block for a decoded lump and accounts for it.
 ///
-/// THE TWO-TIER LAYOUT, AND WHY THE ORDER IS PART OF IT
-///
-/// The heap has no single hole large enough for the working set: with the display
-/// path live it reports 134,924 B free and 110,580 B in its largest block. So the
-/// five biggest blocks are carved out of one 108,872 B request, which fits that
-/// hole, and the rest are separate small requests from the remaining ~24 KB. The
-/// first five calls therefore come from the big block in descending size order and
-/// every later call falls through to the heap; `FRAMEPROF,mem` reports the split.
+/// In the RAM build the first blocks come from the static arena and the rest from
+/// the heap; in the flash build the map is not decoded at all, so nothing calls
+/// this. Blocks are handed out in descending size order by the caller: the heap's
+/// holes are not interchangeable, and a block order that leaves a small hole in
+/// front of a bigger request fails
+/// while the same bytes fit.
 std::uint8_t* heapLump(std::size_t bytes) {
     const std::size_t aligned = (bytes + 7u) & ~static_cast<std::size_t>(7u);
 
-    if (gLumpArenaUsed + aligned <= kStaticLumpBytes) {
-        std::uint8_t* at = gLumpArena + gLumpArenaUsed;
-        gLumpArenaUsed += aligned;
+#if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
+    if (gLevelRamUsed + aligned <= kStaticLumpBytes) {
+        std::uint8_t* at = gLumpArena + gLevelRamUsed;
+        gLevelRamUsed += aligned;
         return at;
     }
+#endif
     if (gLumpBlockCount >= kExtraLumpBlocks) {
         return nullptr;
     }
@@ -1299,23 +1339,33 @@ std::uint8_t* heapLump(std::size_t bytes) {
     }
     gLumpBlocks[gLumpBlockCount] = at;
     ++gLumpBlockCount;
-    gLumpArenaUsed += aligned;
+    gLevelRamUsed += aligned;
     return at;
 }
 
-/// Decodes one E1M1 map lump into its own block, or sizes an empty view.
+/// The map lump the setup could not bind or decode, printed by `FRAMEPROF,setup`
+/// so a shortfall names the request that failed instead of only counting it.
+const char* const kMapLumpNames[DOOM_MAP_LUMP_COUNT] = {
+    "THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES", "SEGS",
+    "SSECTORS", "NODES", "SECTORS", "REJECT", "BLOCKMAP"};
+int gFailLump = -1;
+
+/// Loads one E1M1 map lump the way this build reads the level.
 ///
-/// REJECT and BLOCKMAP are skipped on purpose: doom_map.h states the walk reads
-/// NODES, SSECTORS, SEGS, SECTORS, SIDEDEFS, LINEDEFS and VERTEXES, and THINGS is
-/// read once at setup for the viewpoints. The two the renderer never touches are
-/// 7,826 B of a 201 KB budget, and this probe measures the renderer.
+/// The slot is the `doom_map_lump_t` value itself and the lump is one past the
+/// E1M1 marker plus it. Getting that wrong is silent: doom_map_open() only checks
+/// record sizes, so a shifted set of lumps that happens to be aligned opens fine
+/// and renders garbage.
+///
+/// REJECT and BLOCKMAP are empty in both builds: the renderer never reads them,
+/// and in the RAM build decoding them would spend 7,826 B of DRAM for nothing. In
+/// the flash build the container still holds them raw, so the loader could bind
+/// them, and does not -- the probe measures the renderer.
+///
+/// THINGS is loaded like the rest and, unlike D3.6, stays loaded: the masked pass
+/// builds the sprite list from it once per view, so it is read 20 times, not once.
 bool loadMapLump(int marker, int dataIndex, doom_map_source_t* source,
                  std::int32_t* failures) {
-    // `dataIndex` is the doom_map_lump_t value, so the slot is the value
-    // itself and the lump is one past the E1M1 marker plus it. Getting this
-    // wrong is silent: doom_map_open() only checks record sizes, so a
-    // shifted set of lumps that happens to be aligned opens fine and renders
-    // garbage.
     const int slot = dataIndex;
     const int lump = marker + 1 + dataIndex;
 
@@ -1327,6 +1377,7 @@ bool loadMapLump(int marker, int dataIndex, doom_map_source_t* source,
     const std::int32_t size = doom_whd_source_lump_size(&gWhd, lump);
     if (size < 0) {
         ++(*failures);
+        gFailLump = dataIndex;
         return false;
     }
     if (size == 0) {
@@ -1334,162 +1385,65 @@ bool loadMapLump(int marker, int dataIndex, doom_map_source_t* source,
         source->size[slot] = 0u;
         return true;
     }
+#if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
     std::uint8_t* destination = heapLump(static_cast<std::size_t>(size));
     if (destination == nullptr) {
         ++(*failures);
+        gFailLump = dataIndex;
         return false;
     }
     std::uint32_t used = 0u;
     if (!decodeLump(lump, destination, static_cast<std::size_t>(size), &used)) {
         ++(*failures);
+        gFailLump = dataIndex;
         return false;
     }
     source->data[slot] = destination;
     source->size[slot] = static_cast<std::size_t>(used);
+#else
+    const std::uint8_t* view = nullptr;
+    std::size_t viewSize = 0u;
+    if (!viewLump(lump, &view, &viewSize)) {
+        ++(*failures);
+        gFailLump = dataIndex;
+        return false;
+    }
+    source->data[slot] = view;
+    source->size[slot] = viewSize;
+#endif
     return true;
 }
 
-/// Reads a whole lump into a fresh arena block; the directories are used as-is.
-bool loadLumpByName(const char* name, const std::uint8_t** data, std::size_t* bytes) {
+/// Binds one map lump as a view. THINGS goes through this in *both* builds: it is
+/// the sprite list's input (read once per view by the fixture), not part of the map
+/// graph the walk traverses, so holding it constant keeps the A/B about the walk
+/// and it is the 1,380 B that lets the RAM build fit at all.
+bool viewMapLump(int marker, int dataIndex, doom_map_source_t* source) {
+    const int lump = marker + 1 + dataIndex;
+    const std::uint8_t* view = nullptr;
+    std::size_t viewSize = 0u;
+    if (!viewLump(lump, &view, &viewSize)) {
+        return false;
+    }
+    source->data[dataIndex] = view;
+    source->size[dataIndex] = viewSize;
+    return true;
+}
+
+/// Binds a whole directory lump as a view. The three directories are read-only
+/// tables -- a texture lookup, a patch fetch and a colormap read -- and the
+/// container keeps them raw in both builds, so neither has to hold 20,742 B.
+bool loadLumpViewByName(const char* name, const std::uint8_t** data, std::size_t* bytes) {
     const int lump = doom_whd_source_lump_index(&gWhd, name);
     if (lump < 0) {
         return false;
     }
-    const std::int32_t size = doom_whd_source_lump_size(&gWhd, lump);
-    if (size <= 0) {
-        return false;
-    }
-    std::uint8_t* destination = heapLump(static_cast<std::size_t>(size));
-    if (destination == nullptr) {
-        return false;
-    }
-    std::uint32_t used = 0u;
-    if (!decodeLump(lump, destination, static_cast<std::size_t>(size), &used)) {
-        return false;
-    }
-    *data = destination;
-    *bytes = static_cast<std::size_t>(used);
-    return true;
-}
-
-void writeLe32(std::uint8_t* at, std::uint32_t value) {
-    at[0] = static_cast<std::uint8_t>(value & 0xffu);
-    at[1] = static_cast<std::uint8_t>((value >> 8) & 0xffu);
-    at[2] = static_cast<std::uint8_t>((value >> 16) & 0xffu);
-    at[3] = static_cast<std::uint8_t>((value >> 24) & 0xffu);
-}
-
-/**
- * @brief Builds a TEXTURE1 subset holding only the definitions E1M1 names.
- *
- * The full directory is 9,234 B and E1M1 uses 32 of its 125 textures. The subset
- * is the same format bit for bit -- a count, one offset per texture, then each
- * definition copied verbatim out of the original -- so `r_texture_lookup()` and
- * `r_texture_compose()` read it unchanged and PNAMES' patch indices still refer
- * to the same table. It costs about 2 KB instead of 9,234, which is the 7 KB that
- * decides whether the wall pass fits on this board at all.
- *
- * The original is decoded into the shared scratch, which is free at setup (no
- * frame has run yet), and the subset is written into the lump arena. Called after
- * the map is open, because the names come from the decoded SIDEDEFS.
- */
-bool buildTextureSubset(const doom_map_t& map, std::uint8_t* destination,
-                        std::size_t capacity) {
-    const int lump = doom_whd_source_lump_index(&gWhd, "TEXTURE1");
-    if (lump < 0) {
-        return false;
-    }
-    const std::int32_t size = doom_whd_source_lump_size(&gWhd, lump);
-    if (size <= 0 || static_cast<std::size_t>(size) > kScratchBytes) {
-        return false;
-    }
-    std::uint32_t sourceBytes = 0u;
-    if (!decodeLump(lump, gScratch, kScratchBytes, &sourceBytes)) {
-        return false;
-    }
-    const std::uint8_t* source = gScratch;
-
-    // --- The names E1M1's sidedefs use, deduplicated in first-seen order -----
-    char names[kTextureNameCapacity][9];
-    int nameCount = 0;
-    const doom_map_lump_view_t& sidedefs = map.lumps[DOOM_MAP_SIDEDEFS];
-
-    for (std::uint32_t index = 0; index < sidedefs.count; ++index) {
-        const std::uint8_t* record = sidedefs.data + static_cast<std::size_t>(index) * DOOM_SIDEDEF_SIZE;
-
-        for (int slot = 0; slot < 3; ++slot) {
-            const std::uint8_t* field = record + 4u + static_cast<std::size_t>(slot) * 8u;
-            if (field[0] == 0u
-                || (field[0] == static_cast<std::uint8_t>('-') && field[1] == 0u)) {
-                continue;
-            }
-            char name[9];
-            int at = 0;
-            for (; at < 8 && field[at] != 0u; ++at) {
-                name[at] = static_cast<char>(field[at]);
-            }
-            name[at] = '\0';
-
-            bool seen = false;
-            for (int known = 0; known < nameCount; ++known) {
-                if (std::strcmp(names[known], name) == 0) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (seen) {
-                continue;
-            }
-            if (nameCount >= kTextureNameCapacity) {
-                return false;
-            }
-            std::memcpy(names[nameCount], name, sizeof names[0]);
-            ++nameCount;
-        }
-    }
-
-    // --- The definitions, located in the original and measured --------------
-    struct Definition {
-        std::size_t offset;
-        std::size_t bytes;
-    };
-    Definition definitions[kTextureNameCapacity];
-    std::size_t total = 4u + static_cast<std::size_t>(nameCount) * 4u;
-
-    for (int index = 0; index < nameCount; ++index) {
-        r_texture_info_t info;
-        if (r_texture_lookup(source, sourceBytes, nullptr, 0u, names[index], &info) != R_ERR_OK) {
-            return false;
-        }
-        definitions[index].offset = info.offset;
-        definitions[index].bytes = static_cast<std::size_t>(R_TEXTURE_HEADER_SIZE)
-                                   + static_cast<std::size_t>(info.patchCount)
-                                         * static_cast<std::size_t>(R_TEXTURE_PATCH_SIZE);
-        total += definitions[index].bytes;
-    }
-
-    if (total > capacity) {
-        return false;
-    }
-    std::uint8_t* out = destination;
-
-    writeLe32(out, static_cast<std::uint32_t>(nameCount));
-    std::size_t cursor = 4u + static_cast<std::size_t>(nameCount) * 4u;
-    for (int index = 0; index < nameCount; ++index) {
-        writeLe32(out + 4u + static_cast<std::size_t>(index) * 4u,
-                  static_cast<std::uint32_t>(cursor));
-        std::memcpy(out + cursor, source + definitions[index].offset, definitions[index].bytes);
-        cursor += definitions[index].bytes;
-    }
-
-    gTexture1 = out;
-    gTexture1Bytes = total;
-    return true;
+    return viewLump(lump, data, bytes);
 }
 
 // --- One frame --------------------------------------------------------------
 
-/// The state the three measured passes share for the whole run.
+/// The state the four passes share for the whole run.
 struct Driver {
     doom_map_t map = {};
     r_view_storage_t storage = {};
@@ -1514,25 +1468,23 @@ void bindSurface(Driver* driver, std::uint8_t* pixels, int width, int height) {
 /**
  * @brief Renders one view once and fills @p sample.
  *
- * `frameMicros` brackets the surface prefill and the two measured passes; each
- * pass is timed on its own inside that window. Residency is the sum of the decode
- * time the passes incurred, accumulated by the resolvers.
+ * `frameMicros` brackets the surface prefill and the four passes; each pass is
+ * timed on its own inside that window. Residency is the sum of the decode time
+ * the passes incurred, accumulated by the resolvers.
  *
- * THE TWO PHASES, AND WHY NOT FOUR
+ * THE FOUR PHASES
  *
- * `walk` and `walls` are measured. `planes` (flats and the sky) and `masked`
- * (sprites and the deferred masked mid textures) are not, and the reason is
- * arithmetic rather than preference: with the map working set at 59,816 B and the
- * two wall slots at 36,864 B resident, the flat/sky scratch (35,080 B, SKY1's
- * largest patch) leaves no split of the board's 124,068 B static region and its
- * 134,924 B heap that holds both, and the masked pools add another 9,168 B on top.
- * The brief's own rule for this case is to measure fewer phases rather than
- * something else, so the two expensive ones -- the walk and the naive wall decode
- * -- are measured and the other two are absent, at 0 in every line.
+ * `walk`, `walls`, `planes` and `masked` all run. D3.6 could only afford the
+ * first two: the plane pass needs a 35,080 B sky-patch scratch and the masked
+ * pass its 9,168 B of pools, and neither fit next to a decoded level. With the
+ * level in the container's raw section both fit, so this is the whole frame the
+ * renderer defines, in the order r_bsp.h states, and the hash is the finished
+ * frame rather than the wall pass's half of it.
  *
- * That choice keeps the frame hash exact: the host's `frame NN:` wall hash is the
- * pixels and coverage after its wall pass, which is precisely what this build
- * produces, so the two hashes are comparable byte for byte.
+ * The sprite list is built inside the masked window: upstream builds it during
+ * the walk, but this port's caller owns the thing list, so the build is the
+ * caller's work for that pass and is measured with it rather than hidden in
+ * `other_us`.
  */
 bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int width,
                 int height, FrameProfileSample* sample) {
@@ -1570,14 +1522,75 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     sample->drawsegs = driver->view.drawsegCount;
     sample->drawsegOverflowed = driver->view.drawsegOverflowed;
 
+    // A pass owns the scratch for its duration only. Clearing the owner here is
+    // what keeps `hazards=` honest: the plane pass leaves a flat tagged in the
+    // scratch, and without this the masked pass's first sky/mid compose would look
+    // like an aliasing violation when it is only a stale tag.
+    gScratchOwner = kOwnerNone;
+    gFlatName = R_NAME_NONE;
+
     start = nowMicros();
     driver->stage = "walls";
     const r_segs_error_t walls =
         r_wall_emit(&driver->view, &driver->surface, &driver->textures, &driver->light);
     sample->wallsMicros = elapsedMicros(start);
     if (walls != R_SEGS_OK) {
+        gStageCode = static_cast<int>(walls);
         return false;
     }
+
+    // The wall pass owns the two texture slots for its duration, and it is over.
+    // Clearing them is what lets the plane pass compose the sky: SKY1 is 32,768 B
+    // and only fits the 36,864 B arena beside something of at most 4,096 B, so a
+    // wall texture left cached from the previous pass would refuse it. The policy
+    // is "nothing beyond the current call", and a pass is a call; recomposing the
+    // sky or a masked mid texture costs decode time that `residency_us` reports.
+    gWall[0].used = false;
+    gWall[1].used = false;
+    gNewest = -1;
+
+    start = nowMicros();
+    driver->stage = "planes";
+    gPlanePass = 1;
+    const r_plane_error_t planes =
+        r_plane_draw(&driver->view, &driver->surface, &driver->textures, &driver->light);
+    gPlanePass = 0;
+    sample->planesMicros = elapsedMicros(start);
+    if (planes != R_PLANE_OK) {
+        gStageCode = static_cast<int>(planes);
+        return false;
+    }
+    for (std::uint16_t index = 0u; index < driver->view.storage.planes.count; ++index) {
+        if (driver->view.storage.planes.planes[index].minX
+            <= driver->view.storage.planes.planes[index].maxX) {
+            ++sample->planesDrawn;
+        }
+    }
+    sample->planesAllocated = driver->view.storage.planes.count;
+
+    // The plane pass is over: its flat is dead and the tags go with it.
+    gScratchOwner = kOwnerNone;
+    gFlatName = R_NAME_NONE;
+
+    start = nowMicros();
+    driver->stage = "sprites";
+    const int spriteCount = buildSprites(&driver->map, &params);
+    if (spriteCount < 0) {
+        return false;
+    }
+
+    driver->stage = "masked";
+    r_masked_stats_t maskedStats;
+    const r_things_error_t masked = r_masked_emit(
+        &driver->view, &driver->surface, &driver->textures, &driver->light, gSprites,
+        static_cast<std::uint16_t>(spriteCount), &driver->sprites, &maskedStats);
+    sample->maskedMicros = elapsedMicros(start);
+    if (masked != R_THINGS_OK) {
+        gStageCode = static_cast<int>(masked);
+        return false;
+    }
+    sample->spritesSubmitted = maskedStats.submitted;
+    sample->spritesDrawn = maskedStats.drawn;
 
     sample->residencyMicros = gSample.residencyMicros;
     sample->texResolves = gSample.texResolves;
@@ -1614,8 +1627,8 @@ bool isBreakdownView(int frame) {
 }
 
 /// One `FRAMEPROF,mem` field, from `sizeof`: the driver's RAM cost is a printed
-/// number, never an estimate. `state_static` is the .bss half; `arena_heap` is the
-/// one block `frameProbeRun()` allocates and frees.
+/// number, never an estimate. `state_static` is the .bss half, `level_ram` is the
+/// decoded level (0 in the flash build) and `heap_before/after` bound the rest.
 void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore,
                       std::uint32_t heapAfterAlloc) {
     const std::size_t drawsegs = sizeof(gState.drawsegs);
@@ -1623,24 +1636,36 @@ void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore
     const std::size_t clipRanges = sizeof(gState.clipRanges);
     const std::size_t clipArrays = sizeof(gState.floorClip) + sizeof(gState.ceilingClip);
     const std::size_t clipBlocks = sizeof(gState.clipBlocks);
-    const std::size_t total = sizeof(DriverState) + gLumpArenaUsed + kWallArenaBytes
-                              + kScratchBytes;
+    const std::size_t spritePools = sizeof(gState.visSprites) + sizeof(gState.openingBlocks);
+    const std::size_t total = sizeof(DriverState) + gLevelRamUsed + kWallArenaBytes
+                              + kScratchBytes + sizeof(gSpritePatchBytes);
 
     std::snprintf(line, capacity,
                   "FRAMEPROF,mem,surface=engine8bpp,index_writes=1,present=no,no_rgb332=1,"
-                  "arena=heap,lump_blocks=%u,wall_arena=%u,scratch=%u,state_static=%u,"
-                  "drawsegs=%u,planes=%u,clip_ranges=%u,clip_arrays=%u,clip_blocks=%u,"
-                  "covered=%u,driver_total=%u,drawseg_cap=%d,plane_cap=%d,"
-                  "clip_block_cap=%d,heap_before=%u,heap_after_alloc=%u,phases=2\n",
-                  static_cast<unsigned>(gLumpArenaUsed),
-                  static_cast<unsigned>(kWallArenaBytes),
-                  static_cast<unsigned>(kScratchBytes),
+                  "arena=%s,lump_blocks=%u,wall_arena=%u,scratch=%u,sprite_patch=%u,"
+                  "state_static=%u,drawsegs=%u,planes=%u,clip_ranges=%u,clip_arrays=%u,"
+                  "clip_blocks=%u,sprite_pools=%u,covered=%u,driver_total=%u,drawseg_cap=%d,"
+                  "plane_cap=%d,clip_block_cap=%d,vissprite_cap=%d,heap_before=%u,"
+                  "heap_after_alloc=%u,map=%s,map_in_ram=%d,raw_views=%u,level_ram=%u,"
+                  "level_released=%u,phases=4\n",
+                  gPlacement, static_cast<unsigned>(gLumpBlockCount),
+                  static_cast<unsigned>(kWallArenaBytes), static_cast<unsigned>(kScratchBytes),
+                  static_cast<unsigned>(sizeof(gSpritePatchBytes)),
                   static_cast<unsigned>(sizeof(DriverState)), static_cast<unsigned>(drawsegs),
                   static_cast<unsigned>(planes), static_cast<unsigned>(clipRanges),
                   static_cast<unsigned>(clipArrays), static_cast<unsigned>(clipBlocks),
+                  static_cast<unsigned>(spritePools),
                   static_cast<unsigned>(sizeof(gState.covered)), static_cast<unsigned>(total),
-                  kDrawsegCapacity, kPlaneCapacity, kClipBlockCapacity,
-                  static_cast<unsigned>(heapBefore), static_cast<unsigned>(heapAfterAlloc));
+                  kDrawsegCapacity, kPlaneCapacity, kClipBlockCapacity, kVisspriteCapacity,
+                  static_cast<unsigned>(heapBefore), static_cast<unsigned>(heapAfterAlloc),
+                  kMapPath,
+#if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
+                  1,
+#else
+                  0,
+#endif
+                  static_cast<unsigned>(gRawViews), static_cast<unsigned>(gLevelRamUsed),
+                  static_cast<unsigned>(kLevelReleasedBytes));
 }
 
 }  // namespace
@@ -1669,10 +1694,9 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
 
     // --- The working set ----------------------------------------------------
     //
-    // The map lumps are allocated one per lump inside the setup below; the two
-    // graphics blocks are taken here. The heap reports 134,924 B free and
-    // 110,580 B in its largest block with the display path live, so nothing here
-    // asks for more than 36,864 B at once.
+    // The graphics blocks are taken here; the map lumps are bound inside the setup
+    // below. `FRAMEPROF,mem` prints the heap before and after, and the placement
+    // the driver chose, so the split is a measured number.
     const std::uint32_t heapBefore = static_cast<std::uint32_t>(esp_get_free_heap_size());
     const std::uint32_t largestBefore = static_cast<std::uint32_t>(
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
@@ -1729,9 +1753,12 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     }
     const std::uint32_t heapAfterAlloc = static_cast<std::uint32_t>(esp_get_free_heap_size());
 
+
     // --- Setup: the working set, timed once and reported separately ----------
     const std::int64_t setupStart = nowMicros();
-    gLumpArenaUsed = 0u;
+    gLevelRamUsed = 0u;
+    gRawViews = 0u;
+    gNotRaw = 0u;
     gSample = FrameProfileSample{};
     gDecodeDepth = 0;
 
@@ -1744,62 +1771,70 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
 
     doom_map_source_t source = {};
     std::int32_t mapFailures = 0;
-    // Biggest block first. The heap is not one arena: with the display path live
-    // it reports 134,924 B free in holes whose largest is 110,580 B, so a block
-    // order that leaves a small hole in front of a bigger request fails while the
-    // same bytes fit when the requests descend. The order is the sizes (wall
-    // 36,864, scratch 35,080, SIDEDEFS 19,440, SEGS 8,784, COLORMAP 8,704 -- the
-    // five that fill the big block -- then LINEDEFS 6,650, NODES 6,608, PNAMES
-    // 2,804, SECTORS 2,210, VERTEXES 1,868, the subset's 2,048, SSECTORS 948), and
-    // it is why the calls are not in WAD order.
-    // Descending block size: the heap's holes are not interchangeable, and the
-    // static arena holds the first five. The rest ask the heap one block at a time,
-    // each 8,704 B or smaller, which the fragments behind the big hole serve.
+    // Descending block size, which is the order the RAM build's heap needs: the
+    // holes are not interchangeable, so a small request in front of a big one can
+    // fail while the same bytes fit when the requests descend. In the flash build
+    // every one of these is a pointer and the order costs nothing.
     (void)loadMapLump(marker, DOOM_MAP_SIDEDEFS, &source, &mapFailures);   // 19,440
     (void)loadMapLump(marker, DOOM_MAP_SEGS, &source, &mapFailures);       //  8,784
-    bool directoriesLoaded = loadLumpByName("COLORMAP", &gColormap, &gColormapBytes);
+    bool directoriesLoaded = loadLumpViewByName("COLORMAP", &gColormap, &gColormapBytes);
     (void)loadMapLump(marker, DOOM_MAP_LINEDEFS, &source, &mapFailures);   //  6,650
     (void)loadMapLump(marker, DOOM_MAP_NODES, &source, &mapFailures);      //  6,608
-    directoriesLoaded = loadLumpByName("PNAMES", &gPnames, &gPnamesBytes) && directoriesLoaded;
+    directoriesLoaded = loadLumpViewByName("PNAMES", &gPnames, &gPnamesBytes) && directoriesLoaded;
+    // THINGS is a view in both builds: see viewMapLump(). It stays alive for the
+    // whole run because the masked pass builds one sprite list per view from it.
+    if (!viewMapLump(marker, DOOM_MAP_THINGS, &source)) {
+        ++mapFailures;
+    }
     (void)loadMapLump(marker, DOOM_MAP_SECTORS, &source, &mapFailures);    //  2,210
     (void)loadMapLump(marker, DOOM_MAP_VERTEXES, &source, &mapFailures);   //  1,868
-    std::uint8_t* const textureSubsetBlock = heapLump(kTextureSubsetBytes);
     (void)loadMapLump(marker, DOOM_MAP_SSECTORS, &source, &mapFailures);   //    948
     (void)loadMapLump(marker, DOOM_MAP_REJECT, &source, &mapFailures);     // skipped
     (void)loadMapLump(marker, DOOM_MAP_BLOCKMAP, &source, &mapFailures);   // skipped
+    directoriesLoaded = directoriesLoaded
+                        && loadLumpViewByName("TEXTURE1", &gTexture1, &gTexture1Bytes);
 
-    // THINGS is read once, at setup, to build the 20 viewpoints: its 1,380 B are
-    // decoded into the shared scratch, which no frame has touched yet, and the
-    // map's view of it is cleared as soon as the viewpoints exist. Nothing after
-    // setup reads THINGS -- the sprite list went with the masked pass -- so the
-    // pointer's lifetime ends where this comment does.
-    {
-        const int things = marker + 1 + DOOM_MAP_THINGS;
-        const std::int32_t size = doom_whd_source_lump_size(&gWhd, things);
-        std::uint32_t used = 0u;
-        if (size <= 0 || static_cast<std::size_t>(size) > kScratchBytes
-            || !decodeLump(things, gScratch, kScratchBytes, &used)) {
-            writeLine("FRAMEPROF,setup,status=fail,reason=things\n");
-            doom_whd_source_close();
-            releaseWorkingSet();
-            return;
-        }
-        source.data[DOOM_MAP_THINGS] = gScratch;
-        source.size[DOOM_MAP_THINGS] = static_cast<std::size_t>(used);
+    // The sprite list. D3.6 never allocated it because the masked pass never ran;
+    // it is the caller's thing list, so it is the caller's block. It is taken
+    // *after* the level's blocks because those are the big requests: the scratch
+    // has already eaten the middle of the one large hole, so 8,784 B of SEGS has to
+    // find a hole before a 4,160 B sprite list splits what is left of it.
+    gSprites = static_cast<r_sprite_t*>(
+        heap_caps_malloc(static_cast<std::size_t>(kSpriteCapacity) * sizeof(r_sprite_t),
+                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (gSprites == nullptr) {
+        std::snprintf(line, sizeof line,
+                      "FRAMEPROF,setup,status=fail,reason=sprites,need=%u,heap=%u,"
+                      "largest=%u\n",
+                      static_cast<unsigned>(kSpriteCapacity * sizeof(r_sprite_t)),
+                      static_cast<unsigned>(esp_get_free_heap_size()),
+                      static_cast<unsigned>(heap_caps_get_largest_free_block(
+                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+        writeLine(line);
+        releaseWorkingSet();
+        doom_whd_source_close();
+        return;
     }
-
 
     doom_map_t map;
     const doom_map_error_t mapError =
         mapFailures == 0 ? doom_map_open(&map, &source) : DOOM_MAP_ERR_REQUIRED_LUMP;
     if (mapFailures != 0 || !directoriesLoaded || mapError != DOOM_MAP_OK) {
         std::snprintf(line, sizeof line,
-                      "FRAMEPROF,setup,status=fail,reason=lump,map_failures=%d,directories=%d,"
-                      "map_error=%d,pnames=%u,colormap=%u,heap=%u\n",
-                      static_cast<int>(mapFailures), directoriesLoaded ? 1 : 0,
+                      "FRAMEPROF,setup,status=fail,reason=lump,map=%s,map_failures=%d,"
+                      "fail_lump=%s,not_raw=%u,directories=%d,map_error=%d,pnames=%u,"
+                      "colormap=%u,texture1=%u,heap=%u,largest=%u,level_ram=%u\n",
+                      kMapPath, static_cast<int>(mapFailures),
+                      (gFailLump >= 0 && gFailLump < DOOM_MAP_LUMP_COUNT)
+                          ? kMapLumpNames[gFailLump] : "none",
+                      static_cast<unsigned>(gNotRaw), directoriesLoaded ? 1 : 0,
                       static_cast<int>(mapError), static_cast<unsigned>(gPnamesBytes),
                       static_cast<unsigned>(gColormapBytes),
-                      static_cast<unsigned>(esp_get_free_heap_size()));
+                      static_cast<unsigned>(gTexture1Bytes),
+                      static_cast<unsigned>(esp_get_free_heap_size()),
+                      static_cast<unsigned>(heap_caps_get_largest_free_block(
+                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                      static_cast<unsigned>(gLevelRamUsed));
         writeLine(line);
         doom_whd_source_close();
         releaseWorkingSet();
@@ -1813,26 +1848,19 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
         return;
     }
 
-    // The subset has to be built after the map is open (its names come from the
-    // decoded SIDEDEFS) and before the first resolve. Its block was reserved with
-    // the other allocations, so it does not compete for a hole at this point; the
-    // original directory is read out of the shared scratch, which is free until
-    // the first frame.
-    if (textureSubsetBlock == nullptr || !buildTextureSubset(map, textureSubsetBlock,
-                                                             kTextureSubsetBytes)) {
-        writeLine("FRAMEPROF,setup,status=fail,reason=texture_subset\n");
-        doom_whd_source_close();
-        releaseWorkingSet();
-        return;
-    }
-
     // The block sizes and the directory sizes are the residency decision, so they
     // are printed with the setup that made it.
     std::snprintf(line, sizeof line,
-                  "FRAMEPROF,setup,status=ok,lump_blocks=%u,lump_bytes=%u,texture1=%u,pnames=%u,"
-                  "colormap=%u,map_lumps=%d,map_skipped=%d,setup_us=%u\n",
-                  static_cast<unsigned>(kLumpBlocks),
-                  static_cast<unsigned>(gLumpArenaUsed),
+                  "FRAMEPROF,setup,status=ok,map=%s,map_in_ram=%d,raw_views=%u,level_ram=%u,"
+                  "texture1=%u,pnames=%u,colormap=%u,map_lumps=%d,map_skipped=%d,"
+                  "setup_us=%u\n",
+                  kMapPath,
+#if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
+                  1,
+#else
+                  0,
+#endif
+                  static_cast<unsigned>(gRawViews), static_cast<unsigned>(gLevelRamUsed),
                   static_cast<unsigned>(gTexture1Bytes),
                   static_cast<unsigned>(gPnamesBytes),
                   static_cast<unsigned>(gColormapBytes),
@@ -1849,13 +1877,6 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
         return;
     }
 
-    // The viewpoints are the last reader of THINGS. Clearing the map's view is
-    // what makes the scratch reusable for patches without leaving a dangling
-    // lump behind: nothing can read a NULL lump.
-    map.lumps[DOOM_MAP_THINGS].data = nullptr;
-    map.lumps[DOOM_MAP_THINGS].size = 0u;
-    map.lumps[DOOM_MAP_THINGS].count = 0u;
-
     Driver driver;
     driver.map = map;
     driver.storage.drawsegs = gState.drawsegs;
@@ -1869,13 +1890,13 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     driver.storage.ceilingClip = gState.ceilingClip;
     driver.storage.clipBlocks = gState.clipBlocks;
     driver.storage.clipBlockCapacity = kClipBlockCapacity;
-    // The plane and masked passes are not run (see renderOnce), so the vis-sprite
-    // array and the opening pool are absent. r_bsp_init() ignores both and
-    // r_wall_emit() only needs the clip-block pool.
-    driver.storage.visSprites = nullptr;
-    driver.storage.visSpriteCapacity = 0;
-    driver.storage.openingBlocks = nullptr;
-    driver.storage.openingBlockCapacity = 0;
+    // All four phases run, so the D3.4 pools are part of the frame: the masked
+    // pass projects into visSprites and records its deferred columns in
+    // openingBlocks.
+    driver.storage.visSprites = gState.visSprites;
+    driver.storage.visSpriteCapacity = kVisspriteCapacity;
+    driver.storage.openingBlocks = gState.openingBlocks;
+    driver.storage.openingBlockCapacity = kOpeningBlockCapacity;
 
     if (r_bsp_init(&driver.view, &driver.map, &driver.storage) != R_BSP_OK) {
         writeLine("FRAMEPROF,setup,status=fail,reason=storage\n");
@@ -1905,19 +1926,32 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     for (int frame = 0; frame < kViewCount; ++frame) {
         for (int run = 1; run <= kTotalRuns; ++run) {
             FrameProfileSample sample;
+            gStageCode = 0;
             if (!renderOnce(&driver, frames[frame], surface, width, height, &sample)) {
                 std::snprintf(line, sizeof line,
-                              "FRAMEPROF,error,frame=%02d,run=%d,stage=%s\n", frame, run,
-                              driver.stage);
+                              "FRAMEPROF,error,frame=%02d,run=%d,map=%s,stage=%s,code=%d,"
+                              "tex=%s,why=%s\n", frame,
+                              run, kMapPath, driver.stage, gStageCode, gFailTexture, gFailWhy);
                 writeLine(line);
                 doom_whd_source_close();
                 releaseWorkingSet();
                 return;
             }
             if (run == 1) {
-                // The warm-up: the first render of a view touches flash the
-                // container has not delivered yet, and mixing that with the
-                // steady state would make the table incomparable.
+                // The warm-up is not discarded silently: it is the cold number --
+                // the first touch of this view's map bytes in the flash cache --
+                // and mixing it into the steady state would make the table
+                // incomparable with itself. `FRAMEPROF,cold` prints it alone.
+                std::snprintf(line, sizeof line,
+                              "FRAMEPROF,cold,frame=%02d,map=%s,walk_us=%u,walls_us=%u,"
+                              "planes_us=%u,masked_us=%u,frame_us=%u,drawsegs=%u\n",
+                              frame, kMapPath, static_cast<unsigned>(sample.walkMicros),
+                              static_cast<unsigned>(sample.wallsMicros),
+                              static_cast<unsigned>(sample.planesMicros),
+                              static_cast<unsigned>(sample.maskedMicros),
+                              static_cast<unsigned>(sample.frameMicros),
+                              static_cast<unsigned>(sample.drawsegs));
+                writeLine(line);
                 continue;
             }
 
@@ -1942,16 +1976,16 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
 
     std::snprintf(line, sizeof line,
                   "FRAMEPROF,probe,total_us=%u,hazards=%u,sha256=ok,views=%d,runs=%d,"
-                  "warmup=%d\n",
+                  "warmup=%d,map=%s,phases=4\n",
                   static_cast<unsigned>(probeMicros), static_cast<unsigned>(gHazards), kViewCount,
-                  kMeasuredRuns, kTotalRuns - kMeasuredRuns);
+                  kMeasuredRuns, kTotalRuns - kMeasuredRuns, kMapPath);
     writeLine(line);
 
     doom_whd_source_close();
 
-    // The block goes back before the shell's first frame: a probe that left
-    // 195 KB of a 201 KB heap held would be a state its caller never asked for,
-    // exactly as the D2.3 probe releases its mapping.
+    // The blocks go back before the shell's first frame: a probe that left the
+    // graphics and the decoded level held would be a state its caller never asked
+    // for, exactly as the D2.3 probe releases its mapping.
     releaseWorkingSet();
 
     std::snprintf(line, sizeof line, "FRAMEPROF,heap,after_free=%u\n",
@@ -1980,3 +2014,5 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
 }  // namespace doom
 
 #endif
+
+

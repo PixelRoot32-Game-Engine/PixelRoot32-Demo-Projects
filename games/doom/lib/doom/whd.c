@@ -734,6 +734,7 @@ whd_error_t whd_open(whd_state_t* state, const uint8_t* base, size_t size) {
     uint32_t nameTableOffset = 0u;
     uint32_t dataOffset = 0u;
     uint32_t totalSize = 0u;
+    uint16_t version = 0u;
     uint64_t previousPayloadEnd = 0u;
     uint32_t lump;
 
@@ -764,9 +765,11 @@ whd_error_t whd_open(whd_state_t* state, const uint8_t* base, size_t size) {
         || base[2] != WHD_MAGIC_2 || base[3] != WHD_MAGIC_3) {
         return reject(state, WHD_ERR_BAD_MAGIC);
     }
-    if (readUint16(base + 4) != (uint16_t)WHD_VERSION) {
+    if (readUint16(base + 4) < (uint16_t)WHD_VERSION_MIN
+        || readUint16(base + 4) > (uint16_t)WHD_VERSION) {
         return reject(state, WHD_ERR_VERSION);
     }
+    version = readUint16(base + 4);
     if (readUint16(base + 6) != 0u) {
         return reject(state, WHD_ERR_FLAGS);
     }
@@ -819,8 +822,12 @@ whd_error_t whd_open(whd_state_t* state, const uint8_t* base, size_t size) {
 
     /* Per entry: the method decides how the two sizes relate, and every payload
      * must live inside the data area in directory order. Payloads are stored
-     * back to back, but a gap is not an error -- only an overlap is, because it
-     * means the directory disagrees with the data area. */
+     * back to back, but a gap is not an error for a stored or deflated entry --
+     * only an overlap is, because it means the directory disagrees with the data
+     * area. A raw entry is the one exception in the other direction: the gap in
+     * front of it may exist, may be at most WHD_RAW_MAX_PADDING bytes, and must
+     * be zero padding, because that is the only gap the format defines. */
+    previousPayloadEnd = (uint64_t)dataOffset;
     for (lump = 0u; lump < numLumps; ++lump) {
         const uint8_t* entry = base
                              + (size_t)directoryOffset
@@ -833,10 +840,18 @@ whd_error_t whd_open(whd_state_t* state, const uint8_t* base, size_t size) {
         const uint64_t payloadEnd = payloadStart + (uint64_t)storedSize;
 
         if (method != (uint8_t)WHD_METHOD_STORED
-            && method != (uint8_t)WHD_METHOD_DEFLATE) {
+            && method != (uint8_t)WHD_METHOD_DEFLATE
+            && method != (uint8_t)WHD_METHOD_RAW) {
             return reject(state, WHD_ERR_METHOD);
         }
-        if (method == (uint8_t)WHD_METHOD_STORED && storedSize != uncompressedSize) {
+        /* Version 1 predates the method, so a version 1 container that carries
+         * one is a directory the writer's own version contradicts. */
+        if (method == (uint8_t)WHD_METHOD_RAW && version < 2u) {
+            return reject(state, WHD_ERR_METHOD);
+        }
+        if ((method == (uint8_t)WHD_METHOD_STORED
+             || method == (uint8_t)WHD_METHOD_RAW)
+            && storedSize != uncompressedSize) {
             return reject(state, WHD_ERR_STORED_SIZE);
         }
         if (method == (uint8_t)WHD_METHOD_DEFLATE && storedSize == 0u
@@ -848,6 +863,24 @@ whd_error_t whd_open(whd_state_t* state, const uint8_t* base, size_t size) {
         }
         if (payloadEnd > (uint64_t)size) {
             return reject(state, WHD_ERR_LUMP_RANGE);
+        }
+        if (method == (uint8_t)WHD_METHOD_RAW) {
+            const uint64_t padding = payloadStart - previousPayloadEnd;
+            uint64_t at;
+
+            /* dataOffset is 4-aligned by construction (40 + 16n + 12m), so the
+             * check is really on payloadOffset; testing the sum proves both. */
+            if ((payloadStart % (uint64_t)WHD_RAW_ALIGNMENT) != 0u) {
+                return reject(state, WHD_ERR_BAD_DIRECTORY);
+            }
+            if (padding > (uint64_t)WHD_RAW_MAX_PADDING) {
+                return reject(state, WHD_ERR_BAD_DIRECTORY);
+            }
+            for (at = previousPayloadEnd; at < payloadStart; ++at) {
+                if (base[at] != 0u) {
+                    return reject(state, WHD_ERR_BAD_DIRECTORY);
+                }
+            }
         }
 
         previousPayloadEnd = payloadEnd;
@@ -905,6 +938,52 @@ int32_t whd_lump_stored_size(const whd_state_t* state, int lump) {
     }
 
     return (int32_t)readUint32(entry + 4);
+}
+
+whd_error_t whd_lump_is_raw(const whd_state_t* state, int lump, int* out) {
+    const uint8_t* entry;
+
+    if (state == NULL) {
+        return WHD_ERR_NULL_STATE;
+    }
+    entry = directoryEntry(state, lump);
+    if (entry == NULL) {
+        return WHD_ERR_LUMP_INDEX;
+    }
+    if (out == NULL) {
+        return WHD_ERR_NULL_OUTPUT;
+    }
+
+    *out = entry[12] == (uint8_t)WHD_METHOD_RAW ? 1 : 0;
+    return WHD_ERR_OK;
+}
+
+whd_error_t whd_lump_view(const whd_state_t* state, int lump, const uint8_t** data,
+                          uint32_t* size) {
+    const uint8_t* entry;
+
+    if (state == NULL) {
+        return WHD_ERR_NULL_STATE;
+    }
+    entry = directoryEntry(state, lump);
+    if (entry == NULL) {
+        return WHD_ERR_LUMP_INDEX;
+    }
+    if (data == NULL || size == NULL) {
+        return WHD_ERR_NULL_OUTPUT;
+    }
+    /* The one answer that matters: anything that is not raw has no view, and
+     * the caller must take its copy path instead. */
+    if (entry[12] != (uint8_t)WHD_METHOD_RAW) {
+        return WHD_ERR_NOT_RAW;
+    }
+
+    /* whd_open() proved this entry's payload lives inside the container and
+     * starts on a WHD_RAW_ALIGNMENT boundary, and that a raw entry's two sizes
+     * agree, so both fields are safe to report as they are. */
+    *data = state->base + (size_t)state->dataOffset + (size_t)readUint32(entry);
+    *size = readUint32(entry + 4);
+    return WHD_ERR_OK;
 }
 
 int whd_lump_index_for_name(const whd_state_t* state, const char* name) {
@@ -967,7 +1046,10 @@ whd_error_t whd_read_lump(const whd_state_t* state, int lump, uint8_t* out,
 
     payload = state->base + (size_t)state->dataOffset + (size_t)readUint32(entry);
 
-    if (method == (uint8_t)WHD_METHOD_STORED) {
+    /* A raw lump is copied exactly as a stored one is: the method's extra
+     * promise (alignment, and permission to hand out a view) is not something a
+     * caller that asked for a copy can observe. */
+    if (method == (uint8_t)WHD_METHOD_STORED || method == (uint8_t)WHD_METHOD_RAW) {
         for (index = 0u; index < uncompressedSize; ++index) {
             out[index] = payload[index];
         }

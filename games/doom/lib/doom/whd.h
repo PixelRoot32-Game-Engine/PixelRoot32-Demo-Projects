@@ -36,7 +36,7 @@
  *
  *   offset  size  field
  *   0       4     magic[4]            'P','W','H','D'
- *   4       2     version             1
+ *   4       2     version             1 or 2 (this reader writes 2)
  *   6       2     flags               must be 0
  *   8       4     numLumps
  *   12      4     nameCount           name-table entries
@@ -51,7 +51,7 @@
  *   0       4     payloadOffset       relative to dataOffset
  *   4       4     storedSize          bytes in the payload area
  *   8       4     uncompressedSize    bytes the lump decodes to
- *   12      1     method              WHD_METHOD_STORED or WHD_METHOD_DEFLATE
+ *   12      1     method              STORED, DEFLATE or RAW
  *   13      3     reserved            must be 0
  *
  *   name table, per entry, 12 bytes:
@@ -66,6 +66,35 @@
  * RFC 1951 stream with no zlib wrapper (a raw DEFLATE stream, what zlib calls
  * windowBits = -15), and it must decode to exactly uncompressedSize bytes.
  *
+ * METHOD 2, "RAW", AND THE ONE PADDING EXCEPTION (version 2)
+ *
+ * A container may keep some lumps in a section a reader can hand out *without a
+ * copy*, because the payload then is the lump itself. That is what
+ * WHD_METHOD_RAW is for: it is *semantically identical to STORED*
+ * (storedSize == uncompressedSize and the payload is the lump) with two extra
+ * guarantees a STORED entry does not make:
+ *
+ *   1. `dataOffset + payloadOffset` is a multiple of WHD_RAW_ALIGNMENT (4).
+ *      dataOffset is always 4-aligned -- 40 + 16n + 12m, all multiples of 4 --
+ *      so this is a property of payloadOffset and a reader can check it;
+ *   2. the reader is allowed to return a pointer into the container instead of
+ *      copying (whd_lump_view()). A mapped flash page is then the lump, and a
+ *      level's lumps stop costing DRAM.
+ *
+ * The alignment is bought with padding, not with a new header field: a RAW
+ * payload may be preceded by up to WHD_RAW_ALIGNMENT - 1 zero bytes so that its
+ * first byte lands on the boundary. That is the format's single exception to
+ * "no gap and no padding" -- every other entry keeps the rule, and the padding
+ * belongs to no lump: it shifts no offset, changes no size, and a reader that
+ * does not know about method 2 still sees the byte stream it expects, because a
+ * STORED entry *is* what a raw entry means.
+ *
+ * Version 2 exists only to declare those two guarantees. A version 1 container
+ * is what this reader wrote before them and it still opens; a version 2
+ * container may contain raw entries or none at all. A version 1 container may
+ * not contain method 2, because then its own version would be a lie about the
+ * alignment the writer promised.
+ *
  * The encoder that writes this layout is tools/whd_encode.py. Its --check mode
  * re-decodes a container in memory and compares every lump against the source
  * WAD, and a container it produced was decoded on the host through this reader
@@ -76,6 +105,10 @@
  * It is the primitive only. It holds no decoded-lump cache (that is the next
  * layer), it does not interpret lump contents, it needs a buffer as large as the
  * whole lump because it decodes in one pass, and name lookup is a linear scan.
+ * It does not verify that a RAW payload's *padding* is zero -- that is the
+ * writer's promise and whd_lump_view() never reads the padding bytes -- but it
+ * does verify that no RAW payload can be reached except through bytes it has
+ * already checked.
  *
  * This is C99 only: <stddef.h> and <stdint.h>, no allocation, no stdio, no
  * floating point. The only static data is the DEFLATE root tables described
@@ -102,8 +135,13 @@ extern "C" {
 #define WHD_MAGIC_2 ((uint8_t)'H')
 #define WHD_MAGIC_3 ((uint8_t)'D')
 
-/* The only version this reader accepts. */
-#define WHD_VERSION 1u
+/* The version this reader and tools/whd_encode.py write. Version 2 adds method
+ * 2 ("raw", see the layout comment) and its one padding exception; a version 1
+ * container predates both and is still accepted. */
+#define WHD_VERSION 2u
+
+/* The oldest version this reader accepts. */
+#define WHD_VERSION_MIN 1u
 
 /* magic (4) + version (2) + flags (2) + numLumps (4) + nameCount (4) +
  * directoryOffset (4) + nameTableOffset (4) + dataOffset (4) + totalSize (4) +
@@ -118,9 +156,17 @@ extern "C" {
 #define WHD_NAME_ENTRY_SIZE 12u
 #define WHD_NAME_SIZE 8u
 
-/* Method byte values. */
+/* Method byte values. RAW is STORED plus the two guarantees the method exists
+ * for: a 4-aligned payload and permission to hand out a pointer into the
+ * container. See "METHOD 2, RAW" in the layout comment. */
 #define WHD_METHOD_STORED 0u
 #define WHD_METHOD_DEFLATE 1u
+#define WHD_METHOD_RAW 2u
+
+/* The alignment a RAW payload starts on, and therefore the largest number of
+ * zero padding bytes the format allows before one. */
+#define WHD_RAW_ALIGNMENT 4u
+#define WHD_RAW_MAX_PADDING (WHD_RAW_ALIGNMENT - 1u)
 
 /* --- DEFLATE decoder footprint ------------------------------------------- */
 
@@ -181,11 +227,19 @@ extern "C" {
  *   WHD_ERR_LUMP_RANGE          a payload is outside the data area, or a
  *                               payload's sizes are impossible for its method
  *   WHD_ERR_LUMP_ORDER          a payload starts before the previous one ends
- *   WHD_ERR_METHOD              the method byte is not a known method
- *   WHD_ERR_STORED_SIZE         a stored entry's two sizes disagree
+ *   WHD_ERR_METHOD              the method byte is not a known method, or a
+ *                               RAW entry in a version 1 container
+ *   WHD_ERR_STORED_SIZE         a stored entry's two sizes disagree, and the
+ *                               same rule applies to a raw entry
+ *   WHD_ERR_BAD_DIRECTORY       a RAW entry's payload does not start on a
+ *                               WHD_RAW_ALIGNMENT boundary, or the bytes before
+ *                               it are not at most WHD_RAW_MAX_PADDING zeros
  *   WHD_ERR_NAME_RANGE          a name entry points outside the directory
  *   WHD_ERR_LUMP_INDEX          the requested lump is outside the directory
- *   WHD_ERR_NULL_OUTPUT         the output is NULL for a lump with bytes
+ *   WHD_ERR_NOT_RAW             whd_lump_view() was asked for a lump that is
+ *                               stored or deflated, so no view exists
+ *   WHD_ERR_NULL_OUTPUT         the output is NULL for a lump with bytes, or an
+ *                               out parameter is NULL
  *   WHD_ERR_BUFFER_TOO_SMALL    the output cannot hold the decoded lump
  *   WHD_ERR_CORRUPT_PAYLOAD     the DEFLATE stream is malformed or does not
  *                               decode to the declared uncompressed size
@@ -216,7 +270,9 @@ typedef enum whd_error {
     WHD_ERR_LUMP_INDEX = 19,
     WHD_ERR_NULL_OUTPUT = 20,
     WHD_ERR_BUFFER_TOO_SMALL = 21,
-    WHD_ERR_CORRUPT_PAYLOAD = 22
+    WHD_ERR_CORRUPT_PAYLOAD = 22,
+    WHD_ERR_BAD_DIRECTORY = 23,
+    WHD_ERR_NOT_RAW = 24
 } whd_error_t;
 
 /* --- Reader state -------------------------------------------------------- */
@@ -257,7 +313,7 @@ typedef struct whd_state {
  *   3. size > WHD_MAX_BUFFER_SIZE                     WHD_ERR_SIZE_RANGE
  *   4. size < WHD_HEADER_SIZE                         WHD_ERR_TOO_SMALL
  *   5. magic is "PWHD"                                WHD_ERR_BAD_MAGIC
- *   6. version == WHD_VERSION                         WHD_ERR_VERSION
+ *   6. version is WHD_VERSION_MIN .. WHD_VERSION      WHD_ERR_VERSION
  *   7. flags == 0                                     WHD_ERR_FLAGS
  *   8. reserved == 0                                  WHD_ERR_RESERVED
  *   9. totalSize == size                              WHD_ERR_TOTAL_SIZE
@@ -268,14 +324,19 @@ typedef struct whd_state {
  *      nameCount fits the buffer                       WHD_ERR_NAME_TABLE_RANGE
  *  13. dataOffset == name-table end and
  *      dataOffset <= size                              WHD_ERR_DATA_RANGE
- *  14. per entry: method is known                     WHD_ERR_METHOD
+ *  14. per entry: method is known, and RAW is a
+ *      version 2 method                                WHD_ERR_METHOD
  *  15. per entry: the two sizes agree for a stored
- *      entry, and a deflate entry with an
+ *      or raw entry, and a deflate entry with an
  *      uncompressed size has a payload                WHD_ERR_LUMP_RANGE
  *  16. per entry: payloadOffset >= previous payload
  *      end (no gap is required, overlap is not)       WHD_ERR_LUMP_ORDER
  *  17. per entry: payload end <= data area length     WHD_ERR_LUMP_RANGE
- *  18. per name entry: lumpIndex < numLumps           WHD_ERR_NAME_RANGE
+ *  18. per raw entry: the payload starts on a
+ *      WHD_RAW_ALIGNMENT boundary and the bytes
+ *      between the previous payload and it are at
+ *      most WHD_RAW_MAX_PADDING, all zero             WHD_ERR_BAD_DIRECTORY
+ *  19. per name entry: lumpIndex < numLumps           WHD_ERR_NAME_RANGE
  *
  * @param state Caller-owned reader state; rewritten on every call.
  * @param base  Read-only container bytes (flash mapping or a host array).
@@ -318,6 +379,51 @@ int32_t whd_lump_size(const whd_state_t* state, int lump);
 int32_t whd_lump_stored_size(const whd_state_t* state, int lump);
 
 /**
+ * @brief Tells a caller whether a lump can be read as a zero-copy view.
+ *
+ * True exactly when the directory entry's method is WHD_METHOD_RAW, which is the
+ * only method that promises the payload is the lump *and* that it starts on a
+ * WHD_RAW_ALIGNMENT boundary. It is the cheap question a caller asks before
+ * deciding to map rather than copy; whd_lump_view() answers the same question by
+ * refusing.
+ *
+ * @param state Open reader.
+ * @param lump  Lump index.
+ * @param out   Receives 1 for a raw lump and 0 for any other. Untouched when the
+ *              call fails. May not be NULL.
+ * @return WHD_ERR_OK, WHD_ERR_NULL_STATE, WHD_ERR_LUMP_INDEX or
+ *         WHD_ERR_NULL_OUTPUT.
+ */
+whd_error_t whd_lump_is_raw(const whd_state_t* state, int lump, int* out);
+
+/**
+ * @brief Hands out a running lump as a pointer into the container, with no copy.
+ *
+ * Valid only for a WHD_METHOD_RAW lump: the payload is the lump's bytes, its
+ * size is the lump's uncompressed size, and both live in the buffer handed to
+ * whd_open(). Nothing is decoded, nothing is allocated, and the copy
+ * whd_read_lump() would make does not happen. A container mapped read-only from
+ * flash is then read in place, which is the whole point of the method.
+ *
+ * Everything else answers WHD_ERR_NOT_RAW -- a stored lump and a deflated lump
+ * alike -- so the caller's fallback (copy, or decode) is an explicit branch and
+ * not a silent copy that looks like a view.
+ *
+ * The pointer is owned by the container: it is valid exactly as long as @p state
+ * is open over the same bytes, and it must not be written through (nor must the
+ * padding bytes before it).
+ *
+ * @param state Open reader.
+ * @param lump  Lump index.
+ * @param data  Receives the lump's first byte. Untouched on failure.
+ * @param size  Receives the lump's size in bytes. Untouched on failure.
+ * @return WHD_ERR_OK for a raw lump; WHD_ERR_NOT_RAW for any other method;
+ *         WHD_ERR_NULL_STATE, WHD_ERR_LUMP_INDEX or WHD_ERR_NULL_OUTPUT.
+ */
+whd_error_t whd_lump_view(const whd_state_t* state, int lump, const uint8_t** data,
+                          uint32_t* size);
+
+/**
  * @brief Resolves a lump name to its index, case-insensitively.
  *
  * The query is upper-cased byte by byte and compared against the 8-byte name
@@ -346,6 +452,10 @@ int whd_lump_index_for_name(const whd_state_t* state, const char* name);
  * A payload that fails to decode leaves whatever partial bytes it produced in
  * @p out and reports WHD_ERR_CORRUPT_PAYLOAD; only the size checks above leave
  * the buffer untouched.
+ *
+ * A stored lump and a raw lump are both copied byte for byte, so this call keeps
+ * working for every caller that predates whd_lump_view(): a raw lump is a stored
+ * lump with a stronger promise, and the only thing the copy costs is the copy.
  *
  * Not reentrant for DEFLATE payloads: the decoder owns one static root-table
  * pair (see "DEFLATE decoder footprint" above), so two calls must not decode at
