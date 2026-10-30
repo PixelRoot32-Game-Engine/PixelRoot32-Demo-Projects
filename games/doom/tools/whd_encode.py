@@ -40,8 +40,11 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import shutil
 import struct
+import subprocess
 import sys
+import tempfile
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,8 +73,10 @@ RAW_MAX_PADDING = RAW_ALIGNMENT - 1
 DEFLATE_WINDOW_BITS = -15
 DEFLATE_MEMORY_LEVEL = 9
 
-# The application partition the container has to fit in.
-FLASH_BUDGET = 2_097_152
+# The partition the shipped container is written to: partitions_wad.csv gives
+# `wad` 0x100000..0x400000 (D3.10), 3 MiB. --budget overrides it for a probe of
+# some other layout; every answer below is measured against whatever it is given.
+FLASH_BUDGET = 3_145_728
 
 WAD_HEADER_SIZE = 12
 WAD_DIRECTORY_ENTRY_SIZE = 16
@@ -95,6 +100,16 @@ EXIT_INPUT = 1
 EXIT_USAGE = 2
 EXIT_OUTPUT_EXISTS = 3
 EXIT_VERIFY = 4
+
+# The ten map lumps in WAD order, and their 1993 record sizes
+# (lib/doom/doom_map.h). REJECT and BLOCKMAP are byte blobs: doom_map_open()
+# size-checks them and reports no record count for them.
+MAP_LUMP_NAMES = (
+    "THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES", "SEGS",
+    "SSECTORS", "NODES", "SECTORS", "REJECT", "BLOCKMAP",
+)
+MAP_RECORD_SIZES = (10, 14, 30, 4, 12, 4, 28, 26, 0, 0)
+SHAREWARE_LEVELS = tuple(f"E1M{level}" for level in range(1, 10))
 
 
 class InputError(Exception):
@@ -274,16 +289,45 @@ def select_dropped(lumps: list[Lump], patterns: list[str], levels: list[str]) ->
     return frozenset(dropped)
 
 
-def build_baked_lumps(lumps: list[Lump], kept: list[Lump], level: str, sky: str,
+def select_unused_sprites(lumps: list[Lump], names: list[str]) -> frozenset[int]:
+    """The sprite lump indices a bake does not name, from S_START to S_END.
+
+    The shareware WAD carries 483 sprite lumps; one episode level's sprite table
+    names 36 of them. The rest are animation frames this port cannot address yet
+    (the fixture is frame 0), and at 493 KB compressed they are what makes the
+    whole-episode container too large for the `wad` partition. Dropping them is
+    explicit, never implicit: the names that stay are exactly the ones the bakery
+    marked raw, so the renderer cannot ask for one that was removed.
+    """
+    start = next((index for index, lump in enumerate(lumps)
+                  if lump.name.upper() == "S_START"), -1)
+    if start < 0:
+        raise InputError("--drop-unused-sprites: the WAD has no S_START")
+    end = next((index for index in range(start + 1, len(lumps))
+                if lumps[index].name.upper() == "S_END"), -1)
+    if end < 0:
+        raise InputError("--drop-unused-sprites: the WAD has no S_END after S_START")
+
+    kept = {name.strip().upper()[:NAME_SIZE] for name in names}
+    if not kept:
+        raise InputError("--drop-unused-sprites: the sprite list is empty")
+    return frozenset(index for index in range(start + 1, end)
+                     if lumps[index].name.upper()[:NAME_SIZE] not in kept)
+
+
+def build_baked_lumps(lumps: list[Lump], kept: list[Lump], levels: list[str], sky: str,
                       sprite_names: list[str]) -> tuple[list[Lump], list[tuple[str, int, int, int, int, int]],
                                                           bake.BakedSet, int, set[int]]:
-    """Bakes one level and appends the raw payloads and the manifest.
+    """Bakes the union of @p levels and appends the raw payloads and the manifest.
+
+    One bake for every level given: the union is deduplicated by texture, flat
+    and sprite identity, so a texture nine levels share is stored once.
 
     @return (the kept WAD lumps plus the new lumps, the manifest records with
     final indices, the baked set for --stats, how many lumps were appended, and
     the container indices that must be raw).
     """
-    baked = bake.bake_level(lumps, level, sky=sky, sprite_names=sprite_names)
+    baked = bake.bake_union(lumps, levels, sky=sky, sprite_names=sprite_names)
 
     index_by_name: dict[str, int] = {}
     for index, lump in enumerate(kept):
@@ -553,8 +597,9 @@ def stats_report(container: bytes, encoded: list[EncodedLump], padding: list[int
                  baked_manifest: bytes | None = None,
                  baked_set: bake.BakedSet | None = None,
                  dropped_count: int = 0,
-                 dropped_bytes: int = 0) -> str:
-    """Renders the --stats block: sizes, budget, the raw split and nine levels."""
+                 dropped_bytes: int = 0,
+                 budget: int = FLASH_BUDGET) -> str:
+    """Renders the --stats block: sizes, budget, the raw split and the bake."""
     output_bytes = len(container)
     uncompressed_total = sum(lump.uncompressed_size for lump in encoded)
     stored_total = sum(lump.stored_size for lump in encoded)
@@ -583,18 +628,15 @@ def stats_report(container: bytes, encoded: list[EncodedLump], padding: list[int
     worst = sorted(measured, key=lambda item: (item[1], item[0].name))[:3]
 
     savings = source_bytes - output_bytes
-    spare = FLASH_BUDGET - output_bytes
+    spare = budget - output_bytes
 
-    # What one more level would cost in flash: its ten lumps raw, plus the padding
-    # that aligns each of them. Eight more levels on top of the one already here
-    # is the nine-level question the next decision depends on.
-    level_cost: int | None = None
+    # What the levels kept raw cost in the container: their ten lumps and the
+    # padding that aligns each. This is the episode's map floor; the bake is the
+    # other half of the flash bill.
+    raw_level_bytes = None
     if selection.level_indices:
-        level_cost = sum(padding[index] + encoded[index].stored_size
-                         for index in sorted(selection.level_indices))
-    nine_level_headroom = None
-    if level_cost is not None:
-        nine_level_headroom = FLASH_BUDGET - output_bytes - 8 * level_cost
+        raw_level_bytes = sum(padding[index] + encoded[index].stored_size
+                              for index in sorted(selection.level_indices))
 
     lines = [
         f"  input            {_format_bytes(source_bytes)}  {identification.decode('ascii')}",
@@ -607,10 +649,10 @@ def stats_report(container: bytes, encoded: list[EncodedLump], padding: list[int
         f"{padding_total:,} B of alignment padding",
         f"  lump payloads    {_format_bytes(stored_total + padding_total)}  from "
         f"{_format_bytes(uncompressed_total)} of lump bytes",
-        f"  2 MiB budget     {_format_bytes(FLASH_BUDGET)}  "
+        f"  wad budget       {_format_bytes(budget)}  "
         + ("FITS" if spare >= 0 else "DOES NOT FIT")
         + f", {_format_bytes(abs(spare))} {'spare' if spare >= 0 else 'over'}"
-        + f" ({output_bytes * 100.0 / FLASH_BUDGET:.1f}% used)",
+        + f" ({output_bytes * 100.0 / budget:.1f}% used)",
         f"  lumps            {len(encoded):,} ({empty:,} empty, {deflated:,} deflated, "
         f"{stored:,} stored, {raw_count:,} raw)",
         f"  savings          {_format_bytes(savings)} of {_format_bytes(source_bytes)}",
@@ -619,7 +661,7 @@ def stats_report(container: bytes, encoded: list[EncodedLump], padding: list[int
     if dropped_count:
         lines.append(
             f"  dropped          {dropped_count:,} lumps, {_format_bytes(dropped_bytes)} "
-            f"removed by --drop-lumps/--drop-level")
+            f"removed by --drop-lumps/--drop-level/--drop-unused-sprites")
     if baked_manifest is not None and baked_set is not None:
         lines.append(bake.manifest_line(baked_manifest))
         entries = bake.parse_manifest(baked_manifest)
@@ -633,15 +675,34 @@ def stats_report(container: bytes, encoded: list[EncodedLump], padding: list[int
             f"{_format_bytes(baked_bytes(bake.KIND_SKY))} sky, "
             f"{_format_bytes(baked_bytes(bake.KIND_FLAT))} flats, "
             f"{_format_bytes(baked_bytes(bake.KIND_SPRITE))} sprites")
+        if baked_set.per_level:
+            lines.append(
+                f"  bake union       {baked_set.count(bake.KIND_WALL):,} textures, "
+                f"{baked_set.count(bake.KIND_SKY):,} sky, "
+                f"{baked_set.count(bake.KIND_FLAT):,} flats, "
+                f"{baked_set.count(bake.KIND_SPRITE):,} sprite lumps from "
+                f"{len(baked_set.per_level)} levels")
 
-    if level_cost is not None:
+    if raw_level_bytes is not None:
         lines.append(
-            f"  nine levels      nine_level_headroom={nine_level_headroom:,} B  "
-            f"({_format_bytes(level_cost)} per level, 8 more after "
-            f"{selection.level_name} already in the container)")
+            f"  raw levels       {_format_bytes(raw_level_bytes)}  "
+            f"{len(selection.level_indices):,} map lumps kept raw and mappable")
     else:
-        lines.append(
-            "  nine levels      nine_level_headroom=n/a  (no --raw-level to size a level)")
+        lines.append("  raw levels       n/a  (no --raw-level)")
+
+    # D3.10: one bake would still be a bake. If a level were packed alone, would
+    # its own bake fit the partition? The union has to answer that per level,
+    # because the largest is the one that decides the layout.
+    if baked_set is not None and baked_set.per_level:
+        for row in baked_set.per_level:
+            alone = row.container_bytes()
+            verdict = "FITS" if alone <= budget else "DOES NOT FIT"
+            lines.append(
+                f"  bake alone       {row.level} {_format_bytes(alone)}  "
+                f"{verdict}, {_format_bytes(abs(budget - alone))} "
+                f"{'spare' if alone <= budget else 'over'}  "
+                f"({row.walls} walls + {row.skies} sky, {row.flats} flats, "
+                f"{row.sprites} sprites)")
 
     if ratios:
         lines.append(f"  ratio per lump   min {ratios[0]:.2f}x  median {median(ratios):.2f}x  "
@@ -674,14 +735,14 @@ def _raw_lump_by_name(container: bytes, name: str) -> bytes | None:
     return None
 
 
-def container_stats_report(container: bytes) -> str:
+def container_stats_report(container: bytes, budget: int = FLASH_BUDGET) -> str:
     """Renders the --stats block for a container read back from disk.
 
     Every number is measured from the bytes, so this is what the image on the
     device actually holds. A level's cost cannot be inferred from a finished
     container (its directory does not say which lumps were selected as a level),
-    so the nine-level answer is reported as n/a here and comes from the encode
-    run, where the selection is known.
+    so the per-level bake answer comes from the encode run, where the selection
+    and the bake are known.
     """
     num_lumps, name_count, directory_offset, name_table_offset, data_offset, total_size = \
         struct.unpack_from("<IIIIII", container, 8)
@@ -710,7 +771,7 @@ def container_stats_report(container: bytes) -> str:
         previous_end = payload_offset + stored_size
 
     metadata = total_size - raw_total - compressed_total - padding_total
-    spare = FLASH_BUDGET - total_size
+    spare = budget - total_size
     lines = [
         f"  output           {_format_bytes(total_size)}  from {num_lumps:,} lumps",
         f"  metadata         {_format_bytes(metadata)}  header + directory + name table + padding",
@@ -718,12 +779,12 @@ def container_stats_report(container: bytes) -> str:
         f"{deflated:,} deflated + {stored:,} stored payloads",
         f"  raw              {_format_bytes(raw_total)}  {raw_count:,} raw lumps, "
         f"{padding_total:,} B of alignment padding",
-        f"  2 MiB budget     {_format_bytes(FLASH_BUDGET)}  "
+        f"  wad budget       {_format_bytes(budget)}  "
         + ("FITS" if spare >= 0 else "DOES NOT FIT")
         + f", {_format_bytes(abs(spare))} {'spare' if spare >= 0 else 'over'}"
-        + f" ({total_size * 100.0 / FLASH_BUDGET:.1f}% used)",
-        "  nine levels      nine_level_headroom=n/a  (a finished container does not "
-        "record its raw selection)",
+        + f" ({total_size * 100.0 / budget:.1f}% used)",
+        "  bake alone       n/a  (a finished container does not record its bake "
+        "selection; use the encode run)",
     ]
     manifest = _raw_lump_by_name(container, bake.MANIFEST_NAME)
     if manifest is not None:
@@ -764,6 +825,8 @@ raw selection:
                    use them in place instead of decoding them into RAM
   --raw-level LVL  keep that level's ten lumps raw: THINGS LINEDEFS SIDEDEFS
                    VERTEXES SEGS SSECTORS NODES SECTORS REJECT BLOCKMAP
+                   (repeatable and comma separated: the shipped container names
+                   all nine, so every map is mappable)
   (default)        no raw lumps: every payload is deflate or stored, as before
 
 dropping and baking (both default off; the command records the choice):
@@ -771,20 +834,37 @@ dropping and baking (both default off; the command records the choice):
                       insensitively. ``--drop-lumps 'DS*'`` removes the 55 PCM
                       sound effects this port can never play (APU synthesis
                       only), which frees about 389 KB of the container.
-  --drop-level LVL    remove a level marker and its ten data lumps. The shipped
-                      E1M1-only port drops E1M2..E1M9.
-  --bake LVL          compose that level's wall textures and sky into raw
-                      width*128 payloads, mark its flats and sprite lumps raw,
-                      and append the ~PWBAKE~ manifest. Requires TEXTURE1,
+  --drop-level LVL    remove a level marker and its ten data lumps.
+  --drop-unused-sprites  with --bake, remove the S_START..S_END lumps the bake's
+                      sprite list does not name. The shareware WAD's 447
+                      unreferenced frames are 493 KB compressed and are the
+                      difference between the episode fitting and not.
+  --bake LVL[,LVL]    compose the union of those levels' wall textures and sky
+                      into raw width*128 payloads, mark their flats and sprite
+                      lumps raw, and append one ~PWBAKE~ manifest. One payload
+                      per distinct texture, flat and sprite lump: the union is
+                      deduplicated, not one bake per level. Requires TEXTURE1,
                       PNAMES and --sprite-list for the sprite names.
-  --sprite-list PATH  the sprite lumps the level needs: the generated .inc form
+  --sprite-list PATH  the sprite lumps the bake keeps: the generated .inc form
                       or one name per line.
   --sky NAME          the sky texture to bake (default SKY1).
+
+budget and proofs:
+  --budget BYTES   the wad partition the container must fit (default 3,145,728 B,
+                   the shipped 3 MiB partition). --stats reports total, spare and
+                   what each level would cost if it were baked alone.
 
 --check:
   a WAD input is rebuilt and every lump is compared byte for byte, raw ones
   included; a container input is parsed and verified, and compared byte for
   byte against the WAD beside it (same stem, .WAD/.wad) when one exists.
+
+--check-levels:
+  a container input only. Compiles test/unit/test_whd/tool/levels_check.c.inc
+  against lib/doom/whd.c and lib/doom/doom_map.c, opens E1M1..E1M9 out of the
+  container through doom_map_open(), prints each level's lump bytes and record
+  counts, and compares both with the WAD beside it. A shifted or truncated set
+  that still opens is a failure here, which is the D3.6 bug class.
 
 exit codes:
   0  success
@@ -796,7 +876,7 @@ exit codes:
     parser = argparse.ArgumentParser(
         prog="whd_encode.py",
         description="Pack a DOOM IWAD/PWAD into a PWHD container: compressed, "
-                    "randomly accessible by lump index, sized for a 2 MiB partition.",
+                    "randomly accessible by lump index, sized for the wad partition.",
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -808,10 +888,16 @@ exit codes:
                         help="re-decode the input in memory and compare every lump "
                              "against the source; writes nothing and cannot be combined "
                              "with --output")
+    parser.add_argument("--check-levels", action="store_true",
+                        help="open all nine shareware levels out of a container through "
+                             "lib/doom/doom_map.c, print each level's lump bytes and "
+                             "record counts, and compare them with the WAD beside it")
+    parser.add_argument("--cc", default="gcc", metavar="NAME",
+                        help="C compiler for --check-levels (default: gcc)")
     parser.add_argument("--stats", action="store_true",
                         help="print input size, output size, the compressed/raw split, "
-                             "whether the result fits 2,097,152 B and the headroom for "
-                             "nine levels")
+                             "whether the result fits the wad budget and what each "
+                             "level's bake would cost alone")
     parser.add_argument("--force", action="store_true",
                         help="overwrite an existing output file")
     parser.add_argument("--level", type=int, default=9, choices=range(1, 10), metavar="{1-9}",
@@ -826,11 +912,19 @@ exit codes:
                              "comma separated")
     parser.add_argument("--drop-level", action="append", default=[], metavar="LEVEL",
                         help="remove a level marker and its ten data lumps; repeatable")
-    parser.add_argument("--bake", metavar="LEVEL",
-                        help="bake this level's wall textures, sky, flats and sprite "
-                             "lumps into raw payloads plus a manifest")
+    parser.add_argument("--bake", action="append", default=[], metavar="LEVEL[,LEVEL...]",
+                        help="bake the union of these levels' wall textures, sky, flats "
+                             "and sprite lumps into raw payloads plus one manifest; "
+                             "repeatable, comma separated")
+    parser.add_argument("--drop-unused-sprites", action="store_true",
+                        help="with --bake, drop every S_START..S_END lump the bake's "
+                             "sprite list does not name (the shareware WAD's 447 "
+                             "frame-0-unreachable animation frames)")
     parser.add_argument("--sky", default=None, metavar="NAME",
                         help="sky texture to bake (default SKY1)")
+    parser.add_argument("--budget", type=int, default=FLASH_BUDGET, metavar="BYTES",
+                        help=f"the wad partition the container must fit (default "
+                             f"{FLASH_BUDGET:,} B, the shipped partitions_wad.csv)")
     parser.add_argument("--sprite-list", type=Path, metavar="PATH",
                         help="file naming the sprite lumps --bake keeps: the generated "
                              ".inc form or one name per line")
@@ -864,19 +958,188 @@ def _verify(container: bytes, lumps: list[Lump] | None, source_label: str | None
     return raw_entries
 
 
+# --- The nine-level referee -------------------------------------------------
+
+
+def compile_level_checker(workdir: Path, compiler: str) -> Path:
+    """Builds test/unit/test_whd/tool/levels_check.c.inc against whd.c and doom_map.c."""
+    root = Path(__file__).resolve().parent.parent
+    executable = workdir / ("levels_check.exe" if sys.platform == "win32"
+                            else "levels_check")
+    command = [
+        compiler,
+        "-std=gnu99", "-O2", "-Wall", "-Wextra",
+        "-I", str(root / "lib" / "doom"),
+        "-o", str(executable),
+        "-x", "c",
+        str(root / "test" / "unit" / "test_whd" / "tool" / "levels_check.c.inc"),
+        str(root / "lib" / "doom" / "whd.c"),
+        str(root / "lib" / "doom" / "doom_map.c"),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError("the nine-level harness did not compile:\n"
+                           + (result.stderr or result.stdout))
+    if result.stderr.strip():
+        raise RuntimeError("the nine-level harness compiled with warnings, which this "
+                           "project does not accept:\n" + result.stderr)
+    return executable
+
+
+def expected_level_sizes(wad_path: Path) -> dict[str, list[int]]:
+    """The source WAD's own size for each of the ten lumps of every level."""
+    _, lumps, _ = read_wad(wad_path)
+    by_name: dict[str, int] = {}
+    for index, lump in enumerate(lumps):
+        by_name.setdefault(lump.name.upper()[:NAME_SIZE], index)
+
+    expected: dict[str, list[int]] = {}
+    for level in SHAREWARE_LEVELS:
+        marker = by_name.get(level)
+        if marker is None:
+            raise InputError(f"--check-levels: the WAD has no {level}")
+        following = [lump.name.upper() for lump in lumps[marker + 1:marker + 1 + len(MAP_LUMP_NAMES)]]
+        if following != list(MAP_LUMP_NAMES):
+            raise InputError(f"--check-levels: {level} is not followed by the ten map lumps")
+        expected[level] = [len(lumps[marker + 1 + offset].data)
+                           for offset in range(len(MAP_LUMP_NAMES))]
+    return expected
+
+
+def parse_level_line(line: str) -> tuple[str, str, dict[str, tuple[int, int]]] | None:
+    """Parses one `LEVEL ...` line into (name, status, {lump: (bytes, count)})."""
+    fields = line.split()
+    if len(fields) < 3 or fields[0] != "LEVEL":
+        return None
+    status = fields[2].split("=", 1)[1] if "=" in fields[2] else ""
+    measured: dict[str, tuple[int, int]] = {}
+    for field in fields[3:]:
+        if "=" not in field:
+            continue
+        key, value = field.split("=", 1)
+        if key in MAP_LUMP_NAMES and "/" in value:
+            size, count = value.split("/", 1)
+            measured[key] = (int(size), int(count))
+    return fields[1], status, measured
+
+
+def check_levels(arguments: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """``--check-levels``: opens all nine maps out of the container through C."""
+    if (arguments.output is not None or arguments.check or arguments.raw
+            or arguments.raw_level or arguments.drop_lumps or arguments.drop_level
+            or arguments.bake or arguments.sprite_list or arguments.sky is not None
+            or arguments.drop_unused_sprites):
+        parser.error("--check-levels reads a container as it is; it writes nothing "
+                     "and selects nothing")
+
+    try:
+        container = arguments.input.read_bytes()
+    except OSError as error:
+        print(f"whd_encode: {arguments.input}: {error.strerror}", file=sys.stderr)
+        return EXIT_INPUT
+    if container[0:4] != MAGIC:
+        print(f"whd_encode: {arguments.input}: --check-levels needs a PWHD container",
+              file=sys.stderr)
+        return EXIT_INPUT
+
+    try:
+        raw_entries = verify_container(container, None)
+    except VerificationError as error:
+        print(f"whd_encode: verification failed: {error}", file=sys.stderr)
+        return EXIT_VERIFY
+
+    expected = None
+    wad_path = source_beside(arguments.input)
+    if wad_path is not None:
+        try:
+            expected = expected_level_sizes(wad_path)
+        except InputError as error:
+            print(f"whd_encode: {error}", file=sys.stderr)
+            return EXIT_INPUT
+
+    workdir = Path(tempfile.mkdtemp(prefix="levels_check_"))
+    try:
+        executable = compile_level_checker(workdir, arguments.cc)
+        result = subprocess.run([str(executable), str(arguments.input)],
+                                capture_output=True, text=True)
+    except RuntimeError as error:
+        print(f"whd_encode: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    if result.returncode not in (EXIT_OK, EXIT_INPUT):
+        print(result.stderr or result.stdout, file=sys.stderr)
+        print("whd_encode: the nine-level harness did not run cleanly", file=sys.stderr)
+        return EXIT_USAGE
+
+    print(f"{arguments.input}: {len(container):,} B, {raw_entries:,} raw lumps")
+    failures = 0
+    seen = 0
+    for line in result.stdout.splitlines():
+        parsed = parse_level_line(line)
+        if parsed is None:
+            continue
+        level, status, measured = parsed
+        seen += 1
+        if status != "ok":
+            print(f"  {level}  {status}")
+            failures += 1
+            continue
+        if expected is not None:
+            sizes = expected.get(level)
+            if sizes is None:
+                print(f"  {level}  not in the source WAD")
+                failures += 1
+                continue
+            problems: list[str] = []
+            for offset, name in enumerate(MAP_LUMP_NAMES):
+                size, count = measured[name]
+                stride = MAP_RECORD_SIZES[offset]
+                if size != sizes[offset]:
+                    problems.append(f"{name} {size} B != WAD {sizes[offset]} B")
+                elif stride != 0 and count != size // stride:
+                    problems.append(f"{name} {count} records != {size} B / {stride}")
+            if problems:
+                print(f"  {level}  FAIL  " + "; ".join(problems))
+                failures += 1
+                continue
+        total = sum(size for size, _ in measured.values())
+        print(f"  {level}  ok  {_format_bytes(total)}  "
+              + "  ".join(f"{name} {measured[name][0]}/{measured[name][1]}"
+                          for name in MAP_LUMP_NAMES))
+    if expected is None:
+        print("  counts   structural only (no WAD beside the container): "
+              "sizes and counts were not compared with the source")
+    else:
+        print(f"  counts   every lump size and record count equals {wad_path.name}")
+
+    if seen != len(SHAREWARE_LEVELS) or failures != 0:
+        print(f"whd_encode: {seen - failures} of {len(SHAREWARE_LEVELS)} levels opened",
+              file=sys.stderr)
+        return EXIT_VERIFY
+    print(f"  levels   {seen} of {len(SHAREWARE_LEVELS)} maps open, raw, and validate")
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     arguments = parser.parse_args(argv)
 
     if arguments.check and arguments.output is not None:
         parser.error("--check writes nothing, so it cannot be combined with --output")
-    if not arguments.check and arguments.output is None:
-        parser.error("either --output is needed to write a container, or --check to verify one")
+    if arguments.check and arguments.check_levels:
+        parser.error("--check and --check-levels are two different proofs; pass one")
+    if (not arguments.check and not arguments.check_levels
+            and arguments.output is None):
+        parser.error("either --output is needed to write a container, --check to verify "
+                     "one, or --check-levels to open all nine maps out of one")
 
     raw_names = _split_names(arguments.raw)
     raw_levels = _split_names(arguments.raw_level)
     drop_patterns = _split_names(arguments.drop_lumps)
     drop_levels = _split_names(arguments.drop_level)
+    bake_levels = _split_names(arguments.bake)
 
     try:
         head = arguments.input.read_bytes()[:4]
@@ -885,28 +1148,46 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_INPUT
 
     if head == MAGIC:
+        if arguments.check_levels:
+            return check_levels(arguments, parser)
         return check_container(arguments, parser)
     if head not in (b"IWAD", b"PWAD"):
         print(f"whd_encode: {arguments.input}: neither a WAD nor a PWHD container",
+              file=sys.stderr)
+        return EXIT_INPUT
+    if arguments.check_levels:
+        print(f"whd_encode: {arguments.input}: --check-levels needs a PWHD container",
               file=sys.stderr)
         return EXIT_INPUT
 
     try:
         identification, lumps, source = read_wad(arguments.input)
         dropped = select_dropped(lumps, drop_patterns, drop_levels)
+
+        sprite_names: list[str] = []
+        if arguments.sprite_list is not None:
+            sprite_names = bake.read_sprite_list(arguments.sprite_list)
+        if arguments.drop_unused_sprites:
+            if not bake_levels:
+                raise InputError("--drop-unused-sprites is a bake decision: pass --bake")
+            if not sprite_names:
+                raise InputError("--drop-unused-sprites needs --sprite-list: it is the "
+                                 "only list of the sprite lumps that stay")
+            dropped = dropped | select_unused_sprites(lumps, sprite_names)
+
         kept = [lump for index, lump in enumerate(lumps) if index not in dropped]
         selection = select_raw(kept, raw_names, raw_levels)
 
         baked = None
         baked_manifest = None
         wad_kept = kept
-        if arguments.bake:
-            if arguments.bake in drop_levels:
-                raise InputError("--bake: a level cannot be both baked and dropped")
-            sprite_names = (bake.read_sprite_list(arguments.sprite_list)
-                            if arguments.sprite_list is not None else [])
+        if bake_levels:
+            dropped_keys = {level.strip().upper()[:NAME_SIZE] for level in drop_levels}
+            for level in bake_levels:
+                if level.strip().upper()[:NAME_SIZE] in dropped_keys:
+                    raise InputError("--bake: a level cannot be both baked and dropped")
             kept, _records, baked, _appended, baked_raw = build_baked_lumps(
-                lumps, kept, arguments.bake, arguments.sky or "SKY1", sprite_names)
+                lumps, kept, bake_levels, arguments.sky or "SKY1", sprite_names)
             selection = RawSelection(selection.indices | frozenset(baked_raw),
                                      selection.level_indices, selection.level_name)
             baked_manifest = next(lump.data for lump in kept if lump.name == bake.MANIFEST_NAME)
@@ -923,7 +1204,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{arguments.input}: {len(lumps):,} lumps, {_format_bytes(source_bytes)}")
         print(stats_report(container, encoded, padding, source_bytes, identification, selection,
                            baked_manifest=baked_manifest, baked_set=baked,
-                           dropped_count=len(dropped), dropped_bytes=dropped_bytes))
+                           dropped_count=len(dropped), dropped_bytes=dropped_bytes,
+                           budget=arguments.budget))
 
     if arguments.check:
         try:
@@ -954,9 +1236,10 @@ def check_container(arguments: argparse.Namespace,
     """``--check`` on a container: verify it, and compare against its source WAD."""
     if (arguments.raw or arguments.raw_level or arguments.drop_lumps
             or arguments.drop_level or arguments.bake or arguments.sprite_list
-            or arguments.sky is not None):
-        parser.error("--raw, --raw-level, --drop-lumps, --drop-level, --bake and "
-                     "--sprite-list select what to write; a container is checked as it is")
+            or arguments.sky is not None or arguments.drop_unused_sprites):
+        parser.error("--raw, --raw-level, --drop-lumps, --drop-level, --bake, "
+                     "--sprite-list and --drop-unused-sprites select what to write; "
+                     "a container is checked as it is")
 
     try:
         container = arguments.input.read_bytes()
@@ -990,7 +1273,7 @@ def check_container(arguments: argparse.Namespace,
 
     print(f"{arguments.input}: {num_lumps:,} lumps, {_format_bytes(len(container))}")
     if arguments.stats:
-        print(container_stats_report(container))
+        print(container_stats_report(container, arguments.budget))
     total = sum(struct.unpack_from("<I", container,
                                   HEADER_SIZE + index * DIRECTORY_ENTRY_SIZE + 8)[0]
                 for index in range(num_lumps))

@@ -86,16 +86,16 @@
  *
  * WHAT ONE FRAME COSTS IN RAM NOW
  *
- *   walk state      33,184 B   drawsegs 40 x 52, visplanes 22 x 664, clip posts
+ *   walk state      53,248 B   drawsegs 64 x 52, visplanes 40 x 664, clip posts
  *                              32 x 8, floorclip/ceilingclip 2 x 320 x 2, clip
  *                              blocks 15 x 320 x 2, opening blocks 1 x 320 x 2,
- *                              vis sprites 100 x 44, covered 320
- *   baked records    4,632 B   the 90-entry manifest adapter; the pixels are in
+ *                              vis sprites 256 x 44, covered 320
+ *   baked records   12,312 B   the 187-entry manifest adapter; the pixels are in
  *                              flash and no buffer copies them
  *   level                0 B   in the flash path: the map is a pointer into the
  *                              mapping. 47,888 B in the RAM path.
  *
- * 37,816 B of driver RAM in the flash path, against 105,128 B in D3.5: the
+ * 65,560 B of driver RAM in the flash path, against 105,128 B in D3.5: the
  * 53,248 B static arena, up to 24,576 B of heap arenas, 1,920 B of cache entries
  * and the 35,080 B decode scratch are gone. `FRAMEPROF,mem` prints
  * `map=flash` or `map=ram`, every block it still holds, and the constants the
@@ -103,12 +103,14 @@
  *
  * WHAT FITS, AND WHAT WAS NOT DONE TO MAKE IT FIT
  *
- * Every capacity is the measured peak: 40 drawsegs (peak 39), 22 visplanes (peak
- * 22), 15 clip blocks (peak 15), 100 vis sprites (peak 97), one opening block
- * (peak 0). The visplane count is not 64 as the plan assumes, because 64 x 664 B
- * is 42,496 B and the driver cannot be built at all with it; 22 allocates exactly
- * what the host harness allocated for every one of the 20 views, so no pixel
- * changes. The surface is not a 64,000 B private buffer: it is the engine's own
+ * Every capacity is a measured peak from the whole shareware episode, not from
+ * E1M1 alone (D3.10): 64 drawsegs (E1M2 peak 52, E1M1 39), 40 visplanes (E1M2
+ * draws 32, E1M1 20; the E1M1-only 22 reported R_BSP_ERR_VISPLANE_OVERFLOW on
+ * E1M2 frame 01), 15 clip blocks (peak 15), 256 vis sprites (E1M2 projects more
+ * than E1M1's 97; 100 reported R_THINGS_ERR_VISSPRITE_OVERFLOW on E1M2 frame
+ * 02), one opening block (peak 0). Allocating exactly what each view needs is
+ * what keeps every pixel -- and therefore every hash -- identical to the
+ * host's. The surface is not a 64,000 B private buffer: it is the engine's own
  * 8bpp framebuffer. REJECT, BLOCKMAP and THINGS are in the container's raw
  * section but only THINGS is read, once per view, to place the sprites.
  *
@@ -373,6 +375,21 @@ std::uint32_t frameProfilePermille(std::uint64_t part, std::uint64_t whole);
  * The gate is a budget, not a threshold that has to be beaten by one.
  */
 bool frameProfileGatePass(std::uint32_t meanMicros);
+
+/**
+ * @brief Writes the marker lump name of one shareware level: "E1M1".."E1M9".
+ *
+ * D3.10 carries all nine levels in one container, so the board driver must be
+ * able to say which one it opened instead of hard-coding E1M1. The name is the
+ * one the encoder keeps raw (`--raw-level`), and the only levels the shareware
+ * episode has: anything outside 1..9 is refused and @p out is left untouched,
+ * so a rejected level cannot be mistaken for a name a container might hold.
+ *
+ * @param level 1..9.
+ * @param out   Receives five bytes: four characters and a NUL.
+ * @return true when the level is in range and @p out was written.
+ */
+bool frameMapMarker(std::uint32_t level, char out[5]);
 
 /**
  * @brief Formats one frame line exactly as the file comment documents it.

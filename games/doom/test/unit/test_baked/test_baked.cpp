@@ -15,6 +15,7 @@
  */
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -391,6 +392,33 @@ void test_a_payload_size_disagreement_is_refused() {
                       static_cast<int>(graphics.open(&fixture.state)));
 }
 
+/*
+ * D3.10: the union bake puts every texture, flat and sprite lump of all nine
+ * shareware levels in one manifest -- 185 entries for the measured episode. The
+ * adapter's fixed record array therefore has to hold far more than E1M1's 90,
+ * and a manifest that does not fit must still be refused rather than truncated.
+ * 200 sprite entries is one past the shipped capacity with a naming scheme the
+ * parser accepts, so the case fails if the capacity is left at E1M1's 96.
+ */
+void test_manifest_holds_the_whole_episode_union() {
+    std::vector<ManifestSpec> records;
+    std::vector<std::vector<std::uint8_t>> payloads;
+    for (std::uint32_t index = 0; index < 200u; ++index) {
+        char name[16];
+        std::snprintf(name, sizeof name, "SP%05u", static_cast<unsigned>(index));
+        records.push_back({name, 0u, 0u, 0u, kBakedKindSprite, index + 1u});
+        payloads.push_back(pattern(1u, static_cast<std::uint8_t>(index)));
+    }
+    Fixture fixture = makeFixture(records, payloads,
+                                  std::vector<std::uint8_t>(payloads.size(), kMethodRaw));
+    BakedGraphics graphics;
+    TEST_ASSERT_EQUAL(static_cast<int>(BakedError::Ok),
+                      static_cast<int>(graphics.open(&fixture.state)));
+    TEST_ASSERT_EQUAL_INT(200, graphics.entryCount());
+    TEST_ASSERT_NOT_NULL(graphics.resolveSprite(packName("SP00000")));
+    TEST_ASSERT_NOT_NULL(graphics.resolveSprite(packName("SP00199")));
+}
+
 void test_a_container_without_a_manifest_is_refused() {
     std::vector<LumpSpec> lumps;
     lumps.push_back({"NOTMANIF", pattern(32u, 1u), kMethodRaw});
@@ -424,6 +452,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_a_stored_payload_is_refused_not_decoded);
     RUN_TEST(test_a_payload_size_disagreement_is_refused);
     RUN_TEST(test_a_container_without_a_manifest_is_refused);
+    RUN_TEST(test_manifest_holds_the_whole_episode_union);
 
     const int result = UNITY_END();
     test_teardown();

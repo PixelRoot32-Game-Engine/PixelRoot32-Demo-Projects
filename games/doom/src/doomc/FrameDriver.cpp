@@ -27,10 +27,10 @@
  * Every large buffer below is a reported size, not an estimate: `FRAMEPROF,mem`
  * prints each one from `sizeof` or from the bootstrap that allocated it.
  *
- *   walk state      33,184 B   drawsegs 2,080, visplanes 14,608, clip posts 256,
+ *   walk state      53,248 B   drawsegs 3,328, visplanes 26,560, clip posts 256,
  *                              floorclip/ceilingclip 1,280, clip blocks 9,600,
- *                              opening blocks 640, vis sprites 4,400, covered 320
- *   baked records    4,632 B   the 90-entry manifest adapter, static .bss
+ *                              opening blocks 640, vis sprites 11,264, covered 320
+ *   baked records   12,312 B   the 187-entry manifest adapter, static .bss
  *   level                0 B   in the flash build the map is a pointer into the
  *                              mapping; 47,888 B in the RAM build
  *
@@ -161,6 +161,18 @@ std::uint32_t frameProfilePermille(std::uint64_t part, std::uint64_t whole) {
 bool frameProfileGatePass(std::uint32_t meanMicros) {
     // Inclusive on purpose: the gate is a budget, not a threshold to beat by one.
     return meanMicros <= kFrameGateMicros;
+}
+
+bool frameMapMarker(std::uint32_t level, char out[5]) {
+    if (out == nullptr || level < 1u || level > 9u) {
+        return false;
+    }
+    out[0] = 'E';
+    out[1] = '1';
+    out[2] = 'M';
+    out[3] = static_cast<char>('0' + static_cast<char>(level));
+    out[4] = '\0';
+    return true;
 }
 
 std::size_t frameProfileFormatFrame(const FrameProfileSample& sample, const char* hash, char* out,
@@ -489,20 +501,22 @@ namespace {
 /// DOOM's MAXDRAWSEGS is 256 (13,312 B). 256 does not fit: with the map working
 /// set, the two wall slots, the decode scratch and the walk state resident, the
 /// array is one of the last elastic costs and the driver is tens of kilobytes
-/// over the board's free DRAM at 256. 40 costs 2,080 B and the peak over the 20
-/// sampled views is 39; the walk reports an overflow instead of writing past the
-/// array, and the probe prints that flag per frame.
-constexpr int kDrawsegCapacity = 40;
+/// over the board's free DRAM at 256. D3.10 sized it from the whole episode
+/// instead of E1M1: E1M2 draws 52 drawsegs in its densest sampled view (E1M1's
+/// peak is 39), so the E1M1-only 40 would have refused a level this task
+/// requires. 64 costs 3,328 B and covers the measured peak with headroom; the
+/// walk reports an overflow instead of writing past the array, and the probe
+/// prints that flag per frame.
+constexpr int kDrawsegCapacity = 64;
 
-/// The measured peak *allocation* over the 20 sampled views is 22 (a plane is
-/// allocated by the walk and may stay unmarked for the whole view). 64 is what
-/// D3.1's byte counts and the plan's budget row assume, and 64 x 664 B = 42,496 B
-/// is 28 KB the board does not have: with the map's working set, the two wall
-/// slots and the decode scratch resident, a 64-plane view cannot be built at all.
-/// 22 is the measured peak, allocates exactly what the host harness allocated for
-/// every one of the 20 views, and leaves every pixel -- and therefore every hash
-/// -- identical to the host's. An overflow is reported by the walk, not hidden.
-constexpr int kPlaneCapacity = 22;
+/// A plane is allocated by the walk and may stay unmarked for the whole view, so
+/// the allocation peak is above the drawn peak. D3.10's whole-episode rule:
+/// E1M2 draws 32 planes in its densest sampled view (E1M1's peak is 20 and its
+/// allocation peak 22), so the E1M1-only 22 reported a
+/// R_BSP_ERR_VISPLANE_OVERFLOW on E1M2 frame 01. 40 costs 26,560 B (664 B each)
+/// and covers the measured peak; an overflow is a reported walk error, not a
+/// write past the array.
+constexpr int kPlaneCapacity = 40;
 
 /// R_MAX_CLIP_SEGS, the minimum r_bsp_init() accepts (upstream's MAXSEGS).
 constexpr int kClipRangeCapacity = 32;
@@ -514,32 +528,30 @@ constexpr int kClipRangeCapacity = 32;
 /// pass snapshots every drawseg's clip arrays before it knows what will be drawn.
 constexpr int kClipBlockCapacity = 15;
 
-/// The masked pass's pools, at their measured peaks: 97 accepted vis-sprite
-/// entries (100 here) and zero recorded masked-mid columns (one block here, so a
-/// view that records one allocates it instead of failing). Both are static,
-/// because the heap has nothing to spare.
-constexpr int kVisspriteCapacity = 100;
+/// The masked pass's pools. D3.10 sized them for the whole episode: E1M2 submits
+/// 243 sprites and its densest view projects more than the E1M1-only 100 the
+/// capacity used to hold (frame 02 reports R_THINGS_ERR_VISSPRITE_OVERFLOW at
+/// 100), so 256 is the episode's peak with headroom, 44 B each. One opening
+/// block stays: no E1M1 view records a masked mid, so a view that records one
+/// allocates it instead of failing.
+constexpr int kVisspriteCapacity = 256;
 constexpr int kOpeningBlockCapacity = 1;
 
-/// One THINGS record per sprite the level can place; E1M1's fixture resolves 129.
-constexpr int kSpriteCapacity = 130;
+/// One THINGS record per sprite the level can place. E1M1's fixture resolves
+/// 129 and the episode's busiest map (E1M6) 389, so 512 is the episode's peak
+/// with headroom; the allocation below takes exactly the level's THINGS count.
+constexpr int kSpriteCapacity = 512;
 
 // --- Buffer sizes -----------------------------------------------------------
 
-/// E1M1's renderer lumps minus THINGS (LINEDEFS 6,650 + SIDEDEFS 19,440 +
-/// VERTEXES 1,868 + SEGS 8,784 + SSECTORS 948 + NODES 6,608 + SECTORS 2,210 =
-/// 46,508). In the RAM build these are decoded, one block each; in the flash build
-/// they are pointers into the container. THINGS (1,380) is a view in both builds.
-///
-/// `kLevelReleasedBytes` is what a frame stops costing DRAM: the 46,508 B of map
-/// plus the 20,742 B of COLORMAP, TEXTURE1 and PNAMES (8,704 + 9,234 + 2,804) in
-/// the flash build, and only the directories in the RAM build, which still decodes
-/// the map. `FRAMEPROF,mem` prints it, so "the level costs nothing" is a number.
-#if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
-constexpr std::size_t kLevelReleasedBytes = 20742u;
-#else
-constexpr std::size_t kLevelReleasedBytes = 46508u + 20742u;
-#endif
+/// A level's renderer lumps minus THINGS are what the RAM build decodes and the
+/// flash build maps in place: LINEDEFS, SIDEDEFS, VERTEXES, SEGS, SSECTORS, NODES
+/// and SECTORS (E1M1's are 46,508 B; E1M2's are 94,984 B). THINGS is a view in
+/// both builds. `gLevelReleasedBytes` is what the opened level stops costing
+/// DRAM: those lumps plus the 20,742 B of COLORMAP, TEXTURE1 and PNAMES that the
+/// flash build maps instead of decoding. D3.10 computes it from the level it
+/// actually opened, so `FRAMEPROF,mem` is a per-level number, not E1M1's.
+std::size_t gLevelReleasedBytes = 0u;
 
 /// One static graphics region. D3.8 removed the cache: every wall texture, the
 /// sky and every flat is a pointer into the container's raw section now, so the
@@ -552,12 +564,13 @@ constexpr int kExtraLumpBlocks = 9;
 
 #if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
 /// How much of the decoded level the static arena holds. `dram0_0_seg` is
-/// 124,068 B and this build's other .bss is 101,640 B (the flash build's 97,368
-/// plus the 4,272 B sprite patch), so 22,428 B is the hard ceiling; 20,480 leaves
-/// slack for the framework. It holds SIDEDEFS (19,448) and SSECTORS (952) and
-/// sends the rest -- 30,070 B -- to the heap, which the probe's `heap_before`
-/// shows has room.
-constexpr std::size_t kStaticLumpBytes = 20480u;
+/// 124,068 B. D3.10 grew the walk state for the whole episode (64 drawsegs, 40
+/// planes, 256 vis sprites) and the manifest adapter to 187 entries, so the
+/// E1M1-only control has 2,784 B less static room than D3.9's 20,480 B arena
+/// assumed; 17,408 keeps the link and sends SIDEDEFS (19,448 B) to the heap,
+/// which `heap_before` shows has room for it. The control's pixels are
+/// unchanged: it still decodes every map lump the flash build maps.
+constexpr std::size_t kStaticLumpBytes = 17408u;
 #endif
 
 /// The static region this image can use for data: `dram0_0_seg` is 124,068 B
@@ -580,6 +593,24 @@ constexpr int kAngleCount = 5;
 /// The level's sky flat and sky texture, packed from their WAD names.
 constexpr std::uint8_t kSkyFlatName[8] = {'F', '_', 'S', 'K', 'Y', '1', 0, 0};
 constexpr std::uint8_t kSkyTextureName[8] = {'S', 'K', 'Y', '1', 0, 0, 0, 0};
+
+/*
+ * WHICH LEVEL THIS BUILD OPENS (D3.10)
+ *
+ * The container carries the whole shareware episode now, so "the level" is a
+ * build decision instead of the E1M1 literal D3.8 shipped. Every environment
+ * that predates this task compiles the default; the E1M2 measurement build sets
+ * PIXELROOT32_DOOM_FRAME_LEVEL=2 and renders the same 20 views of the largest
+ * bake in the episode. The marker name is built by frameMapMarker(), which the
+ * host suite pins, so the number and the container's lump name cannot drift.
+ */
+#ifndef PIXELROOT32_DOOM_FRAME_LEVEL
+#define PIXELROOT32_DOOM_FRAME_LEVEL 1
+#endif
+
+constexpr std::uint32_t kFrameLevel = PIXELROOT32_DOOM_FRAME_LEVEL;
+static_assert(kFrameLevel >= 1u && kFrameLevel <= 9u,
+              "the shareware episode has nine levels: E1M1..E1M9");
 
 /// Which of the level's lumps the driver keeps. E1M1 is the zero-byte marker and
 /// the ten data lumps follow it in WAD order (THINGS LINEDEFS SIDEDEFS VERTEXES
@@ -1672,6 +1703,10 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     const r_bsp_error_t walk = r_bsp_render(&driver->view, &params);
     sample->walkMicros = elapsedMicros(start);
     if (walk != R_BSP_OK) {
+        // The walk has its own vocabulary (clip list, plane capacity, depth); the
+        // error line names the stage and this code, so a level that outgrows a
+        // capacity says which one instead of reporting a bare `stage=walk`.
+        gStageCode = static_cast<int>(walk);
         return false;
     }
     sample->drawsegs = driver->view.drawsegCount;
@@ -2059,7 +2094,7 @@ void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore
                   0,
 #endif
                   static_cast<unsigned>(gRawViews), static_cast<unsigned>(gLevelRamUsed),
-                  static_cast<unsigned>(kLevelReleasedBytes), kRemovedCacheStatic,
+                  static_cast<unsigned>(gLevelReleasedBytes), kRemovedCacheStatic,
                   kRemovedCacheHeap);
 }
 
@@ -2116,8 +2151,6 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     gPlacement = "baked-flash";
     const std::uint32_t heapAfterAlloc = static_cast<std::uint32_t>(esp_get_free_heap_size());
-
-
     // --- Setup: the working set, timed once and reported separately ----------
     const std::int64_t setupStart = nowMicros();
     gLevelRamUsed = 0u;
@@ -2126,9 +2159,18 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     gSample = FrameProfileSample{};
     gDecodeDepth = 0;
 
-    const int marker = doom_whd_source_lump_index(&gWhd, "E1M1");
+    char mapMarker[5];
+    if (!frameMapMarker(kFrameLevel, mapMarker)) {
+        writeLine("FRAMEPROF,setup,status=fail,reason=level\n");
+        doom_whd_source_close();
+        return;
+    }
+
+    const int marker = doom_whd_source_lump_index(&gWhd, mapMarker);
     if (marker < 0) {
-        writeLine("FRAMEPROF,setup,status=fail,reason=marker\n");
+        std::snprintf(line, sizeof line,
+                      "FRAMEPROF,setup,status=fail,reason=marker,level=%s\n", mapMarker);
+        writeLine(line);
         doom_whd_source_close();
         return;
     }
@@ -2157,28 +2199,6 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     (void)loadMapLump(marker, DOOM_MAP_REJECT, &source, &mapFailures);     // skipped
     (void)loadMapLump(marker, DOOM_MAP_BLOCKMAP, &source, &mapFailures);   // skipped
 
-    // The sprite list. D3.6 never allocated it because the masked pass never ran;
-    // it is the caller's thing list, so it is the caller's block. It is taken
-    // *after* the level's blocks because those are the big requests: the scratch
-    // has already eaten the middle of the one large hole, so 8,784 B of SEGS has to
-    // find a hole before a 4,160 B sprite list splits what is left of it.
-    gSprites = static_cast<r_sprite_t*>(
-        heap_caps_malloc(static_cast<std::size_t>(kSpriteCapacity) * sizeof(r_sprite_t),
-                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    if (gSprites == nullptr) {
-        std::snprintf(line, sizeof line,
-                      "FRAMEPROF,setup,status=fail,reason=sprites,need=%u,heap=%u,"
-                      "largest=%u\n",
-                      static_cast<unsigned>(kSpriteCapacity * sizeof(r_sprite_t)),
-                      static_cast<unsigned>(esp_get_free_heap_size()),
-                      static_cast<unsigned>(heap_caps_get_largest_free_block(
-                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
-        writeLine(line);
-        releaseWorkingSet();
-        doom_whd_source_close();
-        return;
-    }
-
     doom_map_t map;
     const doom_map_error_t mapError =
         mapFailures == 0 ? doom_map_open(&map, &source) : DOOM_MAP_ERR_REQUIRED_LUMP;
@@ -2203,6 +2223,16 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
         return;
     }
 
+    gLevelReleasedBytes = 20742u;
+#if !defined(PIXELROOT32_DOOM_MAP_IN_RAM)
+    for (int lump = 0; lump < DOOM_MAP_LUMP_COUNT; ++lump) {
+        if (lump == DOOM_MAP_THINGS || lump >= kFirstSkippedMapLump) {
+            continue;
+        }
+        gLevelReleasedBytes += source.size[lump];
+    }
+#endif
+
     if (r_light_init(&gLight, gColormap, gColormapBytes) != R_LIGHT_OK) {
         writeLine("FRAMEPROF,setup,status=fail,reason=colormap\n");
         doom_whd_source_close();
@@ -2210,10 +2240,44 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
         return;
     }
 
+    // The sprite list. D3.6 never allocated it because the masked pass never ran;
+    // it is the caller's thing list, so it is the caller's block. It is taken
+    // *after* the map is open and the level's blocks are bound, and it is exactly
+    // one record per THINGS entry: E1M1 needs 129, E1M6 389, and a fixed 130 was
+    // the E1M1-only build's size. The upper bound is the level's own THINGS
+    // count, so a level the fixture cannot place costs no more than it names.
+    const std::uint32_t thingCount = map.lumps[DOOM_MAP_THINGS].count;
+    if (thingCount == 0u || thingCount > static_cast<std::uint32_t>(kSpriteCapacity)) {
+        std::snprintf(line, sizeof line,
+                      "FRAMEPROF,setup,status=fail,reason=sprites,things=%u,capacity=%d\n",
+                      static_cast<unsigned>(thingCount), kSpriteCapacity);
+        writeLine(line);
+        doom_whd_source_close();
+        releaseWorkingSet();
+        return;
+    }
+    gSprites = static_cast<r_sprite_t*>(
+        heap_caps_malloc(static_cast<std::size_t>(thingCount) * sizeof(r_sprite_t),
+                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (gSprites == nullptr) {
+        std::snprintf(line, sizeof line,
+                      "FRAMEPROF,setup,status=fail,reason=sprites,need=%u,heap=%u,"
+                      "largest=%u\n",
+                      static_cast<unsigned>(thingCount * sizeof(r_sprite_t)),
+                      static_cast<unsigned>(esp_get_free_heap_size()),
+                      static_cast<unsigned>(heap_caps_get_largest_free_block(
+                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+        writeLine(line);
+        releaseWorkingSet();
+        doom_whd_source_close();
+        return;
+    }
+
     // The bake and the map path are the setup's two decisions, so they are
     // printed with the setup that made them.
     std::snprintf(line, sizeof line,
-                  "FRAMEPROF,setup,status=ok,map=%s,map_in_ram=%d,raw_views=%u,level_ram=%u,"
+                  "FRAMEPROF,setup,status=ok,map=%s,map_in_ram=%d,level=%s,raw_views=%u,"
+                  "level_ram=%u,"
                   "baked_entries=%d,baked_walls=%d,baked_flats=%d,baked_sprites=%d,"
                   "baked_bytes=%u,colormap=%u,map_lumps=%d,map_skipped=%d,"
                   "setup_us=%u\n",
@@ -2223,6 +2287,7 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
 #else
                   0,
 #endif
+                  mapMarker,
                   static_cast<unsigned>(gRawViews), static_cast<unsigned>(gLevelRamUsed),
                   gBaked.entryCount(),
                   gBaked.count(BakedKind::kBakedKindWall),
@@ -2374,9 +2439,9 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
 
     std::snprintf(line, sizeof line,
                   "FRAMEPROF,probe,total_us=%u,hazards=%u,sha256=ok,views=%d,runs=%d,"
-                  "warmup=%d,map=%s,phases=4\n",
+                  "warmup=%d,map=%s,level=%s,phases=4\n",
                   static_cast<unsigned>(probeMicros), 0u, kViewCount,
-                  kMeasuredRuns, kTotalRuns - kMeasuredRuns, kMapPath);
+                  kMeasuredRuns, kTotalRuns - kMeasuredRuns, kMapPath, mapMarker);
     writeLine(line);
 
     doom_whd_source_close();

@@ -80,7 +80,7 @@ import struct
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -146,13 +146,43 @@ class BakedItem:
     payload: bytes | None
 
 
+@dataclass(frozen=True)
+class LevelBake:
+    """One level's contribution to a union bake.
+
+    The counts are the level's own distinct names; ``payload_bytes`` is what the
+    level would cost in a container baked for it alone: the dense wall/sky
+    payloads plus one 4,096-byte flat per distinct flat. A container also pays
+    the manifest, which is ``MANIFEST_HEADER_SIZE + MANIFEST_RECORD_SIZE`` per
+    item; --stats adds it when it answers "does this level fit alone".
+    """
+
+    level: str
+    walls: int
+    skies: int
+    flats: int
+    sprites: int
+    payload_bytes: int
+
+    def container_bytes(self) -> int:
+        """The level's bake as a whole container: payloads plus its manifest."""
+        entries = self.walls + self.skies + self.flats + self.sprites
+        return self.payload_bytes + MANIFEST_HEADER_SIZE + MANIFEST_RECORD_SIZE * entries
+
+
 @dataclass
 class BakedSet:
-    """What one level needs, plus the counts a --stats line reports."""
+    """What one level needs, plus the counts a --stats line reports.
+
+    ``per_level`` is empty for a single-level bake and carries one row per level
+    for the union bake (D3.10): it is what lets --stats say whether each level
+    would still fit if it were baked alone.
+    """
 
     items: list[BakedItem]
     flat_names: list[str]
     sprite_names: list[str]
+    per_level: list["LevelBake"] = field(default_factory=list)
 
     def count(self, kind: int) -> int:
         return sum(1 for item in self.items if item.kind == kind)
@@ -572,6 +602,72 @@ def bake_level(lumps: Sequence, level: str, sky: str = "SKY1",
         kept_sprites.append(name)
 
     return BakedSet(items, flat_names, kept_sprites)
+
+
+def bake_union(lumps: Sequence, levels: Sequence[str], sky: str = "SKY1",
+               sprite_names: Iterable[str] = ()) -> BakedSet:
+    """Bakes the union of several levels: one payload per distinct name.
+
+    The nine shareware levels share most of their graphics -- 100 distinct wall
+    textures for the whole episode against 32 for E1M1 -- so baking each level
+    separately would store the shared textures eight more times. This returns
+    one item per distinct (kind, name), in first-seen order across @p levels, so
+    the result is deterministic and the container holds each texture and flat
+    exactly once.
+
+    A texture that is a wall in one level and the sky in another is one item with
+    kind SKY: the renderer resolves both through the same wall view, and a
+    duplicate name inside that view would make the lookup ambiguous. Every level
+    still gets the sky in its own set, so the union always holds it.
+
+    ``per_level`` carries each level's own counts and payload bytes for --stats.
+    """
+    if not levels:
+        raise BakeError("--bake: no level was named")
+
+    items: list[BakedItem] = []
+    index_by_key: dict[tuple[str, str], int] = {}
+    per_level: list[LevelBake] = []
+    sprite_order: list[str] = []
+    seen_sprite: set[str] = set()
+
+    def key_of(item: BakedItem) -> tuple[str, str]:
+        if item.kind in (KIND_WALL, KIND_SKY):
+            return ("texture", item.name.upper())
+        if item.kind == KIND_FLAT:
+            return ("flat", item.name.upper())
+        return ("sprite", item.name.upper())
+
+    for level in levels:
+        one = bake_level(lumps, level, sky=sky, sprite_names=sprite_names)
+        payload_bytes = sum(len(item.payload) for item in one.items
+                            if item.payload is not None)
+        payload_bytes += FLAT_BYTES * sum(1 for item in one.items
+                                          if item.kind == KIND_FLAT)
+        per_level.append(LevelBake(
+            level=level.strip().upper(), walls=one.count(KIND_WALL),
+            skies=one.count(KIND_SKY), flats=one.count(KIND_FLAT),
+            sprites=one.count(KIND_SPRITE), payload_bytes=payload_bytes))
+
+        for item in one.items:
+            key = key_of(item)
+            at = index_by_key.get(key)
+            if at is None:
+                index_by_key[key] = len(items)
+                items.append(item)
+            elif item.kind == KIND_SKY and items[at].kind != KIND_SKY:
+                # The same texture as a wall elsewhere: one payload, sky kind.
+                items[at] = BakedItem(item.name, KIND_SKY, items[at].width,
+                                      items[at].rows, items[at].flags,
+                                      items[at].payload)
+            if item.kind == KIND_SPRITE:
+                sprite = item.name.upper()
+                if sprite not in seen_sprite:
+                    seen_sprite.add(sprite)
+                    sprite_order.append(sprite)
+
+    flat_order = [item.name for item in items if item.kind == KIND_FLAT]
+    return BakedSet(items, flat_order, sprite_order, per_level)
 
 
 # --- Manifest ---------------------------------------------------------------

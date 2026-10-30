@@ -66,9 +66,11 @@ constexpr std::uint16_t kBakedManifestVersion = 1u;
 constexpr std::size_t kBakedManifestHeaderSize = 16u;
 constexpr std::size_t kBakedManifestRecordSize = 20u;
 
-/// The manifest's capacity in this port: E1M1 needs 54 textures/sky/flats and
-/// 36 sprite lumps, so 96 leaves room without a heap allocation.
-constexpr int kBakedCapacity = 96;
+/// The manifest's capacity in this port: the union of E1M1..E1M9 needs 187
+/// entries (100 textures + the sky, 50 flats and 36 sprite lumps), so 256 leaves
+/// room for the rest of the episode without a heap allocation. D3.8's 96 was
+/// E1M1's 90 plus headroom, and the whole-episode bake outgrew it.
+constexpr int kBakedCapacity = 256;
 
 constexpr std::uint8_t kBakedFlagMask = 0x01u;
 

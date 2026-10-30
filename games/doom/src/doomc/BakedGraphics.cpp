@@ -220,7 +220,12 @@ BakedError BakedGraphics::open(const whd_state_t* container) {
     }
     manifestBytes_ = manifestBytes;
 
-    BakedManifest manifest;
+    // The parse result is 5,120 B at the episode's 256-entry capacity, and the
+    // Arduino loop task's stack is already the tightest budget in this build
+    // (D3.9 moved the probe's formatters to .bss for the same reason). open()
+    // runs once at boot, so a file-local static is the right home: it costs
+    // .bss and no stack.
+    static BakedManifest manifest;
     const BakedError parsed = bakedManifestParse(
         manifestData, manifestBytes,
         static_cast<std::uint32_t>(whd_lump_count(container)), &manifest);

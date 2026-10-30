@@ -468,6 +468,30 @@ void test_attribution_line_that_does_not_fit_is_not_written(void) {
     TEST_ASSERT_EQUAL_INT('\0', small[0]);
 }
 
+// D3.10: the board driver picks a level, and every line it prints says which
+// one. The marker name is the one the container names its map lumps after, so
+// E1M1..E1M9 are the only answers: a tenth level is the shareware episode's
+// end, and a rejected level leaves the caller's buffer untouched rather than
+// writing a name no container holds.
+void test_map_marker_names_every_shareware_level(void) {
+    char marker[5];
+    for (std::uint32_t level = 1u; level <= 9u; ++level) {
+        TEST_ASSERT_TRUE(doom::doomc::frameMapMarker(level, marker));
+        TEST_ASSERT_EQUAL_INT('E', marker[0]);
+        TEST_ASSERT_EQUAL_INT('1', marker[1]);
+        TEST_ASSERT_EQUAL_INT('M', marker[2]);
+        TEST_ASSERT_EQUAL_INT(static_cast<int>('0' + level), marker[3]);
+        TEST_ASSERT_EQUAL_INT('\0', marker[4]);
+    }
+}
+
+void test_map_marker_rejects_a_level_outside_the_episode(void) {
+    char marker[5] = {'?', '?', '?', '?', 0};
+    TEST_ASSERT_FALSE(doom::doomc::frameMapMarker(0u, marker));
+    TEST_ASSERT_FALSE(doom::doomc::frameMapMarker(10u, marker));
+    TEST_ASSERT_EQUAL_STRING("????", marker);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_mean_min_max_over_three_frames);
@@ -485,5 +509,7 @@ int main(int, char**) {
     RUN_TEST(test_attribution_summary_reports_per_unit_costs_and_hit_rates);
     RUN_TEST(test_attribution_summary_with_no_sample_reports_zero_costs);
     RUN_TEST(test_attribution_line_that_does_not_fit_is_not_written);
+    RUN_TEST(test_map_marker_names_every_shareware_level);
+    RUN_TEST(test_map_marker_rejects_a_level_outside_the_episode);
     return UNITY_END();
 }
