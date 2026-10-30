@@ -1,5 +1,7 @@
 #include "DoomScene.h"
 
+#include <platforms/PlatformLog.h>
+
 #include "palette/DoomPalette.h"
 
 #include <cstddef>
@@ -101,25 +103,19 @@ static_assert(sizeof(kInkColors) / sizeof(kInkColors[0]) == static_cast<std::siz
 // writes through `palette::packRgb332()` for the same reason -- one conversion
 // in the port, not two that can drift.
 
-// --- Serial -----------------------------------------------------------------
+// --- Console ----------------------------------------------------------------
 
 /**
- * @brief Write one already-formatted line to the console this build has.
+ * @brief Write one already-formatted line to the engine's console.
  *
- * The ESP32 build owns the USB/UART through the Arduino core (`Engine::init()`
- * has already called `Serial.begin(115200)` before any scene is entered); the
- * SDL2 build has no `Serial` object at all, so stdout is the only stream both
- * offer. The engine's `logging::log()` is deliberately not used here: it
- * compiles to a no-op unless `PIXELROOT32_DEBUG_MODE` is set, and these two
- * lines are part of the shell contract on every build.
+ * `logging::platformPrint()` is the engine's cross-platform primitive: the
+ * Arduino core's Serial on the device, stdout on the simulator. It is always
+ * compiled in, unlike `logging::log()`, whose output is gated behind
+ * `PIXELROOT32_DEBUG_MODE`; these lines are part of the shell contract on
+ * every build.
  */
-void writeSerialLine(const char* line) {
-#if defined(PLATFORM_NATIVE)
-    std::fputs(line, stdout);
-    std::fflush(stdout);
-#else
-    Serial.print(line);
-#endif
+void writeConsoleLine(const char* line) {
+    pixelroot32::core::logging::platformPrint(line);
 }
 
 /**
@@ -132,7 +128,11 @@ void writeSerialLine(const char* line) {
  * `bytes` also says which path is live, so a maintainer reading the log learns
  * as much as the code does: 64,000 B for the 8bpp panel buffer, 128,000 B for
  * the 16bpp desktop one, 0 for a driver with neither.
+ *
+ * Suppressed by the frame-log build: that build's stream is pure `FRAME,...`
+ * CSV, and the one boot line would be the only record without a frame index.
  */
+#if !defined(PIXELROOT32_DOOM_FRAME_LOG)
 void reportFrameContract(Renderer& renderer) {
     DrawSurface& surface = renderer.getDrawSurface();
     const int width = renderer.getLogicalWidth();
@@ -156,8 +156,9 @@ void reportFrameContract(Renderer& renderer) {
     char line[128];
     std::snprintf(line, sizeof line, "SHELL,surface=%dx%d,stride=%d,bytes=%d,palette=%s\n",
                   width, height, stride, stride * height * bytesPerPixel, palette);
-    writeSerialLine(line);
+    writeConsoleLine(line);
 }
+#endif  // !PIXELROOT32_DOOM_FRAME_LOG
 
 // --- Tic clock ---------------------------------------------------------------
 
@@ -181,6 +182,26 @@ std::uint32_t sampleMicros() {
     return time::esp32Micros();
 #endif
 }
+
+#if defined(PIXELROOT32_DOOM_FRAME_LOG)
+/**
+ * @brief Free heap bytes for the frame record, sampled at the end of `draw()`.
+ *
+ * The panel build reads the Arduino core's heap counter, so the value belongs
+ * to the frame that just finished. The desktop mirror has no ESP32 heap: it
+ * reports 0, a sentinel that says "not measurable here", not a fake reading.
+ *
+ * Only the frame-log build pays for this call; the shipped environments never
+ * compile it.
+ */
+std::uint32_t sampleFreeHeap() {
+#if defined(PLATFORM_NATIVE)
+    return 0;
+#else
+    return static_cast<std::uint32_t>(ESP.getFreeHeap());
+#endif
+}
+#endif  // PIXELROOT32_DOOM_FRAME_LOG
 
 // --- Pattern ----------------------------------------------------------------
 
@@ -441,7 +462,14 @@ void DoomScene::init() {
     ticClock_.reset(sampleMicros());
     reportedTic_ = kNoTic;
 
+#if defined(PIXELROOT32_DOOM_FRAME_LOG)
+    // The recorder writes the same console the shipped shell did. Under the
+    // flag it is the only writer: the SHELL, TIC and INPUT lines are compiled
+    // out so the stream is pure CSV.
+    frameLog_.setSink(&writeConsoleLine);
+#else
     reportFrameContract(engine.getRenderer());
+#endif
 }
 
 void DoomScene::pollTicClock() {
@@ -456,13 +484,28 @@ void DoomScene::pollTicClock() {
 
     // One line per tic, never per frame. A tic that elapses while update() is
     // not running is never a line either -- there was no sample to report it.
+    //
+    // Under PIXELROOT32_DOOM_FRAME_LOG the tic is still derived and cached in
+    // ticClock_, because the FRAME record reports it; only the serial line is
+    // gone, so the CSV stream has exactly one writer.
+#if !defined(PIXELROOT32_DOOM_FRAME_LOG)
     char line[48];
     std::snprintf(line, sizeof line, "TIC,n=%u,us=%lu\n", static_cast<unsigned>(tic),
                   static_cast<unsigned long>(sample));
-    writeSerialLine(line);
+    writeConsoleLine(line);
+#endif
 }
 
 void DoomScene::update(unsigned long deltaTime) {
+#if defined(PIXELROOT32_DOOM_FRAME_LOG)
+    // Close the previous frame at the first instant of this update. The line is
+    // written inside endFrame(); the start sample below is taken after that
+    // write, so the recorder's own serial cost is bracketed out of both the
+    // previous frame's period and this frame's render interval.
+    frameLog_.endFrame(sampleMicros());
+    const std::uint32_t frameStartMicros = sampleMicros();
+#endif
+
     // Entities first, as everywhere else in the repository; this scene has
     // none, so the call is the base contract rather than work.
     Scene::update(deltaTime);
@@ -470,6 +513,14 @@ void DoomScene::update(unsigned long deltaTime) {
     // The 35 Hz tic advances on every frame, input or not, so it is sampled
     // before the input early-return below.
     pollTicClock();
+
+#if defined(PIXELROOT32_DOOM_FRAME_LOG)
+    // The frame's start timestamp is from the top of update(); the tic is the
+    // one pollTicClock() just derived from this frame's sample. beginFrame() is
+    // called here only because the tic is not known earlier; it stores the
+    // timestamp without taking another reading.
+    frameLog_.beginFrame(frameStartMicros, ticClock_.tic());
+#endif
 
     const pixelroot32::input::InputManager& input = engine.getInputManager();
 
@@ -491,9 +542,14 @@ void DoomScene::update(unsigned long deltaTime) {
 
     // The bit field is the same number as the index order: bit 0 up ... bit 5
     // B. One line per change, nothing per frame.
+    //
+    // The frame-log build suppresses this line: its stream is pure CSV, and a
+    // per-frame recorder cannot share the port with an event line.
+#if !defined(PIXELROOT32_DOOM_FRAME_LOG)
     char line[32];
     std::snprintf(line, sizeof line, "INPUT,buttons=0x%02X\n", static_cast<unsigned>(buttons));
-    writeSerialLine(line);
+    writeConsoleLine(line);
+#endif
 }
 
 void DoomScene::draw(Renderer& renderer) {
@@ -504,6 +560,14 @@ void DoomScene::draw(Renderer& renderer) {
     paintPaletteTestFrame(renderer);
 #else
     paintShellFrame(renderer, buttons_);
+#endif
+
+#if defined(PIXELROOT32_DOOM_FRAME_LOG)
+    // The end of the scene's own work, not the end of the engine's present
+    // path: Engine::draw() still runs the transition effect (off here) and the
+    // debug overlay (off here) after this returns, then run() calls present().
+    // Both land in present_us, as the FrameLog header states.
+    frameLog_.endDraw(sampleMicros(), sampleFreeHeap());
 #endif
 }
 

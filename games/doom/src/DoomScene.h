@@ -4,6 +4,10 @@
 
 #include <core/Scene.h>
 
+#if defined(PIXELROOT32_DOOM_FRAME_LOG)
+#include "perf/FrameLog.h"
+#endif
+
 #include "time/TicClock.h"
 
 namespace doom {
@@ -52,6 +56,13 @@ namespace doom {
  * (`env:esp32dev_ILI9341_palette`); the shipped environments never define it
  * and render the shell exactly as they always have.
  *
+ * `PIXELROOT32_DOOM_FRAME_LOG` adds the frame-pacing recorder
+ * (`perf/FrameLog.h`) and suppresses the shell, tic and input serial lines so
+ * the stream is pure `FRAME,...` CSV. It lives in its own build environment
+ * (`env:esp32dev_ILI9341_perf`); the member and every call site are compiled
+ * only under the flag, so the shipped builds are byte-for-byte behaviourally
+ * unchanged and take no extra microsecond samples.
+ *
  * The logical surface is a constant here on purpose. DOOM's renderer is
  * column-indexed: `distscale[SCREENWIDTH]`, `visplane_t::top[SCREENWIDTH]`,
  * `floorclip` / `ceilingclip` and the status bar layout all assume 320x200.
@@ -98,6 +109,17 @@ private:
     /// Last tic written to the serial line; the change filter behind the
     /// once-per-tic (never per-frame) reporting.
     std::uint32_t reportedTic_ = kNoTic;
+
+#if defined(PIXELROOT32_DOOM_FRAME_LOG)
+    /**
+     * @brief Per-frame CSV recorder for `env:esp32dev_ILI9341_perf`.
+     *
+     * Declared only under the flag: the shipped environments do not carry the
+     * member, do not include `perf/FrameLog.h`, and never take the extra
+     * end-of-draw microsecond sample.
+     */
+    perf::FrameLog frameLog_;
+#endif
 };
 
 }  // namespace doom
