@@ -15,6 +15,10 @@
 #include "doomc/FlashProfile.h"
 #endif
 
+#if defined(PIXELROOT32_DOOM_FRAME_PROBE)
+#include "doomc/FrameDriver.h"
+#endif
+
 #include "palette/DoomPalette.h"
 
 #include <cstddef>
@@ -647,6 +651,30 @@ void DoomScene::init() {
     // CSV.
     doomc::flashProfileRunProbe();
 #endif  // PIXELROOT32_DOOM_FLASH_PROFILE
+
+#if defined(PIXELROOT32_DOOM_FRAME_PROBE)
+    // D3.6's frame driver, compiled only into env:esp32dev_ILI9341_frame: opens
+    // the `wad` partition, loads E1M1's renderer working set, renders the 20
+    // sampled viewpoints and prints the per-phase table, the three-view
+    // breakdown, the summary with the Phase 3 gate verdict, the RAM line and the
+    // hash of every frame.
+    //
+    // The surface is the engine's own 8bpp logical framebuffer, passed in rather
+    // than fetched by the driver so the driver carries no engine dependency. It
+    // receives DOOM palette indices, not RGB332: that is visually wrong and
+    // timing-correct, and the probe's `FRAMEPROF,mem` line says so. Nothing is
+    // presented from here; the probe measures renderer CPU and nothing else.
+    //
+    // No frame-log guard here: the two flags never meet. The probe exists to be
+    // read at boot, and the frame-log environment exists to keep its stream pure
+    // CSV.
+    {
+        pixelroot32::graphics::DrawSurface& surface =
+            engine.getRenderer().getDrawSurface();
+        doomc::frameProbeRun(surface.getSpriteBuffer(), engine.getRenderer().getLogicalWidth(),
+                             engine.getRenderer().getLogicalHeight());
+    }
+#endif  // PIXELROOT32_DOOM_FRAME_PROBE
 
     // Anchors the tic clock at the scene's first microsecond sample, which is
     // tic 0. The sentinel makes the first update() report it, so the serial
