@@ -1,0 +1,13 @@
+# The encoder is committed; the payload it reads and the container it writes are
+# not. DOOM1.WAD is copyrighted shareware data (and 4,196,020 B, larger than the
+# whole flash), and every .whd here is a repacked copy of it. Point the tool at a
+# WAD outside the repository and write containers outside the repository too;
+# this file is the guard for the day someone forgets.
+*.WAD
+*.wad
+*.whd
+*.WHD
+
+# Python leaves bytecode behind when a probe imports whd_encode as a module.
+__pycache__/
+*.pyc

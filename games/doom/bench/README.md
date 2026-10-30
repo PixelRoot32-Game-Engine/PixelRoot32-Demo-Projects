@@ -57,7 +57,7 @@ remote until the branch is pushed. For a local build, temporarily replace it
 with the worktree path:
 
 ```ini
-lib_deps = symlink://C:/Users/Gperez/Documents/Projects/pr32-workspace/PixelRoot32-Game-Engine-worktrees/doom-esp32
+lib_deps = symlink://<engine-worktree>
 ```
 
 and restore it before committing. A committed `symlink://` fails the demo CI
