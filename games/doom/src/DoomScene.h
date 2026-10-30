@@ -91,6 +91,16 @@ namespace doom {
  * shipped environments define neither flag and carry neither the 64 KB array nor
  * the probe code.
  *
+ * `PIXELROOT32_DOOM_FLASH_PROFILE` adds D2.5's flash-read profile: `init()` runs
+ * one probe (`doomc/FlashProfile.h`) that decodes E1M1's whole working set out
+ * of the mapped container once, replays the identical sequence warm, and prints
+ * the two `WADPROF,pass=...` summaries, one line per phase, the warm/cold ratio
+ * and the per-frame budget. It lives in its own build environment
+ * (`env:esp32dev_ILI9341_flashprof`, same partition table as `_wad`) and costs a
+ * 68,168 B static decode buffer, so it is compiled out of every shipped build
+ * along with that buffer. Nothing on the frame path changes: the probe runs once,
+ * inside `init()`, before the shell draws its first frame.
+ *
  * The logical surface is a constant here on purpose. DOOM's renderer is
  * column-indexed: `distscale[SCREENWIDTH]`, `visplane_t::top[SCREENWIDTH]`,
  * `floorclip` / `ceilingclip` and the status bar layout all assume 320x200.

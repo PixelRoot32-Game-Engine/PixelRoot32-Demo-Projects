@@ -11,6 +11,10 @@
 #include "z_zone.h"
 #endif
 
+#if defined(PIXELROOT32_DOOM_FLASH_PROFILE)
+#include "doomc/FlashProfile.h"
+#endif
+
 #include "palette/DoomPalette.h"
 
 #include <cstddef>
@@ -628,6 +632,21 @@ void DoomScene::init() {
     // the level loader does.
     reportZoneProbe();
 #endif  // PIXELROOT32_DOOM_ZONE_PROBE
+
+#if defined(PIXELROOT32_DOOM_FLASH_PROFILE)
+    // D2.5's flash-read profile, compiled only into
+    // env:esp32dev_ILI9341_flashprof: opens the `wad` partition, decodes E1M1's
+    // whole working set out of it once (cold) and immediately again (warm), and
+    // prints the two summaries, the phase lines, the warm/cold ratio and the
+    // per-frame budget. It takes ~68 KB of static decode buffer, so it is not a
+    // line a shipped build pays for -- the buffer and the probe are both inside
+    // that flag.
+    //
+    // No frame-log guard here: the two flags never meet. The profile exists to be
+    // read at boot, and the frame-log environment exists to keep its stream pure
+    // CSV.
+    doomc::flashProfileRunProbe();
+#endif  // PIXELROOT32_DOOM_FLASH_PROFILE
 
     // Anchors the tic clock at the scene's first microsecond sample, which is
     // tic 0. The sentinel makes the first update() report it, so the serial
