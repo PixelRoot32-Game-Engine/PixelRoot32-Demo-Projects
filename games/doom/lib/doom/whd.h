@@ -77,9 +77,11 @@
  * layer), it does not interpret lump contents, it needs a buffer as large as the
  * whole lump because it decodes in one pass, and name lookup is a linear scan.
  *
- * This is C99 only: <stddef.h> and <stdint.h>, no allocation, no globals, no
- * stdio, no floating point. Nothing here depends on w_wad.c. The caller owns the
- * one state struct and every buffer.
+ * This is C99 only: <stddef.h> and <stdint.h>, no allocation, no stdio, no
+ * floating point. The only static data is the DEFLATE root tables described
+ * below under "DEFLATE decoder footprint"; there is no other global and no
+ * per-open state outside the caller's struct. Nothing here depends on w_wad.c.
+ * The caller owns the one state struct and every buffer.
  */
 #ifndef DOOM_WHD_H
 #define DOOM_WHD_H
@@ -119,6 +121,35 @@ extern "C" {
 /* Method byte values. */
 #define WHD_METHOD_STORED 0u
 #define WHD_METHOD_DEFLATE 1u
+
+/* --- DEFLATE decoder footprint ------------------------------------------- */
+
+/*
+ * The decoder resolves the common Huffman codes through one root lookup table
+ * per alphabet, rebuilt for each block from the canonical code the block header
+ * describes. A code of at most WHD_LITERAL_ROOT_BITS bits (literal/length) or
+ * WHD_DISTANCE_ROOT_BITS bits (distance) is decoded and consumed in one step; a
+ * longer code falls back to the canonical bit-by-bit walk. The tables therefore
+ * only ever remove work: every decoded byte is the byte the walk produces.
+ *
+ * The tables are deliberately NOT on the stack. A nine-bit literal table alone
+ * is a kilobyte, while the stack keeps carrying the canonical tables the
+ * fallback needs; putting both there would triple the decoder's stack cost for
+ * no gain on a target that has one reader. They live in static storage owned by
+ * whd.c, and WHD_DEFLATE_ROOT_TABLE_BYTES is their exact total cost: 512 + 64
+ * uint16_t entries, 1152 bytes.
+ *
+ * The consequence is part of the contract: the DEFLATE decode path is not
+ * reentrant. Two whd_state_t readers can coexist and answer every size, name
+ * and read query in any order, but two whd_read_lump() calls must not decode a
+ * DEFLATE payload at the same time, because both rebuild the same static
+ * tables. The port decodes from one thread, so nothing is lost; an interrupt
+ * handler must not call whd_read_lump().
+ */
+#define WHD_LITERAL_ROOT_BITS 9u
+#define WHD_DISTANCE_ROOT_BITS 6u
+#define WHD_DEFLATE_ROOT_TABLE_BYTES \
+    (((1u << WHD_LITERAL_ROOT_BITS) + (1u << WHD_DISTANCE_ROOT_BITS)) * 2u)
 
 /* The container addresses everything with uint32_t, so a larger buffer cannot
  * be described by it. */
@@ -191,9 +222,12 @@ typedef enum whd_error {
 /* --- Reader state -------------------------------------------------------- */
 
 /*
- * Everything the reader knows, owned by the caller. There is no static data in
- * this translation unit, so two readers can coexist (a test opens one per case)
- * and the state can live on the stack or next to the scene.
+ * Everything the reader knows, owned by the caller. The struct holds no decode
+ * workspace, so two readers can coexist (a test opens one per case) and the
+ * state can live on the stack or next to the scene. The one piece of shared
+ * state in this translation unit is the DEFLATE root-table pair described under
+ * "DEFLATE decoder footprint"; it is why two concurrent whd_read_lump() calls
+ * that decode a payload are not allowed.
  *
  * Treat the fields as read-only after a successful open: `open` is 1 and
  * `error` is WHD_ERR_OK only for an accepted buffer. A rejected open zeroes all
@@ -312,6 +346,10 @@ int whd_lump_index_for_name(const whd_state_t* state, const char* name);
  * A payload that fails to decode leaves whatever partial bytes it produced in
  * @p out and reports WHD_ERR_CORRUPT_PAYLOAD; only the size checks above leave
  * the buffer untouched.
+ *
+ * Not reentrant for DEFLATE payloads: the decoder owns one static root-table
+ * pair (see "DEFLATE decoder footprint" above), so two calls must not decode at
+ * the same time. Stored lumps carry no such restriction.
  *
  * @param state      Open reader.
  * @param lump       Lump index.

@@ -17,12 +17,19 @@
  * allocation, and no output beyond the size the directory declared. It accepts
  * stored, fixed-Huffman and dynamic-Huffman blocks, and it holds one canonical
  * Huffman table per alphabet rather than a lookup table, so its whole working
- * set is about a kilobyte of stack. That trades speed for footprint: the caller
- * is expected to decode a lump once and keep it (the cache layer above this
- * one), not to decode per frame.
+ * set is about a kilobyte of stack.
+ *
+ * On top of that walk it keeps one root lookup table per alphabet, rebuilt per
+ * block, which resolves every code of at most WHD_LITERAL_ROOT_BITS bits
+ * (literal/length) or WHD_DISTANCE_ROOT_BITS bits (distance) in a single step;
+ * a longer code falls back to the canonical walk, so the decoded bytes cannot
+ * differ, only the work does. The tables are static, not stack: WHD_DEFLATE_
+ * ROOT_TABLE_BYTES is their exact cost, and whd_state_t does not carry them.
+ * That makes the decode path single-threaded, which whd.h states as contract.
  *
  * Compiled by the C compiler under the firmware's C99 flags; no C++ construct,
- * no allocation, no stdio, no floating point, no mutable global.
+ * no allocation, no stdio, no floating point, and no mutable global other than
+ * those two tables.
  */
 #include "whd.h"
 
@@ -125,6 +132,26 @@ static int nameMatchesField(const char* name, const uint8_t* field) {
  * the bit space can hold. */
 #define WHD_HUFFMAN_OVERSUBSCRIBED (-1)
 
+/* A root-table entry packs the decoded symbol and the number of bits it
+ * consumed into one uint16_t: the length in the low nibble, the symbol in the
+ * twelve bits above it (287, the largest literal/length symbol, needs nine).
+ * A zero entry means "no code of at most rootBits bits starts here", which the
+ * decoder answers by falling back to the canonical walk; a real entry always
+ * has a length of at least one. */
+#define WHD_TABLE_ENTRY(symbol, length) \
+    ((uint16_t)(((uint16_t)(symbol) << 4) | (uint16_t)(length)))
+#define WHD_TABLE_LENGTH(entry) ((int)((entry) & 0x0Fu))
+#define WHD_TABLE_SYMBOL(entry) ((int)((entry) >> 4))
+
+/* The root tables, one row per alphabet. Static storage on purpose: the
+ * literal table alone is a kilobyte and the stack already carries the canonical
+ * tables the fallback needs, so both together would triple the decoder's stack
+ * cost. The total is WHD_DEFLATE_ROOT_TABLE_BYTES (1152 bytes), stated in
+ * whd.h, which also states the one thing this costs -- the decode path is not
+ * reentrant. */
+static uint16_t g_literalRoot[1u << WHD_LITERAL_ROOT_BITS];
+static uint16_t g_distanceRoot[1u << WHD_DISTANCE_ROOT_BITS];
+
 /* Bit reader over the payload. Bits are consumed least significant bit first,
  * as DEFLATE packs them; at most seven bits of the current byte are ever held
  * back, which is what lets a stored block resume on a byte boundary by dropping
@@ -153,6 +180,52 @@ static int inflateBits(whdBitReader_t* reader, int need, uint32_t* value) {
     *value = accumulator & (((uint32_t)1u << need) - 1u);
 
     return 1;
+}
+
+/* True when the reader can still produce @p need bits from the payload.
+ *
+ * Compared as a byte count rather than as a bit total on purpose: a stream this
+ * container can address may be longer than 2^28 bytes, and a bit total for one
+ * would overflow a 32-bit int. @p need - count is always below 16 here, so the
+ * right-hand side cannot overflow either. */
+static int hasBits(const whdBitReader_t* reader, int need) {
+    if (reader->count >= need) {
+        return 1;
+    }
+
+    return (size_t)(reader->end - reader->at)
+        >= ((size_t)(need - reader->count) + 7u) / 8u;
+}
+
+/* The next @p need bits without consuming them. Bits past the end of the
+ * payload read as zero, which is why the caller calls hasBits() first: only
+ * then is the answer a real code prefix. */
+static uint32_t peekBits(const whdBitReader_t* reader, int need) {
+    uint32_t accumulator = reader->buffer;
+    const uint8_t* at = reader->at;
+    int count = reader->count;
+
+    while (count < need && at < reader->end) {
+        accumulator |= (uint32_t)(*at) << count;
+        ++at;
+        count += 8;
+    }
+
+    return accumulator & (((uint32_t)1u << need) - 1u);
+}
+
+/* Drops @p bits the caller has already proved available. Kept separate from
+ * inflateBits() so the table path pays one refill decision instead of a loop
+ * per bit; the invariant is the same -- fewer than eight bits stay buffered. */
+static void dropBits(whdBitReader_t* reader, int bits) {
+    while (reader->count < bits) {
+        reader->buffer |= (uint32_t)(*reader->at) << reader->count;
+        ++reader->at;
+        reader->count += 8;
+    }
+
+    reader->buffer >>= bits;
+    reader->count -= bits;
 }
 
 /*
@@ -242,6 +315,78 @@ static int decodeSymbol(whdBitReader_t* reader, const uint16_t* counts,
     }
 
     return 0;
+}
+
+/*
+ * Fills a root lookup table from the canonical table buildHuffman() produced.
+ *
+ * Every code of at most @p rootBits bits is written into every slot it can be
+ * reached from: the index is the code with its bits reversed, because DEFLATE
+ * transmits the most significant code bit first while the reader assembles the
+ * next bits least significant first; the suffixes the code does not cover are
+ * then all the slots that share it, `1 << length` apart. Codes longer than
+ * @p rootBits leave their slots at zero, which is the decoder's signal to walk
+ * that code instead.
+ *
+ * symbols[] is grouped by ascending code length and, inside a length, by
+ * symbol -- the order canonical codes are assigned in -- so one pass over
+ * counts[] and symbols[] visits every code exactly once.
+ */
+static void buildRootTable(uint16_t* table, int rootBits, const uint16_t* counts,
+                           const uint16_t* symbols) {
+    const int size = 1 << rootBits;
+    int firstCode = 0;
+    int index = 0;
+    int length;
+    int slot;
+
+    for (slot = 0; slot < size; ++slot) {
+        table[slot] = 0u;
+    }
+
+    for (length = 1; length <= (int)WHD_MAX_CODE_BITS; ++length) {
+        const int count = (int)counts[length];
+        int item;
+
+        for (item = 0; item < count; ++item) {
+            if (length <= rootBits) {
+                const int code = firstCode + item;
+                const uint16_t entry =
+                    WHD_TABLE_ENTRY((int)symbols[index + item], length);
+                int reversed = 0;
+                int bit;
+
+                for (bit = 0; bit < length; ++bit) {
+                    reversed |= ((code >> bit) & 1) << (length - 1 - bit);
+                }
+
+                for (slot = reversed; slot < size; slot += 1 << length) {
+                    table[slot] = entry;
+                }
+            }
+        }
+
+        index += count;
+        firstCode = (firstCode + count) << 1;
+    }
+}
+
+/* Peeks the root-table entry for the next code.
+ *
+ * Returns the packed entry, or zero when the payload has fewer than @p rootBits
+ * bits left or when no code of at most @p rootBits bits starts here. Both are
+ * the caller's signal to hand the code to decodeSymbol(), so a table hit never
+ * invents bits past the end of the stream and a miss never consumes any.
+ *
+ * This stays small on purpose: it is inlined into the block payload loop, where
+ * it is the whole cost of the common case. */
+static uint16_t peekRootEntry(whdBitReader_t* reader, const uint16_t* table,
+                              int rootBits) {
+    if (hasBits(reader, rootBits) == 0) {
+        return 0u;
+    }
+
+    return table[peekBits(reader, rootBits)];
 }
 
 /* The length and distance tables of RFC 1951 section 3.2.5. */
@@ -371,6 +516,8 @@ static int inflateStream(const uint8_t* payload, uint32_t payloadSize,
             if (left != 0) {
                 return 0;
             }
+            buildRootTable(g_literalRoot, (int)WHD_LITERAL_ROOT_BITS,
+                           literalCounts, literalSymbols);
             for (symbol = 0; symbol < WHD_MAX_DISTANCE_CODES; ++symbol) {
                 lengths[symbol] = 5u;
             }
@@ -379,6 +526,8 @@ static int inflateStream(const uint8_t* payload, uint32_t payloadSize,
             if (left != 0) {
                 return 0;
             }
+            buildRootTable(g_distanceRoot, (int)WHD_DISTANCE_ROOT_BITS,
+                           distanceCounts, distanceSymbols);
         } else if (blockType == 2u) {
             uint32_t literalCount = 0u;
             uint32_t distanceCount = 0u;
@@ -485,16 +634,28 @@ static int inflateStream(const uint8_t* payload, uint32_t payloadSize,
             if (left < 0 || (left > 0 && maxLength != 1)) {
                 return 0;
             }
+            buildRootTable(g_literalRoot, (int)WHD_LITERAL_ROOT_BITS,
+                           literalCounts, literalSymbols);
+            buildRootTable(g_distanceRoot, (int)WHD_DISTANCE_ROOT_BITS,
+                           distanceCounts, distanceSymbols);
         } else {
             return 0; /* BTYPE = 11 is not defined */
         }
 
         /* One block's payload: literals and length/distance pairs, ending on
-         * the end-of-block symbol. */
+         * the end-of-block symbol. Both alphabets go through their root table
+         * first; a code the table cannot resolve falls back to the walk. */
         for (;;) {
             int symbol = 0;
+            uint16_t entry =
+                peekRootEntry(&reader, g_literalRoot,
+                              (int)WHD_LITERAL_ROOT_BITS);
 
-            if (decodeSymbol(&reader, literalCounts, literalSymbols, &symbol) == 0) {
+            if (entry != 0u) {
+                dropBits(&reader, WHD_TABLE_LENGTH(entry));
+                symbol = WHD_TABLE_SYMBOL(entry);
+            } else if (decodeSymbol(&reader, literalCounts, literalSymbols,
+                                    &symbol) == 0) {
                 return 0;
             }
 
@@ -520,14 +681,20 @@ static int inflateStream(const uint8_t* payload, uint32_t payloadSize,
                 uint32_t distance = 0u;
                 int distanceSymbol = 0;
                 uint32_t index;
+                uint16_t distanceEntry;
 
                 if (inflateBits(&reader, (int)kLengthExtra[lengthIndex], &extra) == 0) {
                     return 0;
                 }
                 length = (uint32_t)kLengthBase[lengthIndex] + extra;
 
-                if (decodeSymbol(&reader, distanceCounts, distanceSymbols,
-                                 &distanceSymbol) == 0) {
+                distanceEntry = peekRootEntry(&reader, g_distanceRoot,
+                                              (int)WHD_DISTANCE_ROOT_BITS);
+                if (distanceEntry != 0u) {
+                    dropBits(&reader, WHD_TABLE_LENGTH(distanceEntry));
+                    distanceSymbol = WHD_TABLE_SYMBOL(distanceEntry);
+                } else if (decodeSymbol(&reader, distanceCounts, distanceSymbols,
+                                        &distanceSymbol) == 0) {
                     return 0;
                 }
                 if (distanceSymbol > 29) {

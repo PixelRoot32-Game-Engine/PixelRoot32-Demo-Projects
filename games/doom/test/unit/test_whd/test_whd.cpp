@@ -411,6 +411,98 @@ LumpSpec deflateLump(const char* name, const std::vector<std::uint8_t>& stream,
     return LumpSpec{name, stream, uncompressedSize, kMethodDeflate};
 }
 
+/// One dynamic-Huffman block whose alphabets are wider than the decoder's root
+/// tables, so its payload forces the bit-by-bit fallback AND the one-step path
+/// inside the same block. This is the equivalence boundary of a table-driven
+/// inflater: a code of at most the root width must decode in one step and a
+/// longer one must decode exactly as the canonical walk always did.
+///
+/// The literal/length alphabet is a complete code of 258 entries whose lengths
+/// are 1,2,...,9 for nine symbols and 10,10 for two more (1/2 + ... + 1/512 +
+/// 2/1024 = 1). The distance alphabet is a complete code of eight entries with
+/// lengths 1,2,3,4,5,6,7,7 (1/2 + ... + 1/64 + 2/128 = 1). Both are therefore
+/// legal complete codes and both end past the root width.
+///
+/// The payload is 13 literals ('H' with a ten-bit code, then twelve 'A's with a
+/// three-bit code), one length-3 match at distance 13 whose distance code is
+/// seven bits long, and the end-of-block symbol.
+std::vector<std::uint8_t> longCodeStream() {
+    // Literal/length alphabet: 258 entries (HLIT = 1, so 286 and 287 still stay
+    // reserved). 256 is the end of block, 257 is "length 3, no extra bits".
+    std::vector<int> literalLengths(258, 0);
+    literalLengths[256] = 1;
+    literalLengths[257] = 2;
+    literalLengths[65] = 3;   // 'A'
+    literalLengths[66] = 4;
+    literalLengths[67] = 5;
+    literalLengths[68] = 6;
+    literalLengths[69] = 7;
+    literalLengths[70] = 8;
+    literalLengths[71] = 9;   // exactly the literal root width
+    literalLengths[72] = 10;  // 'H', past the root width
+    literalLengths[73] = 10;
+
+    // Distance alphabet: 8 entries (HDIST = 7). Symbol 7 is a seven-bit code,
+    // past the distance root width.
+    std::vector<int> distanceLengths(8, 0);
+    for (int symbol = 0; symbol < 6; ++symbol) {
+        distanceLengths[static_cast<std::size_t>(symbol)] = symbol + 1;
+    }
+    distanceLengths[6] = 7;
+    distanceLengths[7] = 7;
+
+    const std::vector<std::uint32_t> literalCodes = canonicalCodes(literalLengths);
+    const std::vector<std::uint32_t> distanceCodes = canonicalCodes(distanceLengths);
+
+    // The code-length alphabet has to name every length value that appears:
+    // 0..10. Five three-bit codes and six four-bit codes are complete
+    // (5/8 + 6/16 = 1), and no repeat symbol is used.
+    std::vector<int> codeLengthLengths(19, 0);
+    for (int symbol = 0; symbol <= 4; ++symbol) {
+        codeLengthLengths[static_cast<std::size_t>(symbol)] = 3;
+    }
+    for (int symbol = 5; symbol <= 10; ++symbol) {
+        codeLengthLengths[static_cast<std::size_t>(symbol)] = 4;
+    }
+    const std::vector<std::uint32_t> codeLengthCodes = canonicalCodes(codeLengthLengths);
+
+    BitWriter bits;
+    bits.put(1u, 1);    // BFINAL
+    bits.put(2u, 2);    // BTYPE = 10, dynamic Huffman
+    bits.put(1u, 5);    // HLIT  = 1 -> 258 literal/length codes
+    bits.put(7u, 5);    // HDIST = 7 -> 8 distance codes
+    bits.put(14u, 4);   // HCLEN = 14 -> 18 code-length codes (symbol 15 unused)
+
+    const int order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
+    for (int index = 0; index < 18; ++index) {
+        bits.put(static_cast<std::uint32_t>(
+                     codeLengthLengths[static_cast<std::size_t>(order[index])]),
+                 3);
+    }
+
+    const auto emitCodeLength = [&](int value) {
+        bits.putCode(codeLengthCodes[static_cast<std::size_t>(value)],
+                     codeLengthLengths[static_cast<std::size_t>(value)]);
+    };
+
+    for (const int value : literalLengths) {
+        emitCodeLength(value);
+    }
+    for (const int value : distanceLengths) {
+        emitCodeLength(value);
+    }
+
+    bits.putCode(literalCodes[72], 10);  // 'H' by its ten-bit code
+    for (int count = 0; count < 12; ++count) {
+        bits.putCode(literalCodes[65], 3);  // 'A' by its three-bit code
+    }
+    bits.putCode(literalCodes[257], 2);     // length 3, no extra bits
+    bits.putCode(distanceCodes[7], 7);      // distance base 13, two extra bits
+    bits.put(0u, 2);                        // extra = 0 -> distance 13
+    bits.putCode(literalCodes[256], 1);     // end of block
+    return bits.take();
+}
+
 }  // namespace
 
 // The smallest complete case: one stored lump, reported by size and by name and
@@ -542,9 +634,100 @@ void test_multiple_blocks_in_one_stream_decode(void) {
     TEST_ASSERT_EQUAL_UINT8(static_cast<std::uint8_t>('D'), out[14]);
 }
 
-// An empty lump owns no payload and needs no output buffer.
-void test_empty_lump_needs_no_buffer(void) {
+// One block that mixes both decode shapes: codes of at most the root width are
+// resolved in one step and longer codes fall back to the canonical walk. The
+// bytes must be exactly the bytes the walk alone produces -- 'H', twelve 'A's,
+// then a three-byte copy from distance 13.
+void test_codes_past_the_root_width_decode_identically(void) {
+    const std::vector<std::uint8_t> stream = longCodeStream();
     const std::vector<std::uint8_t> container =
+        buildContainer({deflateLump("DYNROOT", stream, 16u)});
+    whd_state_t state;
+
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_open(&state, container.data(), container.size()));
+    TEST_ASSERT_EQUAL_INT32(16, whd_lump_size(&state, 0));
+
+    std::uint8_t out[16] = {0u};
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_read_lump(&state, 0, out, sizeof out, nullptr));
+
+    const std::uint8_t expected[16] = {
+        static_cast<std::uint8_t>('H'),
+        static_cast<std::uint8_t>('A'), static_cast<std::uint8_t>('A'),
+        static_cast<std::uint8_t>('A'), static_cast<std::uint8_t>('A'),
+        static_cast<std::uint8_t>('A'), static_cast<std::uint8_t>('A'),
+        static_cast<std::uint8_t>('A'), static_cast<std::uint8_t>('A'),
+        static_cast<std::uint8_t>('A'), static_cast<std::uint8_t>('A'),
+        static_cast<std::uint8_t>('A'), static_cast<std::uint8_t>('A'),
+        static_cast<std::uint8_t>('H'),
+        static_cast<std::uint8_t>('A'), static_cast<std::uint8_t>('A')
+    };
+    for (std::size_t index = 0; index < sizeof expected; ++index) {
+        TEST_ASSERT_EQUAL_UINT8(expected[index], out[index]);
+    }
+}
+
+// A lookup table must not manufacture bits it does not have: the same block,
+// truncated inside its final code, is still a corrupt payload and not a short
+// success.
+void test_truncated_code_past_the_root_width_is_corrupt(void) {
+    std::vector<std::uint8_t> stream = longCodeStream();
+    stream.resize(stream.size() - 1u);  // the last byte always carries EOB bits
+
+    const std::vector<std::uint8_t> container =
+        buildContainer({deflateLump("TRUNC", stream, 16u)});
+    whd_state_t state;
+
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_open(&state, container.data(), container.size()));
+
+    std::uint8_t out[16] = {0u};
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_CORRUPT_PAYLOAD,
+                          whd_read_lump(&state, 0, out, sizeof out, nullptr));
+}
+
+// The fixed-Huffman alphabet is nine bits deep in its middle range, so its
+// boundary codes are the widest the root table resolves and its longest match
+// (length 258) is the largest copy the format defines.
+void test_fixed_block_boundary_codes_decode(void) {
+    FixedBlockWriter block(true);
+    block.literal(200u);                        // nine-bit fixed code
+    block.literal(255u);                        // nine-bit fixed code
+    block.literal(static_cast<std::uint8_t>('A'));  // eight-bit fixed code
+    block.match(258, 3);                        // length 258, five-bit distance
+    block.end();
+    const std::vector<std::uint8_t> stream = block.take();
+
+    const std::vector<std::uint8_t> container =
+        buildContainer({deflateLump("FIXEDGE", stream, 261u)});
+    whd_state_t state;
+
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_open(&state, container.data(), container.size()));
+
+    std::uint8_t out[261] = {0u};
+    TEST_ASSERT_EQUAL_INT(WHD_ERR_OK, whd_read_lump(&state, 0, out, sizeof out, nullptr));
+
+    // A distance-3 copy repeats the three literals, so every byte is decided by
+    // its position modulo three.
+    TEST_ASSERT_EQUAL_UINT8(200u, out[0]);
+    TEST_ASSERT_EQUAL_UINT8(255u, out[1]);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<std::uint8_t>('A'), out[2]);
+    TEST_ASSERT_EQUAL_UINT8(200u, out[3]);
+    TEST_ASSERT_EQUAL_UINT8(255u, out[4]);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<std::uint8_t>('A'), out[260]);
+}
+
+// The tables are a fixed, documented cost held outside the stack, so the header
+// states the exact number of bytes rather than leaving it to the build.
+void test_root_tables_have_the_documented_footprint(void) {
+    TEST_ASSERT_EQUAL_UINT32(9u, WHD_LITERAL_ROOT_BITS);
+    TEST_ASSERT_EQUAL_UINT32(6u, WHD_DISTANCE_ROOT_BITS);
+    TEST_ASSERT_EQUAL_UINT32(
+        ((1u << WHD_LITERAL_ROOT_BITS) + (1u << WHD_DISTANCE_ROOT_BITS)) * 2u,
+        WHD_DEFLATE_ROOT_TABLE_BYTES);
+    TEST_ASSERT_EQUAL_UINT32(1152u, WHD_DEFLATE_ROOT_TABLE_BYTES);
+}
+
+// An empty lump owns no payload and needs no output buffer.
+void test_empty_lump_needs_no_buffer(void) {    const std::vector<std::uint8_t> container =
         buildContainer({storedLump("EMPTY", {}), storedLump("AFTER", {7u})});
     whd_state_t state;
 
@@ -844,6 +1027,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_code_length_repeat_symbol_decodes);
     RUN_TEST(test_stored_deflate_block_decodes);
     RUN_TEST(test_multiple_blocks_in_one_stream_decode);
+    RUN_TEST(test_codes_past_the_root_width_decode_identically);
+    RUN_TEST(test_truncated_code_past_the_root_width_is_corrupt);
+    RUN_TEST(test_fixed_block_boundary_codes_decode);
+    RUN_TEST(test_root_tables_have_the_documented_footprint);
     RUN_TEST(test_empty_lump_needs_no_buffer);
     RUN_TEST(test_name_lookup_is_case_insensitive);
     RUN_TEST(test_missing_name_returns_minus_one);
