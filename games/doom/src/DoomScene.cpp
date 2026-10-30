@@ -7,6 +7,10 @@
 #include "doomc/WhdSource.h"
 #endif
 
+#if defined(PIXELROOT32_DOOM_ZONE_PROBE)
+#include "z_zone.h"
+#endif
+
 #include "palette/DoomPalette.h"
 
 #include <cstddef>
@@ -524,6 +528,55 @@ void reportContainerProbe() {
 
 #endif  // PIXELROOT32_DOOM_WAD_PROBE
 
+// --- Zone probe -------------------------------------------------------------
+
+#if defined(PIXELROOT32_DOOM_ZONE_PROBE)
+
+/**
+ * @brief The probe's arena: 64 KB of static DRAM, a smoke test only.
+ *
+ * The real level working set is not allocated here. This array exists so the
+ * boot log can state three facts about the allocator on the board itself: the
+ * arena's accounting overhead, the largest single free block, and that the
+ * container's 68,168 B HELP1 lump is refused cleanly by a 64 KB zone -- the
+ * refusal the port will handle outside the zone.
+ */
+alignas(ZONE_ALIGNMENT) std::uint8_t kZoneArena[65536];
+
+/**
+ * @brief Creates one zone over the static arena and prints one `ZONE,...` line.
+ *
+ * No block survives this function and nothing is freed: the state is local and
+ * the arena is left as the allocator wrote it. The line is a boot-time smoke
+ * record, not a frame path, and the whole function is compiled out of every
+ * environment that does not define PIXELROOT32_DOOM_ZONE_PROBE.
+ */
+void reportZoneProbe() {
+    zone_state_t zone;
+
+    if (z_init(&zone, kZoneArena, sizeof kZoneArena) != ZONE_ERR_OK) {
+        writeConsoleLine("ZONE,arena=0,overhead=0,largest_free=0,alloc_68168=init_failed\n");
+        return;
+    }
+
+    const zone_stats_t stats = z_stats(&zone);
+    zone_error_t error = ZONE_ERR_OK;
+    const void* help1 = z_alloc(&zone, 68168u, PU_LEVEL, &error);
+
+    // The three decimal fields reach at most ten digits each; 128 bytes leaves
+    // room for the labels and the two possible outcome words.
+    char line[128];
+    std::snprintf(line, sizeof line,
+                  "ZONE,arena=%u,overhead=%u,largest_free=%u,alloc_68168=%s\n",
+                  static_cast<unsigned>(stats.arenaSize),
+                  static_cast<unsigned>(stats.overhead),
+                  static_cast<unsigned>(stats.largestFree),
+                  help1 != nullptr ? "ok" : "fail");
+    writeConsoleLine(line);
+}
+
+#endif  // PIXELROOT32_DOOM_ZONE_PROBE
+
 }  // namespace
 
 void DoomScene::init() {
@@ -566,6 +619,15 @@ void DoomScene::init() {
     // its stream pure CSV.
     reportContainerProbe();
 #endif  // PIXELROOT32_DOOM_WAD_PROBE
+
+#if defined(PIXELROOT32_DOOM_ZONE_PROBE)
+    // The zone probe: one `ZONE,arena=...,overhead=...,largest_free=...,
+    // alloc_68168=...` line over a static 64 KB arena, stating that the
+    // allocator accounts for the whole arena and refuses the real container's
+    // largest lump. It allocates no level memory; the working set arrives when
+    // the level loader does.
+    reportZoneProbe();
+#endif  // PIXELROOT32_DOOM_ZONE_PROBE
 
     // Anchors the tic clock at the scene's first microsecond sample, which is
     // tic 0. The sentinel makes the first update() report it, so the serial

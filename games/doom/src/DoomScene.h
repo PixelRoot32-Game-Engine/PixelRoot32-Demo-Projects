@@ -82,6 +82,15 @@ namespace doom {
  * that selects `partitions_wad.csv`; every shipped environment keeps the default
  * table and the original boot log.
  *
+ * `PIXELROOT32_DOOM_ZONE_PROBE` adds the zone smoke record: `init()` creates
+ * one allocator over a static 64 KB array (never the level working set) and
+ * prints one `ZONE,arena=...,overhead=...,largest_free=...,
+ * alloc_68168=...` line. It shares `env:esp32dev_ILI9341_wad`, so the same boot
+ * log that proves the container also proves that a 64 KB zone accounts for all
+ * 65,536 bytes and refuses the container's 68,168 B `HELP1` lump cleanly. The
+ * shipped environments define neither flag and carry neither the 64 KB array nor
+ * the probe code.
+ *
  * The logical surface is a constant here on purpose. DOOM's renderer is
  * column-indexed: `distscale[SCREENWIDTH]`, `visplane_t::top[SCREENWIDTH]`,
  * `floorclip` / `ceilingclip` and the status bar layout all assume 320x200.
