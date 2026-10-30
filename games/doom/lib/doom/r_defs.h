@@ -32,6 +32,26 @@ extern "C" {
 #define R_SCREEN_WIDTH 320
 #define R_SCREEN_HEIGHT 200
 
+/*
+ * THE VIEW WINDOW INSIDE THE SURFACE, AND THE ONE PLACE A HUD WOULD MOVE IT
+ *
+ * DOOM's R_ExecuteSetViewSize() derives two independent numbers from the
+ * window it renders into: `viewheight` (how many rows the renderer may write,
+ * which is what floorclip[] is initialised to) and `centery` (the horizon, the
+ * row R_RenderSegLoop's 12.4 fractional screen positions are measured from).
+ * Upstream they are `viewheight` and `viewheight/2`; the status bar steals rows
+ * by shrinking the window, so both change together.
+ *
+ * This port draws a 200-row view with no status bar yet, so R_VIEW_HEIGHT is
+ * the whole surface. A Phase-5 HUD that steals rows changes R_CENTER_Y (and
+ * R_VIEW_HEIGHT, which is what a clip array starts at); nothing else in the
+ * renderer hard-codes either number. r_bsp.c and r_segs.c read these macros and
+ * never a literal 100 or 200.
+ */
+#define R_VIEW_HEIGHT R_SCREEN_HEIGHT
+#define R_CENTER_Y (R_VIEW_HEIGHT / 2)
+#define R_CENTER_Y_FRAC (((fixed_t)R_CENTER_Y) << FRACBITS)
+
 /* DOOM's field of view, in fine angles. 2048 of 8192 is 90 degrees, which is
  * the horizontal arc the view-angle-to-column table flattens onto 320 px. */
 #define R_FIELDOFVIEW 2048
@@ -71,6 +91,34 @@ typedef uint64_t r_name_t;
  * answers 0 for "-", and "-" maps to the first directory entry for a real
  * texture; at this layer a name whose first byte is '-' or NUL is "absent". */
 #define R_NAME_NONE ((r_name_t)0)
+
+/*
+ * The drawing classes the wall pass counts in r_draw_surface_t::tierPixels, in
+ * the order R_RenderSegLoop tries them: the single-sided mid texture, the upper
+ * tier of a two-sided line, then the lower one.
+ */
+#define R_DRAW_TIER_MID 0
+#define R_DRAW_TIER_TOP 1
+#define R_DRAW_TIER_BOTTOM 2
+#define R_DRAW_TIER_COUNT 3
+
+/* The texture-column wrap of a wall texture, as R_InitTextures() computes it:
+ * `j = 1; while (j*2 <= width) j <<= 1; texturewidthmask = j - 1;` -- the
+ * largest power of two that does not exceed the width, minus one. It is not
+ * `width - 1` for a width that is not a power of two (a 72-wide texture wraps at
+ * 63), which is why it is a function and not a caller's assumption. */
+static inline int16_t r_texture_width_mask(int width) {
+    int16_t mask = 1;
+
+    if (width < 1) {
+        return 0;
+    }
+    while ((int)mask * 2 <= width) {
+        mask = (int16_t)(mask * 2);
+    }
+    return (int16_t)(mask - 1);
+}
+
 
 /**
  * @brief Packs the eight bytes of a WAD name field into one r_name_t.
@@ -114,6 +162,31 @@ static inline int r_has_name(r_name_t packed) {
 
     return first != 0u && first != (uint8_t)'-';
 }
+
+/*
+ * One palette-index surface: R_SCREEN_WIDTH x R_VIEW_HEIGHT bytes, row major,
+ * pixel (x, y) at pixels[x + y * width]. `width` and `height` are carried
+ * rather than assumed so the column emitter can prove its writes are in bounds
+ * with one comparison instead of trusting the caller.
+ *
+ * `covered` is the coverage record the frame hash needs: one byte per column,
+ * set to 1 when the pass wrote at least one pixel there. It is optional (NULL
+ * means "do not record"), and it exists because an uncovered column is filled
+ * with 0xFF -- a real palette index -- so the pixel buffer alone cannot say
+ * whether a column was written. A pass that writes nothing leaves it alone.
+ *
+ * `tierPixels` is the same record per drawing class (the wall pass writes three:
+ * mid, upper and lower). It is what makes "the same pixels" and "the same tiers
+ * in the same order" two separately checkable claims in the frame protocol; the
+ * sum of the three is the number of pixels the pass wrote.
+ */
+typedef struct r_draw_surface {
+    uint8_t* pixels;
+    int32_t width;
+    int32_t height;
+    uint8_t* covered;
+    uint32_t tierPixels[R_DRAW_TIER_COUNT];
+} r_draw_surface_t;
 
 #ifdef __cplusplus
 } /* extern "C" */

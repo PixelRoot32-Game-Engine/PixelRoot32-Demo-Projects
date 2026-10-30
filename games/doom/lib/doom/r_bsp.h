@@ -54,12 +54,12 @@
  * Everything is caller-owned. At the default DOOM capacities (R_MAX_DRAWSEGS
  * drawsegs, R_MAX_CLIP_SEGS clip posts, 64 visplanes) one view costs:
  *
- *   drawsegs      256 * sizeof(r_drawseg_t)               =  9,216 B
+ *   drawsegs      256 * sizeof(r_drawseg_t)               = 12,288 B
  *   visplanes      64 * sizeof(r_visplane_t)              = 42,496 B
  *   clip posts     32 * sizeof(r_clip_range_t)            =    256 B
  *   column clips  2 * 320 * sizeof(int16_t)               =  1,280 B
  *   ---------------------------------------------------------------
- *   total                                                 53,248 B
+ *   total                                                 56,320 B
  *
  * The visplanes dominate, exactly as DOOM's own visplane_t does (two 320-byte
  * arrays per plane). A caller that has measured its level may pass a smaller
@@ -67,6 +67,45 @@
  * capacity that is too small is reported as R_BSP_ERR_VISPLANE_OVERFLOW, never
  * written past. The projection tables are `const` in flash and cost no DRAM
  * (r_tables.h).
+ *
+ * THE WALL FRAGMENT, AND WHY IT IS NOT STORED
+ *
+ * Upstream splits one visible wall across two functions of one file:
+ * R_StoreWallRange() decides the heights, the tier textures, the light index
+ * and the pegging, and leaves all of it in file-scope variables; R_RenderSegLoop()
+ * then walks the fragment's columns and draws them. This port splits the same
+ * work across two files -- r_bsp.c (walk) and r_segs.c (column emitter) -- so the
+ * hand-off needs an explicit record. It is r_wall_fragment_t, below, and it is
+ * *stack local*: r_wall_fragment_open() fills it once per fragment, in the walk
+ * before the drawseg is stored and again in the emitter from the stored drawseg.
+ *
+ * What lives in the drawseg and what lives in the fragment is a deliberate
+ * divergence from upstream's boundary, and it is decided by a byte count:
+ *
+ *   in r_drawseg_t (12,288 B for the 256-entry array, 48 B each)
+ *     seg, x1, x2, scale1, scale2, scaleStep, silhouette, bottomSilhouette,
+ *     topSilhouette, lightLevel, lightNum, rwDistance, rwOffset, rwCenterAngle
+ *   in r_wall_fragment_t (168 B on the stack, one fragment at a time)
+ *     everything above, plus worldTop/worldBottom/worldHigh/worldLow, the three
+ *     texturemids, the topfrac/bottomfrac/pixhigh/pixlow steppers,
+ *     markFloor/markCeiling and the wallTop/wallMid/wallBottom tier flags
+ *
+ * Only the column emitter ever reads the second group, and it is 75 B of fields
+ * (76 after padding): storing it per drawseg would cost 19,456 B of DRAM for one
+ * view -- about a seventh of the whole remaining budget measured in D0.4 -- for
+ * data with a single consumer. The fragment struct is 168 B because it also
+ * carries the map-facing fields the walk needs *before* a drawseg exists (the
+ * sidedef's names and offsets, the seg's first vertex and normal angle, the
+ * scale at both ends); those are on the stack for the duration of one fragment.
+ *
+ * The three values that *are* stored per drawseg are the ones only
+ * R_StoreWallRange can produce from the seg angle and the sidedefs (the distance
+ * along the wall's normal, the texture offset and the view-relative centre
+ * angle), and they are stored because recomputing them in a second file would be
+ * a second implementation of the highest-risk sign and orientation math in the
+ * port.
+ *
+ * 36 B -> 48 B per drawseg, so 9,216 B -> 12,288 B for the array.
  *
  * ERROR BEHAVIOUR
  *
@@ -169,17 +208,11 @@ typedef struct r_view_params {
 /*
  * One visible wall fragment, in screen columns [x1, x2] inclusive.
  *
- * Upstream's drawseg_t also carries `maskedtexturecol`, the two sprite
- * clipping arrays, and the texture-column state R_RenderSegLoop uses
- * (`rw_offset`, `rw_centerangle`, `rw_distance`). They are *not* here on
- * purpose. The sprite arrays are storage into upstream's `openings[]` and are
- * only read by the sprite pass (D3.4), which owns that storage decision. The
- * texture-column state needs finetangent[] and a texture height, neither of
- * which this layer loads: D3.2 must either record those three values in this
- * struct (it can recompute them from the seg, the view and rw_distance) or
- * re-derive them in the emitter. What the brief asks of D3.1 -- the seg, the
- * light, the two scales, the step and the silhouette heights -- is complete,
- * and every field below is compared with the oracle or unit-tested.
+ * Upstream's drawseg_t also carries `maskedtexturecol` and the two sprite
+ * clipping arrays. They are *not* here on purpose: they are storage into
+ * upstream's `openings[]` and are only read by the sprite pass (D3.4), which
+ * owns that storage decision. See the file header for the byte-count reason the
+ * per-column fragment state is a stack local instead of a field.
  *
  * Field by field, and where it comes from:
  *
@@ -206,6 +239,21 @@ typedef struct r_view_params {
  *                    and -1 for a horizontal one, exactly as upstream picks the
  *                    wall light table. Not clamped here: the emitter owns the
  *                    clamp to [0, LIGHTLEVELS), as upstream's does.
+ *   rwDistance       `rw_distance`: the distance from the viewpoint to the
+ *                    seg's plane along the seg normal, 16.16. R_StoreWallRange's
+ *                    R_PointToDist * sine(distance angle).
+ *   rwOffset         `rw_offset`: the texture u coordinate at the fragment's
+ *                    left column before the tangent term, in 16.16 texture
+ *                    units. It folds in the sidedef's textureoffset and the
+ *                    seg's own offset, and its sign depends on which way the
+ *                    normal turns from the first vertex direction -- the one
+ *                    piece of orientation math in the renderer that is easiest
+ *                    to get backwards.
+ *   rwCenterAngle    `rw_centerangle` = ANG90 + viewangle - rw_normalangle. It is
+ *                    view *relative* on purpose: the emitter adds
+ *                    xtoviewangle[x] to it and shifts by ANGLETOFINESHIFT to
+ *                    index r_fine_tangent[], and the relative form is what keeps
+ *                    that index inside [0, FINEANGLES/2).
  */
 typedef struct r_drawseg {
     uint16_t seg;
@@ -219,7 +267,94 @@ typedef struct r_drawseg {
     fixed_t topSilhouette;
     int16_t lightLevel;
     int16_t lightNum;
+    fixed_t rwDistance;
+    fixed_t rwOffset;
+    fixed_t rwCenterAngle;
 } r_drawseg_t;
+
+/* --- The wall fragment (shared with the column emitter, r_segs.c) --------- */
+
+/*
+ * Everything R_StoreWallRange() and R_RenderSegLoop() keep in file-scope
+ * variables for one wall fragment, in one stack local. It is filled by
+ *
+ *   r_wall_fragment_open()   the map-facing half: sectors, sidedef, the two
+ *                            sided tier predicate, the silhouette, the light
+ *                            index, the pre-shift world heights and the tier
+ *                            names;
+ *   r_wall_fragment_step()   the 12.4 fractional screen positions and their
+ *                            per-column steps, from the heights and the scale;
+ *   r_wall_fragment_peg()    the three `dc_texturemid` values, which need the
+ *                            tier textures' heights and therefore cannot be
+ *                            computed by a layer that never resolves a texture.
+ *
+ * The walk calls open() + step() and stores the six range values in the
+ * drawseg; the emitter calls open() on the stored drawseg, copies the six
+ * values back in from it, then calls step() + peg(). No rule is written twice:
+ * the predicate in open() is the *only* implementation of the two-sided
+ * height/picture test, and it is the one that decides worldhigh/worldlow,
+ * markFloor/markCeiling and the tier flags for both passes.
+ *
+ * The world heights are 16.16 and view relative (sector height - view->z). The
+ * sky hack of R_StoreWallRange is applied here, so worldTop already equals
+ * worldHigh for an outdoor ceiling.
+ */
+typedef struct r_wall_fragment {
+    /* From the seg, its linedef and its sidedef. */
+    uint16_t seg;
+    uint16_t frontSector;
+    uint16_t backSector;
+    int16_t flags;            /* linedef flags, for ML_DONTPEGTOP/BOTTOM */
+    fixed_t textureOffset;    /* sidedef textureoffset */
+    fixed_t rowOffset;        /* sidedef rowoffset */
+    r_name_t midTexture;      /* packed sidedef names, R_NAME_NONE when absent */
+    r_name_t topTexture;
+    r_name_t bottomTexture;
+    /* From the seg's geometry, for the walk's range computation. */
+    fixed_t v1x;
+    fixed_t v1y;
+    angle_t normalAngle;      /* seg.angle + ANG90 */
+    fixed_t segOffset;        /* seg.offset, the SEGS lump's own u origin */
+    /* The predicate: R_StoreWallRange's decisions. */
+    fixed_t worldTop;         /* 16.16, view relative, sky hack applied */
+    fixed_t worldBottom;
+    fixed_t worldHigh;
+    fixed_t worldLow;
+    fixed_t midTextureMid;    /* dc_texturemid per tier, after peg() */
+    fixed_t topTextureMid;
+    fixed_t bottomTextureMid;
+    /* The range: R_StoreWallRange's scales and the three stored values. */
+    int16_t x1;
+    int16_t x2;
+    fixed_t scale1;
+    fixed_t scale2;
+    fixed_t scaleStep;
+    fixed_t distance;         /* rwDistance */
+    fixed_t offset;           /* rwOffset */
+    fixed_t centerAngle;      /* rwCenterAngle */
+    /* The column steppers: 12.4 fractions, after step(). */
+    fixed_t topFrac;
+    fixed_t topStep;
+    fixed_t bottomFrac;
+    fixed_t bottomStep;
+    fixed_t pixHigh;
+    fixed_t pixLow;
+    fixed_t pixHighStep;
+    fixed_t pixLowStep;
+    fixed_t scale;            /* rw_scale, advanced once per column */
+    /* Flags, exactly upstream's. */
+    uint8_t hasBack;
+    uint8_t wallMid;
+    uint8_t wallTop;
+    uint8_t wallBottom;
+    uint8_t markFloor;
+    uint8_t markCeiling;
+    uint8_t silhouette;
+    int16_t lightLevel;
+    int16_t lightNum;
+    fixed_t bottomSilhouette;
+    fixed_t topSilhouette;
+} r_wall_fragment_t;
 
 /* One solid clip post: `first`..`last` are screen columns already covered by a
  * wall nearer than anything the walk will visit next. The list is kept sorted
@@ -255,9 +390,13 @@ typedef struct r_view_storage {
 
 /*
  * One view's state, owned by the caller. Public fields describe the result;
- * fields marked INTERNAL are the walked render state that upstream keeps as
+ * fields marked INTERNAL are the walked render state upstream keeps as
  * file-scope globals, moved here so two views (a test's, the game's) can
  * coexist and so nothing mutable lives outside this struct.
+ *
+ * Everything R_RenderSegLoop() used to read from file scope (the fractions, the
+ * steppers, the tier flags) is *not* here: it belongs to one fragment and lives
+ * in the stack-local r_wall_fragment_t (see the struct's comment).
  */
 typedef struct r_view_state {
     const doom_map_t* map;
@@ -275,31 +414,6 @@ typedef struct r_view_state {
     uint16_t frontSector;
     uint16_t currentSeg;
     angle_t rwAngle1;
-    angle_t rwNormalAngle;
-    fixed_t rwDistance;
-    int rwX;
-    int rwStopX;
-    fixed_t rwScale;
-    fixed_t rwScaleStep;
-    fixed_t worldTop;
-    fixed_t worldBottom;
-    fixed_t worldHigh;
-    fixed_t worldLow;
-    fixed_t topFrac;
-    fixed_t topStep;
-    fixed_t bottomFrac;
-    fixed_t bottomStep;
-    fixed_t pixHigh;
-    fixed_t pixLow;
-    fixed_t pixHighStep;
-    fixed_t pixLowStep;
-    int markFloor;
-    int markCeiling;
-    int wallMid;
-    int wallTop;
-    int wallBottom;
-    int16_t lightNum;
-    uint8_t depth;
     uint16_t clipRangeCount;
 } r_view_state_t;
 
@@ -387,6 +501,80 @@ r_bsp_error_t r_bsp_point_in_subsector(const doom_map_t* map, fixed_t x,
  */
 r_bsp_error_t r_bsp_spawn_view(const doom_map_t* map, int playerIndex,
                                r_view_params_t* out);
+
+/**
+ * @brief Fills the map-facing half of one wall fragment.
+ *
+ * This is R_StoreWallRange()'s decision block, extracted so the walk and the
+ * column emitter share one implementation of it: the front and back sectors,
+ * the silhouette heights, worldhigh/worldlow, the outdoor sky hack, markfloor
+ * and markceiling, the three tier flags, the wall light index, and the pre-shift
+ * world heights the column steppers are derived from.
+ *
+ * It reads the map and the view only. It does not touch the clip arrays, the
+ * plane set or the drawsegs, so calling it is free of side effects and calling
+ * it twice for the same fragment (walk, then emitter) cannot change a result.
+ *
+ * Every index it follows was proved by doom_map_open(); a seg index the graph
+ * never named is a caller bug, not a condition diagnosed here.
+ *
+ * @param map  An open map.
+ * @param view The viewpoint the fragment was stored for.
+ * @param seg  Index into SEGS.
+ * @param out  Receives the fragment. `x1`, `x2`, the scales and the three range
+ *             values are left 0: the walk's range helper fills them, and the
+ *             emitter copies them from the drawseg.
+ */
+void r_wall_fragment_open(const doom_map_t* map, const r_view_params_t* view,
+                          uint16_t seg, r_wall_fragment_t* out);
+
+/**
+ * @brief Computes the 12.4 column steppers from the fragment's world heights.
+ *
+ * R_StoreWallRange()'s last block: `worldtop >>= 4` and the four
+ * topfrac/topstep/bottomfrac/bottomstep values, plus pixhigh/pixlow and their
+ * steps for the two visible tiers of a two-sided line. `scale1` is the
+ * fragment's starting texture scale and `scaleStep` its per-column step.
+ *
+ * The world heights are shifted inside this call, so the fragment keeps its
+ * pre-shift values and the result does not depend on how many times it runs.
+ *
+ * @param fragment  A fragment from r_wall_fragment_open().
+ * @param scale1    rw_scale at x1.
+ * @param scaleStep rw_scalestep for the fragment.
+ */
+void r_wall_fragment_step(r_wall_fragment_t* fragment, fixed_t scale1,
+                          fixed_t scaleStep);
+
+/**
+ * @brief Computes the three `dc_texturemid` values from the tier heights.
+ *
+ * R_StoreWallRange()'s pegging block, which is the one part of the fragment
+ * that needs data this layer does not have: the height of the tier's texture.
+ * `textureheight[]` is upstream's `texture->height << FRACBITS`. The bottom
+ * tier is the one that never consults it -- upstream pegs it to worldTop or
+ * worldLow only -- so there is no bottomHeight argument.
+ *
+ *   single-sided mid   ML_DONTPEGBOTTOM: front floor + mid height - view z,
+ *                      otherwise worldTop; then += sidedef rowoffset
+ *   top tier           ML_DONTPEGTOP: worldTop, otherwise back ceiling + top
+ *                      height - view z; then += sidedef rowoffset
+ *   bottom tier        ML_DONTPEGBOTTOM: worldTop, otherwise worldLow;
+ *                      then += sidedef rowoffset
+ *
+ * A two-sided line's mid texture is upstream's *masked* texture: R_RenderSegLoop
+ * records its column for R_DrawMasked and draws nothing, so wallMid is 0 for
+ * such a fragment and the mid rule cannot reach it.
+ *
+ * Heights for tiers the fragment does not draw are ignored, so a caller may
+ * pass 0 for them.
+ *
+ * @param fragment   A fragment from r_wall_fragment_open().
+ * @param midHeight  The mid texture's height in 16.16, 0 when there is none.
+ * @param topHeight  The top texture's height in 16.16.
+ */
+void r_wall_fragment_peg(r_wall_fragment_t* fragment, fixed_t midHeight,
+                         fixed_t topHeight);
 
 #ifdef __cplusplus
 } /* extern "C" */

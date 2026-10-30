@@ -19,6 +19,14 @@ prints every drawseg, every visplane and a hash of both, so
 protocols are independent: this file has its own map parser, its own tables,
 its own clip list and its own plane set.
 
+A third oracle, ``--segs NAME``, is D3.2's: it composes the wall textures, reads
+COLORMAP, and renders the wall-only frame for 20 sampled viewpoints -- four
+player/deathmatch start positions from THINGS against five view angles -- with
+its own column loop, and prints one SHA-256 per frame. ``tools/rsegs_check.py``
+compares those hashes with ``tools/rsegs_check.c``. It is written from upstream's
+r_segs.c/r_draw.c and from r_data.h's documented composition contract; it does
+not read the C emitter.
+
 INDEPENDENCE
 
 Nothing here is derived from the C implementation. This file has its own WAD
@@ -1092,6 +1100,7 @@ class WalkState:
 
         worldtop = front["ceiling"] - self.viewz
         worldbottom = front["floor"] - self.viewz
+        worldhigh = worldlow = 0
         wall_mid = wall_top = wall_bottom = 0
         silhouette = 0
         bottom_sil = INT32_MAX
@@ -1146,6 +1155,26 @@ class WalkState:
             markfloor = 0
         if front["ceiling"] <= self.viewz and front["ceilingpic"] != self.sky:
             markceiling = 0
+
+        # R_StoreWallRange's texture-origin block, for the column emitter (D3.2).
+        # The C side stores these three per fragment because only this function
+        # can produce them from the seg angle and the sidedefs; the oracle
+        # derives them the same way and hands them to its own emitter.
+        delta = u32(self.rw_normalangle - self.rw_angle1)
+        offset_angle = delta
+        if offset_angle > ANG180:
+            offset_angle = u32(-offset_angle)
+        if offset_angle > ANG90:
+            offset_angle = ANG90
+        rw_offset = fixed_mul(hyp, FINE_SINE[offset_angle >> ANGLETOFINESHIFT])
+        if delta < ANG180:
+            rw_offset = -rw_offset
+        rw_offset = i32(rw_offset + side["textureoffset"] + seg["offset"])
+        rw_centerangle = u32(ANG90 + self.viewangle - self.rw_normalangle)
+
+        # The pre-shift heights: 12.4 below, but the pegging and the sky-aware
+        # worldtop the emitter needs are 16.16.
+        top16, bottom16, high16, low16 = worldtop, worldbottom, worldhigh, worldlow
 
         worldtop >>= 4
         worldbottom >>= 4
@@ -1207,6 +1236,22 @@ class WalkState:
             "top": top_sil,
             "light": front["light"],
             "lightnum": lightnum,
+            # D3.2: what the column emitter reads.
+            "distance": self.rw_distance,
+            "offset": rw_offset,
+            "centerangle": rw_centerangle,
+            "top16": top16,
+            "bottom16": bottom16,
+            "high16": high16,
+            "low16": low16,
+            "wall_mid": wall_mid,
+            "wall_top": wall_top,
+            "wall_bottom": wall_bottom,
+            "markfloor": markfloor,
+            "markceiling": markceiling,
+            "has_back": back is not None,
+            "flags": line["flags"],
+            "side": side,
         })
 
     def render_seg_loop(self) -> None:
@@ -1673,6 +1718,412 @@ def report_stats(lumps: list[Lump], pnames: list[str]) -> None:
     print(f"STAT masked-textures {masked}")
 
 
+# --- The wall column emitter (D3.2) -----------------------------------------
+
+# r_data.h's light constants. The view this port renders is fixed, so the wall
+# light table is a constant derived from the same formula R_ExecuteSetViewSize()
+# uses, exactly as the C side generates it into r_tables.c.
+LIGHTLEVELS = 16
+NUMCOLORMAPS = 32
+MAXLIGHTSCALE = 48
+MAXLIGHTSCALE_INDEX = MAXLIGHTSCALE - 1
+LIGHTSCALESHIFT = 12
+DISTMAP = 2
+LIGHTSEGSHIFT = 4
+VIEW_HEIGHT = SCREEN_HEIGHT
+CENTER_Y = SCREEN_HEIGHT // 2
+CENTER_Y_FRAC = CENTER_Y << FRACBITS
+UNCOVERED = 0xFF
+
+# DOOM's R_DrawColumn() wraps a texture column with a hard-coded `& 127`, so a
+# stored column is 128 rows whatever the texture's declared height.
+STORED_COLUMN_HEIGHT = 128
+
+# linetype_sidedef flags the wall pegging reads.
+ML_DONTPEGTOP = 8
+ML_DONTPEGBOTTOM = 16
+
+# The THINGS types that are a player or deathmatch start.
+PLAYER_START_TYPES = (1, 2, 3, 4, 11)
+
+
+def _light_levels() -> tuple[tuple[int, ...], ...]:
+    """R_ExecuteSetViewSize()'s scalelight[,] as COLORMAP map indices."""
+    table: list[tuple[int, ...]] = []
+    for i in range(LIGHTLEVELS):
+        start_map = ((LIGHTLEVELS - 1 - i) * 2) * NUMCOLORMAPS // LIGHTLEVELS
+        row: list[int] = []
+        for j in range(MAXLIGHTSCALE):
+            level = start_map - j * SCREEN_WIDTH // SCREEN_WIDTH // DISTMAP
+            row.append(0 if level < 0 else (NUMCOLORMAPS - 1 if level >= NUMCOLORMAPS else level))
+        table.append(tuple(row))
+    return tuple(table)
+
+
+LIGHT_LEVEL = _light_levels()
+
+
+def light_row(lightnum: int) -> int:
+    """R_StoreWallRange()'s three-way clamp of the wall light number."""
+    if lightnum < 0:
+        return 0
+    if lightnum >= LIGHTLEVELS:
+        return LIGHTLEVELS - 1
+    return lightnum
+
+
+def light_column(scale: int) -> int:
+    """R_RenderSegLoop()'s `rw_scale >> LIGHTSCALESHIFT`, clamped; unsigned."""
+    index = (scale & 0xFFFFFFFF) >> LIGHTSCALESHIFT
+    return MAXLIGHTSCALE_INDEX if index >= MAXLIGHTSCALE else index
+
+
+def width_mask(width: int) -> int:
+    """R_InitTextures(): the largest power of two that does not exceed width, -1."""
+    power = 1
+    while power * 2 <= width:
+        power <<= 1
+    return power - 1
+
+
+class WallTexture:
+    """One composed wall texture in the column loop's storage form."""
+
+    __slots__ = ("width", "height", "pixels", "width_mask", "column_height")
+
+    def __init__(self, width: int, height: int, composite: bytes) -> None:
+        self.width = width
+        self.height = height                 # declared, for the pegging
+        self.column_height = STORED_COLUMN_HEIGHT
+        self.width_mask = width_mask(width)
+        pixels = bytearray(width * self.column_height)
+        for x in range(width):
+            pixels[x * self.column_height:x * self.column_height + height] = \
+                composite[x * height:(x + 1) * height]
+        self.pixels = bytes(pixels)
+
+
+class TextureLibrary:
+    """Composes wall textures on demand from TEXTURE1/2, PNAMES and the patches.
+
+    This is the residency policy of the oracle: nothing is composed until a
+    fragment asks for it, and every patch is decoded with the same rules
+    r_data.h documents (the decoder D2.4 was verified against).
+    """
+
+    def __init__(self, lumps: list[Lump]) -> None:
+        self.lumps = lumps
+        pnames_index = first_index(lumps, "PNAMES")
+        if pnames_index < 0:
+            raise FormatError("PNAMES is not in this WAD")
+        self.pnames = parse_pnames(lumps[pnames_index].data)
+        self.definitions: dict[str, Texture] = {}
+        for lump_name in ("TEXTURE1", "TEXTURE2"):
+            index = first_index(lumps, lump_name)
+            if index < 0:
+                continue
+            for texture in parse_textures(lump_name, lumps[index].data):
+                self.definitions.setdefault(texture.name.upper(), texture)
+        self.patches: dict[int, Patch] = {}
+        self.cache: dict[str, WallTexture] = {}
+
+    def _patch(self, index: int) -> Patch:
+        cached = self.patches.get(index)
+        if cached is not None:
+            return cached
+        if index < 0 or index >= len(self.pnames):
+            raise FormatError(f"PNAMES index {index} outside {len(self.pnames)}")
+        name = self.pnames[index]
+        lump = first_index(self.lumps, name)
+        if lump < 0:
+            raise FormatError(f"patch {name!r} is not a lump in this WAD")
+        patch = parse_patch(name, self.lumps[lump].data)
+        self.patches[index] = patch
+        return patch
+
+    def get(self, name: str) -> WallTexture:
+        key = name.upper()
+        cached = self.cache.get(key)
+        if cached is not None:
+            return cached
+        texture = self.definitions.get(key)
+        if texture is None:
+            raise FormatError(f"texture {name!r} is not in TEXTURE1/TEXTURE2")
+        resolved = {index: self._patch(index) for _, _, index in texture.patches}
+        pixels, _mask = compose_texture(texture, resolved)
+        wall = WallTexture(texture.width, texture.height, pixels)
+        self.cache[key] = wall
+        return wall
+
+
+def name_of(field: bytes) -> str:
+    return field.rstrip(b"\0").decode("latin-1")
+
+
+def emit_walls(bsp: BspMap, drawsegs: list[dict], params: dict,
+               textures: TextureLibrary, colormaps: bytes) -> dict:
+    """R_RenderSegLoop()'s drawing half, over the walk's drawsegs.
+
+    Written from r_segs.c/r_draw.c and from r_light.h's documented wall table;
+    it reads the walk's stored fragment values, never r_segs.c's C text.
+    """
+    pixels = bytearray([UNCOVERED]) * (SCREEN_WIDTH * SCREEN_HEIGHT)
+    covered = bytearray(SCREEN_WIDTH)
+    floorclip = [VIEW_HEIGHT] * SCREEN_WIDTH
+    ceilingclip = [-1] * SCREEN_WIDTH
+    counts = {"mid": 0, "top": 0, "bottom": 0}
+    tangent = _TANGENT
+    half_angles = FINEANGLES // 2
+    half_mask = half_angles - 1
+    width = SCREEN_WIDTH
+
+    def draw(tier: str, texture: WallTexture, texture_mid: int, y0: int, y1: int,
+             colormap: int, iscale: int, texture_column: int, x: int) -> None:
+        if y0 > y1:
+            return
+        if y0 < 0:
+            y0 = 0
+        if y1 > VIEW_HEIGHT - 1:
+            y1 = VIEW_HEIGHT - 1
+        if y0 > y1:
+            return
+        column = (texture_column & texture.width_mask) * texture.column_height
+        frac = i32(texture_mid + (y0 - CENTER_Y) * iscale)
+        written = 0
+        for y in range(y0, y1 + 1):
+            pixels[y * width + x] = colormaps[colormap + texture.pixels[column + ((frac >> FRACBITS) & (texture.column_height - 1))]]
+            frac = i32(frac + iscale)
+            written += 1
+        if written:
+            covered[x] = 1
+            counts[tier] += written
+
+    for ds in drawsegs:
+        side = ds["side"]
+        flags = ds["flags"]
+        top16 = ds["top16"]
+        bottom16 = ds["bottom16"]
+        high16 = ds["high16"]
+        low16 = ds["low16"]
+
+        mid = top = bottom = None
+        mid_height = top_height = 0
+        if ds["wall_mid"]:
+            mid = textures.get(name_of(side["mid"]))
+            mid_height = mid.height << FRACBITS
+        if ds["wall_top"]:
+            top = textures.get(name_of(side["top"]))
+            top_height = top.height << FRACBITS
+        if ds["wall_bottom"]:
+            bottom = textures.get(name_of(side["bottom"]))
+        row_offset = side["rowoffset"]
+
+        mid_mid = top_mid = bottom_mid = 0
+        if ds["wall_mid"]:
+            mid_mid = bottom16 + mid_height if flags & ML_DONTPEGBOTTOM else top16
+            mid_mid += row_offset
+        if ds["has_back"]:
+            if ds["wall_top"]:
+                top_mid = top16 if flags & ML_DONTPEGTOP else high16 + top_height
+                top_mid += row_offset
+            if ds["wall_bottom"]:
+                bottom_mid = top16 if flags & ML_DONTPEGBOTTOM else low16
+                bottom_mid += row_offset
+
+        scale = ds["scale1"]
+        scalestep = ds["scalestep"]
+        top4 = top16 >> 4
+        bottom4 = bottom16 >> 4
+        top_step = -fixed_mul(scalestep, top4)
+        top_frac = (CENTER_Y_FRAC >> 4) - fixed_mul(top4, scale)
+        bottom_step = -fixed_mul(scalestep, bottom4)
+        bottom_frac = (CENTER_Y_FRAC >> 4) - fixed_mul(bottom4, scale)
+        pix_high = pix_low = pix_high_step = pix_low_step = 0
+        if ds["has_back"]:
+            high4 = high16 >> 4
+            low4 = low16 >> 4
+            if high4 < top4:
+                pix_high = (CENTER_Y_FRAC >> 4) - fixed_mul(high4, scale)
+                pix_high_step = -fixed_mul(scalestep, high4)
+            if low4 > bottom4:
+                pix_low = (CENTER_Y_FRAC >> 4) - fixed_mul(low4, scale)
+                pix_low_step = -fixed_mul(scalestep, low4)
+
+        light = LIGHT_LEVEL[light_row(ds["lightnum"])]
+        texture_offset = ds["offset"]
+        distance = ds["distance"]
+        center_angle = ds["centerangle"]
+        wall_mid = ds["wall_mid"]
+        wall_top = ds["wall_top"]
+        wall_bottom = ds["wall_bottom"]
+
+        for x in range(ds["x1"], ds["x2"] + 1):
+            yl = (top_frac + HEIGHTUNIT - 1) >> HEIGHTBITS
+            if yl < ceilingclip[x] + 1:
+                yl = ceilingclip[x] + 1
+            yh = bottom_frac >> HEIGHTBITS
+            if yh >= floorclip[x]:
+                yh = floorclip[x] - 1
+
+            colormap = 0
+            iscale = 0
+            texture_column = 0
+            if wall_mid or wall_top or wall_bottom:
+                angle = u32(center_angle + X_TO_VIEW_ANGLE[x])
+                texture_column = i32(texture_offset - fixed_mul(
+                    tangent[(angle >> ANGLETOFINESHIFT) & half_mask], distance)) >> FRACBITS
+                colormap = light[light_column(scale)] * 256
+                iscale = 0xFFFFFFFF // (scale & 0xFFFFFFFF) if (scale & 0xFFFFFFFF) else INT32_MAX
+
+            if wall_mid:
+                draw("mid", mid, mid_mid, yl, yh, colormap, iscale, texture_column, x)
+                ceilingclip[x] = VIEW_HEIGHT
+                floorclip[x] = -1
+            else:
+                if wall_top:
+                    mid_row = pix_high >> HEIGHTBITS
+                    pix_high += pix_high_step
+                    if mid_row >= floorclip[x]:
+                        mid_row = floorclip[x] - 1
+                    if mid_row >= yl:
+                        draw("top", top, top_mid, yl, mid_row, colormap, iscale,
+                             texture_column, x)
+                        ceilingclip[x] = mid_row
+                    else:
+                        ceilingclip[x] = yl - 1
+                elif ds["markceiling"]:
+                    ceilingclip[x] = yl - 1
+
+                if wall_bottom:
+                    mid_row = (pix_low + HEIGHTUNIT - 1) >> HEIGHTBITS
+                    pix_low += pix_low_step
+                    if mid_row <= ceilingclip[x]:
+                        mid_row = ceilingclip[x] + 1
+                    if mid_row <= yh:
+                        draw("bottom", bottom, bottom_mid, mid_row, yh, colormap,
+                             iscale, texture_column, x)
+                        floorclip[x] = mid_row
+                    else:
+                        floorclip[x] = yh + 1
+                elif ds["markfloor"]:
+                    floorclip[x] = yh + 1
+
+            scale += scalestep
+            top_frac += top_step
+            bottom_frac += bottom_step
+
+    digest = hashlib.sha256()
+    digest.update(bytes(pixels))
+    digest.update(bytes(covered))
+    frame = {
+        "pixels": bytes(pixels),
+        "covered": bytes(covered),
+        "covered_columns": sum(1 for value in covered if value),
+        "drawsegs": len(drawsegs),
+        "mid": counts["mid"],
+        "top": counts["top"],
+        "bottom": counts["bottom"],
+        "digest": digest.hexdigest(),
+    }
+    frame["pixels_written"] = counts["mid"] + counts["top"] + counts["bottom"]
+    return frame
+
+
+def floor_view(bsp: BspMap, x: int, y: int) -> dict:
+    """A viewpoint at (x, y) with P_SpawnPlayer()'s z rule, angle 0."""
+    subsector = bsp.ssectors[point_in_subsector(bsp, x, y)]
+    seg = bsp.segs[subsector["firstseg"]]
+    side = bsp.sidedefs[bsp.linedefs[seg["linedef"]]["side0"] if seg["side"] == 0
+                        else bsp.linedefs[seg["linedef"]]["side1"]]
+    return {"x": x, "y": y, "z": bsp.sectors[side["sector"]]["floor"] + (41 << FRACBITS),
+            "angle": 0, "extralight": 0, "sky": b"F_SKY1\x00\x00"}
+
+
+def frame_views(bsp: BspMap) -> list[dict]:
+    """The 20 sampled viewpoints: 4 positions x 5 angles, in that order.
+
+    Positions are the first four THINGS records in file order whose type is a
+    player or deathmatch start, padded by repeating the spawn viewpoint. Angles
+    are k * 2^32 / 5 for k in 0..4, and frame index = position * 5 + angle.
+    """
+    spawn = spawn_view(bsp)
+    positions: list[dict] = []
+    for thing in bsp.things:
+        if thing["type"] not in PLAYER_START_TYPES:
+            continue
+        positions.append(floor_view(bsp, _fixed16(thing["x"]), _fixed16(thing["y"])))
+        if len(positions) == 4:
+            break
+    while len(positions) < 4:
+        positions.append(dict(spawn))
+
+    views: list[dict] = []
+    for position in positions:
+        for k in range(5):
+            view = dict(position)
+            view["angle"] = u32(k * (1 << 32) // 5 & 0xFFFFFFFF)
+            views.append(view)
+    return views
+
+
+def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
+                detail: int | None = None,
+                column: tuple[int, int] | None = None) -> None:
+    bsp = read_bsp_map(lumps, map_name)
+    textures = TextureLibrary(lumps)
+    colormap_index = first_index(lumps, "COLORMAP")
+    if colormap_index < 0:
+        raise FormatError("COLORMAP is not in this WAD")
+    colormaps = lumps[colormap_index].data
+    if len(colormaps) != 34 * 256:
+        raise FormatError(f"COLORMAP is {len(colormaps)} B, not 34 * 256")
+
+    views = frame_views(bsp)
+    print(f"SEGS {map_name} frames={len(views)}")
+    frames: list[dict] = []
+    for index, params in enumerate(views):
+        state = WalkState(bsp, drawsegs, planes)
+        state.render(params)
+        frame = emit_walls(bsp, state.drawsegs, params, textures, colormaps)
+        frames.append(frame)
+        pixel_digest = hashlib.sha256(frame["pixels"]).hexdigest()
+        cover_digest = hashlib.sha256(frame["covered"]).hexdigest()
+        print(f"frame {index:02d}: {frame['digest']}")
+        print(f"FRAMESTAT {index:02d} drawsegs={frame['drawsegs']} "
+              f"columns={frame['covered_columns']} pixels={frame['pixels_written']} "
+              f"mid={frame['mid']} top={frame['top']} bottom={frame['bottom']} "
+              f"pixelhash={pixel_digest} coverhash={cover_digest}")
+
+    print(f"SEGS-SUMMARY frames={len(frames)} "
+          f"drawsegs={sum(f['drawsegs'] for f in frames)} "
+          f"columns={sum(f['covered_columns'] for f in frames)} "
+          f"pixels={sum(f['pixels_written'] for f in frames)} "
+          f"mid={sum(f['mid'] for f in frames)} top={sum(f['top'] for f in frames)} "
+          f"bottom={sum(f['bottom'] for f in frames)}")
+
+    if detail is not None:
+        if detail < 0 or detail >= len(frames):
+            raise InputError(f"--segs-detail {detail} is not a frame of this run")
+        frame = frames[detail]
+        for x in range(SCREEN_WIDTH):
+            column_hash = hashlib.sha256()
+            column_hash.update(frame["pixels"][x::SCREEN_WIDTH])
+            column_hash.update(frame["covered"][x:x + 1])
+            print(f"COLUMN {detail:02d} {x} {column_hash.hexdigest()}")
+
+    if column is not None:
+        frame_index, x = column
+        if frame_index < 0 or frame_index >= len(frames):
+            raise InputError(f"--segs-column frame {frame_index} is not in this run")
+        if x < 0 or x >= SCREEN_WIDTH:
+            raise InputError(f"--segs-column {x} is not a screen column")
+        frame = frames[frame_index]
+        for y in range(SCREEN_HEIGHT):
+            print(f"ROW {frame_index:02d} {x} {y} "
+                  f"{frame['pixels'][y * SCREEN_WIDTH + x]:02x} "
+                  f"{frame['covered'][x]:02x}")
+
+
 # --- Command line -----------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1725,6 +2176,15 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
                         help="print STAT lines about the real data: composing "
                              "holes, negative patch origins, clipped posts and "
                              "the masked flag, the numbers r_data.h quotes")
+    parser.add_argument("--segs", metavar="NAME",
+                        help="render the 20 sampled wall-only frames of a map "
+                             "(D3.2) and print one hash per frame")
+    parser.add_argument("--segs-detail", type=int, metavar="N",
+                        help="with --segs: also print a hash per screen column "
+                             "of frame N (the first divergent column)")
+    parser.add_argument("--segs-column", metavar="N,X",
+                        help="with --segs: also print the 200 pixels of column "
+                             "X of frame N (the first divergent row)")
     parser.add_argument("--limit", type=int, metavar="N",
                         help="hash at most N items of each requested kind")
     return parser
@@ -1738,15 +2198,28 @@ def main(argv: list[str] | None = None) -> int:
     textures_wanted = arguments.textures or arguments.all
     flats_wanted = arguments.flats or arguments.all
     if not (patches_wanted or textures_wanted or flats_wanted or arguments.map
-            or arguments.stats or arguments.bsp):
+            or arguments.stats or arguments.bsp or arguments.segs):
         parser.error("nothing to do: pass --patches, --textures, --flats, --all, "
-                     "--map, --stats or --bsp")
+                     "--map, --stats, --bsp or --segs")
     if arguments.limit is not None and arguments.limit < 0:
         parser.error("--limit cannot be negative")
     if arguments.drawsegs < 1:
         parser.error("--drawsegs must be at least 1")
     if arguments.planes < 1:
         parser.error("--planes must be at least 1")
+    if arguments.segs_detail is not None and not arguments.segs:
+        parser.error("--segs-detail needs --segs")
+    if arguments.segs_column is not None and not arguments.segs:
+        parser.error("--segs-column needs --segs")
+    segs_column = None
+    if arguments.segs_column is not None:
+        parts = arguments.segs_column.split(",")
+        if len(parts) != 2:
+            parser.error("--segs-column wants FRAME,COLUMN")
+        try:
+            segs_column = (int(parts[0]), int(parts[1]))
+        except ValueError:
+            parser.error("--segs-column wants two integers")
 
     try:
         identification, lumps = read_wad(arguments.wad)
@@ -1783,11 +2256,14 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.bsp:
             report_bsp(lumps, arguments.bsp.upper(), arguments.drawsegs,
                        arguments.planes)
+        if arguments.segs:
+            report_segs(lumps, arguments.segs.upper(), arguments.drawsegs,
+                        arguments.planes, arguments.segs_detail, segs_column)
     except FormatError as error:
         print(f"doom_ref: {error}", file=sys.stderr)
         return EXIT_INPUT
     except WalkError as error:
-        print(f"doom_ref: {arguments.bsp}: {error}", file=sys.stderr)
+        print(f"doom_ref: {arguments.bsp or arguments.segs}: {error}", file=sys.stderr)
         return EXIT_INPUT
 
     return EXIT_OK

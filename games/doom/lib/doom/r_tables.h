@@ -26,6 +26,13 @@
  *       wrap to large unsigned fine indices.
  *   r_tan_to_angle[SLOPERANGE + 1]
  *       atan(i / 2048) as a 32-bit binary angle, indexed through slope_div().
+ *   r_fine_tangent[FINEANGLES / 2]
+ *       tan of the half turn of fine angles, in 16.16: the array
+ *       R_RenderSegLoop() indexes to pick a wall's texture column.
+ *   r_light_level[R_LIGHT_LEVELS][R_LIGHT_SCALE_LEVELS]
+ *       R_ExecuteSetViewSize()'s wall light table, as COLORMAP map indices.
+ *       Not a projection table, but generated data of the same kind: it depends
+ *       only on SCREENWIDTH and on the one view size this port has.
  *   r_view_angle_to_x[FINEANGLES / 2]
  *       The view angle, offset by ANG90 and shifted by ANGLETOFINESHIFT, to a
  *       screen column. Values are -1 or 320 only before the fencepost pass;
@@ -63,6 +70,57 @@ extern const fixed_t r_fine_sine[5 * FINEANGLES / 4];
 static inline fixed_t r_fine_cosine(angle_t angle) {
     return r_fine_sine[((angle >> ANGLETOFINESHIFT) + (FINEANGLES / 4))];
 }
+
+/*
+ * tan() in 16.16 for the half turn (i - FINEANGLES/4) of fine angles, i.e. from
+ * -90 degrees (exclusive) to +90 degrees (exclusive). This is upstream's
+ * finetangent[], and it is the array R_RenderSegLoop() indexes to turn the view
+ * angle of a column into the texture column a wall fragment shows.
+ */
+extern const fixed_t r_fine_tangent[FINEANGLES / 2];
+
+/**
+ * @brief finetangent[angle >> ANGLETOFINESHIFT], masked to the table.
+ *
+ * WHY THE MASK IS EXACT AND NOT SAFE-BY-ACCIDENT
+ *
+ * Two independent facts, both checkable:
+ *
+ *   1. r_fine_tangent[i] is tan((i - FINEANGLES/4 + 0.5) * 2*pi/FINEANGLES),
+ *      and tan has period pi, which is FINEANGLES/2 = 4096 fine angles. The
+ *      table therefore *is* the tangent for every angle_t, not only for the
+ *      half turn it stores: entry (i mod 4096) is the value at angle i.
+ *   2. The angles the renderer actually passes are rwCenterAngle +
+ *      xtoviewangle[x], where rwCenterAngle = ANG90 + viewangle -
+ *      rw_normalangle and xtoviewangle[x] is the column's angle relative to
+ *      the view direction. A column of a front-facing wall sees the wall's
+ *      front side, so the ray lies strictly between the wall's two tangent
+ *      directions: the angle above is strictly between 0 and ANG180, and the
+ *      index (>> ANGLETOFINESHIFT) strictly between 0 and 4096. The mask is
+ *      the identity on every value that range can produce.
+ *
+ * So the mask costs one AND per column and removes the only way this lookup
+ * could read outside the array: a caller that passes an unrelated angle.
+ */
+static inline fixed_t r_fine_tangent_lookup(angle_t angle) {
+    return r_fine_tangent[(angle >> ANGLETOFINESHIFT) & (FINEANGLES / 2 - 1)];
+}
+
+/* --- Light tables -------------------------------------------------------- */
+
+/*
+ * LIGHTLEVELS, MAXLIGHTSCALE and NUMCOLORMAPS from upstream's r_data.h, and the
+ * table R_ExecuteSetViewSize() builds from them. It lives here because it is
+ * generated data (tools/gen_r_tables.py), like the four tables above; r_light.h
+ * is what gives it meaning and is the layer a caller should use.
+ */
+#define R_LIGHT_LEVELS 16       /* LIGHTLEVELS: rows, indexed by wall lightnum */
+#define R_LIGHT_SCALE_LEVELS 48 /* MAXLIGHTSCALE: columns, by rw_scale >> 12 */
+#define R_LIGHT_MAPS 32         /* NUMCOLORMAPS: usable 256-byte maps */
+
+/* r_light_level[row][column] is the COLORMAP map index that (lightnum, scale)
+ * selects: `colormaps + r_light_level[i][j] * 256`. */
+extern const uint8_t r_light_level[R_LIGHT_LEVELS][R_LIGHT_SCALE_LEVELS];
 
 /* atan() table: slope_div() -> binary angle. */
 extern const uint32_t r_tan_to_angle[SLOPERANGE + 1];

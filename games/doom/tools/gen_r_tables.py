@@ -25,15 +25,30 @@ FORMULAS (exactly the ones upstream's disabled initialisers state)
                      for every angle, including negative ones that wrap.
 
     finetangent[i] = trunc(FRACUNIT * tan((i - FINEANGLES/4 + 0.5) * 2*pi/FINEANGLES))
-                     for i in [0, FINEANGLES/2). Used here only to build the
-                     projection table; D3.2 will also use it for texture
-                     columns.
+                     for i in [0, FINEANGLES/2). Emitted as r_fine_tangent and
+                     indexed through r_fine_tangent_lookup(): it is the table
+                     upstream's R_RenderSegLoop() uses to select a texture column
+                     from the view angle, and it is also the table the projection
+                     table is built from.
 
     tantoangle[i]  = trunc(0x100000000 * atan(i / SLOPERANGE) / (2 * pi))
                      for i in [0, SLOPERANGE]. The i/SLOPERANGE ratio is
                      computed in single precision, as upstream's initialiser
                      writes it with an explicit (float) cast, then promoted for
                      atan().
+
+    r_light_level[i][j] is R_ExecuteSetViewSize()'s scalelight[] table, reduced
+    to the map index it selects:
+
+        startmap = ((LIGHTLEVELS-1-i)*2) * NUMCOLORMAPS / LIGHTLEVELS
+        level    = startmap - j * SCREENWIDTH / (viewwidth << detailshift) / DISTMAP
+        level    = clamp(level, 0, NUMCOLORMAPS-1)
+
+    computed by that C expression's own order of operations: the first division
+    is exact because viewwidth == SCREENWIDTH and detailshift == 0 in this port,
+    the second divides by DISTMAP == 2, so level = startmap - j/2. Upstream
+    rebuilds this table in R_ExecuteSetViewSize() because the view size can
+    change; this port has one view size, so it is a constant like the rest.
 
     viewangletox[i] is R_InitTextureMapping()'s table: tangent -> screen
     column, with the two fencepost passes that make column 0 and column 319
@@ -73,6 +88,15 @@ SCREEN_WIDTH = 320
 FIELDOFVIEW = 2048
 ANG90 = 0x40000000
 
+# The light tables of upstream's r_data.h, and the view the wall table is built
+# for: this port's single 320-wide, un-detailed view.
+LIGHTLEVELS = 16
+NUMCOLORMAPS = 32
+MAXLIGHTSCALE = 48
+VIEWWIDTH = SCREEN_WIDTH
+DETAILSHIFT = 0
+DISTMAP = 2
+
 
 def single(value: float) -> float:
     """Rounds a Python double to the nearest IEEE-754 single, as a C float cast."""
@@ -93,6 +117,19 @@ def tan_to_angle() -> list[int]:
     return [int(0x100000000 * (math.atan(single(i / SLOPERANGE)) / (3.141592657 * 2)))
             & 0xFFFFFFFF
             for i in range(SLOPERANGE + 1)]
+
+
+def light_level() -> list[list[int]]:
+    """R_ExecuteSetViewSize()'s scalelight[,] as colormap indices."""
+    table: list[list[int]] = []
+    for i in range(LIGHTLEVELS):
+        startmap = ((LIGHTLEVELS - 1 - i) * 2) * NUMCOLORMAPS // LIGHTLEVELS
+        row: list[int] = []
+        for j in range(MAXLIGHTSCALE):
+            level = startmap - j * SCREEN_WIDTH // (VIEWWIDTH << DETAILSHIFT) // DISTMAP
+            row.append(max(0, min(NUMCOLORMAPS - 1, level)))
+        table.append(row)
+    return table
 
 
 def fixed_mul(a: int, b: int) -> int:
@@ -158,6 +195,7 @@ def main() -> int:
     tangent = fine_tangent()
     arc = tan_to_angle()
     columns = view_angle_to_x(tangent)
+    levels = light_level()
 
     # The fencepost pass runs after xtoviewangle/clipangle are derived, exactly
     # as R_InitTextureMapping() does it, so the emitted table is the post-pass one.
@@ -187,6 +225,8 @@ def main() -> int:
     out.append("")
     out.extend(format_array("const fixed_t r_fine_sine[5 * FINEANGLES / 4] = {", sine, 8))
     out.append("")
+    out.extend(format_array("const fixed_t r_fine_tangent[FINEANGLES / 2] = {", tangent, 8))
+    out.append("")
     out.extend(format_array("const uint32_t r_tan_to_angle[SLOPERANGE + 1] = {", arc, 6))
     out.append("")
     out.extend(format_array("const int16_t r_view_angle_to_x[FINEANGLES / 2] = {", columns, 12))
@@ -194,6 +234,15 @@ def main() -> int:
     out.extend(format_array("const uint32_t r_x_to_view_angle[R_SCREEN_WIDTH + 1] = {", xangles, 4))
     out.append("")
     out.append(f"const uint32_t r_clip_angle = 0x{clip_angle:08x}u;")
+    out.append("")
+    out.append("/* R_ExecuteSetViewSize()'s scalelight[,] as colormap indices; see the")
+    out.append(" * generator and r_tables.h. Row index is the wall light number, column")
+    out.append(" * index is rw_scale >> LIGHTSCALESHIFT, and the value indexes the 256-byte")
+    out.append(" * maps of the COLORMAP lump. */")
+    out.append("const uint8_t r_light_level[R_LIGHT_LEVELS][R_LIGHT_SCALE_LEVELS] = {")
+    for row in levels:
+        out.append("    { " + ", ".join(str(value) for value in row) + " },")
+    out.append("};")
     out.append("")
 
     text = "\n".join(out) + "\n"

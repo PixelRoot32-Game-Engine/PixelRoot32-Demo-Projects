@@ -15,8 +15,11 @@
  *
  *   R_StoreWallRange, and the floor/ceiling marking of R_RenderSegLoop
  *       r_segs.c. The texture-column lookup, the three wall tiers and all
- *       pixel writes are D3.2's; what remains is the silhouette decision, the
- *       light index, the two scales and the plane marks.
+ *       pixel writes are D3.2's (r_segs.c). What remains here is the silhouette
+ *       decision, the light index, the two scales, the range values and the
+ *       plane marks -- and that decision block is r_wall_fragment_open(), which
+ *       D3.2 calls a second time from the stored drawseg rather than
+ *       reimplementing.
  *
  * DELIBERATE DIVERGENCES (each is visible in behaviour and named for review)
  *
@@ -46,10 +49,10 @@
 
 #include "r_tables.h"
 
-/* The projection constants R_ExecuteSetViewSize() derives for the fixed
- * 320x200 view: centerx == 160, centery == 100, projection == centerx << 16. */
+/* The projection constant R_ExecuteSetViewSize() derives for the fixed
+ * 320x200 view: centerx == 160, projection == centerx << 16. The vertical
+ * centre is R_CENTER_Y_FRAC (r_defs.h), the one place a HUD would move. */
 #define R_CENTER_X_FRAC (((fixed_t)(R_SCREEN_WIDTH / 2)) << FRACBITS)
-#define R_CENTER_Y_FRAC (((fixed_t)(R_SCREEN_HEIGHT / 2)) << FRACBITS)
 
 /* The eight name bytes of the sky flat, written out so no string literal is
  * read past its terminator. */
@@ -67,6 +70,13 @@ static fixed_t abs_fixed(fixed_t value) {
     const int64_t wide = value;
 
     return (fixed_t)(wide < 0 ? -wide : wide);
+}
+
+/* -value with two's-complement wrap, so INT32_MIN negates to itself instead of
+ * invoking the signed overflow rule. Upstream's `-x` on a fixed_t wraps the same
+ * way on every compiler this port supports. */
+static fixed_t neg_fixed(fixed_t value) {
+    return (fixed_t)(0u - (uint32_t)value);
 }
 
 static int abs_angle_32(angle_t value) {
@@ -112,9 +122,9 @@ static int point_on_side(fixed_t x, fixed_t y, const doom_node_t* node) {
 }
 
 /* R_PointToAngle(): octant-normalised arc tangent through the table. */
-static angle_t point_to_angle(const r_view_state_t* state, fixed_t x, fixed_t y) {
-    fixed_t dx = (fixed_t)((uint32_t)x - (uint32_t)state->params.x);
-    fixed_t dy = (fixed_t)((uint32_t)y - (uint32_t)state->params.y);
+static angle_t point_to_angle(const r_view_params_t* view, fixed_t x, fixed_t y) {
+    fixed_t dx = (fixed_t)((uint32_t)x - (uint32_t)view->x);
+    fixed_t dy = (fixed_t)((uint32_t)y - (uint32_t)view->y);
 
     if (dx == 0 && dy == 0) {
         return 0;
@@ -149,9 +159,9 @@ static angle_t point_to_angle(const r_view_state_t* state, fixed_t x, fixed_t y)
 }
 
 /* R_PointToDist(): distance from the viewpoint to a point, 16.16. */
-static fixed_t point_to_dist(const r_view_state_t* state, fixed_t x, fixed_t y) {
-    fixed_t dx = abs_fixed((fixed_t)((uint32_t)x - (uint32_t)state->params.x));
-    fixed_t dy = abs_fixed((fixed_t)((uint32_t)y - (uint32_t)state->params.y));
+static fixed_t point_to_dist(const r_view_params_t* view, fixed_t x, fixed_t y) {
+    fixed_t dx = abs_fixed((fixed_t)((uint32_t)x - (uint32_t)view->x));
+    fixed_t dy = abs_fixed((fixed_t)((uint32_t)y - (uint32_t)view->y));
     fixed_t temp;
     angle_t angle;
 
@@ -173,14 +183,15 @@ static fixed_t point_to_dist(const r_view_state_t* state, fixed_t x, fixed_t y) 
 }
 
 /* R_ScaleFromGlobalAngle(): the texture scale at one column, 16.16. */
-static fixed_t scale_from_global_angle(const r_view_state_t* state,
+static fixed_t scale_from_global_angle(const r_view_params_t* view,
+                                       angle_t normalAngle, fixed_t distance,
                                        angle_t visangle) {
-    const angle_t anglea = ANG90 + (visangle - state->params.angle);
-    const angle_t angleb = ANG90 + (visangle - state->rwNormalAngle);
+    const angle_t anglea = ANG90 + (visangle - view->angle);
+    const angle_t angleb = ANG90 + (visangle - normalAngle);
     const fixed_t sinea = r_fine_sine[anglea >> ANGLETOFINESHIFT];
     const fixed_t sineb = r_fine_sine[angleb >> ANGLETOFINESHIFT];
     const fixed_t num = fixed_mul(R_CENTER_X_FRAC, sineb);
-    const fixed_t den = fixed_mul(state->rwDistance, sinea);
+    const fixed_t den = fixed_mul(distance, sinea);
     fixed_t scale;
 
     if (den > (num >> FRACBITS)) {
@@ -257,8 +268,8 @@ static int check_bbox(r_view_state_t* state, const fixed_t* bbox) {
     x2 = bbox[checkcoord[boxpos][2]];
     y2 = bbox[checkcoord[boxpos][3]];
 
-    angle1 = point_to_angle(state, x1, y1) - state->params.angle;
-    angle2 = point_to_angle(state, x2, y2) - state->params.angle;
+    angle1 = point_to_angle(&state->params, x1, y1) - state->params.angle;
+    angle2 = point_to_angle(&state->params, x2, y2) - state->params.angle;
     span = angle1 - angle2;
 
     if (span >= ANG180) {
@@ -301,21 +312,22 @@ static int check_bbox(r_view_state_t* state, const fixed_t* bbox) {
 
 /* --- Wall ranges (r_segs.c R_StoreWallRange, marking half) --------------- */
 
-static void render_seg_loop(r_view_state_t* state) {
-    const int viewheight = R_SCREEN_HEIGHT;
+/* R_RenderSegLoop's floor/ceiling marking, exactly upstream's column loop. D3.2
+ * reimplements the drawing half in r_segs.c against the same fragment; this is
+ * the half that fills the plane arrays, and it runs during the walk because the
+ * planes are part of the walk's output. */
+static void render_seg_loop(r_view_state_t* state, r_wall_fragment_t* fragment) {
     int16_t* floorclip = state->storage.floorClip;
     int16_t* ceilingclip = state->storage.ceilingClip;
     r_visplane_t* floorplane = state->floorPlane;
     r_visplane_t* ceilingplane = state->ceilingPlane;
-    fixed_t topfrac = state->topFrac;
-    fixed_t bottomfrac = state->bottomFrac;
-    fixed_t topstep = state->topStep;
-    fixed_t bottomstep = state->bottomStep;
-    fixed_t pixhigh = state->pixHigh;
-    fixed_t pixlow = state->pixLow;
+    fixed_t topfrac = fragment->topFrac;
+    fixed_t bottomfrac = fragment->bottomFrac;
+    fixed_t pixhigh = fragment->pixHigh;
+    fixed_t pixlow = fragment->pixLow;
     int x;
 
-    for (x = state->rwX; x < state->rwStopX; ++x) {
+    for (x = fragment->x1; x <= fragment->x2; ++x) {
         int yl = (int)((topfrac + (1 << 12) - 1) >> 12);
         int yh;
 
@@ -323,7 +335,7 @@ static void render_seg_loop(r_view_state_t* state) {
             yl = ceilingclip[x] + 1;
         }
 
-        if (state->markCeiling) {
+        if (fragment->markCeiling) {
             int top = ceilingclip[x] + 1;
             int bottom = yl - 1;
 
@@ -341,7 +353,7 @@ static void render_seg_loop(r_view_state_t* state) {
             yh = floorclip[x] - 1;
         }
 
-        if (state->markFloor) {
+        if (fragment->markFloor) {
             int top = yh + 1;
             int bottom = floorclip[x] - 1;
 
@@ -354,14 +366,14 @@ static void render_seg_loop(r_view_state_t* state) {
             }
         }
 
-        if (state->wallMid) {
-            ceilingclip[x] = (int16_t)viewheight;
+        if (fragment->wallMid) {
+            ceilingclip[x] = (int16_t)R_VIEW_HEIGHT;
             floorclip[x] = -1;
         } else {
-            if (state->wallTop) {
+            if (fragment->wallTop) {
                 int mid = (int)(pixhigh >> 12);
 
-                pixhigh += state->pixHighStep;
+                pixhigh += fragment->pixHighStep;
                 if (mid >= floorclip[x]) {
                     mid = floorclip[x] - 1;
                 }
@@ -370,14 +382,14 @@ static void render_seg_loop(r_view_state_t* state) {
                 } else {
                     ceilingclip[x] = (int16_t)(yl - 1);
                 }
-            } else if (state->markCeiling) {
+            } else if (fragment->markCeiling) {
                 ceilingclip[x] = (int16_t)(yl - 1);
             }
 
-            if (state->wallBottom) {
+            if (fragment->wallBottom) {
                 int mid = (int)((pixlow + (1 << 12) - 1) >> 12);
 
-                pixlow += state->pixLowStep;
+                pixlow += fragment->pixLowStep;
                 if (mid <= ceilingclip[x]) {
                     mid = ceilingclip[x] + 1;
                 }
@@ -386,17 +398,82 @@ static void render_seg_loop(r_view_state_t* state) {
                 } else {
                     floorclip[x] = (int16_t)(yh + 1);
                 }
-            } else if (state->markFloor) {
+            } else if (fragment->markFloor) {
                 floorclip[x] = (int16_t)(yh + 1);
             }
         }
 
-        topfrac += topstep;
-        bottomfrac += bottomstep;
+        topfrac += fragment->topStep;
+        bottomfrac += fragment->bottomStep;
     }
 }
 
-static void store_wall_range(r_view_state_t* state, int start, int stop) {
+/* R_StoreWallRange's range half: rw_distance, the two scales and the three
+ * values the drawseg stores (r_bsp.h explains why those three and no others).
+ * This is the sign/orientation math the emitter must not repeat. */
+static void wall_fragment_range(r_wall_fragment_t* fragment,
+                                const r_view_params_t* view, angle_t angle1,
+                                int start, int stop) {
+    fixed_t offsetangle;
+    fixed_t distangle;
+    fixed_t hyp;
+    fixed_t sineval;
+    angle_t delta;
+    angle_t offsetAngle;
+
+    fragment->x1 = (int16_t)start;
+    fragment->x2 = (int16_t)stop;
+
+    offsetangle = (fixed_t)abs_angle_32(fragment->normalAngle - angle1);
+    if (offsetangle > (fixed_t)ANG90) {
+        offsetangle = (fixed_t)ANG90;
+    }
+    distangle = (fixed_t)(ANG90 - (angle_t)offsetangle);
+    hyp = point_to_dist(view, fragment->v1x, fragment->v1y);
+    sineval = r_fine_sine[(angle_t)distangle >> ANGLETOFINESHIFT];
+    fragment->distance = fixed_mul(hyp, sineval);
+
+    fragment->scale1 = scale_from_global_angle(
+        view, fragment->normalAngle, fragment->distance,
+        view->angle + r_x_to_view_angle[start]);
+    if (stop > start) {
+        fragment->scale2 = scale_from_global_angle(
+            view, fragment->normalAngle, fragment->distance,
+            view->angle + r_x_to_view_angle[stop]);
+        /* C's division truncates toward zero; the columns are positive. */
+        fragment->scaleStep = (fragment->scale2 - fragment->scale1) / (stop - start);
+    } else {
+        fragment->scale2 = fragment->scale1;
+        fragment->scaleStep = 0;
+    }
+
+    /* rw_offset, R_StoreWallRange's second offset-angle block. The angle is an
+     * unsigned binary angle there, so the fold and the clamp are the modular
+     * ones, and the sign test is on the *unclamped* delta. */
+    delta = fragment->normalAngle - angle1;
+    offsetAngle = delta;
+    if (offsetAngle > ANG180) {
+        offsetAngle = (angle_t)(0u - offsetAngle);
+    }
+    if (offsetAngle > ANG90) {
+        offsetAngle = ANG90;
+    }
+    sineval = r_fine_sine[offsetAngle >> ANGLETOFINESHIFT];
+    fragment->offset = fixed_mul(hyp, sineval);
+    if (delta < ANG180) {
+        fragment->offset = neg_fixed(fragment->offset);
+    }
+    fragment->offset = (fixed_t)((uint32_t)fragment->offset
+                                 + (uint32_t)fragment->textureOffset
+                                 + (uint32_t)fragment->segOffset);
+
+    /* View-relative on purpose: r_segs.c adds xtoviewangle[x] and shifts, and
+     * this form is what keeps the tangent index inside [0, FINEANGLES/2). */
+    fragment->centerAngle = ANG90 + view->angle - fragment->normalAngle;
+}
+
+void r_wall_fragment_open(const doom_map_t* map, const r_view_params_t* view,
+                          uint16_t segIndex, r_wall_fragment_t* out) {
     doom_seg_t seg;
     doom_line_t line;
     doom_side_t sidedef;
@@ -407,25 +484,202 @@ static void store_wall_range(r_view_state_t* state, int start, int stop) {
     uint16_t frontIndex;
     uint16_t backIndex;
     int hasBack;
-    fixed_t offsetangle;
-    fixed_t distangle;
-    fixed_t hyp;
-    fixed_t sineval;
     fixed_t worldtop;
     fixed_t worldbottom;
     fixed_t worldhigh = 0;
     fixed_t worldlow = 0;
-    fixed_t scale1;
-    fixed_t scale2;
-    fixed_t scaleStep;
-    fixed_t bsilheight = INT32_MAX;
-    fixed_t tsilheight = INT32_MIN;
-    int silhouette = R_SIL_NONE;
-    int markfloor = 0;
-    int markceiling = 0;
-    int wallmid = 0;
-    int walltop = 0;
-    int wallbottom = 0;
+
+    *out = (r_wall_fragment_t){0};
+    out->seg = segIndex;
+    out->bottomSilhouette = INT32_MAX;
+    out->topSilhouette = INT32_MIN;
+
+    doom_map_get_seg(map, segIndex, &seg);
+    doom_map_get_line(map, seg.linedef, &line);
+    doom_map_get_side(map, seg.side != 0 ? line.sideNum[1] : line.sideNum[0],
+                      &sidedef);
+    doom_map_get_vertex(map, seg.v1, &v1);
+    doom_map_get_vertex(map, seg.v2, &v2);
+    hasBack = doom_map_seg_sectors(map, &seg, &frontIndex, &backIndex);
+    doom_map_get_sector(map, frontIndex, &front);
+
+    out->frontSector = frontIndex;
+    out->hasBack = (uint8_t)(hasBack ? 1 : 0);
+    out->flags = line.flags;
+    out->textureOffset = sidedef.textureOffset;
+    out->rowOffset = sidedef.rowOffset;
+    out->midTexture = sidedef.midTexture;
+    out->topTexture = sidedef.topTexture;
+    out->bottomTexture = sidedef.bottomTexture;
+    out->v1x = v1.x;
+    out->v1y = v1.y;
+    out->normalAngle = seg.angle + ANG90;
+    out->segOffset = seg.offset;
+    out->lightLevel = front.lightLevel;
+
+    worldtop = front.ceilingHeight - view->z;
+    worldbottom = front.floorHeight - view->z;
+
+    if (!hasBack) {
+        out->wallMid = (uint8_t)(r_has_name(sidedef.midTexture) ? 1 : 0);
+        out->markFloor = 1;
+        out->markCeiling = 1;
+        out->silhouette = R_SIL_BOTH;
+    } else {
+        doom_map_get_sector(map, backIndex, &back);
+        out->backSector = backIndex;
+
+        if (front.floorHeight > back.floorHeight) {
+            out->silhouette = R_SIL_BOTTOM;
+            out->bottomSilhouette = front.floorHeight;
+        } else if (back.floorHeight > view->z) {
+            out->silhouette = R_SIL_BOTTOM;
+            out->bottomSilhouette = INT32_MAX;
+        }
+
+        if (front.ceilingHeight < back.ceilingHeight) {
+            out->silhouette |= R_SIL_TOP;
+            out->topSilhouette = front.ceilingHeight;
+        } else if (back.ceilingHeight < view->z) {
+            out->silhouette |= R_SIL_TOP;
+            out->topSilhouette = INT32_MIN;
+        }
+
+        if (back.ceilingHeight <= front.floorHeight) {
+            out->bottomSilhouette = INT32_MAX;
+            out->silhouette |= R_SIL_BOTTOM;
+        }
+        if (back.floorHeight >= front.ceilingHeight) {
+            out->topSilhouette = INT32_MIN;
+            out->silhouette |= R_SIL_TOP;
+        }
+
+        worldhigh = back.ceilingHeight - view->z;
+        worldlow = back.floorHeight - view->z;
+
+        /* "hack to allow height changes in outdoor areas": both ceilings sky
+         * means the wall between them is not a ceiling at all. */
+        if (front.ceilingPic == view->skyPicNum &&
+            back.ceilingPic == view->skyPicNum) {
+            worldtop = worldhigh;
+        }
+
+        if (worldlow != worldbottom || back.floorPic != front.floorPic ||
+            back.lightLevel != front.lightLevel) {
+            out->markFloor = 1;
+        }
+        if (worldhigh != worldtop || back.ceilingPic != front.ceilingPic ||
+            back.lightLevel != front.lightLevel) {
+            out->markCeiling = 1;
+        }
+        if (back.ceilingHeight <= front.floorHeight ||
+            back.floorHeight >= front.ceilingHeight) {
+            out->markFloor = 1;
+            out->markCeiling = 1;
+        }
+
+        if (worldhigh < worldtop) {
+            out->wallTop = (uint8_t)(r_has_name(sidedef.topTexture) ? 1 : 0);
+        }
+        if (worldlow > worldbottom) {
+            out->wallBottom = (uint8_t)(r_has_name(sidedef.bottomTexture) ? 1 : 0);
+        }
+    }
+
+    /* A floor/ceiling plane on the wrong side of the view plane is invisible. */
+    if (front.floorHeight >= view->z) {
+        out->markFloor = 0;
+    }
+    if (front.ceilingHeight <= view->z &&
+        front.ceilingPic != view->skyPicNum) {
+        out->markCeiling = 0;
+    }
+
+    out->worldTop = worldtop;
+    out->worldBottom = worldbottom;
+    out->worldHigh = worldhigh;
+    out->worldLow = worldlow;
+
+    /* Wall light index: sector light, gun flash, and the axis correction. */
+    out->lightNum = (int16_t)((front.lightLevel >> 4) + view->extralight);
+    if (v1.y == v2.y) {
+        out->lightNum = (int16_t)(out->lightNum - 1);
+    } else if (v1.x == v2.x) {
+        out->lightNum = (int16_t)(out->lightNum + 1);
+    }
+}
+
+void r_wall_fragment_step(r_wall_fragment_t* fragment, fixed_t scale1,
+                          fixed_t scaleStep) {
+    const fixed_t worldtop = fragment->worldTop >> 4;
+    const fixed_t worldbottom = fragment->worldBottom >> 4;
+
+    fragment->scale = scale1;
+    fragment->topStep = neg_fixed(fixed_mul(scaleStep, worldtop));
+    fragment->topFrac = (R_CENTER_Y_FRAC >> 4) - fixed_mul(worldtop, scale1);
+    fragment->bottomStep = neg_fixed(fixed_mul(scaleStep, worldbottom));
+    fragment->bottomFrac = (R_CENTER_Y_FRAC >> 4) - fixed_mul(worldbottom, scale1);
+
+    fragment->pixHigh = 0;
+    fragment->pixLow = 0;
+    fragment->pixHighStep = 0;
+    fragment->pixLowStep = 0;
+    if (fragment->hasBack) {
+        const fixed_t worldhigh = fragment->worldHigh >> 4;
+        const fixed_t worldlow = fragment->worldLow >> 4;
+
+        if (worldhigh < worldtop) {
+            fragment->pixHigh =
+                (R_CENTER_Y_FRAC >> 4) - fixed_mul(worldhigh, scale1);
+            fragment->pixHighStep = neg_fixed(fixed_mul(scaleStep, worldhigh));
+        }
+        if (worldlow > worldbottom) {
+            fragment->pixLow =
+                (R_CENTER_Y_FRAC >> 4) - fixed_mul(worldlow, scale1);
+            fragment->pixLowStep = neg_fixed(fixed_mul(scaleStep, worldlow));
+        }
+    }
+}
+
+void r_wall_fragment_peg(r_wall_fragment_t* fragment, fixed_t midHeight,
+                         fixed_t topHeight) {
+
+    /* Single-sided mid texture: R_StoreWallRange's !backsector peg. A two-sided
+     * line's mid texture is upstream's *masked* texture, recorded for
+     * R_DrawMasked and not drawn by R_RenderSegLoop, so wallMid is 0 there and
+     * this branch cannot see it. */
+    if (fragment->wallMid) {
+        if ((fragment->flags & DOOM_ML_DONTPEGBOTTOM) != 0) {
+            fragment->midTextureMid = fragment->worldBottom + midHeight;
+        } else {
+            fragment->midTextureMid = fragment->worldTop;
+        }
+        fragment->midTextureMid += fragment->rowOffset;
+    }
+
+    if (fragment->hasBack) {
+        if (fragment->wallTop) {
+            if ((fragment->flags & DOOM_ML_DONTPEGTOP) != 0) {
+                fragment->topTextureMid = fragment->worldTop;
+            } else {
+                /* back ceiling - view z is worldHigh. */
+                fragment->topTextureMid = fragment->worldHigh + topHeight;
+            }
+            fragment->topTextureMid += fragment->rowOffset;
+        }
+        if (fragment->wallBottom) {
+            if ((fragment->flags & DOOM_ML_DONTPEGBOTTOM) != 0) {
+                fragment->bottomTextureMid = fragment->worldTop;
+            } else {
+                fragment->bottomTextureMid = fragment->worldLow;
+            }
+            fragment->bottomTextureMid += fragment->rowOffset;
+        }
+    }
+}
+
+static void store_wall_range(r_view_state_t* state, int start, int stop) {
+    r_wall_fragment_t fragment;
     r_drawseg_t* drawseg;
     r_plane_error_t planeError;
 
@@ -434,192 +688,44 @@ static void store_wall_range(r_view_state_t* state, int start, int stop) {
         return;
     }
 
-    doom_map_get_seg(state->map, state->currentSeg, &seg);
-    doom_map_get_line(state->map, seg.linedef, &line);
-    doom_map_get_side(state->map, seg.side != 0 ? line.sideNum[1] : line.sideNum[0],
-                      &sidedef);
-    doom_map_get_sector(state->map, state->frontSector, &front);
-    doom_map_get_vertex(state->map, seg.v1, &v1);
-    doom_map_get_vertex(state->map, seg.v2, &v2);
-    hasBack = doom_map_seg_sectors(state->map, &seg, &frontIndex, &backIndex);
-    (void)frontIndex;
+    r_wall_fragment_open(state->map, &state->params, state->currentSeg, &fragment);
+    wall_fragment_range(&fragment, &state->params, state->rwAngle1, start, stop);
 
-    /* rw_distance: the scale needs the distance along the seg's normal. */
-    state->rwNormalAngle = seg.angle + ANG90;
-    offsetangle = (fixed_t)abs_angle_32(state->rwNormalAngle - state->rwAngle1);
-    if (offsetangle > (fixed_t)ANG90) {
-        offsetangle = (fixed_t)ANG90;
-    }
-    distangle = (fixed_t)(ANG90 - (angle_t)offsetangle);
-    hyp = point_to_dist(state, v1.x, v1.y);
-    sineval = r_fine_sine[(angle_t)distangle >> ANGLETOFINESHIFT];
-    state->rwDistance = fixed_mul(hyp, sineval);
-
-    state->rwX = start;
-    state->rwStopX = stop + 1;
-    scale1 = scale_from_global_angle(state,
-                                     state->params.angle + r_x_to_view_angle[start]);
-    if (stop > start) {
-        scale2 = scale_from_global_angle(state,
-                                         state->params.angle + r_x_to_view_angle[stop]);
-        /* C's division truncates toward zero; the columns are positive. */
-        scaleStep = (scale2 - scale1) / (stop - start);
-    } else {
-        scale2 = scale1;
-        scaleStep = 0;
-    }
-    state->rwScale = scale1;
-    state->rwScaleStep = scaleStep;
-
-    worldtop = front.ceilingHeight - state->params.z;
-    worldbottom = front.floorHeight - state->params.z;
-
-    if (!hasBack) {
-        wallmid = r_has_name(sidedef.midTexture);
-        markfloor = 1;
-        markceiling = 1;
-        silhouette = R_SIL_BOTH;
-    } else {
-        doom_map_get_sector(state->map, backIndex, &back);
-
-        if (front.floorHeight > back.floorHeight) {
-            silhouette = R_SIL_BOTTOM;
-            bsilheight = front.floorHeight;
-        } else if (back.floorHeight > state->params.z) {
-            silhouette = R_SIL_BOTTOM;
-            bsilheight = INT32_MAX;
-        }
-
-        if (front.ceilingHeight < back.ceilingHeight) {
-            silhouette |= R_SIL_TOP;
-            tsilheight = front.ceilingHeight;
-        } else if (back.ceilingHeight < state->params.z) {
-            silhouette |= R_SIL_TOP;
-            tsilheight = INT32_MIN;
-        }
-
-        if (back.ceilingHeight <= front.floorHeight) {
-            bsilheight = INT32_MAX;
-            silhouette |= R_SIL_BOTTOM;
-        }
-        if (back.floorHeight >= front.ceilingHeight) {
-            tsilheight = INT32_MIN;
-            silhouette |= R_SIL_TOP;
-        }
-
-        worldhigh = back.ceilingHeight - state->params.z;
-        worldlow = back.floorHeight - state->params.z;
-
-        if (front.ceilingPic == state->params.skyPicNum &&
-            back.ceilingPic == state->params.skyPicNum) {
-            worldtop = worldhigh;
-        }
-
-        if (worldlow != worldbottom || back.floorPic != front.floorPic ||
-            back.lightLevel != front.lightLevel) {
-            markfloor = 1;
-        }
-        if (worldhigh != worldtop || back.ceilingPic != front.ceilingPic ||
-            back.lightLevel != front.lightLevel) {
-            markceiling = 1;
-        }
-        if (back.ceilingHeight <= front.floorHeight ||
-            back.floorHeight >= front.ceilingHeight) {
-            markfloor = 1;
-            markceiling = 1;
-        }
-
-        if (worldhigh < worldtop) {
-            walltop = r_has_name(sidedef.topTexture);
-        }
-        if (worldlow > worldbottom) {
-            wallbottom = r_has_name(sidedef.bottomTexture);
-        }
-    }
-
-    if (front.floorHeight >= state->params.z) {
-        markfloor = 0;
-    }
-    if (front.ceilingHeight <= state->params.z &&
-        front.ceilingPic != state->params.skyPicNum) {
-        markceiling = 0;
-    }
-
-    /* Wall light index: sector light, gun flash, and the axis correction. */
-    state->lightNum = (int16_t)((front.lightLevel >> 4) + state->params.extralight);
-    if (v1.y == v2.y) {
-        state->lightNum = (int16_t)(state->lightNum - 1);
-    } else if (v1.x == v2.x) {
-        state->lightNum = (int16_t)(state->lightNum + 1);
-    }
-
-    /* Height to 12.4 for the incremental steppers, exactly as upstream does. */
-    worldtop >>= 4;
-    worldbottom >>= 4;
-    state->worldTop = worldtop;
-    state->worldBottom = worldbottom;
-    state->topStep = -fixed_mul(state->rwScaleStep, worldtop);
-    state->topFrac = (R_CENTER_Y_FRAC >> 4) - fixed_mul(worldtop, state->rwScale);
-    state->bottomStep = -fixed_mul(state->rwScaleStep, worldbottom);
-    state->bottomFrac = (R_CENTER_Y_FRAC >> 4) - fixed_mul(worldbottom, state->rwScale);
-    state->markFloor = markfloor;
-    state->markCeiling = markceiling;
-    state->wallMid = wallmid;
-    state->wallTop = walltop;
-    state->wallBottom = wallbottom;
-
-    state->pixHigh = 0;
-    state->pixLow = 0;
-    state->pixHighStep = 0;
-    state->pixLowStep = 0;
-    if (hasBack) {
-        worldhigh >>= 4;
-        worldlow >>= 4;
-        state->worldHigh = worldhigh;
-        state->worldLow = worldlow;
-        if (worldhigh < worldtop) {
-            state->pixHigh = (R_CENTER_Y_FRAC >> 4) - fixed_mul(worldhigh, state->rwScale);
-            state->pixHighStep = -fixed_mul(state->rwScaleStep, worldhigh);
-        }
-        if (worldlow > worldbottom) {
-            state->pixLow = (R_CENTER_Y_FRAC >> 4) - fixed_mul(worldlow, state->rwScale);
-            state->pixLowStep = -fixed_mul(state->rwScaleStep, worldlow);
-        }
-    }
-
-    if (markceiling) {
+    if (fragment.markCeiling) {
         planeError = r_plane_check(&state->storage.planes, state->ceilingPlane,
-                                   state->rwX, state->rwStopX - 1,
-                                   &state->ceilingPlane);
+                                   fragment.x1, fragment.x2, &state->ceilingPlane);
         if (planeError != R_PLANE_OK) {
             fail(state, R_BSP_ERR_VISPLANE_OVERFLOW);
             return;
         }
     }
-    if (markfloor) {
+    if (fragment.markFloor) {
         planeError = r_plane_check(&state->storage.planes, state->floorPlane,
-                                   state->rwX, state->rwStopX - 1,
-                                   &state->floorPlane);
+                                   fragment.x1, fragment.x2, &state->floorPlane);
         if (planeError != R_PLANE_OK) {
             fail(state, R_BSP_ERR_VISPLANE_OVERFLOW);
             return;
         }
     }
 
-    render_seg_loop(state);
+    r_wall_fragment_step(&fragment, fragment.scale1, fragment.scaleStep);
+    render_seg_loop(state, &fragment);
 
     drawseg = &state->storage.drawsegs[state->drawsegCount];
     drawseg->seg = state->currentSeg;
-    drawseg->x1 = (int16_t)start;
-    drawseg->x2 = (int16_t)stop;
-    drawseg->scale1 = scale1;
-    drawseg->scale2 = scale2;
-    drawseg->scaleStep = scaleStep;
-    drawseg->silhouette = (uint8_t)silhouette;
-    drawseg->bottomSilhouette = bsilheight;
-    drawseg->topSilhouette = tsilheight;
-    drawseg->lightLevel = front.lightLevel;
-    drawseg->lightNum = state->lightNum;
+    drawseg->x1 = fragment.x1;
+    drawseg->x2 = fragment.x2;
+    drawseg->scale1 = fragment.scale1;
+    drawseg->scale2 = fragment.scale2;
+    drawseg->scaleStep = fragment.scaleStep;
+    drawseg->silhouette = fragment.silhouette;
+    drawseg->bottomSilhouette = fragment.bottomSilhouette;
+    drawseg->topSilhouette = fragment.topSilhouette;
+    drawseg->lightLevel = fragment.lightLevel;
+    drawseg->lightNum = fragment.lightNum;
+    drawseg->rwDistance = fragment.distance;
+    drawseg->rwOffset = fragment.offset;
+    drawseg->rwCenterAngle = fragment.centerAngle;
     state->drawsegCount = (uint16_t)(state->drawsegCount + 1);
 }
 
@@ -760,8 +866,8 @@ static void add_line(r_view_state_t* state, uint16_t segIndex) {
     doom_map_get_vertex(state->map, seg.v2, &v2);
 
     state->currentSeg = segIndex;
-    angle1 = point_to_angle(state, v1.x, v1.y);
-    angle2 = point_to_angle(state, v2.x, v2.y);
+    angle1 = point_to_angle(&state->params, v1.x, v1.y);
+    angle2 = point_to_angle(&state->params, v2.x, v2.y);
 
     span = angle1 - angle2;
 
@@ -983,13 +1089,12 @@ r_bsp_error_t r_bsp_render(r_view_state_t* state, const r_view_params_t* params)
     state->error = R_BSP_OK;
     state->drawsegCount = 0;
     state->drawsegOverflowed = 0;
-    state->depth = 0;
     state->params = *params;
     r_plane_clear(&state->storage.planes);
     clear_clip_segs(state);
 
     for (column = 0; column < R_SCREEN_WIDTH; ++column) {
-        state->storage.floorClip[column] = (int16_t)R_SCREEN_HEIGHT;
+        state->storage.floorClip[column] = (int16_t)R_VIEW_HEIGHT;
         state->storage.ceilingClip[column] = -1;
     }
 
