@@ -39,11 +39,14 @@ Standard library only: argparse, struct, sys, zlib, pathlib.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import struct
 import sys
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
+
+import bake_graphics as bake
 
 # --- Container constants (keep in step with lib/doom/whd.h) ------------------
 
@@ -232,6 +235,85 @@ def select_raw(lumps: list[Lump], names: list[str], levels: list[str]) -> RawSel
     return RawSelection(frozenset(chosen), frozenset(level_chosen), level_name)
 
 
+def select_dropped(lumps: list[Lump], patterns: list[str], levels: list[str]) -> frozenset[int]:
+    """Resolves --drop-lumps and --drop-level against the WAD's directory.
+
+    A pattern is a case-insensitive shell glob over the lump name, so ``DS*``
+    removes every PCM sound effect. A level is the same marker-plus-ten-lumps
+    rule --raw-level uses; dropping it removes the marker too.
+    """
+    by_name: dict[str, int] = {}
+    for index, lump in enumerate(lumps):
+        by_name.setdefault(lump.name.upper()[:NAME_SIZE], index)
+
+    dropped: set[int] = set()
+
+    for pattern in patterns:
+        key = pattern.strip().upper()
+        if not key:
+            raise InputError("--drop-lumps: an empty pattern")
+        matched = [index for index, lump in enumerate(lumps)
+                   if fnmatch.fnmatchcase(lump.name.upper(), key)]
+        if not matched:
+            raise InputError(f"--drop-lumps: no lump matches {pattern!r}")
+        dropped.update(matched)
+
+    for level in levels:
+        key = level.strip().upper()[:NAME_SIZE]
+        if key not in by_name:
+            raise InputError(f"--drop-level: the WAD has no level marker {level!r}")
+        marker = by_name[key]
+        following = [lump.name.upper() for lump in lumps[marker + 1:marker + 1 + len(LEVEL_LUMPS)]]
+        if marker + len(LEVEL_LUMPS) >= len(lumps) or following != list(LEVEL_LUMPS):
+            raise InputError(
+                f"--drop-level: {level!r} is not followed by {', '.join(LEVEL_LUMPS)}")
+        dropped.add(marker)
+        for offset in range(len(LEVEL_LUMPS)):
+            dropped.add(marker + 1 + offset)
+
+    return frozenset(dropped)
+
+
+def build_baked_lumps(lumps: list[Lump], kept: list[Lump], level: str, sky: str,
+                      sprite_names: list[str]) -> tuple[list[Lump], list[tuple[str, int, int, int, int, int]],
+                                                          bake.BakedSet, int, set[int]]:
+    """Bakes one level and appends the raw payloads and the manifest.
+
+    @return (the kept WAD lumps plus the new lumps, the manifest records with
+    final indices, the baked set for --stats, how many lumps were appended, and
+    the container indices that must be raw).
+    """
+    baked = bake.bake_level(lumps, level, sky=sky, sprite_names=sprite_names)
+
+    index_by_name: dict[str, int] = {}
+    for index, lump in enumerate(kept):
+        index_by_name.setdefault(lump.name.upper()[:NAME_SIZE], index)
+
+    appended: list[Lump] = []
+    records: list[tuple[str, int, int, int, int, int]] = []
+    raw_indices: set[int] = set()
+
+    for item in baked.items:
+        if item.payload is not None:
+            kind_letter = "S" if item.kind == bake.KIND_SKY else "W"
+            lump_name = f"~B{kind_letter}{len(appended):05X}"
+            appended.append(Lump(lump_name, item.payload))
+            lump_index = len(kept) + len(appended) - 1
+            raw_indices.add(lump_index)
+        else:
+            lump_index = index_by_name.get(item.name.upper()[:NAME_SIZE], -1)
+            if lump_index < 0:
+                raise InputError(f"--bake: {item.name!r} was dropped before it could be baked")
+            raw_indices.add(lump_index)
+        records.append((item.name, item.width, item.rows, item.flags, item.kind, lump_index))
+
+    manifest = bake.build_manifest(records)
+    appended.append(Lump(bake.MANIFEST_NAME, manifest))
+    raw_indices.add(len(kept) + len(appended) - 1)
+
+    return kept + appended, records, baked, len(appended), raw_indices
+
+
 # --- Encoding ---------------------------------------------------------------
 
 
@@ -382,8 +464,9 @@ def verify_container(container: bytes, lumps: list[Lump] | None) -> int:
         raise VerificationError("dataOffset does not follow the name table")
     if data_offset > total_size:
         raise VerificationError("dataOffset is past the end of the container")
-    if lumps is not None and num_lumps != len(lumps):
+    if lumps is not None and num_lumps < len(lumps):
         raise VerificationError(f"container holds {num_lumps} lumps, the WAD holds {len(lumps)}")
+    source_count = len(lumps) if lumps is not None else 0
 
     raw_entries = 0
     previous_end = 0
@@ -439,7 +522,7 @@ def verify_container(container: bytes, lumps: list[Lump] | None) -> int:
         if len(decoded) != uncompressed_size:
             raise VerificationError(
                 f"lump {index}: decodes to {len(decoded)} bytes, directory says {uncompressed_size}")
-        if lumps is not None and decoded != lumps[index].data:
+        if index < source_count and decoded != lumps[index].data:
             raise VerificationError(f"lump {index} ({lumps[index].name}): bytes differ from the source WAD")
 
     for index in range(name_count):
@@ -448,11 +531,11 @@ def verify_container(container: bytes, lumps: list[Lump] | None) -> int:
         (lump_index,) = struct.unpack_from("<I", container, entry + 8)
         if lump_index >= num_lumps:
             raise VerificationError(f"name entry {index} points at lump {lump_index}")
-        expected = (lumps[lump_index].name if lumps is not None
-                    else "").encode("latin-1")[:NAME_SIZE]
-        if lumps is not None and raw_name.rstrip(b"\0") != expected:
-            raise VerificationError(
-                f"name entry {index} is {raw_name!r}, expected {expected!r}")
+        if lump_index < source_count:
+            expected = lumps[lump_index].name.encode("latin-1")[:NAME_SIZE]
+            if raw_name.rstrip(b"\0") != expected:
+                raise VerificationError(
+                    f"name entry {index} is {raw_name!r}, expected {expected!r}")
 
     return raw_entries
 
@@ -466,7 +549,11 @@ def _format_bytes(value: int) -> str:
 
 def stats_report(container: bytes, encoded: list[EncodedLump], padding: list[int],
                  source_bytes: int, identification: bytes,
-                 selection: RawSelection) -> str:
+                 selection: RawSelection,
+                 baked_manifest: bytes | None = None,
+                 baked_set: bake.BakedSet | None = None,
+                 dropped_count: int = 0,
+                 dropped_bytes: int = 0) -> str:
     """Renders the --stats block: sizes, budget, the raw split and nine levels."""
     output_bytes = len(container)
     uncompressed_total = sum(lump.uncompressed_size for lump in encoded)
@@ -529,6 +616,24 @@ def stats_report(container: bytes, encoded: list[EncodedLump], padding: list[int
         f"  savings          {_format_bytes(savings)} of {_format_bytes(source_bytes)}",
     ]
 
+    if dropped_count:
+        lines.append(
+            f"  dropped          {dropped_count:,} lumps, {_format_bytes(dropped_bytes)} "
+            f"removed by --drop-lumps/--drop-level")
+    if baked_manifest is not None and baked_set is not None:
+        lines.append(bake.manifest_line(baked_manifest))
+        entries = bake.parse_manifest(baked_manifest)
+
+        def baked_bytes(kind: int) -> int:
+            return sum(encoded[entry.lump_index].stored_size
+                       for entry in entries if entry.kind == kind)
+
+        lines.append(
+            f"  baked payloads   {_format_bytes(baked_bytes(bake.KIND_WALL))} walls, "
+            f"{_format_bytes(baked_bytes(bake.KIND_SKY))} sky, "
+            f"{_format_bytes(baked_bytes(bake.KIND_FLAT))} flats, "
+            f"{_format_bytes(baked_bytes(bake.KIND_SPRITE))} sprites")
+
     if level_cost is not None:
         lines.append(
             f"  nine levels      nine_level_headroom={nine_level_headroom:,} B  "
@@ -546,6 +651,27 @@ def stats_report(container: bytes, encoded: list[EncodedLump], padding: list[int
                      + ", ".join(f"{lump.name} {ratio:.2f}x" for lump, ratio in worst))
 
     return "\n".join(lines)
+
+
+def _raw_lump_by_name(container: bytes, name: str) -> bytes | None:
+    """Returns a raw lump's bytes by name, or None when it is absent."""
+    num_lumps, name_count, directory_offset, name_table_offset, data_offset, _total = \
+        struct.unpack_from("<IIIIII", container, 8)
+    key = name.upper().encode("latin-1")[:NAME_SIZE]
+    for index in range(name_count):
+        entry = name_table_offset + index * NAME_ENTRY_SIZE
+        if container[entry:entry + NAME_SIZE].rstrip(b"\0") != key:
+            continue
+        (lump_index,) = struct.unpack_from("<I", container, entry + 8)
+        if lump_index >= num_lumps:
+            return None
+        payload_offset, stored_size, _uncompressed, method = \
+            struct.unpack_from("<IIIB", container, directory_offset + lump_index * DIRECTORY_ENTRY_SIZE)
+        if method != METHOD_RAW:
+            return None
+        start = data_offset + payload_offset
+        return container[start:start + stored_size]
+    return None
 
 
 def container_stats_report(container: bytes) -> str:
@@ -585,7 +711,7 @@ def container_stats_report(container: bytes) -> str:
 
     metadata = total_size - raw_total - compressed_total - padding_total
     spare = FLASH_BUDGET - total_size
-    return "\n".join([
+    lines = [
         f"  output           {_format_bytes(total_size)}  from {num_lumps:,} lumps",
         f"  metadata         {_format_bytes(metadata)}  header + directory + name table + padding",
         f"  compressed       {_format_bytes(compressed_total)}  "
@@ -598,7 +724,11 @@ def container_stats_report(container: bytes) -> str:
         + f" ({total_size * 100.0 / FLASH_BUDGET:.1f}% used)",
         "  nine levels      nine_level_headroom=n/a  (a finished container does not "
         "record its raw selection)",
-    ])
+    ]
+    manifest = _raw_lump_by_name(container, bake.MANIFEST_NAME)
+    if manifest is not None:
+        lines.append(bake.manifest_line(manifest))
+    return "\n".join(lines)
 
 
 def source_beside(container_path: Path) -> Path | None:
@@ -635,6 +765,21 @@ raw selection:
   --raw-level LVL  keep that level's ten lumps raw: THINGS LINEDEFS SIDEDEFS
                    VERTEXES SEGS SSECTORS NODES SECTORS REJECT BLOCKMAP
   (default)        no raw lumps: every payload is deflate or stored, as before
+
+dropping and baking (both default off; the command records the choice):
+  --drop-lumps GLOB   remove every lump whose name matches the glob, case
+                      insensitively. ``--drop-lumps 'DS*'`` removes the 55 PCM
+                      sound effects this port can never play (APU synthesis
+                      only), which frees about 389 KB of the container.
+  --drop-level LVL    remove a level marker and its ten data lumps. The shipped
+                      E1M1-only port drops E1M2..E1M9.
+  --bake LVL          compose that level's wall textures and sky into raw
+                      width*128 payloads, mark its flats and sprite lumps raw,
+                      and append the ~PWBAKE~ manifest. Requires TEXTURE1,
+                      PNAMES and --sprite-list for the sprite names.
+  --sprite-list PATH  the sprite lumps the level needs: the generated .inc form
+                      or one name per line.
+  --sky NAME          the sky texture to bake (default SKY1).
 
 --check:
   a WAD input is rebuilt and every lump is compared byte for byte, raw ones
@@ -676,6 +821,19 @@ exit codes:
                              "device can read them in place; repeatable, comma separated")
     parser.add_argument("--raw-level", action="append", default=[], metavar="LEVEL",
                         help="keep a level's ten lumps raw; repeatable")
+    parser.add_argument("--drop-lumps", action="append", default=[], metavar="GLOB",
+                        help="remove every lump whose name matches the glob; repeatable, "
+                             "comma separated")
+    parser.add_argument("--drop-level", action="append", default=[], metavar="LEVEL",
+                        help="remove a level marker and its ten data lumps; repeatable")
+    parser.add_argument("--bake", metavar="LEVEL",
+                        help="bake this level's wall textures, sky, flats and sprite "
+                             "lumps into raw payloads plus a manifest")
+    parser.add_argument("--sky", default=None, metavar="NAME",
+                        help="sky texture to bake (default SKY1)")
+    parser.add_argument("--sprite-list", type=Path, metavar="PATH",
+                        help="file naming the sprite lumps --bake keeps: the generated "
+                             ".inc form or one name per line")
     return parser
 
 
@@ -689,13 +847,18 @@ def _split_names(values: list[str]) -> list[str]:
 def _verify(container: bytes, lumps: list[Lump] | None, source_label: str | None) -> int:
     """Runs verify_container and prints the one-line result. Returns raw count."""
     raw_entries = verify_container(container, lumps)
+    num_lumps = struct.unpack_from("<I", container, 8)[0]
     total = sum(
         struct.unpack_from("<I", container, HEADER_SIZE + index * DIRECTORY_ENTRY_SIZE + 8)[0]
-        for index in range(struct.unpack_from("<I", container, 8)[0]))
-    compared = (f"byte for byte against {source_label}" if source_label is not None
-                else "structurally (no source WAD beside the container)")
-    print(f"  verified         {total:,} B in "
-          f"{struct.unpack_from('<I', container, 8)[0]:,} lumps, {compared}")
+        for index in range(num_lumps))
+    if source_label is not None and lumps is not None and num_lumps > len(lumps):
+        compared = (f"byte for byte for the {len(lumps):,} WAD lumps; "
+                    f"{num_lumps - len(lumps):,} appended baked lumps structurally")
+    elif source_label is not None:
+        compared = f"byte for byte against {source_label}"
+    else:
+        compared = "structurally (no source WAD beside the container)"
+    print(f"  verified         {total:,} B in {num_lumps:,} lumps, {compared}")
     print(f"  raw alignment    {raw_entries:,} raw lumps, every payload on a "
           f"{RAW_ALIGNMENT}-byte boundary")
     return raw_entries
@@ -712,6 +875,8 @@ def main(argv: list[str] | None = None) -> int:
 
     raw_names = _split_names(arguments.raw)
     raw_levels = _split_names(arguments.raw_level)
+    drop_patterns = _split_names(arguments.drop_lumps)
+    drop_levels = _split_names(arguments.drop_level)
 
     try:
         head = arguments.input.read_bytes()[:4]
@@ -728,22 +893,41 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         identification, lumps, source = read_wad(arguments.input)
-        selection = select_raw(lumps, raw_names, raw_levels)
-    except InputError as error:
+        dropped = select_dropped(lumps, drop_patterns, drop_levels)
+        kept = [lump for index, lump in enumerate(lumps) if index not in dropped]
+        selection = select_raw(kept, raw_names, raw_levels)
+
+        baked = None
+        baked_manifest = None
+        wad_kept = kept
+        if arguments.bake:
+            if arguments.bake in drop_levels:
+                raise InputError("--bake: a level cannot be both baked and dropped")
+            sprite_names = (bake.read_sprite_list(arguments.sprite_list)
+                            if arguments.sprite_list is not None else [])
+            kept, _records, baked, _appended, baked_raw = build_baked_lumps(
+                lumps, kept, arguments.bake, arguments.sky or "SKY1", sprite_names)
+            selection = RawSelection(selection.indices | frozenset(baked_raw),
+                                     selection.level_indices, selection.level_name)
+            baked_manifest = next(lump.data for lump in kept if lump.name == bake.MANIFEST_NAME)
+    except (InputError, bake.BakeError) as error:
         print(f"whd_encode: {error}", file=sys.stderr)
         return EXIT_INPUT
 
     source_bytes = len(source)
     source_crc = zlib.crc32(source) & 0xFFFFFFFF
-    container, encoded, padding = build_container(lumps, arguments.level, source_crc, selection)
+    dropped_bytes = sum(len(lumps[index].data) for index in dropped)
+    container, encoded, padding = build_container(kept, arguments.level, source_crc, selection)
 
     if arguments.stats or arguments.check:
         print(f"{arguments.input}: {len(lumps):,} lumps, {_format_bytes(source_bytes)}")
-        print(stats_report(container, encoded, padding, source_bytes, identification, selection))
+        print(stats_report(container, encoded, padding, source_bytes, identification, selection,
+                           baked_manifest=baked_manifest, baked_set=baked,
+                           dropped_count=len(dropped), dropped_bytes=dropped_bytes))
 
     if arguments.check:
         try:
-            _verify(container, lumps, str(arguments.input))
+            _verify(container, wad_kept, str(arguments.input))
         except VerificationError as error:
             print(f"whd_encode: verification failed: {error}", file=sys.stderr)
             return EXIT_VERIFY
@@ -768,8 +952,11 @@ def main(argv: list[str] | None = None) -> int:
 def check_container(arguments: argparse.Namespace,
                     parser: argparse.ArgumentParser) -> int:
     """``--check`` on a container: verify it, and compare against its source WAD."""
-    if arguments.raw or arguments.raw_level:
-        parser.error("--raw and --raw-level select what to write; a container is checked as it is")
+    if (arguments.raw or arguments.raw_level or arguments.drop_lumps
+            or arguments.drop_level or arguments.bake or arguments.sprite_list
+            or arguments.sky is not None):
+        parser.error("--raw, --raw-level, --drop-lumps, --drop-level, --bake and "
+                     "--sprite-list select what to write; a container is checked as it is")
 
     try:
         container = arguments.input.read_bytes()
@@ -777,13 +964,20 @@ def check_container(arguments: argparse.Namespace,
         print(f"whd_encode: {arguments.input}: {error.strerror}", file=sys.stderr)
         return EXIT_INPUT
 
+    num_lumps = struct.unpack_from("<I", container, 8)[0]
     lumps: list[Lump] | None = None
     label: str | None = None
     candidate = source_beside(arguments.input)
+    baked = _raw_lump_by_name(container, bake.MANIFEST_NAME) is not None
     if candidate is not None:
         try:
-            _, lumps, _ = read_wad(candidate)
-            label = str(candidate)
+            _, source_lumps, _ = read_wad(candidate)
+            # Index alignment only exists when the container was not built with
+            # a drop or a bake; a baked container is verified structurally and by
+            # tools/bake_graphics.py's C check, not by a WAD-wide byte diff.
+            if not baked and num_lumps == len(source_lumps):
+                lumps = source_lumps
+                label = str(candidate)
         except InputError as error:
             print(f"whd_encode: {error}", file=sys.stderr)
             return EXIT_INPUT
@@ -794,7 +988,6 @@ def check_container(arguments: argparse.Namespace,
         print(f"whd_encode: verification failed: {error}", file=sys.stderr)
         return EXIT_VERIFY
 
-    num_lumps = struct.unpack_from("<I", container, 8)[0]
     print(f"{arguments.input}: {num_lumps:,} lumps, {_format_bytes(len(container))}")
     if arguments.stats:
         print(container_stats_report(container))
@@ -802,7 +995,7 @@ def check_container(arguments: argparse.Namespace,
                                   HEADER_SIZE + index * DIRECTORY_ENTRY_SIZE + 8)[0]
                 for index in range(num_lumps))
     compared = (f"byte for byte against {label}" if label is not None
-                else "structurally (no source WAD beside the container)")
+                else "structurally (a baked/dropped container has no WAD index alignment)")
     print(f"  verified         {_format_bytes(total)} in {num_lumps:,} lumps, {compared}")
     print(f"  raw alignment    {raw_entries:,} raw lumps, every payload on a "
           f"{RAW_ALIGNMENT}-byte boundary")

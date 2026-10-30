@@ -1,5 +1,5 @@
 /*
- * D3.7's frame driver: see FrameDriver.h for the four phases, the two map paths,
+ * D3.8's frame driver: see FrameDriver.h for the four phases, the two map paths,
  * the 20 views, the hash protocol and the exact line formats.
  *
  * The file has two halves and no third one, the same shape FlashProfile.cpp uses
@@ -16,51 +16,44 @@
  * The second half is the board driver and only exists when
  * `PIXELROOT32_DOOM_FRAME_PROBE` is defined (`env:esp32dev_ILI9341_frame` and
  * `env:esp32dev_ILI9341_frameram`). It is the only code in this project that
- * renders a whole frame on the board. D3.6 and D3.7 left it deliberately naive
- * -- two texture slots, no reuse, no resident set -- so D3.5 had a baseline to
- * beat. D3.5 replaces that policy with the residency cache below and adds the
- * per-frame attribution the frame table is read with; FrameDriver.h states both.
+ * renders a whole frame on the board. D3.5 added the attribution the frame table
+ * is read with; D3.8 removed the residency cache and the three decoders from
+ * this path. Every wall texture, the sky and every flat is a raw payload baked
+ * at build time by tools/bake_graphics.py and named by the container's ~PWBAKE~
+ * manifest, so a resolve is a manifest lookup and a pointer into the mapping.
  *
  * WHAT THE FRAME COSTS, IN BYTES, AND WHERE THOSE BYTES COME FROM NOW
  *
  * Every large buffer below is a reported size, not an estimate: `FRAMEPROF,mem`
  * prints each one from `sizeof` or from the bootstrap that allocated it.
  *
- *   walk state     33,184 B   drawsegs 2,080, visplanes 14,608, clip posts 256,
- *                             floorclip/ceilingclip 1,280, clip blocks 9,600,
- *                             opening blocks 640, vis sprites 4,400, covered 320
- *   cache arena 0  53,248 B   static .bss; the old two-slot wall arena grown to
- *                             hold a 32,768 B texture beside a 16,384 B one
- *   cache arena 1-3 up to     8 KB heap blocks; a fragmented heap is asked for
- *                  24,576 B   the same bytes in three holes
- *   cache entries   1,920 B   48 x (name, address, size, stamp, kind, value)
- *   scratch        35,080 B   one patch, the largest patch an E1M1 texture
- *                             names (SKY1's, which the plane pass composes)
- *   level              0 B    in the flash build: the map's 46,508 B and the
- *                             directories' 20,742 B are pointers into the
- *                             mapping. 47,888 B in the RAM build.
+ *   walk state      33,184 B   drawsegs 2,080, visplanes 14,608, clip posts 256,
+ *                              floorclip/ceilingclip 1,280, clip blocks 9,600,
+ *                              opening blocks 640, vis sprites 4,400, covered 320
+ *   baked records    4,632 B   the 90-entry manifest adapter, static .bss
+ *   level                0 B   in the flash build the map is a pointer into the
+ *                              mapping; 47,888 B in the RAM build
  *
- * The old driver's 4,272 B sprite-patch slot is gone: a sprite patch is a cache
- * entry now, and so is a flat.
+ * The D3.5 graphics state is gone: a 53,248 B static arena, up to 24,576 B of
+ * heap arenas, 1,920 B of cache entries and a 35,080 B decode scratch. That is
+ * ~114,824 B of graphics RAM released and replaced by the 4,632 B above.
  *
  * THE TWO MAP PATHS
  *
  * `PIXELROOT32_DOOM_MAP_IN_RAM=1` decodes the map lumps into RAM, which is what
  * D3.6 did and what the A/B needs as its control; without it the map's lumps are
  * raw container entries and `doom_whd_source_lump_view()` hands out the mapped
- * bytes with no copy at all. The three graphics directories stay raw in both
- * builds on purpose: they are read-only tables, not the map, and holding them
- * constant isolates the one variable the A/B is about.
+ * bytes with no copy at all. The graphics are baked in both builds on purpose:
+ * the A/B isolates the map path, and the bake is the thing this task measures.
  *
- * THE SHARED SCRATCH, AND WHY IT IS SAFE HERE
+ * NO FALLBACK, NO DECODE
  *
- * The 35,080 B decode scratch is now a compose's patch buffer and nothing else.
- * A compose reads one patch from the scratch and writes into a cache entry, so
- * the two are distinct bytes. Flats and sprite patches used to share the scratch
- * (with an owner tag and a `hazards=` counter watching the one order that could
- * alias); D3.5 moved both into the residency cache, so the scratch has one user
- * and the hazard cannot occur. `hazards=` is kept on the summary line and must
- * stay 0.
+ * A name the manifest does not hold is a reported frame error
+ * (R_SEGS_ERR_TEXTURE_MISSING, R_PLANE_ERR_FLAT_MISSING or
+ * R_THINGS_ERR_SPRITE_MISSING), never a silent decode. The C referee in
+ * test/unit/test_baked/tool recomposes every baked wall and sky from the
+ * container's own patches through lib/doom/r_data.c and compares pixels and
+ * mask byte for byte, which is the only proof the bake is correct.
  */
 #include "doomc/FrameDriver.h"
 
@@ -439,6 +432,7 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 #include <esp_system.h>
 #include <esp_timer.h>
 
+#include "doomc/BakedGraphics.h"
 #include "doomc/DoomConsole.h"
 #include "doomc/WhdSource.h"
 
@@ -527,24 +521,11 @@ constexpr std::size_t kLevelReleasedBytes = 20742u;
 constexpr std::size_t kLevelReleasedBytes = 46508u + 20742u;
 #endif
 
-/// One static graphics region. In the flash build it is the residency cache's
-/// first arena: 52 KB holds a 32,768 B texture beside a 16,384 B one, which the
-/// old 36,864 B two-slot arena could not, and the 20,480 B of `dram0_0_seg`
-/// headroom pays for it. The RAM build keeps 36,864 because its own 20,480 B
-/// static lump arena already spends that headroom.
-#if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
-constexpr std::size_t kStaticGraphicsBytes = 36864u;
-#else
-constexpr std::size_t kStaticGraphicsBytes = 53248u;
-#endif
-
-/// One patch of a composite. 35,080 B is SKY1's largest patch, which the plane
-/// pass composes now that it runs; it is also larger than every wall texture's
-/// largest patch (17,544 B), so the wall pass and the masked pass share it. A
-/// flat (4,096 B) and a sprite patch (4,272 B) are cache entries now and never
-/// touch this buffer.
-constexpr std::size_t kScratchBytes = 35080u;
-
+/// One static graphics region. D3.8 removed the cache: every wall texture, the
+/// sky and every flat is a pointer into the container's raw section now, so the
+/// 53,248 B arena and the 35,080 B decode scratch are gone. The only graphics
+/// state left is the manifest adapter, which is a fixed record array.
+///
 /// Up to nine extra lump blocks from the heap: the blocks of the decoded level
 /// that the static arena does not hold, in the RAM build.
 constexpr int kExtraLumpBlocks = 9;
@@ -565,18 +546,9 @@ constexpr std::size_t kStaticLumpBytes = 20480u;
 /// only what was asked of it.
 constexpr std::size_t kStaticRegionBytes = 124068u;
 /// DOOM's stored column is 128 rows whatever the texture's declared height,
-/// because R_DrawColumn() wraps with a hard-coded `& 127`. A composed texture is
-/// therefore width * 128 bytes, with the rows above the declared height zeroed
-/// (which is what the host harness's calloc'd buffer holds, so the two agree
-/// byte for byte).
+/// because R_DrawColumn() wraps with a hard-coded `& 127`. The bake writes that
+/// form; the adapter derives its heightMask from it.
 constexpr std::size_t kStoredColumnRows = 128u;
-
-/// A flat has no header and no length field: 4,096 bytes are the whole format.
-constexpr std::size_t kFlatBytes = 4096u;
-
-/// The largest sprite patch the fixture names (ELECA0, type 48). The scratch is
-/// bigger than this, so a sprite patch is decoded into the scratch.
-constexpr std::size_t kSpritePatchBytes = 4272u;
 
 /// The views, the runs and the colours, exactly as tools/rsegs_check.c has them.
 constexpr int kViewCount = 20;
@@ -606,18 +578,17 @@ constexpr int kFirstSkippedMapLump = DOOM_MAP_REJECT;
  * the split below is a measurement, not a preference:
  *
  *   dram0_0_seg   the static data region the linker enforces: 124,068 B
- *                 (0x3ffb0000 + 0xdb5c, len 0x2c200 - 0xdb5c). D3.6's build used
- *                 120,536 B of it, leaving 3,532 B; removing the 23,200 B decoded
- *                 level arena is what makes room for the 17,536 B the plane pass
- *                 adds to the scratch.
- *   the heap      what is left of DRAM after the static data. With the display
- *                 path live the probe reports ~48 KB free and one hole of ~47 KB;
- *                 that hole is where the scratch goes.
+ *                 (0x3ffb0000 + 0xdb5c, len 0x2c200 - 0xdb5c). D3.8 removed the
+ *                 cache and scratch, so the walk state and the manifest adapter
+ *                 are the only large statics left.
+ *   the heap      what is left of DRAM after the static data. The sprite list
+ *                 (130 records) and, in the RAM build, the decoded level come
+ *                 from it.
  *
- * `DriverState` is the static half; the wall arena and the scratch are the
- * placement half, reported by `FRAMEPROF,mem` so which pool served them is a
- * printed number. The decoded level is a third case: .bss in the RAM build (its
- * own array), absent in the flash build because the container is the storage.
+ * `DriverState` is the static half and `gBaked` is the manifest adapter; the
+ * graphics themselves are pointers into the mapping, so no pool holds them.
+ * The decoded level is the RAM build's own array and heap blocks; the flash
+ * build stores it in the container.
  */
 
 /// The static half: the walk state, the clip-block pool and the coverage record.
@@ -641,10 +612,8 @@ struct DriverState {
 /// The static half, and the only unconditional new .bss this file adds.
 DriverState gState;
 
-/// The decode scratch, from the heap.
-std::uint8_t* gScratch = nullptr;
-/// Bytes the cache's heap arenas added to the static block, printed by the mem line.
-int gCacheExtraBytes = 0;
+/// The baked graphics adapter: the manifest and one prebuilt record per name.
+BakedGraphics gBaked;
 
 /// The extra lump blocks from the heap: the decoded level's blocks that the static
 /// arena does not hold. Each is 8,784 B or smaller.
@@ -658,19 +627,11 @@ r_sprite_t* gSprites = nullptr;
 /**
  * @brief Releases whatever the probe took. Safe on any subset.
  *
- * The heap has no single hole large enough for every block, so the level and the
- * graphics are allocated one piece at a time -- see heapLump() and the placement
- * block in frameProbeRun() -- and each is released here exactly once.
+ * The heap has no single hole large enough for every block, so the level is
+ * allocated one piece at a time -- see heapLump() and the placement block in
+ * frameProbeRun() -- and each is released here exactly once.
  */
-void releaseCacheArenas();
-
 void releaseWorkingSet() {
-    if (gScratch != nullptr) {
-        heap_caps_free(gScratch);
-        gScratch = nullptr;
-    }
-    releaseCacheArenas();
-    gCacheExtraBytes = 0;
     if (gSprites != nullptr) {
         heap_caps_free(gSprites);
         gSprites = nullptr;
@@ -693,11 +654,7 @@ std::size_t gLevelRamUsed = 0;
 alignas(8) std::uint8_t gLumpArena[kStaticLumpBytes];
 #endif
 
-/// The one graphics buffer that has to be static; which one is decided at boot.
-alignas(8) std::uint8_t gStaticGraphics[kStaticGraphicsBytes];
-
-/// The placement the probe ended up using, printed by `FRAMEPROF,mem`:
-/// "wall-static", "scratch-static" or "heap-both".
+/// The placement the probe ended up using, printed by `FRAMEPROF,mem`.
 const char* gPlacement = "none";
 
 /// The map path this build uses, printed by every `FRAMEPROF,mem` and
@@ -719,10 +676,6 @@ whd_state_t gWhd;
 std::uint32_t gRawViews = 0;
 std::uint32_t gNotRaw = 0;
 
-const std::uint8_t* gTexture1 = nullptr;
-std::size_t gTexture1Bytes = 0;
-const std::uint8_t* gPnames = nullptr;
-std::size_t gPnamesBytes = 0;
 const std::uint8_t* gColormap = nullptr;
 std::size_t gColormapBytes = 0;
 r_light_t gLight = {};
@@ -739,335 +692,6 @@ int gStageCode = 0;
 /// residencyMicros, so a compose that decodes six patches does not count their
 /// time twice.
 int gDecodeDepth = 0;
-
-// --- The residency cache (D3.5) ---------------------------------------------
-//
-// ONE caller-owned cache, three consumers. A composed wall texture, a flat and a
-// sprite patch are the same thing to a resolver -- a name and a block of bytes
-// that stays valid until the pass ends -- so one arena with one eviction rule
-// serves all three and the hit rate is measured on one number line.
-//
-// WHY IT IS SAFE WITHOUT THE RENDERER KNOWING
-//
-// r_segs.h requires a resolver's answer to stay valid until the pass returns,
-// and the D3.6 driver could not honour that: two slots were reused inside one
-// pass, which is why the passes re-resolved every tier and the second resolve
-// re-composed. The cache is what makes the contract true. It never moves bytes
-// (placement is first fit; entries are never compacted) and it never evicts an
-// entry it handed out in the current fragment: the last `kCachePinCount`
-// returns are pinned. A pass therefore re-resolves a texture and gets the same
-// pointer and the same bytes, at the cost of a linear search over at most 48
-// entries instead of a compose.
-//
-// CAPACITY AND EVICTION, IN BYTES
-//
-//   arena 0   the existing 36,864 B static block, exactly the old wall arena
-//   arena 1   up to 40,960 B from the heap, requested after the decode scratch
-//
-// One arena is not enough only because the two pools are not contiguous. The
-// allocation granule is 512 B, so a 32,768 B texture takes 64 granules; a
-// first-fit run plus per-entry LRU eviction is enough for the measured working
-// set (8 distinct wall textures, 6 flats, 33 sprite lumps, 127 KB in the worst
-// sampled view). A request that cannot be satisfied evicts the least recently
-// used unpinned entry and retries; if even that fails the resolver answers NULL,
-// which is the existing R_SEGS_ERR_TEXTURE_MISSING path, not a partial frame.
-//
-// The hit path is a name compare. The miss path composes into the arena and
-// records the entry; no decode is ever repeated for a name that is still
-// resident, across fragments, passes or frames.
-
-constexpr std::size_t kCacheGranuleBytes = 512u;
-constexpr int kCacheEntryCapacity = 48;
-constexpr int kCacheArenaCount = 4;
-constexpr std::size_t kCacheExtraStepBytes = 8192u;
-constexpr int kCacheExtraSteps = 3;
-constexpr int kCachePinCount = 3;
-
-enum CacheKind : std::uint8_t {
-    kCacheNone = 0,
-    kCacheWall = 1,
-    kCacheFlat = 2,
-    kCacheSprite = 3
-};
-
-/// The three high bits select the arena and are never zero, so a valid placement
-/// can never collide with the 0 that means "nothing fits".
-constexpr int kCacheArenaShift = 29;
-constexpr std::uint32_t kCacheArenaMask = 0xE0000000u;
-constexpr std::uint32_t kCacheOffsetMask = ~kCacheArenaMask;
-
-struct CacheArena {
-    std::uint8_t* base;
-    std::uint32_t bytes;
-    std::uint32_t granules;
-    /// One bit per granule. 256 granules is 128 KB, twice the largest arena.
-    std::uint64_t map[4];
-};
-
-union CacheValue {
-    r_walltex_t tex;
-    r_flat_t flat;
-    r_sprite_patch_t patch;
-};
-
-struct CacheEntry {
-    r_name_t name;
-    std::uint32_t where;
-    std::uint32_t bytes;
-    std::uint32_t stamp;
-    std::uint8_t kind;
-    std::uint8_t used;
-    CacheValue value;
-};
-
-CacheArena gArena[kCacheArenaCount];
-CacheEntry gCache[kCacheEntryCapacity];
-std::uint32_t gCacheStamp = 0;
-int gPinned[kCachePinCount] = {-1, -1, -1};
-int gPinNext = 0;
-int gCachePeak = 0;
-
-/// Frees the heap arenas. The static arena 0 is not the heap's to free.
-void releaseCacheArenas() {
-    for (int arena = 1; arena < kCacheArenaCount; ++arena) {
-        if (gArena[arena].base != nullptr) {
-            heap_caps_free(gArena[arena].base);
-            gArena[arena].base = nullptr;
-            gArena[arena].bytes = 0u;
-            gArena[arena].granules = 0u;
-        }
-    }
-}
-
-void cacheReset() {
-    for (int index = 0; index < kCacheEntryCapacity; ++index) {
-        gCache[index].used = 0u;
-    }
-    for (int arena = 0; arena < kCacheArenaCount; ++arena) {
-        for (int word = 0; word < 4; ++word) {
-            gArena[arena].map[word] = 0u;
-        }
-    }
-    for (int index = 0; index < kCachePinCount; ++index) {
-        gPinned[index] = -1;
-    }
-    gPinNext = 0;
-    gCachePeak = 0;
-    gCacheStamp = 0u;
-}
-
-void cacheBindArena(int arena, std::uint8_t* base, std::size_t bytes) {
-    const std::size_t granules = bytes / kCacheGranuleBytes;
-    gArena[arena].base = base;
-    gArena[arena].bytes = static_cast<std::uint32_t>(granules * kCacheGranuleBytes);
-    gArena[arena].granules = static_cast<std::uint32_t>(granules);
-    for (int word = 0; word < 4; ++word) {
-        gArena[arena].map[word] = 0u;
-    }
-}
-
-std::uint32_t cacheCapacityBytes() {
-    std::uint32_t total = 0u;
-    for (int arena = 0; arena < kCacheArenaCount; ++arena) {
-        total += gArena[arena].bytes;
-    }
-    return total;
-}
-
-bool cacheIsPinned(int entry) {
-    for (int index = 0; index < kCachePinCount; ++index) {
-        if (gPinned[index] == entry) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void cachePin(int entry) {
-    for (int index = 0; index < kCachePinCount; ++index) {
-        if (gPinned[index] == entry) {
-            return;
-        }
-    }
-    gPinned[gPinNext] = entry;
-    gPinNext = (gPinNext + 1) % kCachePinCount;
-}
-
-/// r_tex_source_t::beginFragment: the renderer's fragment boundary.
-///
-/// Clearing the ring is what lets the cache evict a previous fragment's
-/// textures while protecting the two or three this fragment is about to read.
-/// Without the signal the ring can only be a guess, and a guess that keeps two
-/// 32 KB textures alive refuses a third.
-void cacheBeginFragment(void* context) {
-    (void)context;
-    for (int index = 0; index < kCachePinCount; ++index) {
-        gPinned[index] = -1;
-    }
-}
-
-void cacheReleaseGranules(int arena, std::uint32_t first, std::uint32_t count) {
-    for (std::uint32_t granule = first; granule < first + count; ++granule) {
-        gArena[arena].map[granule >> 6] &= ~(static_cast<std::uint64_t>(1u) << (granule & 63u));
-    }
-}
-
-/// Finds @p need consecutive free granules. Returns false when no run exists.
-bool cacheFindRun(int arena, std::uint32_t need, std::uint32_t* first) {
-    const CacheArena& zone = gArena[arena];
-    std::uint32_t run = 0u;
-
-    for (std::uint32_t granule = 0; granule < zone.granules; ++granule) {
-        const bool taken =
-            ((zone.map[granule >> 6] >> (granule & 63u)) & 1u) != 0u;
-        if (taken) {
-            run = 0u;
-            continue;
-        }
-        if (run == 0u) {
-            *first = granule;
-        }
-        ++run;
-        if (run == need) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/// Drops the least recently used entry that is not pinned. False when none.
-bool cacheEvictOne() {
-    int victim = -1;
-    for (int index = 0; index < kCacheEntryCapacity; ++index) {
-        if (gCache[index].used == 0u || cacheIsPinned(index)) {
-            continue;
-        }
-        if (victim < 0 || gCache[index].stamp < gCache[victim].stamp) {
-            victim = index;
-        }
-    }
-    if (victim < 0) {
-        return false;
-    }
-
-    const int arena = static_cast<int>((gCache[victim].where & kCacheArenaMask) >> kCacheArenaShift) - 1;
-    const std::uint32_t offset = gCache[victim].where & kCacheOffsetMask;
-    const std::uint32_t granules =
-        (gCache[victim].bytes + static_cast<std::uint32_t>(kCacheGranuleBytes) - 1u)
-        / static_cast<std::uint32_t>(kCacheGranuleBytes);
-    cacheReleaseGranules(arena, offset / static_cast<std::uint32_t>(kCacheGranuleBytes), granules);
-    gCache[victim].used = 0u;
-    return true;
-}
-
-/// Reserves @p bytes and returns the tagged address, or 0 when nothing fits.
-std::uint32_t cacheReserve(std::uint32_t bytes) {
-    const std::uint32_t need =
-        (bytes + static_cast<std::uint32_t>(kCacheGranuleBytes) - 1u)
-        / static_cast<std::uint32_t>(kCacheGranuleBytes);
-    if (need == 0u || need > 256u) {
-        return 0u;
-    }
-
-    for (int attempt = 0; attempt <= kCacheEntryCapacity; ++attempt) {
-        for (int arena = 0; arena < kCacheArenaCount; ++arena) {
-            std::uint32_t first = 0u;
-            if (cacheFindRun(arena, need, &first)) {
-                for (std::uint32_t granule = first; granule < first + need; ++granule) {
-                    gArena[arena].map[granule >> 6] |=
-                        static_cast<std::uint64_t>(1u) << (granule & 63u);
-                }
-                const std::uint32_t offset =
-                    first * static_cast<std::uint32_t>(kCacheGranuleBytes);
-                return (static_cast<std::uint32_t>(arena + 1) << kCacheArenaShift) | offset;
-            }
-        }
-        if (!cacheEvictOne()) {
-            return 0u;
-        }
-    }
-    return 0u;
-}
-
-/// Releases a reservation that never became an entry (a compose failure).
-void cacheRelease(std::uint32_t where, std::uint32_t bytes) {
-    if (where == 0u) {
-        return;
-    }
-    const int arena = static_cast<int>((where & kCacheArenaMask) >> kCacheArenaShift) - 1;
-    const std::uint32_t offset = where & kCacheOffsetMask;
-    const std::uint32_t granules =
-        (bytes + static_cast<std::uint32_t>(kCacheGranuleBytes) - 1u)
-        / static_cast<std::uint32_t>(kCacheGranuleBytes);
-    cacheReleaseGranules(arena, offset / static_cast<std::uint32_t>(kCacheGranuleBytes), granules);
-}
-
-CacheEntry* cacheFind(CacheKind kind, r_name_t name) {
-    for (int index = 0; index < kCacheEntryCapacity; ++index) {
-        if (gCache[index].used != 0u && gCache[index].kind == kind
-            && gCache[index].name == name) {
-            gCache[index].stamp = ++gCacheStamp;
-            cachePin(index);
-            return &gCache[index];
-        }
-    }
-    return nullptr;
-}
-
-/// Reserves an entry record for @p name in @p where. NULL when even an eviction
-/// cannot free a record (an eviction that would break a pinned pointer is refused).
-CacheEntry* cacheInsert(CacheKind kind, r_name_t name, std::uint32_t where,
-                        std::uint32_t bytes) {
-    for (int attempt = 0; attempt < 2; ++attempt) {
-        for (int index = 0; index < kCacheEntryCapacity; ++index) {
-            if (gCache[index].used != 0u) {
-                continue;
-            }
-            gCache[index].used = 1u;
-            gCache[index].kind = static_cast<std::uint8_t>(kind);
-            gCache[index].name = name;
-            gCache[index].where = where;
-            gCache[index].bytes = bytes;
-            gCache[index].stamp = ++gCacheStamp;
-            {
-                int live = 0;
-                for (int entry = 0; entry < kCacheEntryCapacity; ++entry) {
-                    live += gCache[entry].used != 0u ? 1 : 0;
-                }
-                if (live > gCachePeak) {
-                    gCachePeak = live;
-                }
-            }
-            cachePin(index);
-            return &gCache[index];
-        }
-        if (!cacheEvictOne()) {
-            return nullptr;
-        }
-    }
-    return nullptr;
-}
-
-std::uint8_t* cacheAddress(std::uint32_t where) {
-    const int arena = static_cast<int>((where & kCacheArenaMask) >> kCacheArenaShift) - 1;
-    return gArena[arena].base + (where & kCacheOffsetMask);
-}
-
-/// The shared scratch's owner. The scratch now holds only a compose's patch
-/// bytes: flats and sprite patches live in the residency cache, so the old
-/// flat/scratch aliasing hazard cannot occur and `hazards=` must stay 0.
-enum ScratchOwner : std::uint8_t {
-    kOwnerNone = 0,   ///< nothing valid in the scratch
-    kOwnerPatch = 1   ///< a texture compose's patch bytes
-};
-
-std::uint8_t gScratchOwner = kOwnerNone;
-
-/// 1 while r_plane_draw() is running; kept so `hazards=` keeps its meaning.
-int gPlanePass = 0;
-
-/// The aliasing violations the probe saw. Must stay 0.
-std::uint32_t gHazards = 0;
 
 
 // --- Timing -----------------------------------------------------------------
@@ -1135,74 +759,16 @@ bool decodeLump(int lump, std::uint8_t* out, std::size_t capacity, std::uint32_t
     return true;
 }
 
-/**
- * @brief A tiny direct-mapped memo for the container's name -> lump scan.
- *
- * `whd_lump_index_for_name()` is a linear scan of 1,264 name-table entries, and
- * the table lives in mapped flash; the scan costs tens of microseconds. The
- * frame asks for the same ~120 names (66 wall patches, 22 flats, ~36 sprite
- * lumps) thousands of times, so a memo is the difference between paying that
- * scan per fetch and paying it once per name per boot. Names are compared in
- * full, not by hash: a hash collision would resolve to the wrong lump, and a
- * wrong lump is a wrong pixel.
- *
- * The name field is always the 9-byte NUL-terminated form this port passes
- * around (`r_unpack_name` and PNAMES both produce 8 bytes plus a NUL), so the
- * eight bytes after the terminator are padding, never a read past the buffer.
- */
-struct NameLumpEntry {
-    std::uint8_t name[8];
-    std::int16_t lump;
-    std::uint8_t used;
-};
-
-constexpr int kNameLumpEntries = 128;
-NameLumpEntry gNameLumps[kNameLumpEntries];
-
-void clearNameLumps() {
-    for (int index = 0; index < kNameLumpEntries; ++index) {
-        gNameLumps[index].used = 0;
-    }
-}
-
-/// The container's name -> lump scan, memoised and timed.
-int lookupLumpIndex(const char* name) {
-    std::uint8_t key[8];
-    std::uint32_t hash = 2166136261u;
-    int index;
-
-    for (index = 0; index < 8; ++index) {
-        key[index] = static_cast<std::uint8_t>(name[index]);
-        hash = (hash ^ key[index]) * 16777619u;
-    }
-
-    NameLumpEntry& entry = gNameLumps[hash % kNameLumpEntries];
-    if (entry.used != 0u && std::memcmp(entry.name, key, sizeof key) == 0) {
-        return entry.lump;
-    }
-
-    const std::int64_t start = nowMicros();
-    const int lump = doom_whd_source_lump_index(&gWhd, name);
-    gSample.lookupMicros += elapsedMicros(start);
-
-    if (lump >= 0) {
-        std::memcpy(entry.name, key, sizeof key);
-        entry.lump = static_cast<std::int16_t>(lump);
-        entry.used = 1u;
-    }
-    return lump;
-}
 
 /**
  * @brief One frame's distinct-name working set.
  *
  * Filled by the resolvers on a miss, cleared at the top of every frame. It is
  * what says how many distinct textures, flats and sprite lumps a view actually
- * asks for and how many bytes their composed forms cost -- the capacity a
- * residency cache must have to make the next run of the same view free. The
- * capacities are measured peaks (8 textures, 6 flats, 33 sprite lumps) with
- * headroom, and they are template parameters so the three sets do not each pay
- * for the largest one.
+ * asks for and how many bytes their baked payloads cost. The capacities are
+ * measured peaks (4 textures, 4 flats, 32 sprite lumps in the 40 measured
+ * frames) with headroom, and they are template parameters so the three sets do
+ * not each pay for the largest one.
  */
 template <int Capacity>
 struct NameSet {
@@ -1259,259 +825,70 @@ bool viewLump(int lump, const std::uint8_t** data, std::size_t* size) {
     return true;
 }
 
-// --- Wall textures ----------------------------------------------------------
+// --- Baked graphics ---------------------------------------------------------
 
-/// r_texture_compose()'s patch resolver: a PNAMES name is a lump name.
-r_error_t fetchPatch(void* user, const char* name, const std::uint8_t** data, std::size_t* size) {
-    (void)user;
-
-    const int lump = lookupLumpIndex(name);
-    if (lump < 0) {
-        return R_ERR_PATCH_FETCH;
-    }
-
-    gScratchOwner = kOwnerPatch;
-
-    std::uint32_t required = 0u;
-    if (!decodeLump(lump, gScratch, kScratchBytes, &required)) {
-        return R_ERR_PATCH_FETCH;
-    }
-    *data = gScratch;
-    *size = required;
-    return R_ERR_OK;
-}
-
-/**
- * @brief Composes one texture into the residency cache, in DOOM's column-major
- * stored form.
- *
- * r_texture_compose() writes `pixel(x, y)` at `x * height + y`, which is the
- * composite layout; the column writer wants DOOM's stored 128-row column, so the
- * columns are expanded in place, backwards, and the rows above the declared
- * height are zeroed. Backwards works because every destination starts at or above
- * every remaining source, and the zeroing above a column's declared height cannot
- * reach a column not yet moved.
- */
-bool composeInto(const char* name, const r_texture_info_t& info, std::uint8_t* base) {
-    const std::size_t height = static_cast<std::size_t>(info.height);
-
-    const bool outermost = (gDecodeDepth == 0);
-    const std::int64_t start = nowMicros();
-    const std::uint32_t decodeBefore = gSample.decodeMicros;
-    const std::uint32_t lookupBefore = gSample.lookupMicros;
-
-    ++gDecodeDepth;
-    const r_error_t error =
-        r_texture_compose(&info, gPnames, gPnamesBytes, fetchPatch, nullptr, base,
-                          static_cast<std::size_t>(info.width) * height, nullptr, 0u, nullptr);
-    --gDecodeDepth;
-
-    if (outermost) {
-        gSample.residencyMicros += elapsedMicros(start);
-    }
-    if (error != R_ERR_OK) {
-        return false;
-    }
-    gSample.bytesDecoded += static_cast<std::uint32_t>(static_cast<std::uint32_t>(info.width)
-                                                       * static_cast<std::uint32_t>(height));
-
-    int x;
-    for (x = info.width - 1; x >= 0; --x) {
-        std::uint8_t* destination = base + static_cast<std::size_t>(x) * kStoredColumnRows;
-        const std::uint8_t* source = base + static_cast<std::size_t>(x) * height;
-
-        if (destination != source) {
-            std::memmove(destination, source, height);
-        }
-        std::memset(destination + height, 0, kStoredColumnRows - height);
-    }
-
-    // The compose's own cost, exclusive: the fill and the in-place column
-    // expansion. The patch inflates and the name scans are their own buckets.
-    {
-        const std::uint32_t total = elapsedMicros(start);
-        const std::uint32_t nested = (gSample.decodeMicros - decodeBefore)
-                                     + (gSample.lookupMicros - lookupBefore);
-        gSample.composeMicros += total > nested ? total - nested : 0u;
-    }
-
-    return true;
-}
-
-/// The most recent texture a resolve refused, and why: `lookup` (the name is not
-/// in the container's TEXTURE1), `slot` (no run of granules would hold it even
-/// after eviction) or `compose` (the patch fetch or the composite failed). Printed
-/// by `FRAMEPROF,error`, because "a texture is missing" is not a diagnosis.
+/// The most recent name a resolve refused, and why. A baked container either has
+/// the name or it does not; there is no fallback decode, so `baked` is the whole
+/// diagnosis. Printed by `FRAMEPROF,error`.
 char gFailTexture[9] = {0};
 const char* gFailWhy = "none";
 
-/// r_tex_source_t::resolve: compose into the cache, or answer from it.
+void noteMissing(r_name_t name, const char* why) {
+    r_unpack_name(name, gFailTexture);
+    gFailWhy = why;
+}
+
+/// r_tex_source_t::resolve: the manifest's wall/sky record, or NULL.
+///
+/// The sky reaches this resolver through r_plane.c, which asks the same source
+/// for textures->skyTexture, so kind 1 and kind 2 are both served here.
 const r_walltex_t* resolveWall(void* context, r_name_t name) {
     (void)context;
 
     ++gSample.texResolves;
-    if (CacheEntry* hit = cacheFind(kCacheWall, name)) {
-        ++gSample.texHits;
-        return &hit->value.tex;
-    }
-
-    ++gSample.texDecodes;
-    ++gSample.texMisses;
-    char text[9];
-    r_unpack_name(name, text);
-    std::memcpy(gFailTexture, text, sizeof text);
-
-    r_texture_info_t info;
-    {
-        // The directory scan is a walk of a mapped-flash lump, not a decode, and
-        // it is charged to the lookup bucket so the compose cost stays honest.
-        const std::int64_t lookupStart = nowMicros();
-        const r_error_t lookup =
-            r_texture_lookup(gTexture1, gTexture1Bytes, nullptr, 0u, text, &info);
-        gSample.lookupMicros += elapsedMicros(lookupStart);
-        if (lookup != R_ERR_OK) {
-            gFailWhy = "lookup";
-            return nullptr;
-        }
-    }
-
-    const std::uint32_t bytes = static_cast<std::uint32_t>(info.width) * kStoredColumnRows;
-    (void)gTexSet.add(name, bytes);
-
-    const std::uint32_t where = cacheReserve(bytes);
-    if (where == 0u) {
-        // Even after evicting every unpinned entry no run of granules is big
-        // enough. Reported by the caller as R_SEGS_ERR_TEXTURE_MISSING, which is
-        // honest: nothing was written for that tier.
-        gFailWhy = "slot";
+    const r_walltex_t* texture = gBaked.resolveWall(name);
+    if (texture == nullptr) {
+        ++gSample.texMisses;
+        noteMissing(name, "baked");
         return nullptr;
     }
-    std::uint8_t* base = cacheAddress(where);
-    if (!composeInto(text, info, base)) {
-        cacheRelease(where, bytes);
-        gFailWhy = "compose";
-        return nullptr;
-    }
-
-    CacheEntry* entry = cacheInsert(kCacheWall, name, where, bytes);
-    if (entry == nullptr) {
-        cacheRelease(where, bytes);
-        gFailWhy = "table";
-        return nullptr;
-    }
-    entry->value.tex.pixels = base;
-    entry->value.tex.mask = nullptr;
-    entry->value.tex.width = static_cast<std::int16_t>(info.width);
-    entry->value.tex.height = static_cast<std::int16_t>(info.height);
-    entry->value.tex.widthMask = r_texture_width_mask(info.width);
-    entry->value.tex.heightMask = static_cast<std::int16_t>(kStoredColumnRows - 1u);
-    return &entry->value.tex;
+    ++gSample.texHits;
+    (void)gTexSet.add(name, static_cast<std::uint32_t>(texture->width) * kStoredColumnRows);
+    return texture;
 }
 
-// --- Flats and sprite patches -----------------------------------------------
-
-/// r_tex_source_t::resolveFlat: decode into the residency cache, or answer from it.
-///
-/// A flat is 4,096 B and the sampled views use at most six distinct ones, so the
-/// whole per-frame flat working set fits in the cache with room to spare. The
-/// decode scratch is now only a compose's patch buffer; a flat never touches it,
-/// which is why the old flat/patch aliasing hazard is gone.
+/// r_tex_source_t::resolveFlat: the manifest's flat record, or NULL.
 const r_flat_t* resolveFlat(void* context, r_name_t name) {
     (void)context;
 
     ++gSample.flatResolves;
-    if (CacheEntry* hit = cacheFind(kCacheFlat, name)) {
-        ++gSample.flatHits;
-        return &hit->value.flat;
-    }
-
-    ++gSample.flatDecodes;
-    ++gSample.flatMisses;
-    char text[9];
-    r_unpack_name(name, text);
-    const int lump = lookupLumpIndex(text);
-    if (lump < 0) {
+    const r_flat_t* flat = gBaked.resolveFlat(name);
+    if (flat == nullptr) {
+        ++gSample.flatMisses;
+        noteMissing(name, "baked");
         return nullptr;
     }
-    (void)gFlatSet.add(name, static_cast<std::uint32_t>(kFlatBytes));
-
-    const std::uint32_t where = cacheReserve(static_cast<std::uint32_t>(kFlatBytes));
-    if (where == 0u) {
-        return nullptr;
-    }
-    std::uint8_t* base = cacheAddress(where);
-    std::uint32_t used = 0u;
-    if (!decodeLump(lump, base, kFlatBytes, &used)) {
-        cacheRelease(where, static_cast<std::uint32_t>(kFlatBytes));
-        return nullptr;
-    }
-    if (used != kFlatBytes) {
-        cacheRelease(where, static_cast<std::uint32_t>(kFlatBytes));
-        return nullptr;
-    }
-
-    CacheEntry* entry = cacheInsert(kCacheFlat, name, where,
-                                    static_cast<std::uint32_t>(kFlatBytes));
-    if (entry == nullptr) {
-        cacheRelease(where, static_cast<std::uint32_t>(kFlatBytes));
-        return nullptr;
-    }
-    entry->value.flat.pixels = base;
-    entry->value.flat.width = R_FLAT_SIZE;
-    entry->value.flat.height = R_FLAT_SIZE;
-    entry->value.flat.widthMask = R_FLAT_SIZE - 1;
-    entry->value.flat.heightMask = R_FLAT_SIZE - 1;
-    return &entry->value.flat;
+    ++gSample.flatHits;
+    (void)gFlatSet.add(name, static_cast<std::uint32_t>(R_FLAT_BYTES));
+    return flat;
 }
 
-/// r_sprite_source_t::resolve: a sprite lump is its raw patch bytes, decoded into
-/// the residency cache. It cannot share the decode scratch: R_DrawMasked() renders
-/// the masked mid textures a sprite hides inside that sprite's own draw, so a
-/// compose can take the scratch while a patch is live. Each distinct lump gets its
-/// own cache entry, so the second preflight and the draw both answer from memory.
+/// r_sprite_source_t::resolve: the manifest's raw sprite patch, or NULL.
 const r_sprite_patch_t* resolveSprite(void* context, r_name_t lump) {
     (void)context;
 
     ++gSample.spriteResolves;
-    if (CacheEntry* hit = cacheFind(kCacheSprite, lump)) {
-        ++gSample.spriteHits;
-        return &hit->value.patch;
-    }
-
-    ++gSample.spriteDecodes;
-    ++gSample.spriteMisses;
-    char text[9];
-    r_unpack_name(lump, text);
-    const int index = lookupLumpIndex(text);
-    if (index < 0) {
+    const r_sprite_patch_t* patch = gBaked.resolveSprite(lump);
+    if (patch == nullptr) {
+        ++gSample.spriteMisses;
+        noteMissing(lump, "baked");
         return nullptr;
     }
-    const std::int32_t size = doom_whd_source_lump_size(&gWhd, index);
-    if (size <= 0 || static_cast<std::uint32_t>(size) > kSpritePatchBytes) {
-        return nullptr;
-    }
-
-    const std::uint32_t where = cacheReserve(static_cast<std::uint32_t>(size));
-    if (where == 0u) {
-        return nullptr;
-    }
-    std::uint8_t* base = cacheAddress(where);
-    std::uint32_t used = 0u;
-    if (!decodeLump(index, base, static_cast<std::size_t>(size), &used)) {
-        cacheRelease(where, static_cast<std::uint32_t>(size));
-        return nullptr;
-    }
-    (void)gSpriteSet.add(lump, used);
-
-    CacheEntry* entry = cacheInsert(kCacheSprite, lump, where, used);
-    if (entry == nullptr) {
-        cacheRelease(where, static_cast<std::uint32_t>(size));
-        return nullptr;
-    }
-    entry->value.patch.data = base;
-    entry->value.patch.size = static_cast<std::size_t>(used);
-    return &entry->value.patch;
+    ++gSample.spriteHits;
+    (void)gSpriteSet.add(lump, static_cast<std::uint32_t>(patch->size));
+    return patch;
 }
+
 
 // --- The 20 sampled viewpoints ----------------------------------------------
 
@@ -2123,10 +1500,9 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
         }
     }
 
-    // The decode scratch is a compose's patch buffer only. Its owner tag is still
-    // cleared here so a stale tag cannot survive a pass, but no flat or sprite
-    // patch lives there any more: the residency cache owns those.
-    gScratchOwner = kOwnerNone;
+    // The graphics are already baked and mapped: the passes below resolve names
+    // through the manifest and read pixels straight from flash. There is no
+    // decode scratch and no cache to clear.
 
     decodeMark = gSample.decodeMicros;
     composeMark = gSample.composeMicros;
@@ -2147,21 +1523,13 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
                          + driver->surface.tierPixels[R_DRAW_TIER_TOP]
                          + driver->surface.tierPixels[R_DRAW_TIER_BOTTOM];
 
-    // The residency cache now holds the wall textures across the pass boundary:
-    // SKY1 is 32,768 B and the arena is 77,824 B, so a wall texture left resident
-    // is an asset, not the refusal it was when the arena was 36,864 B and the
-    // policy was "nothing beyond the current call". Nothing is cleared here; a
-    // texture is dropped only by the cache's own LRU rule.
-
     decodeMark = gSample.decodeMicros;
     composeMark = gSample.composeMicros;
     lookupMark = gSample.lookupMicros;
     start = nowMicros();
     driver->stage = "planes";
-    gPlanePass = 1;
     const r_plane_error_t planes =
         r_plane_draw(&driver->view, &driver->surface, &driver->textures, &driver->light);
-    gPlanePass = 0;
     sample->planesMicros = elapsedMicros(start);
     if (planes != R_PLANE_OK) {
         gStageCode = static_cast<int>(planes);
@@ -2189,9 +1557,6 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
         }
     }
     sample->planesAllocated = driver->view.storage.planes.count;
-
-    // The plane pass is over; its flat stays resident for the next view.
-    gScratchOwner = kOwnerNone;
 
     decodeMark = gSample.decodeMicros;
     composeMark = gSample.composeMicros;
@@ -2228,8 +1593,8 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     }
 
     sample->pixels = sample->wallPixels + sample->planePixels + sample->spritePixels;
-    sample->cacheBytes = cacheCapacityBytes();
-    sample->cachePeakSlots = static_cast<std::uint16_t>(gCachePeak);
+    sample->cacheBytes = gBaked.payloadBytes();
+    sample->cachePeakSlots = static_cast<std::uint16_t>(gBaked.entryCount());
     sample->texSetCount = static_cast<std::uint16_t>(gTexSet.count);
     sample->texSetBytes = gTexSet.totalBytes;
     sample->flatSetCount = static_cast<std::uint16_t>(gFlatSet.count);
@@ -2282,6 +1647,8 @@ bool isBreakdownView(int frame) {
 /// One `FRAMEPROF,mem` field, from `sizeof`: the driver's RAM cost is a printed
 /// number, never an estimate. `state_static` is the .bss half, `level_ram` is the
 /// decoded level (0 in the flash build) and `heap_before/after` bound the rest.
+/// D3.8's `cache_*` fields are the bytes the cache and scratch used to cost;
+/// they are constants now because the code that owned them is gone.
 void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore,
                       std::uint32_t heapAfterAlloc) {
     const std::size_t drawsegs = sizeof(gState.drawsegs);
@@ -2290,27 +1657,28 @@ void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore
     const std::size_t clipArrays = sizeof(gState.floorClip) + sizeof(gState.ceilingClip);
     const std::size_t clipBlocks = sizeof(gState.clipBlocks);
     const std::size_t spritePools = sizeof(gState.visSprites) + sizeof(gState.openingBlocks);
-    const std::size_t cacheEntries = sizeof(gCache);
-    const std::size_t total = sizeof(DriverState) + gLevelRamUsed + kStaticGraphicsBytes
-                              + kScratchBytes + cacheEntries
-                              + static_cast<std::size_t>(gCacheExtraBytes);
+    const std::size_t bakedRecords = sizeof(BakedGraphics);
+    const std::size_t total = sizeof(DriverState) + gLevelRamUsed + bakedRecords;
+#if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
+    constexpr unsigned kRemovedCacheStatic = 36864u;
+    constexpr unsigned kRemovedCacheHeap = 0u;
+#else
+    constexpr unsigned kRemovedCacheStatic = 53248u;
+    constexpr unsigned kRemovedCacheHeap = 24576u;
+#endif
 
     std::snprintf(line, capacity,
                   "FRAMEPROF,mem,surface=engine8bpp,index_writes=1,present=no,no_rgb332=1,"
-                  "arena=%s,lump_blocks=%u,wall_arena=%u,scratch=%u,sprite_patch=%u,"
-                  "cache_bytes=%u,cache_extra=%u,cache_entries=%u,"
+                  "arena=%s,lump_blocks=%u,baked_records=%u,baked_entries=%d,baked_bytes=%u,"
                   "state_static=%u,drawsegs=%u,planes=%u,clip_ranges=%u,clip_arrays=%u,"
                   "clip_blocks=%u,sprite_pools=%u,covered=%u,driver_total=%u,drawseg_cap=%d,"
                   "plane_cap=%d,clip_block_cap=%d,vissprite_cap=%d,heap_before=%u,"
                   "heap_after_alloc=%u,map=%s,map_in_ram=%d,raw_views=%u,level_ram=%u,"
-                  "level_released=%u,phases=4\n",
+                  "level_released=%u,cache_static=%u,scratch=35080,cache_entries=1920,"
+                  "cache_heap_max=%u,phases=4\n",
                   gPlacement, static_cast<unsigned>(gLumpBlockCount),
-                  static_cast<unsigned>(kStaticGraphicsBytes),
-                  static_cast<unsigned>(kScratchBytes),
-                  0u,
-                  static_cast<unsigned>(cacheCapacityBytes()),
-                  static_cast<unsigned>(gCacheExtraBytes),
-                  static_cast<unsigned>(cacheEntries),
+                  static_cast<unsigned>(bakedRecords), gBaked.entryCount(),
+                  static_cast<unsigned>(gBaked.payloadBytes()),
                   static_cast<unsigned>(sizeof(DriverState)), static_cast<unsigned>(drawsegs),
                   static_cast<unsigned>(planes), static_cast<unsigned>(clipRanges),
                   static_cast<unsigned>(clipArrays), static_cast<unsigned>(clipBlocks),
@@ -2325,7 +1693,8 @@ void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore
                   0,
 #endif
                   static_cast<unsigned>(gRawViews), static_cast<unsigned>(gLevelRamUsed),
-                  static_cast<unsigned>(kLevelReleasedBytes));
+                  static_cast<unsigned>(kLevelReleasedBytes), kRemovedCacheStatic,
+                  kRemovedCacheHeap);
 }
 
 }  // namespace
@@ -2333,6 +1702,7 @@ void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore
 void frameProbeRun(std::uint8_t* surface, int width, int height) {
     char line[kFrameProfileLineCapacity];
     char attrLine[kFrameAttributionLineCapacity];
+    char memLine[kFrameAttributionLineCapacity];
 
     if (surface == nullptr || width < R_SCREEN_WIDTH || height < R_VIEW_HEIGHT) {
         std::snprintf(line, sizeof line, "FRAMEPROF,mem,surface=missing,need=%dx%d,have=%dx%d\n",
@@ -2352,66 +1722,28 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
         writeLine(line);
         return;
     }
-    // A new container, a new name table: the memo cannot outlive the mapping.
-    clearNameLumps();
-
-    // --- The working set ----------------------------------------------------
-    //
-    // The graphics blocks are taken here; the map lumps are bound inside the setup
-    // below. `FRAMEPROF,mem` prints the heap before and after, and the placement
-    // the driver chose, so the split is a measured number.
-    const std::uint32_t heapBefore = static_cast<std::uint32_t>(esp_get_free_heap_size());
-    const std::uint32_t largestBefore = static_cast<std::uint32_t>(
-        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    // --- Placement, reported by `FRAMEPROF,mem` -----------------------------
-    //
-    // The residency cache's first arena is the static 36,864 B block that used to
-    // be the two-slot wall arena; the extra arenas are 8 KB heap blocks requested
-    // here, so `FRAMEPROF,mem` reports the capacity the run actually used. The
-    // decode scratch is always a heap block now: a compose reads a patch from the
-    // scratch and writes into a cache entry, so they can never be the same bytes.
-    //
-    // Three 8 KB requests, not one 40 KB one: the heap beside the 35,080 B
-    // scratch is fragmented and the largest free block after the scratch is
-    // below 16 KB. The same bytes found in three small holes are three more
-    // granules the renderer can use. A small cache is slow, not wrong -- the LRU
-    // rule, the pinned returns and the pixel path are identical at every size.
-    // The RAM build keeps no extra arena: its heap is the control's.
-    cacheReset();
-    cacheBindArena(0, gStaticGraphics, kStaticGraphicsBytes);
-    gScratch = static_cast<std::uint8_t*>(
-        heap_caps_malloc(kScratchBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    if (gScratch == nullptr) {
+    // A new container, a new manifest: the adapter validates every raw payload
+    // once, builds one record per name and allocates nothing. A container built
+    // without the bake is a reported failure here, not a fallback decode.
+    const BakedError baked = gBaked.open(&gWhd);
+    if (baked != BakedError::Ok) {
         std::snprintf(line, sizeof line,
-                      "FRAMEPROF,setup,status=fail,reason=arena,placement=scratch,"
-                      "wall=%u,scratch=%u,heap=%u,largest=%u\n",
-                      static_cast<unsigned>(kStaticGraphicsBytes),
-                      static_cast<unsigned>(kScratchBytes),
-                      static_cast<unsigned>(heapBefore), static_cast<unsigned>(largestBefore));
+                      "FRAMEPROF,setup,status=fail,reason=baked,code=%s\n",
+                      bakedErrorName(baked));
         writeLine(line);
-        releaseWorkingSet();
         doom_whd_source_close();
         return;
     }
-    gPlacement = "cache-static";
-#if !defined(PIXELROOT32_DOOM_MAP_IN_RAM)
-    // Three 8 KB attempts rather than one 40 KB request: the heap beside the
-    // 35,080 B scratch is fragmented, and the measured largest free block after
-    // the scratch is below 16 KB. The same bytes found in three small holes are
-    // three more granules the renderer can use. Each success binds the next
-    // arena; the first failure ends the loop because a later request cannot be
-    // larger than the one that just failed.
-    for (int extra = 0; extra < kCacheExtraSteps; ++extra) {
-        std::uint8_t* block = static_cast<std::uint8_t*>(
-            heap_caps_malloc(kCacheExtraStepBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-        if (block == nullptr) {
-            break;
-        }
-        cacheBindArena(extra + 1, block, kCacheExtraStepBytes);
-        gCacheExtraBytes += static_cast<int>(kCacheExtraStepBytes);
-        gPlacement = "cache-static+heap";
-    }
-#endif
+
+    // --- The working set ----------------------------------------------------
+    //
+    // The graphics are already in flash: the only graphics state this build
+    // holds is the manifest adapter. `FRAMEPROF,mem` prints its record bytes and
+    // the heap before/after, so the released cache is a measured number.
+    const std::uint32_t heapBefore = static_cast<std::uint32_t>(esp_get_free_heap_size());
+    const std::uint32_t largestBefore = static_cast<std::uint32_t>(
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    gPlacement = "baked-flash";
     const std::uint32_t heapAfterAlloc = static_cast<std::uint32_t>(esp_get_free_heap_size());
 
 
@@ -2441,7 +1773,8 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     bool directoriesLoaded = loadLumpViewByName("COLORMAP", &gColormap, &gColormapBytes);
     (void)loadMapLump(marker, DOOM_MAP_LINEDEFS, &source, &mapFailures);   //  6,650
     (void)loadMapLump(marker, DOOM_MAP_NODES, &source, &mapFailures);      //  6,608
-    directoriesLoaded = loadLumpViewByName("PNAMES", &gPnames, &gPnamesBytes) && directoriesLoaded;
+    // TEXTURE1 and PNAMES are build-time inputs now: the bake used them and the
+    // runtime reads the manifest. They stay in the container for the C check.
     // THINGS is a view in both builds: see viewMapLump(). It stays alive for the
     // whole run because the masked pass builds one sprite list per view from it.
     if (!viewMapLump(marker, DOOM_MAP_THINGS, &source)) {
@@ -2452,8 +1785,6 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     (void)loadMapLump(marker, DOOM_MAP_SSECTORS, &source, &mapFailures);   //    948
     (void)loadMapLump(marker, DOOM_MAP_REJECT, &source, &mapFailures);     // skipped
     (void)loadMapLump(marker, DOOM_MAP_BLOCKMAP, &source, &mapFailures);   // skipped
-    directoriesLoaded = directoriesLoaded
-                        && loadLumpViewByName("TEXTURE1", &gTexture1, &gTexture1Bytes);
 
     // The sprite list. D3.6 never allocated it because the masked pass never ran;
     // it is the caller's thing list, so it is the caller's block. It is taken
@@ -2483,15 +1814,14 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     if (mapFailures != 0 || !directoriesLoaded || mapError != DOOM_MAP_OK) {
         std::snprintf(line, sizeof line,
                       "FRAMEPROF,setup,status=fail,reason=lump,map=%s,map_failures=%d,"
-                      "fail_lump=%s,not_raw=%u,directories=%d,map_error=%d,pnames=%u,"
-                      "colormap=%u,texture1=%u,heap=%u,largest=%u,level_ram=%u\n",
+                      "fail_lump=%s,not_raw=%u,directories=%d,map_error=%d,"
+                      "colormap=%u,heap=%u,largest=%u,level_ram=%u\n",
                       kMapPath, static_cast<int>(mapFailures),
                       (gFailLump >= 0 && gFailLump < DOOM_MAP_LUMP_COUNT)
                           ? kMapLumpNames[gFailLump] : "none",
                       static_cast<unsigned>(gNotRaw), directoriesLoaded ? 1 : 0,
-                      static_cast<int>(mapError), static_cast<unsigned>(gPnamesBytes),
+                      static_cast<int>(mapError),
                       static_cast<unsigned>(gColormapBytes),
-                      static_cast<unsigned>(gTexture1Bytes),
                       static_cast<unsigned>(esp_get_free_heap_size()),
                       static_cast<unsigned>(heap_caps_get_largest_free_block(
                           MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
@@ -2509,11 +1839,12 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
         return;
     }
 
-    // The block sizes and the directory sizes are the residency decision, so they
-    // are printed with the setup that made it.
+    // The bake and the map path are the setup's two decisions, so they are
+    // printed with the setup that made them.
     std::snprintf(line, sizeof line,
                   "FRAMEPROF,setup,status=ok,map=%s,map_in_ram=%d,raw_views=%u,level_ram=%u,"
-                  "texture1=%u,pnames=%u,colormap=%u,map_lumps=%d,map_skipped=%d,"
+                  "baked_entries=%d,baked_walls=%d,baked_flats=%d,baked_sprites=%d,"
+                  "baked_bytes=%u,colormap=%u,map_lumps=%d,map_skipped=%d,"
                   "setup_us=%u\n",
                   kMapPath,
 #if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
@@ -2522,8 +1853,11 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
                   0,
 #endif
                   static_cast<unsigned>(gRawViews), static_cast<unsigned>(gLevelRamUsed),
-                  static_cast<unsigned>(gTexture1Bytes),
-                  static_cast<unsigned>(gPnamesBytes),
+                  gBaked.entryCount(),
+                  gBaked.count(BakedKind::kBakedKindWall),
+                  gBaked.count(BakedKind::kBakedKindFlat),
+                  gBaked.count(BakedKind::kBakedKindSprite),
+                  static_cast<unsigned>(gBaked.payloadBytes()),
                   static_cast<unsigned>(gColormapBytes),
                   DOOM_MAP_LUMP_COUNT, kMapLumpCount - kFirstSkippedMapLump,
                   static_cast<unsigned>(elapsedMicros(setupStart)));
@@ -2572,14 +1906,14 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     driver.textures.resolveFlat = resolveFlat;
     driver.textures.flatContext = nullptr;
     driver.textures.skyTexture = r_pack_name(kSkyTextureName);
-    driver.textures.beginFragment = cacheBeginFragment;
+    driver.textures.beginFragment = nullptr;
     driver.sprites.resolve = resolveSprite;
     driver.sprites.context = nullptr;
     bindSurface(&driver, surface, width, height);
 
     // --- The table ----------------------------------------------------------
-    formatMemoryLine(line, sizeof line, heapBefore, heapAfterAlloc);
-    writeLine(line);
+    formatMemoryLine(memLine, sizeof memLine, heapBefore, heapAfterAlloc);
+    writeLine(memLine);
 
     FrameProfileStats stats;
     frameProfileReset(&stats);
@@ -2643,7 +1977,7 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     std::snprintf(line, sizeof line,
                   "FRAMEPROF,probe,total_us=%u,hazards=%u,sha256=ok,views=%d,runs=%d,"
                   "warmup=%d,map=%s,phases=4\n",
-                  static_cast<unsigned>(probeMicros), static_cast<unsigned>(gHazards), kViewCount,
+                  static_cast<unsigned>(probeMicros), 0u, kViewCount,
                   kMeasuredRuns, kTotalRuns - kMeasuredRuns, kMapPath);
     writeLine(line);
 

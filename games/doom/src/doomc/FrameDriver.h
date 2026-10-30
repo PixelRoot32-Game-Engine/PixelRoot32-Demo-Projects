@@ -1,53 +1,43 @@
 #pragma once
 
 /*
- * D3.7: the board frame driver, now that a level's lumps no longer cost DRAM.
+ * D3.8: the board frame driver after composition moved to build time.
  *
- * WHAT CHANGED SINCE D3.6, IN ONE PARAGRAPH
+ * D3.6 measured the wall and could not finish the frame; D3.7 moved the level's
+ * lumps into a raw, page-mappable section of the PWHD container (lib/doom/whd.h,
+ * method 2) so all four phases run. D3.5 then attributed the frame: 69.1 % of it
+ * was inflate/copy, 7.8 % composition and 5.9 % container name scans. D3.8 stops
+ * doing all three for graphics: tools/bake_graphics.py writes every wall texture,
+ * the sky and every flat as a raw payload at build time, the container carries a
+ * ~PWBAKE~ manifest, and this driver resolves a packed name through
+ * src/doomc/BakedGraphics.h to a pointer into the mapping. The residency cache,
+ * its arenas, its entries and the 35,080 B decode scratch are gone; the only
+ * graphics state left is the 4,632 B manifest adapter.
  *
- * D3.6 measured the wall and could not finish the frame: a correct four-phase
- * view needed 169,168 B and the image had ~141,992 B for it, so `planes` and
- * `masked` were absent. D3.7 moves the level's data into a raw, page-mappable
- * section of the PWHD container (lib/doom/whd.h, method 2), and the driver reads
- * E1M1's map and the three graphics directories in place with
- * doom_whd_source_lump_view(): 46,508 B of map and 20,742 B of COLORMAP,
- * TEXTURE1 and PNAMES stop being decoded into RAM. All four phases now run --
- * walk, walls, planes and masked -- and the probe measures each one.
- *
- * THE TWO MAP PATHS, AND WHY THERE ARE TWO
- *
- * D3.5: WHAT THE FRAME COSTS, AND WHERE IT GOES
- *
- * The D3.6/D3.7 driver was the naive one: two texture slots, "nothing beyond
- * the current call", and a resolver that re-composed a texture for every
- * fragment that asked. D3.5 replaces that policy with one caller-owned residency
- * cache and instruments the frame so a microsecond can be assigned to a unit.
- *
- * The probe now prints, beside the frame line, one `FRAMEPROF,attr` line per
+ * The probe still prints, beside the frame line, one `FRAMEPROF,attr` line per
  * measured frame and one `FRAMEPROF,attrsum` summary. They carry:
  *
  *   pixels / columns / fragments   the wall tier pixels, the wall columns the
  *                                  loop visited (sum of x2-x1+1) and the number
  *                                  of drawsegs, plus the plane pixels and spans,
  *                                  the sky columns and the sprite columns.
- *   decode_us                      inflate/copy only, summed at the leaf.
- *   compose_us                     the rest of a composition: validate, blit and
- *                                  the in-place 128-row column expansion.
- *   lookup_us                      the container's name -> lump scan and the
- *                                  TEXTURE1 directory scan.
+ *   decode_us                      inflate/copy only; 0 for graphics now, and
+ *                                  nonzero only for the RAM build's map setup.
+ *   compose_us                     the rest of a composition; 0 now.
+ *   lookup_us                      the manifest lookup; a resolve is a binary
+ *                                  search over at most 96 packed names.
  *   wall_/plane_/masked_*_us       the same three buckets per pass.
  *   raster_us                      pass time less those buckets, i.e. the column
  *                                  loop, the span loop and the sprite post walk.
  *   px_us_permille                 wall raster per wall pixel, in thousandths
  *                                  of a microsecond (1,100 = 1.100 us/pixel).
  *
- * The cache: one arena per pool, first fit, 512 B granules, LRU eviction, and a
- * pin ring the renderer scopes with `r_tex_source_t::beginFragment`. Arena 0 is
- * the static 52 KB block; up to three 8 KB heap blocks follow. Capacity, hit
- * counts and the peak live entries are on the same line, so a hit rate is always
- * printed beside the bytes it is trying to hold.
+ * The cache counters keep their line positions with their D3.8 meaning: a "hit"
+ * is a name the manifest answered and a "miss" is one it did not; `cache_bytes`
+ * is the total baked payload size and `cache_peak` is the manifest entry count.
+ * `tex_dec`, `flat_dec`, `sprite_dec` and `bytes_decoded` are 0 for graphics.
  *
- * THE TWO MAP PATHS, AND WHY THERE ARE TWO (unchanged)
+ * THE TWO MAP PATHS (unchanged)
  *
  * The one thing a raw section cannot tell you by itself is what the flash reads
  * cost. So the same driver is built twice:
@@ -96,24 +86,20 @@
  *
  * WHAT ONE FRAME COSTS IN RAM NOW
  *
- *   walk state   33,184 B  drawsegs 40 x 52, visplanes 22 x 664, clip posts
- *                          32 x 8, floorclip/ceilingclip 2 x 320 x 2, clip
- *                          blocks 15 x 320 x 2, opening blocks 1 x 320 x 2,
- *                          vis sprites 100 x 44, covered 320
- *   graphics     71,944 B  wall arena 36,864 (32,768 + 4,096, the measured peak
- *                          pair) + scratch 35,080 (SKY1's largest patch, now
- *                          that the plane pass runs)
- *   level            0 B   in the flash path: the map and the three directories
- *                          are pointers into the mapping. 47,888 B in the RAM
- *                          path (46,508 map + THINGS 1,380; the directories are
- *                          read-only tables and stay raw in both).
+ *   walk state      33,184 B   drawsegs 40 x 52, visplanes 22 x 664, clip posts
+ *                              32 x 8, floorclip/ceilingclip 2 x 320 x 2, clip
+ *                              blocks 15 x 320 x 2, opening blocks 1 x 320 x 2,
+ *                              vis sprites 100 x 44, covered 320
+ *   baked records    4,632 B   the 90-entry manifest adapter; the pixels are in
+ *                              flash and no buffer copies them
+ *   level                0 B   in the flash path: the map is a pointer into the
+ *                              mapping. 47,888 B in the RAM path.
  *
- * 105,128 B of driver RAM in the flash path against the 94,916 B of free
- * `dram0_0_seg` plus the heap: the walk state and the wall arena are .bss
- * (70,048 B) and the scratch comes from the heap (35,080 B, inside the 47,092 B
- * largest hole). The 23,200 B static lump arena D3.6 needed is gone from the
- * flash build; `FRAMEPROF,mem` prints `map=flash` or `map=ram` and both halves of
- * the accounting, so the split is a printed number and not a claim.
+ * 37,816 B of driver RAM in the flash path, against 105,128 B in D3.5: the
+ * 53,248 B static arena, up to 24,576 B of heap arenas, 1,920 B of cache entries
+ * and the 35,080 B decode scratch are gone. `FRAMEPROF,mem` prints
+ * `map=flash` or `map=ram`, every block it still holds, and the constants the
+ * removed cache used to cost, so the split is a printed number and not a claim.
  *
  * WHAT FITS, AND WHAT WAS NOT DONE TO MAKE IT FIT
  *
@@ -264,8 +250,10 @@ struct FrameProfileSample {
     std::uint32_t planeLookupMicros = 0;
     std::uint32_t maskedLookupMicros = 0;
 
-    // The residency cache. A hit is a resolve the cache answered without
-    // touching the container; a miss is one that had to decode.
+    // The manifest lookup. A hit is a name the manifest answered and a miss is
+    // one it did not; a miss is a reported frame error, never a decode, so
+    // `texDecodes`, `flatDecodes`, `spriteDecodes` and `bytesDecoded` stay 0 for
+    // graphics.
     std::uint16_t texHits = 0;
     std::uint16_t texMisses = 0;
     std::uint16_t flatHits = 0;
@@ -275,10 +263,11 @@ struct FrameProfileSample {
     std::uint32_t cacheBytes = 0;
     std::uint16_t cachePeakSlots = 0;
 
-    // The working set: how many *distinct* wall textures, flats and sprite
-    // lumps this frame asked for, and how many bytes their composed forms
-    // occupy. That is the number a residency cache has to hold to make the
-    // frame's second run free.
+    // The working set: how many *distinct* wall textures, flats and sprite lumps
+    // this frame asked for, and how many bytes their baked payloads occupy.
+    // `cacheBytes` is the whole manifest's payload total and `cachePeakSlots`
+    // its entry count, so the line keeps the D3.5 field positions with their
+    // D3.8 meaning.
     std::uint16_t texSetCount = 0;
     std::uint32_t texSetBytes = 0;
     std::uint16_t flatSetCount = 0;
@@ -494,9 +483,9 @@ struct FrameProfileReport<false> {
  * contract, and the driver only writes bytes into it.
  *
  * Prints `FRAMEPROF,setup,status=fail,...` and returns when the container, the
- * map, a lump or an arena block is missing. Nothing here allocates from the heap
- * except the graphics scratch and, in the RAM build, the decoded lumps; all of it
- * is released before this returns.
+ * map, a lump or the baked manifest is missing. Nothing here allocates from the
+ * heap except, in the RAM build, the decoded lumps; all of it is released before
+ * this returns. The baked graphics are pointers into the mapping.
  */
 void frameProbeRun(std::uint8_t* surface, int width, int height);
 

@@ -95,6 +95,25 @@
  * not contain method 2, because then its own version would be a lie about the
  * alignment the writer promised.
  *
+ * THE BAKED GRAPHICS SECTION (D3.8, A CONVENTION ON TOP OF METHOD 2)
+ *
+ * A container built for the ESP32 port may carry one extra raw lump named
+ * "~PWBAKE~". The name is exactly eight characters and contains '~', a byte no
+ * IWAD lump name uses, so it cannot collide with level, patch, flat or sprite
+ * data. The lump is a 16-byte header ("PWBK", version 1, record size 20, record
+ * count, reserved) followed by 20-byte records:
+ *
+ *   name[8], width (2), rows (2), flags (1), kind (1), reserved (2),
+ *   lumpIndex (4)                                            little-endian
+ *
+ * `lumpIndex` is a raw entry inside this container: a baked wall/sky payload
+ * (width * 128 pixels plus an optional mask), a flat's own 4,096 bytes, or a
+ * sprite's own patch lump. `rows` is the declared height for a wall/sky, 64 for
+ * a flat and 0 for a sprite; `flags` bit 0 says a mask follows the pixels; kind
+ * is 1 wall, 2 sky, 3 flat, 4 sprite. The reader itself does not interpret the
+ * lump -- it is only a raw view like any other -- and tools/bake_graphics.py is
+ * the writer and the C referee.
+ *
  * The encoder that writes this layout is tools/whd_encode.py. Its --check mode
  * re-decodes a container in memory and compares every lump against the source
  * WAD, and a container it produced was decoded on the host through this reader
