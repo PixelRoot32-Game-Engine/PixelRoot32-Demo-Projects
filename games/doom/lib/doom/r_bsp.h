@@ -488,6 +488,109 @@ typedef struct r_clip_range {
  */
 struct r_vissprite; /* r_things.h: the projected sprite record */
 
+/* --- D3.9 cycle attribution ---------------------------------------------- */
+
+/*
+ * WHAT THIS IS, AND WHY IT IS IN THE VIEW STATE
+ *
+ * The frame table says how many microseconds each pass took; it cannot say what
+ * those microseconds were spent on, and the D3.5 lesson is that a guess about
+ * that is wrong by an order of magnitude. This struct is the second opinion:
+ * every pass folds the CPU cycle counter into the bucket that names the work,
+ * so "per-pixel store" and "per-column setup" and "per-sprite preflight" stop
+ * being an argument and become two columns of a table.
+ *
+ * It is a pointer in the caller's state rather than a file-scope global because
+ * nothing mutable lives at file scope in this library (the same rule every pass
+ * follows for upstream's globals). It is only *declared* when
+ * PIXELROOT32_DOOM_RASTER_PROBE is defined -- the frame measurement environment
+ * sets it and every other build, including the shipped one, compiles the
+ * instrumented expressions out entirely and pays a NULL test at the jitter of
+ * the previous code.
+ *
+ * `r_probe_cycles()` is supplied by the caller, because the cycle counter is a
+ * CPU feature and this library is also built for a host with none. The frame
+ * driver answers it with the Xtensa CCOUNT register; a caller that sets
+ * state->probe must link it.
+ *
+ * The struct is declared in every build so the instrumented expressions still
+ * typecheck, but only a build that defines PIXELROOT32_DOOM_RASTER_PROBE can
+ * reach them: R_PROBE_HAS() is a literal 0 there, every instrumented block is
+ * dead code the compiler removes, and no translation unit asks for the cycle
+ * counter. A shipped image therefore carries no probe and no counter call.
+ */
+typedef struct r_raster_probe {
+    /* R_RenderBSPNode / R_Subsector / R_AddLine: how much of the walk is
+     * traversal and how much is per-seg record reading. */
+    uint32_t nodeVisits;
+    uint32_t subsectorVisits;
+    uint32_t segVisits;
+    uint32_t bboxTests;
+    uint32_t planeFindCalls;
+    uint32_t planeFindCycle;
+    uint32_t clipScanSteps;
+    uint32_t wallRangeStores;
+    uint32_t walkLineCycle;    /* add_line() including its record reads */
+    uint32_t walkStoreCycle;   /* store_wall_range() including the range math */
+    uint32_t walkSegLoopCycle; /* render_seg_loop(): the plane marking */
+    uint32_t walkPlaneCheckCycle;
+    uint32_t walkMapReads;     /* doom_map_get_* calls: the mapped-flash touches */
+    uint32_t walkSubsectorCycle;
+
+    /* The wall column pass, split where the cost changes shape. */
+    uint32_t wallPreflightCycle;
+    uint32_t wallClipSaveCycle;
+    uint32_t wallSetupCycle;   /* one fragment column: yl/yh, tangent, light */
+    uint32_t wallStoreCycle;   /* the r_column_draw() call for that column */
+    uint32_t wallOpenCycle;    /* the two r_wall_fragment_open() per drawseg */
+    uint32_t wallPoolCycle;    /* the constant clip blocks and the clear loop */
+    uint32_t wallGenericCycle; /* the two-sided loop, all of it */
+    uint32_t wallEmitCycle;    /* one emit_fragment() call, all of it */
+    uint32_t wallPrologueCycle; /* fragment copy, 3 resolves, peg and step */
+    uint32_t wallLoopCycle;    /* the whole drawseg loop of r_wall_emit */
+    uint32_t wallColumns;
+    uint32_t wallPixels;
+
+    /* The plane pass. */
+    uint32_t planePreflightCycle;
+    uint32_t planeSetupCycle;  /* per span: distance, steps, xfrac/yfrac, light */
+    uint32_t planePixelCycle;  /* the per-pixel flat store */
+    uint32_t planeCoverCycle;  /* the per-span covered[] run */
+    uint32_t planeLoopCycle;   /* the whole per-plane loop of r_plane_draw */
+    uint32_t planeSpans;
+
+    /* The masked pass, split by what it iterates over. */
+    uint32_t maskedPatchProofCycle; /* resolve + r_patch_validate per sprite */
+    uint32_t maskedProjectionCycle;
+    uint32_t maskedPatchProofs;     /* how many full patch walks ran */
+    uint32_t maskedProofCalls;      /* how many resolve_patch() calls asked */
+    uint32_t maskedPatchMemoHits;   /* how many of those the memo answered */
+    uint32_t maskedRangeCheckCycle; /* the per-drawseg pool proof */
+    uint32_t maskedClipSeedCycle;   /* the per-sprite drawseg scan */
+    uint32_t maskedClipSeedSteps;   /* drawsegs × sprites it visited */
+    uint32_t maskedSpriteCycle;     /* the sprite columns and their posts */
+    uint32_t maskedPostCalls;
+    uint32_t maskedTailCycle;       /* the far-to-near masked mid loop */
+    uint32_t maskedSortCycle;
+} r_raster_probe_t;
+
+/* The CPU cycle counter, supplied by the caller. Monotonic for the life of a
+ * boot and must not be reset inside a frame. */
+uint32_t r_probe_cycles(void);
+
+#define R_PROBE_OF(state) ((state)->probe)
+
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+#define R_PROBE_NOW() r_probe_cycles()
+#define R_PROBE_HAS(state) ((state)->probe != NULL)
+#else
+/* No probe in this build: every instrumented block is `if (0)` and the counter
+ * is never called, so a caller that leaves the pointer set still pays nothing
+ * more than the four bytes the field costs. */
+#define R_PROBE_NOW() 0u
+#define R_PROBE_HAS(state) 0
+#endif
+
 typedef struct r_view_storage {
     r_drawseg_t* drawsegs;
     uint16_t drawsegCapacity;
@@ -503,6 +606,11 @@ typedef struct r_view_storage {
     uint16_t clipBlockCapacity;
     int16_t* openingBlocks;
     uint16_t openingBlockCapacity;
+    /* D3.9: an optional, caller-owned proof cache for the sprite patches the
+     * masked pass validates. NULL means the pass proves each distinct patch once
+     * per call, which is the behaviour every earlier revision had. See
+     * r_things.h's r_sprite_proofs_t. */
+    struct r_sprite_proofs* spriteProofs;
 } r_view_storage_t;
 
 /*
@@ -541,6 +649,10 @@ typedef struct r_view_state {
     uint16_t currentSeg;
     angle_t rwAngle1;
     uint16_t clipRangeCount;
+
+    /* The D3.9 cycle attribution, or NULL. The caller sets it after
+     * r_bsp_init(); the walk and the three draw passes only read it. */
+    r_raster_probe_t* probe;
 } r_view_state_t;
 
 /* --- Public API ---------------------------------------------------------- */

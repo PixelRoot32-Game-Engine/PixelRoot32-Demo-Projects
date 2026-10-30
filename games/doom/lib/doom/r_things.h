@@ -251,6 +251,13 @@ typedef struct r_sprite_patch {
  * is drawn -- never per column. The returned record must stay valid until
  * r_masked_emit() returns; the emitter copies nothing.
  *
+ * What the pass does *not* do is prove the same patch twice. r_patch_validate()
+ * is a walk over every column and post of the lump, so the emitter keeps the
+ * proof and answers a repeat from it: for the duration of one call by default,
+ * and for as long as the caller says the bytes cannot change when it supplies
+ * r_view_storage_t::spriteProofs (see r_sprite_proofs_t). A resolver that
+ * answers a *different* record for the same lump is proved again.
+ *
  * The policy behind the callback -- a cache, a mapped flash region, "decode it
  * now" -- is the caller's. Answering NULL is a normal outcome and produces
  * R_THINGS_ERR_SPRITE_MISSING, not a partial frame.
@@ -263,6 +270,50 @@ typedef struct r_sprite_source {
     r_sprite_resolve_fn resolve;
     void* context;
 } r_sprite_source_t;
+
+/* --- The patch proof cache (D3.9) ----------------------------------------- */
+
+/*
+ * r_patch_validate() walks every column of a patch and every post in it, and
+ * the bytes it walks are the caller's -- in this port, a mapped-flash lump. On
+ * the board that walk is the single most expensive thing the masked pass does:
+ * 5,599 us of a 7,555 us pass for 32 distinct sprite lumps, because the pass
+ * proves a patch once per sprite in the preflight and again once per drawn
+ * sprite.
+ *
+ * Within one call the pass memoises on its own (a nameless stack table), which
+ * is what every revision before D3.9 did. This struct is for a caller whose
+ * resolver answers the *same* patch for the *same* address across calls -- a
+ * baked, mmapped, immutable set of lumps -- where re-proving the same bytes
+ * every frame is the same class of waste as re-decoding them. Supplying it in
+ * r_view_storage_t::spriteProofs moves the proof to the residency.
+ *
+ * WHO MAY SUPPLY ONE. Only a caller that can promise the two things the
+ * validator is protecting: that a patch's bytes do not change under an
+ * unchanged r_sprite_patch_t address, and that a patch which was well formed
+ * stays well formed. A caller that composes patches into a reusable buffer, or
+ * that can evict and reuse a record, must leave the field NULL and keep the
+ * per-call proof. The frame driver in this port supplies one, because the bake
+ * is part of the read-only container mapping and its records are file-scope
+ * statics.
+ *
+ * `count` is the caller's to reset: set it to 0 whenever the promise above stops
+ * holding (a container remount, a level change).
+ */
+#define R_SPRITE_PROOF_CAPACITY 40
+
+typedef struct r_sprite_proof {
+    const r_sprite_patch_t* patch;
+    int32_t width;
+    int32_t height;
+    int32_t leftOffset;
+    int32_t topOffset;
+} r_sprite_proof_t;
+
+typedef struct r_sprite_proofs {
+    r_sprite_proof_t entries[R_SPRITE_PROOF_CAPACITY];
+    int count;
+} r_sprite_proofs_t;
 
 /* --- The projected sprite ------------------------------------------------- */
 

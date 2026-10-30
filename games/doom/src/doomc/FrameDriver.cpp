@@ -427,6 +427,7 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 #if defined(PIXELROOT32_DOOM_FRAME_PROBE) && (defined(ESP32) || defined(ESP_PLATFORM))
 
 #include <cstring>
+#include <cstddef>
 
 #include <esp_heap_caps.h>
 #include <esp_system.h>
@@ -452,6 +453,25 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 // tools/ on the include path so the board builds the same sprite list the host
 // proves, from the same table, or the two hashes describe different frames.
 #include "e1m1_sprites.inc"
+
+/*
+ * The CPU cycle counter the D3.9 attribution reads (r_bsp.h declares it).
+ *
+ * The Xtensa CCOUNT special register is the only counter with a cycle of its
+ * own; esp_timer_get_time() is the reference for the phase table and these two
+ * must agree on the total, which is what makes the per-pixel numbers
+ * trustworthy. CCOUNT is 32 bits at 240 MHz, so it wraps every 17.9 s -- far
+ * longer than a frame, and `now - start` on unsigned values is still correct
+ * across a wrap as long as one interval is under that.
+ *
+ * It is defined outside the anonymous namespace and with C linkage because
+ * lib/doom/ is C and links against this symbol.
+ */
+extern "C" std::uint32_t r_probe_cycles(void) {
+    std::uint32_t value;
+    __asm__ __volatile__("rsr %0, ccount" : "=a"(value));
+    return value;
+}
 
 namespace doom {
 namespace doomc {
@@ -680,6 +700,14 @@ const std::uint8_t* gColormap = nullptr;
 std::size_t gColormapBytes = 0;
 r_light_t gLight = {};
 
+/// D3.9's residency-scoped patch proof cache. The bake is part of the read-only
+/// container mapping and BakedGraphics' records are file-scope statics, so a
+/// patch at a given address cannot change or become malformed while the run
+/// holds: the two promises r_things.h's r_sprite_proofs_t requires both hold
+/// here, and the 32 distinct sprite lumps are proved once per run instead of
+/// once per frame. It is the only state this change adds, 800 B of .bss.
+r_sprite_proofs_t gSpriteProofs;
+
 /// The measured sample being filled. Every resolver folds into it, so a counter
 /// cannot be written by one pass and forgotten by the next.
 FrameProfileSample gSample;
@@ -833,6 +861,12 @@ bool viewLump(int lump, const std::uint8_t** data, std::size_t* size) {
 char gFailTexture[9] = {0};
 const char* gFailWhy = "none";
 
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+/// The first wall texture the run resolved, kept for the D3.9 memory probe so
+/// the benchmark reads the bytes the frame actually reads.
+const r_walltex_t* gProbeTexture = nullptr;
+#endif
+
 void noteMissing(r_name_t name, const char* why) {
     r_unpack_name(name, gFailTexture);
     gFailWhy = why;
@@ -853,6 +887,11 @@ const r_walltex_t* resolveWall(void* context, r_name_t name) {
         return nullptr;
     }
     ++gSample.texHits;
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+    if (gProbeTexture == nullptr) {
+        gProbeTexture = texture;
+    }
+#endif
     (void)gTexSet.add(name, static_cast<std::uint32_t>(texture->width) * kStoredColumnRows);
     return texture;
 }
@@ -980,10 +1019,28 @@ bool sectorAt(const doom_map_t* map, fixed_t x, fixed_t y, std::uint16_t* sector
     return true;
 }
 
-/// Builds the frame's sprite list: every THINGS record the fixture covers, standing
-/// on its sector's floor, with the rotation R_ProjectSprite's rule selects for this
-/// viewpoint -- exactly the list the host harness builds.
-int buildSprites(const doom_map_t* map, const r_view_params_t* view) {
+/*
+ * THE SPRITE LIST'S CONSTANT HALF (D3.9)
+ *
+ * buildSprites() used to re-read every THINGS record, descend the BSP for its
+ * sector and copy the sector for all 129 sprites *per view*, for values that
+ * cannot change while the level is loaded. The attribution measured that at
+ * 4,932 us a frame -- 37% of the masked window, more than the sprite drawing
+ * itself -- for 242 mapped-flash record reads a frame.
+ *
+ * Only two fields are view-dependent: the rotation R_ProjectSprite's rule picks
+ * for this viewpoint, and the lump and flip that follow from it. So the base
+ * record is built once per run into gSprites itself (no second array of records)
+ * and the per-view pass rewrites the lump, the flip and the fullbright flag.
+ * The rule pointer is the 520 bytes this needs, and it is the only new state.
+ *
+ * The frame is unchanged by construction: the same records, the same values,
+ * the same order -- only the reads that produce them happen once.
+ */
+const e1m1_sprite_rule_t* gSpriteRules[kSpriteCapacity] = {};
+int gSpriteBaseCount = -1;
+
+bool buildSpriteBase(const doom_map_t* map) {
     int count = 0;
 
     for (std::uint32_t index = 0; index < map->lumps[DOOM_MAP_THINGS].count; ++index) {
@@ -994,21 +1051,47 @@ int buildSprites(const doom_map_t* map, const r_view_params_t* view) {
             continue;
         }
         if (count >= kSpriteCapacity) {
-            return -1;
+            return false;
         }
 
         const fixed_t x = static_cast<fixed_t>(static_cast<std::uint32_t>(static_cast<std::uint16_t>(thing.x)) << FRACBITS);
         const fixed_t y = static_cast<fixed_t>(static_cast<std::uint32_t>(static_cast<std::uint16_t>(thing.y)) << FRACBITS);
         std::uint16_t sectorIndex = 0u;
         if (!sectorAt(map, x, y, &sectorIndex)) {
-            return -1;
+            return false;
         }
         doom_sector_t sector;
         doom_map_get_sector(map, sectorIndex, &sector);
 
-        const angle_t angle = ANG45 * static_cast<angle_t>(thing.angle / 45);
-        const angle_t facing = pointToAngle(view, x, y);
-        const int rotation = static_cast<int>((facing - angle + ((ANG45 / 2u) * 9u)) >> 29);
+        gSprites[count].x = x;
+        gSprites[count].y = y;
+        gSprites[count].z = sector.floorHeight;
+        gSprites[count].angle = ANG45 * static_cast<angle_t>(thing.angle / 45);
+        gSprites[count].lightLevel = sector.lightLevel;
+        gSprites[count].noClip = 0;
+        gSpriteRules[count] = rule;
+        ++count;
+    }
+    gSpriteBaseCount = count;
+    return true;
+}
+
+/// Builds the frame's sprite list: every THINGS record the fixture covers, standing
+/// on its sector's floor, with the rotation R_ProjectSprite's rule selects for this
+/// viewpoint -- exactly the list the host harness builds.
+int buildSprites(const doom_map_t* map, const r_view_params_t* view) {
+    if (gSpriteBaseCount < 0 && !buildSpriteBase(map)) {
+        return -1;
+    }
+    if (gSpriteBaseCount < 0) {
+        return -1;
+    }
+
+    for (int index = 0; index < gSpriteBaseCount; ++index) {
+        const e1m1_sprite_rule_t* rule = gSpriteRules[index];
+        const angle_t facing = pointToAngle(view, gSprites[index].x, gSprites[index].y);
+        const int rotation =
+            static_cast<int>((facing - gSprites[index].angle + ((ANG45 / 2u) * 9u)) >> 29);
         const int lump = rule->rotations ? rotation : 0;
 
         char lumpName[9];
@@ -1017,18 +1100,11 @@ int buildSprites(const doom_map_t* map, const r_view_params_t* view) {
         }
         lumpName[8] = '\0';
 
-        gSprites[count].x = x;
-        gSprites[count].y = y;
-        gSprites[count].z = sector.floorHeight;
-        gSprites[count].angle = angle;
-        gSprites[count].lump = r_pack_name(reinterpret_cast<const std::uint8_t*>(lumpName));
-        gSprites[count].lightLevel = sector.lightLevel;
-        gSprites[count].flip = rule->lumps[lump].flip;
-        gSprites[count].fullbright = rule->fullbright;
-        gSprites[count].noClip = 0;
-        ++count;
+        gSprites[index].lump = r_pack_name(reinterpret_cast<const std::uint8_t*>(lumpName));
+        gSprites[index].flip = rule->lumps[lump].flip;
+        gSprites[index].fullbright = rule->fullbright;
     }
-    return count;
+    return gSpriteBaseCount;
 }
 
 /// The same rule tools/rsegs_check.c's buildFrames() uses, so the two describe
@@ -1413,9 +1489,113 @@ struct Driver {
     r_tex_source_t textures = {};
     r_sprite_source_t sprites = {};
     const char* stage = "none";
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+    /// D3.9's cycle attribution for one frame. Zeroed at the top of every
+    /// frame and handed to the view state so the four passes can fold into it.
+    r_raster_probe_t probe = {};
+    /// The sprite-list build, timed on the caller's side because the fixture,
+    /// not the renderer, owns that loop.
+    std::uint32_t spriteListCycles = 0u;
+    std::uint32_t spriteListSectors = 0u;
+    /// The whole frame in cycles, so the cycle table and the microsecond table
+    /// can be checked against each other.
+    std::uint32_t frameCycles = 0u;
+#endif
 };
 
-/// Builds the surface descriptor over the engine's framebuffer.
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+/*
+ * THE D3.9 ACCUMULATOR
+ *
+ * r_raster_probe_t is 32-bit fields because the passes live in C99 and adding
+ * a second width there buys nothing. Forty frames of 240 MHz is 9.6e9 cycles,
+ * which does not fit, so the folding below is 64-bit: one field per bucket,
+ * summed over the measured frames only (the cold run is not part of the table).
+ *
+ * The fold walks the probe as a flat array of 32-bit words. Every member is a
+ * uint32_t, so there is no interior padding the array walk could misread; the
+ * static_assert below is the proof of that, not a wish.
+ */
+static_assert(sizeof(r_raster_probe_t) % sizeof(std::uint32_t) == 0,
+              "the probe's fields must be one uniform word size");
+
+constexpr std::size_t kProbeWords = sizeof(r_raster_probe_t) / sizeof(std::uint32_t);
+
+struct ProbeSum {
+    std::uint64_t words[kProbeWords] = {};
+    std::uint32_t frames = 0u;
+    std::uint64_t frameCycles = 0u;
+    std::uint64_t spriteListCycles = 0u;
+
+    void add(const r_raster_probe_t& probe, std::uint32_t cycles,
+             std::uint32_t spriteCycles) {
+        const std::uint32_t* source = reinterpret_cast<const std::uint32_t*>(&probe);
+        for (std::size_t index = 0; index < kProbeWords; ++index) {
+            words[index] += source[index];
+        }
+        ++frames;
+        frameCycles += cycles;
+        spriteListCycles += spriteCycles;
+    }
+
+    std::uint32_t field(std::size_t offset) const { return static_cast<std::uint32_t>(words[offset]); }
+};
+
+/// The accumulator and the line buffer are file-scope statics, not locals: the
+/// probe runs on the Arduino loop task, whose stack the four passes already
+/// nearly fill, and 1,536 bytes of formatter buffer there is enough to trip the
+/// canary. Nothing else reads them.
+ProbeSum gProbeSum;
+ProbeSum gProbeFrameSum;
+char gProbeLine[1536];
+
+/// Compile-time offsets, so the formatter cannot print the wrong bucket under a
+/// name: a field added to the struct and forgotten here is a build error at the
+/// next name that shifts.
+#define PROBE_FIELD(name) (offsetof(r_raster_probe_t, name) / sizeof(std::uint32_t))
+#define PROBE_SUM(field_) (sum.words[PROBE_FIELD(field_)])
+
+/*
+ * HOW MANY CYCLES IS A PIXEL, AND HOW MUCH OF IT IS THE FLASH
+ *
+ * The phase table says a wall pixel costs 236 ns; the pass table says the store
+ * is X of it. Neither says whether that X is the loop's own shape or the mapped
+ * flash read of the texel and the colormap entry. This benchmark separates the
+ * two by running the *identical* inner statement over the same byte patterns
+ * from three residencies, so the difference between two rows is the cost of
+ * moving one operand from RAM to flash.
+ *
+ * It uses a real baked texture column and the real mapped COLORMAP, so the
+ * bytes are the ones the frame reads, and a RAM copy of the same 256-byte
+ * colormap, so the only variable is where the bytes live.
+ */
+struct MemoryProbe {
+    std::uint32_t ramRamNanos = 0u;   ///< store + texel and map both in RAM
+    std::uint32_t ramFlashNanos = 0u; ///< store + colormap in flash
+    std::uint32_t flashFlashNanos = 0u; ///< store + texel and map both in flash
+    std::uint32_t storeNanos = 0u;    ///< the store alone
+    std::uint32_t pixels = 0u;
+};
+
+/// One pass of the micro-benchmark. `column` and `colormap` are read through the
+/// same expression the wall pass uses, one pixel per row of a 200-row column.
+void benchInner(uint8_t* destination, int stride, const uint8_t* column,
+                const uint8_t* colormap, fixed_t iscale, int rows, int repeats,
+                std::uint64_t* sink) {
+    for (int pass = 0; pass < repeats; ++pass) {
+        fixed_t frac = 0;
+        uint8_t* at = destination;
+        for (int row = 0; row < rows; ++row) {
+            *at = colormap[column[(int)((frac >> FRACBITS) & 127)]];
+            if (sink != nullptr && (row & 63) == 0) {
+                *sink += *at;
+            }
+            at += stride;
+            frac += iscale;
+        }
+    }
+}
+#endif
 void bindSurface(Driver* driver, std::uint8_t* pixels, int width, int height) {
     driver->surface.pixels = pixels;
     driver->surface.width = width;
@@ -1449,6 +1629,9 @@ void bindSurface(Driver* driver, std::uint8_t* pixels, int width, int height) {
 bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int width,
                 int height, FrameProfileSample* sample) {
     const std::int64_t frameStart = nowMicros();
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+    const std::uint32_t frameCycleStart = r_probe_cycles();
+#endif
 
     r_view_params_t params;
     params.x = view.x;
@@ -1468,6 +1651,11 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
 
     std::memset(pixels, 0xFF, static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
     std::memset(gState.covered, 0, sizeof gState.covered);
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+    driver->probe = r_raster_probe_t{};
+    driver->spriteListCycles = 0u;
+    driver->spriteListSectors = 0u;
+#endif
     driver->surface.tierPixels[R_DRAW_TIER_MID] = 0u;
     driver->surface.tierPixels[R_DRAW_TIER_TOP] = 0u;
     driver->surface.tierPixels[R_DRAW_TIER_BOTTOM] = 0u;
@@ -1522,6 +1710,9 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     sample->wallPixels = driver->surface.tierPixels[R_DRAW_TIER_MID]
                          + driver->surface.tierPixels[R_DRAW_TIER_TOP]
                          + driver->surface.tierPixels[R_DRAW_TIER_BOTTOM];
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+    driver->probe.wallPixels = sample->wallPixels;
+#endif
 
     decodeMark = gSample.decodeMicros;
     composeMark = gSample.composeMicros;
@@ -1563,7 +1754,13 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     lookupMark = gSample.lookupMicros;
     start = nowMicros();
     driver->stage = "sprites";
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+    const std::uint32_t spriteListStart = r_probe_cycles();
+#endif
     const int spriteCount = buildSprites(&driver->map, &params);
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+    driver->spriteListCycles = r_probe_cycles() - spriteListStart;
+#endif
     if (spriteCount < 0) {
         return false;
     }
@@ -1619,6 +1816,9 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     sample->spriteMisses = gSample.spriteMisses;
     sample->bytesDecoded = gSample.bytesDecoded;
     sample->frameMicros = elapsedMicros(frameStart);
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+    driver->frameCycles = r_probe_cycles() - frameCycleStart;
+#endif
     driver->stage = "done";
     return true;
 }
@@ -1644,8 +1844,174 @@ bool isBreakdownView(int frame) {
     return false;
 }
 
-/// One `FRAMEPROF,mem` field, from `sizeof`: the driver's RAM cost is a printed
-/// number, never an estimate. `state_static` is the .bss half, `level_ram` is the
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+/*
+ * The D3.9 attribution line: what the cycles were spent on, per unit, so the
+ * microsecond table can be read as work rather than as a phase name. Every
+ * number here is a sum over the measured frames of one bucket the passes fill,
+ * divided by the count that names it.
+ */
+void formatProbeLine(const ProbeSum& sum, char* out, std::size_t capacity) {
+    if (out == nullptr || capacity == 0u) {
+        return;
+    }
+
+    const int written = std::snprintf(
+        out, capacity,
+        "FRAMEPROF,d39,frames=%u,frame_cyc=%u,"
+        "walk_nodes=%u,walk_subsectors=%u,walk_segs=%u,walk_bbox=%u,walk_clipscan=%u,"
+        "walk_planefind_cyc=%u,walk_planefind_calls=%u,"
+        "walk_line_cyc=%u,walk_store_cyc=%u,walk_segloop_cyc=%u,walk_planecheck_cyc=%u,"
+        "walk_subsector_cyc=%u,walk_mapreads=%u,wall_stores=%u,"
+        "wall_pre_cyc=%u,wall_setup_cyc=%u,wall_store_cyc=%u,wall_generic_cyc=%u,"
+        "wall_open_cyc=%u,wall_pool_cyc=%u,wall_clip_cyc=%u,wall_emit_cyc=%u,"
+        "wall_prologue_cyc=%u,"
+        "wall_columns=%u,wall_px=%u,"
+        "plane_pre_cyc=%u,plane_setup_cyc=%u,plane_px_cyc=%u,plane_cover_cyc=%u,"
+        "plane_loop_cyc=%u,plane_spans=%u,"
+        "masked_proof_cyc=%u,masked_proofs=%u,masked_proof_calls=%u,masked_memo_hits=%u,"
+        "masked_proj_cyc=%u,"
+        "masked_range_cyc=%u,masked_seed_cyc=%u,masked_seed_steps=%u,masked_sort_cyc=%u,"
+        "masked_sprite_cyc=%u,masked_posts=%u,masked_tail_cyc=%u,spritelist_cyc=%u\n",
+        static_cast<unsigned>(sum.frames),
+        static_cast<unsigned>(sum.frameCycles),
+        static_cast<unsigned>(PROBE_SUM(nodeVisits)),
+        static_cast<unsigned>(PROBE_SUM(subsectorVisits)),
+        static_cast<unsigned>(PROBE_SUM(segVisits)),
+        static_cast<unsigned>(PROBE_SUM(bboxTests)),
+        static_cast<unsigned>(PROBE_SUM(clipScanSteps)),
+        static_cast<unsigned>(PROBE_SUM(planeFindCycle)),
+        static_cast<unsigned>(PROBE_SUM(planeFindCalls)),
+        static_cast<unsigned>(PROBE_SUM(walkLineCycle)),
+        static_cast<unsigned>(PROBE_SUM(walkStoreCycle)),
+        static_cast<unsigned>(PROBE_SUM(walkSegLoopCycle)),
+        static_cast<unsigned>(PROBE_SUM(walkPlaneCheckCycle)),
+        static_cast<unsigned>(PROBE_SUM(walkSubsectorCycle)),
+        static_cast<unsigned>(PROBE_SUM(walkMapReads)),
+        static_cast<unsigned>(PROBE_SUM(wallRangeStores)),
+        static_cast<unsigned>(PROBE_SUM(wallPreflightCycle)),
+        static_cast<unsigned>(PROBE_SUM(wallSetupCycle)),
+        static_cast<unsigned>(PROBE_SUM(wallStoreCycle)),
+        static_cast<unsigned>(PROBE_SUM(wallGenericCycle)),
+        static_cast<unsigned>(PROBE_SUM(wallOpenCycle)),
+        static_cast<unsigned>(PROBE_SUM(wallPoolCycle)),
+        static_cast<unsigned>(PROBE_SUM(wallClipSaveCycle)),
+        static_cast<unsigned>(PROBE_SUM(wallEmitCycle)),
+        static_cast<unsigned>(PROBE_SUM(wallPrologueCycle)),
+        static_cast<unsigned>(PROBE_SUM(wallColumns)),
+        static_cast<unsigned>(PROBE_SUM(wallPixels)),
+        static_cast<unsigned>(PROBE_SUM(planePreflightCycle)),
+        static_cast<unsigned>(PROBE_SUM(planeSetupCycle)),
+        static_cast<unsigned>(PROBE_SUM(planePixelCycle)),
+        static_cast<unsigned>(PROBE_SUM(planeCoverCycle)),
+        static_cast<unsigned>(PROBE_SUM(planeLoopCycle)),
+        static_cast<unsigned>(PROBE_SUM(planeSpans)),
+        static_cast<unsigned>(PROBE_SUM(maskedPatchProofCycle)),
+        static_cast<unsigned>(PROBE_SUM(maskedPatchProofs)),
+        static_cast<unsigned>(PROBE_SUM(maskedProofCalls)),
+        static_cast<unsigned>(PROBE_SUM(maskedPatchMemoHits)),
+        static_cast<unsigned>(PROBE_SUM(maskedProjectionCycle)),
+        static_cast<unsigned>(PROBE_SUM(maskedRangeCheckCycle)),
+        static_cast<unsigned>(PROBE_SUM(maskedClipSeedCycle)),
+        static_cast<unsigned>(PROBE_SUM(maskedClipSeedSteps)),
+        static_cast<unsigned>(PROBE_SUM(maskedSortCycle)),
+        static_cast<unsigned>(PROBE_SUM(maskedSpriteCycle)),
+        static_cast<unsigned>(PROBE_SUM(maskedPostCalls)),
+        static_cast<unsigned>(PROBE_SUM(maskedTailCycle)),
+        static_cast<unsigned>(static_cast<std::uint32_t>(sum.spriteListCycles)));
+
+    if (written <= 0 || static_cast<std::size_t>(written) >= capacity) {
+        out[0] = '\0';
+    }
+}
+
+/**
+ * @brief Runs the inner-loop benchmark and prints where the operand bytes live.
+ *
+ * Three residencies of the same statement, then the difference. `us_permille`
+ * units are the D3.5 convention (1,100 = 1.100 us), so a row here is directly
+ * comparable with the frame table's `px_us_permille`.
+ */
+void runMemoryProbe(std::uint8_t* scratch, int stride, const r_walltex_t* texture,
+                    const std::uint8_t* colormap, char* out, std::size_t capacity) {
+    MemoryProbe memory;
+
+    if (texture == nullptr || colormap == nullptr || scratch == nullptr) {
+        std::snprintf(out, capacity, "FRAMEPROF,d39mem,status=skip\n");
+        return;
+    }
+
+    // 200 rows is one full-height column; 200 passes gives 40,000 pixels per
+    // row, which is above the 34,129 a frame draws, and the timer's own
+    // resolution stops mattering.
+    constexpr int kRows = 200;
+    constexpr int kPasses = 200;
+    constexpr fixed_t kIscale = 1 << 12;  // one texel every 16 rows
+
+    static std::uint8_t ramColormap[256];
+    static std::uint8_t ramColumn[128];
+    std::uint64_t sink = 0u;
+
+    for (int index = 0; index < 256; ++index) {
+        ramColormap[index] = colormap[index];
+    }
+    for (int index = 0; index < 128; ++index) {
+        ramColumn[index] = texture->pixels[index];
+    }
+
+    struct Row {
+        const char* name;
+        const std::uint8_t* column;
+        const std::uint8_t* map;
+        std::uint32_t* nanos;
+    } rows[3] = {
+        {"ram_ram", ramColumn, ramColormap, &memory.ramRamNanos},
+        {"ram_flash", ramColumn, colormap, &memory.ramFlashNanos},
+        {"flash_flash", texture->pixels, colormap, &memory.flashFlashNanos},
+    };
+
+    for (Row& row : rows) {
+        const std::int64_t start = nowMicros();
+        benchInner(scratch, stride, row.column, row.map, kIscale, kRows, kPasses,
+                   &sink);
+        const std::uint32_t micros = elapsedMicros(start);
+        // Thousandths of a nanosecond... the frame table's unit is 1/1000 us,
+        // so the same unit is used here: permille of a microsecond.
+        *row.nanos = static_cast<std::uint32_t>(
+            (static_cast<std::uint64_t>(micros) * 1000u)
+            / static_cast<std::uint64_t>(kRows * kPasses));
+    }
+
+    {
+        const std::int64_t start = nowMicros();
+        for (int pass = 0; pass < kPasses; ++pass) {
+            std::uint8_t* at = scratch;
+
+            for (int row = 0; row < kRows; ++row) {
+                *at = static_cast<std::uint8_t>(row);
+                at += stride;
+            }
+        }
+        const std::uint32_t micros = elapsedMicros(start);
+        memory.storeNanos = static_cast<std::uint32_t>(
+            (static_cast<std::uint64_t>(micros) * 1000u)
+            / static_cast<std::uint64_t>(kRows * kPasses));
+    }
+    memory.pixels = static_cast<std::uint32_t>(kRows * kPasses);
+
+    std::snprintf(out, capacity,
+                  "FRAMEPROF,d39mem,pixels=%u,store_us_permille=%u,ram_ram_us_permille=%u,"
+                  "ram_flash_us_permille=%u,flash_flash_us_permille=%u,sink=%u\n",
+                  static_cast<unsigned>(memory.pixels),
+                  static_cast<unsigned>(memory.storeNanos),
+                  static_cast<unsigned>(memory.ramRamNanos),
+                  static_cast<unsigned>(memory.ramFlashNanos),
+                  static_cast<unsigned>(memory.flashFlashNanos),
+                  static_cast<unsigned>(static_cast<std::uint32_t>(sink)));
+}
+#endif /* PIXELROOT32_DOOM_RASTER_PROBE */
+
+/// One `FRAMEPROF,mem` field, from `sizeof`: the driver's RAM cost is a printed/// number, never an estimate. `state_static` is the .bss half, `level_ram` is the
 /// decoded level (0 in the flash build) and `heap_before/after` bound the rest.
 /// D3.8's `cache_*` fields are the bytes the cache and scratch used to cost;
 /// they are constants now because the code that owned them is gone.
@@ -1700,10 +2066,15 @@ void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore
 }  // namespace
 
 void frameProbeRun(std::uint8_t* surface, int width, int height) {
-    char line[kFrameProfileLineCapacity];
-    char attrLine[kFrameAttributionLineCapacity];
-    char memLine[kFrameAttributionLineCapacity];
-
+    // The three line buffers are the probe's largest stack locals and the call
+    // graph below them -- the BSP recursion, the wall column emitter and the
+    // masked pass's two clip arrays -- already runs close to the loop task's
+    // stack. D3.9's attribution added a few words to several of those frames and
+    // that was enough to trip the canary, so the buffers moved to .bss: they are
+    // written once per line and never reentrant.
+    static char line[kFrameProfileLineCapacity];
+    static char attrLine[kFrameAttributionLineCapacity];
+    static char memLine[kFrameAttributionLineCapacity];
     if (surface == nullptr || width < R_SCREEN_WIDTH || height < R_VIEW_HEIGHT) {
         std::snprintf(line, sizeof line, "FRAMEPROF,mem,surface=missing,need=%dx%d,have=%dx%d\n",
                       R_SCREEN_WIDTH, R_VIEW_HEIGHT, width, height);
@@ -1892,6 +2263,11 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     driver.storage.visSpriteCapacity = kVisspriteCapacity;
     driver.storage.openingBlocks = gState.openingBlocks;
     driver.storage.openingBlockCapacity = kOpeningBlockCapacity;
+    // D3.9: the baked patches cannot change under an unchanged record address,
+    // so their proof belongs to the residency and not to the frame. Reset the
+    // count here because this is where the run's resolver is bound.
+    gSpriteProofs.count = 0;
+    driver.storage.spriteProofs = &gSpriteProofs;
 
     if (r_bsp_init(&driver.view, &driver.map, &driver.storage) != R_BSP_OK) {
         writeLine("FRAMEPROF,setup,status=fail,reason=storage\n");
@@ -1909,6 +2285,11 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     driver.textures.beginFragment = nullptr;
     driver.sprites.resolve = resolveSprite;
     driver.sprites.context = nullptr;
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+    // D3.9: the four passes fold their cycle buckets into this state. Assigned
+    // after r_bsp_init() because that call zeroes the state.
+    driver.view.probe = &driver.probe;
+#endif
     bindSurface(&driver, surface, width, height);
 
     // --- The table ----------------------------------------------------------
@@ -1965,6 +2346,16 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
             if (isBreakdownView(frame)) {
                 emitFormatted(frameProfileFormatBreakdown(sample, line, sizeof line), line);
             }
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+            gProbeSum.add(driver.probe, driver.frameCycles, driver.spriteListCycles);
+            if (isBreakdownView(frame)) {
+                gProbeFrameSum = ProbeSum{};
+                gProbeFrameSum.add(driver.probe, driver.frameCycles,
+                                   driver.spriteListCycles);
+                formatProbeLine(gProbeFrameSum, gProbeLine, sizeof gProbeLine);
+                emitLine(gProbeLine);
+            }
+#endif
         }
     }
 
@@ -1973,6 +2364,13 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
                   line);
     emitFormatted(frameProfileFormatAttributionSummary(stats, attrLine, sizeof attrLine),
                   attrLine);
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+    formatProbeLine(gProbeSum, gProbeLine, sizeof gProbeLine);
+    emitLine(gProbeLine);
+    runMemoryProbe(surface, width, gProbeTexture, gColormap, gProbeLine,
+                   sizeof gProbeLine);
+    emitLine(gProbeLine);
+#endif
 
     std::snprintf(line, sizeof line,
                   "FRAMEPROF,probe,total_us=%u,hazards=%u,sha256=ok,views=%d,runs=%d,"

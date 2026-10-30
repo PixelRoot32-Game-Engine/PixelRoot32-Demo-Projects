@@ -272,6 +272,7 @@ static void map_plane(const r_view_state_t* state, r_draw_surface_t* surface,
     unsigned z;
     const uint8_t* colormap;
     int x;
+    const uint32_t setupStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
 
     /* A guard on a caller's corrupt plane, not a behaviour: the clip arrays keep
      * every real span inside the view, exactly as draw_column's row clamp does
@@ -296,6 +297,10 @@ static void map_plane(const r_view_state_t* state, r_draw_surface_t* surface,
     colormap = light->colormaps
                + (size_t)r_plane_light[lightRow][z] * (size_t)R_LIGHT_MAP_BYTES;
 
+    if (R_PROBE_HAS(state)) {
+        R_PROBE_OF(state)->planeSetupCycle += R_PROBE_NOW() - setupStart;
+    }
+
     {
         uint8_t* destination =
             surface->pixels + (size_t)x1 + (size_t)y * (size_t)surface->width;
@@ -303,25 +308,53 @@ static void map_plane(const r_view_state_t* state, r_draw_surface_t* surface,
                               ? surface->planeMask + (size_t)x1
                                     + (size_t)y * (size_t)surface->width
                               : NULL;
+        /* The coverage record is written where the pixel is (D3.9). The separate
+         * pass over [x1, x2] that used to follow the loop set the same bytes --
+         * every column a span covers gets 1 -- but it re-walked a 320-byte array
+         * the pixel writes had just evicted, and it cost 1,276 us a frame for
+         * 29,870 one-byte stores.
+         *
+         * The flat's bytes and the two optional records are hoisted out of the
+         * loop, and the case a frame actually runs (a flat and the coverage
+         * record, no per-pixel attribution mask) has its own loop: the two
+         * pointers are tests per span instead of tests per pixel. Both forms
+         * write exactly the same bytes. */
+        const uint8_t* flatPixels = flat->pixels;
+        uint8_t* coverAt = surface->covered != NULL ? surface->covered + (size_t)x1 : NULL;
+        const uint32_t pixelStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
 
-        for (x = x1; x <= x2; ++x) {
-            /* R_DrawSpan's spot: the v coordinate is the high six bits of yfrac
-             * and the u coordinate the low six of xfrac, both wrapped inside the
-             * 64 x 64 square by the masks the format hard-codes. */
-            const int spot = (int)(((yfrac >> (FRACBITS - 6)) & (63 * 64))
-                                   + ((xfrac >> FRACBITS) & 63));
+        if (maskAt == NULL && coverAt != NULL) {
+            for (x = x1; x <= x2; ++x) {
+                const int spot = (int)(((yfrac >> (FRACBITS - 6)) & (63 * 64))
+                                       + ((xfrac >> FRACBITS) & 63));
 
-            *destination++ = colormap[flat->pixels[spot]];
-            if (maskAt != NULL) {
-                *maskAt++ = 1u;
+                *destination++ = colormap[flatPixels[spot]];
+                *coverAt++ = 1u;
+                xfrac += xstep;
+                yfrac += ystep;
             }
-            xfrac += xstep;
-            yfrac += ystep;
+        } else {
+            for (x = x1; x <= x2; ++x) {
+                /* R_DrawSpan's spot: the v coordinate is the high six bits of yfrac
+                 * and the u coordinate the low six of xfrac, both wrapped inside the
+                 * 64 x 64 square by the masks the format hard-codes. */
+                const int spot = (int)(((yfrac >> (FRACBITS - 6)) & (63 * 64))
+                                       + ((xfrac >> FRACBITS) & 63));
+
+                *destination++ = colormap[flatPixels[spot]];
+                if (maskAt != NULL) {
+                    *maskAt++ = 1u;
+                }
+                if (coverAt != NULL) {
+                    *coverAt++ = 1u;
+                }
+                xfrac += xstep;
+                yfrac += ystep;
+            }
         }
-    }
-    if (surface->covered != NULL) {
-        for (x = x1; x <= x2; ++x) {
-            surface->covered[x] = 1u;
+        if (R_PROBE_HAS(state)) {
+            R_PROBE_OF(state)->planePixelCycle += R_PROBE_NOW() - pixelStart;
+            ++R_PROBE_OF(state)->planeSpans;
         }
     }
     surface->planePixels += (uint32_t)(x2 - x1 + 1);
@@ -603,7 +636,14 @@ r_plane_error_t r_plane_draw(struct r_view_state* state, r_draw_surface_t* surfa
 
     /* Nothing is written until every flat and the sky texture are resident and
      * well formed. */
-    result = preflight_planes(state, textures);
+    {
+        const uint32_t preflightStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
+
+        result = preflight_planes(state, textures);
+        if (R_PROBE_HAS(state)) {
+            R_PROBE_OF(state)->planePreflightCycle += R_PROBE_NOW() - preflightStart;
+        }
+    }
     if (result != R_PLANE_OK) {
         return result;
     }
@@ -622,6 +662,7 @@ r_plane_error_t r_plane_draw(struct r_view_state* state, r_draw_surface_t* surfa
 
     for (index = 0; index < state->storage.planes.count; ++index) {
         const r_visplane_t* plane = &state->storage.planes.planes[index];
+        const uint32_t planeStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
 
         if (plane->minX > plane->maxX) {
             continue;
@@ -629,8 +670,7 @@ r_plane_error_t r_plane_draw(struct r_view_state* state, r_draw_surface_t* surfa
         if (textures->beginFragment != NULL) {
             textures->beginFragment(textures->context);
         }
-        if (is_sky_plane(state, plane)) {
-            /* Preflight proved this resolves and is usable; a resolver that
+        if (is_sky_plane(state, plane)) {            /* Preflight proved this resolves and is usable; a resolver that
              * answers differently between the two calls breaks the
              * r_tex_source_t contract, and the plane is skipped rather than
              * dereferenced. */
@@ -652,6 +692,9 @@ r_plane_error_t r_plane_draw(struct r_view_state* state, r_draw_surface_t* surfa
                 draw_flat_plane(state, surface, flat, light, plane, baseXScale,
                                 baseYScale, lightRow);
             }
+        }
+        if (R_PROBE_HAS(state)) {
+            R_PROBE_OF(state)->planeLoopCycle += R_PROBE_NOW() - planeStart;
         }
     }
     return R_PLANE_OK;

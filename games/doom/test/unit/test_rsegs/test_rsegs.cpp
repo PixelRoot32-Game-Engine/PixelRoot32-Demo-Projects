@@ -2082,6 +2082,141 @@ void test_a_sprite_post_gap_leaves_the_buffer_untouched() {
                              fixture.surface.spritePixels);
 }
 
+/*
+ * D3.9's patch proof cache (r_things.h's r_sprite_proofs_t).
+ *
+ * The cache only changes *how many times* a patch is validated, so the test that
+ * matters is the one that proves it changes nothing else: the same sprites drawn
+ * with and without a cache must leave byte-identical pixels and byte-identical
+ * sprite coverage, and the cache must hold exactly one entry per distinct lump.
+ */
+void test_a_patch_proof_cache_draws_byte_identical_pixels() {
+    Fixture fixture;
+    TestTexture wall;
+    TestPatch patch;
+
+    wall.setSolid(7u, 8, 8);
+    fixture.textures.add("STONE", &wall.texture);
+    patch.setSolid(42u, 8, 16, 4, 16);
+    fixture.sprites.add("SPRA0", &patch.patch);
+    OneWall().build(fixture.mapBytes, 200, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+
+    // Two sprites, one lump: the cache has one entry to hold, not two.
+    r_sprite_t sprites[2];
+    sprites[0] = makeSprite(48 * kFracUnit, 0, 33 * kFracUnit, "SPRA0");
+    sprites[1] = makeSprite(96 * kFracUnit, 0, 33 * kFracUnit, "SPRA0");
+
+    fixture.prefill(0xEEu);
+    TEST_ASSERT_EQUAL_INT(R_THINGS_OK, fixture.drawMasked(sprites, 2u));
+    const std::vector<std::uint8_t> uncachedPixels = fixture.pixels;
+    const std::vector<std::uint8_t> uncachedMask = fixture.spriteMask;
+    const std::uint32_t uncachedCount = fixture.surface.spritePixels;
+    TEST_ASSERT_TRUE(uncachedCount > 0u);
+
+    r_sprite_proofs_t proofs{};
+    proofs.count = 0;
+    fixture.view.storage.spriteProofs = &proofs;
+
+    fixture.prefill(0xEEu);
+    TEST_ASSERT_EQUAL_INT(R_THINGS_OK, fixture.drawMasked(sprites, 2u));
+
+    TEST_ASSERT_EQUAL_UINT32(uncachedCount, fixture.surface.spritePixels);
+    TEST_ASSERT_TRUE(uncachedPixels == fixture.pixels);
+    TEST_ASSERT_TRUE(uncachedMask == fixture.spriteMask);
+    TEST_ASSERT_EQUAL_INT(1, proofs.count);
+}
+
+/*
+ * A caller-owned cache is only trusted for a patch it actually proved. This
+ * entry is for a *different* record, so the sprite's own patch is proved again
+ * -- and a malformed one is still refused rather than answered from the cache.
+ */
+void test_a_patch_proof_cache_cannot_answer_for_an_unproved_patch() {
+    Fixture fixture;
+    TestTexture wall;
+    TestPatch good;
+    // A header claiming eight columns whose column table is missing: the
+    // validator's R_ERR_PATCH_COLUMN_TABLE.
+    std::vector<std::uint8_t> badBytes = {8u, 0u, 16u, 0u, 4u, 0u, 16u, 0u};
+    r_sprite_patch_t bad;
+
+    wall.setSolid(7u, 8, 8);
+    fixture.textures.add("STONE", &wall.texture);
+    good.setSolid(42u, 8, 16, 4, 16);
+    fixture.sprites.add("GOODA0", &good.patch);
+    bad.data = badBytes.data();
+    bad.size = badBytes.size();
+    fixture.sprites.add("BADCA0", &bad);
+    OneWall().build(fixture.mapBytes, 200, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+
+    r_sprite_proofs_t proofs{};
+    proofs.entries[0].patch = &good.patch;
+    proofs.entries[0].width = 8;
+    proofs.entries[0].height = 16;
+    proofs.entries[0].leftOffset = 4;
+    proofs.entries[0].topOffset = 16;
+    proofs.count = 1;
+    fixture.view.storage.spriteProofs = &proofs;
+
+    fixture.prefill(0xAAu);
+    r_sprite_t badSprite = makeSprite(64 * kFracUnit, 0, 33 * kFracUnit, "BADCA0");
+    TEST_ASSERT_EQUAL_INT(R_THINGS_ERR_SPRITE_SHAPE,
+                          fixture.drawMasked(&badSprite, 1u));
+    TEST_ASSERT_EQUAL_INT(320 * 200, countValue(fixture, 0xAAu));
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.spritePixels);
+}
+
+/*
+ * D3.9 writes the coverage record inside the span loop instead of in a second
+ * pass over [x1, x2]. The invariant is the same one the second pass had: a
+ * column is covered exactly when this pass wrote at least one of its pixels.
+ * Drawn on a surface nothing else has touched, so "a plane wrote here" and
+ * "this pixel is not the prefill" are the same statement.
+ */
+void test_the_plane_pass_marks_exactly_the_columns_it_writes() {
+    Fixture fixture;
+    TestFlat flat;
+
+    flat.setSolid(0x37u);
+    fixture.flats.add("FLAT1", &flat.flat);
+    OneWall().build(fixture.mapBytes, 64, 100, -100, "STONE");
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+
+    // A run that is neither empty nor the whole screen, so "covered" cannot be
+    // satisfied by a blanket answer.
+    clearPlanes(fixture);
+    setRun(addPlane(fixture, 0, "FLAT1", 255), 40, 199, 20, 59);
+    fixture.prefill(0xEEu);
+
+    TEST_ASSERT_EQUAL_INT(R_PLANE_OK, fixture.drawPlanes());
+    TEST_ASSERT_EQUAL_UINT32(160u * 40u, fixture.surface.planePixels);
+
+    for (int x = 0; x < static_cast<int>(kScreenWidth); ++x) {
+        bool written = false;
+        for (int y = 0; y < static_cast<int>(kScreenHeight); ++y) {
+            if (fixture.at(x, y) != 0xEEu) {
+                written = true;
+                break;
+            }
+        }
+        TEST_ASSERT_EQUAL_UINT8(written ? 1u : 0u, fixture.covered[x]);
+    }
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.covered[39]);
+    TEST_ASSERT_EQUAL_UINT8(1u, fixture.covered[40]);
+    TEST_ASSERT_EQUAL_UINT8(1u, fixture.covered[199]);
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.covered[200]);
+}
+
 void test_a_nonresident_sprite_leaves_the_frame_untouched() {
     Fixture fixture;
     TestTexture wall;
@@ -2237,6 +2372,9 @@ int main(int argc, char** argv) {
     RUN_TEST(test_a_sprite_in_front_of_a_two_sided_line_is_not_clipped);
     RUN_TEST(test_a_flipped_sprite_mirrors_its_texture_columns);
     RUN_TEST(test_a_masked_mid_texture_is_deferred_and_orders_against_sprites_and_flats);
+    RUN_TEST(test_a_patch_proof_cache_draws_byte_identical_pixels);
+    RUN_TEST(test_a_patch_proof_cache_cannot_answer_for_an_unproved_patch);
+    RUN_TEST(test_the_plane_pass_marks_exactly_the_columns_it_writes);
     RUN_TEST(test_a_sprite_post_gap_leaves_the_buffer_untouched);
     RUN_TEST(test_a_nonresident_sprite_leaves_the_frame_untouched);
     RUN_TEST(test_a_vis_sprite_overflow_fails_before_any_write);

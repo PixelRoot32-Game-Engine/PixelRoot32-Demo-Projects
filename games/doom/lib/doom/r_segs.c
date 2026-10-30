@@ -195,7 +195,7 @@ void r_column_draw(r_draw_surface_t* surface, int x, int yl, int yh,
                    const uint8_t* colormap, uint8_t* pixelMask,
                    uint32_t* written) {
     fixed_t frac;
-    const int stride = surface->width;
+    const size_t stride = (size_t)surface->width;
     size_t at;
     uint32_t count = 0u;
     int row;
@@ -223,34 +223,55 @@ void r_column_draw(r_draw_surface_t* surface, int x, int yl, int yh,
     frac = textureMid + (fixed_t)((yl - R_CENTER_Y) * iscale);
     /* The strided address is advanced, not recomputed: the row multiply was the
      * only one in the loop, and a wall column is a run of rows at a fixed x. */
-    at = (size_t)x + (size_t)yl * (size_t)stride;
+    at = (size_t)x + (size_t)yl * stride;
 
     if (mask == NULL) {
         /* Every tier DOOM's R_RenderSegLoop draws is opaque, and so is every
-         * composite in the sampled map; this is the path that matters. */
-        for (row = yl; row <= yh; ++row) {
-            surface->pixels[at] =
-                colormap[column[(int)((frac >> FRACBITS) & heightMask)]];
-            if (pixelMask != NULL) {
-                pixelMask[at] = 1u;
+         * composite in the sampled map; this is the path that matters.
+         *
+         * D3.9 splits the coverage write out of the loop instead of testing the
+         * pointer per pixel: `surface->pixels[at] = ...` and `pixelMask[at] = 1`
+         * are two stores through two byte pointers, and the test is a branch the
+         * compiler cannot fold away. The two forms write exactly the same bytes.
+         * The destination is a pointer, not an index, for the same reason the
+         * address was already being advanced. */
+        uint8_t* destination = surface->pixels + at;
+
+        if (pixelMask == NULL) {
+            for (row = yl; row <= yh; ++row) {
+                *destination = colormap[column[(int)((frac >> FRACBITS) & heightMask)]];
+                destination += stride;
+                frac += iscale;
             }
-            at += (size_t)stride;
-            frac += iscale;
+        } else {
+            uint8_t* maskAt = pixelMask + at;
+
+            for (row = yl; row <= yh; ++row) {
+                *destination = colormap[column[(int)((frac >> FRACBITS) & heightMask)]];
+                *maskAt = 1u;
+                destination += stride;
+                maskAt += stride;
+                frac += iscale;
+            }
         }
         count = (uint32_t)(yh - yl + 1);
     } else {
+        uint8_t* destination = surface->pixels + at;
+
         for (row = yl; row <= yh; ++row) {
             const int texel = (int)((frac >> FRACBITS) & heightMask);
 
             if (mask[texel] != 0u) {
-                surface->pixels[at] = colormap[column[texel]];
+                *destination = colormap[column[texel]];
                 if (pixelMask != NULL) {
                     pixelMask[at] = 1u;
                 }
                 ++count;
             }
-            at += (size_t)stride;
+            ++destination;
+            destination += stride;
             frac += iscale;
+            at += stride;
         }
     }
 
@@ -300,6 +321,8 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
     fixed_t scaleStep;
     fixed_t topStep;
     fixed_t bottomStep;
+    uint32_t genericStart = 0u;
+    const uint32_t prologueStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
     int x;
 
     /* The predicate arrived from the caller's single r_wall_fragment_open(); ...
@@ -341,6 +364,9 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
     r_wall_fragment_peg(&fragment, mid != NULL ? (fixed_t)mid->height << FRACBITS : 0,
                         top != NULL ? (fixed_t)top->height << FRACBITS : 0);
     r_wall_fragment_step(&fragment, fragment.scale1, fragment.scaleStep);
+    if (R_PROBE_HAS(state)) {
+        R_PROBE_OF(state)->wallPrologueCycle += R_PROBE_NOW() - prologueStart;
+    }
 
     /* The steppers are r_wall_fragment_step()'s output, so they are read after
      * it: taking them from the opened fragment would freeze every column at the
@@ -370,6 +396,7 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
             const uint8_t* colormap;
             fixed_t iscale;
             int textureColumn;
+            const uint32_t setupStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
 
             if (yl < ceilingclip[x] + 1) {
                 yl = ceilingclip[x] + 1;
@@ -383,11 +410,28 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
             textureColumn = (int)texturecolumn;
             colormap = r_light_wall(light, fragment.lightNum, scale);
             iscale = column_iscale(scale);
-            r_column_draw(surface, x, yl, yh, fragment.midTextureMid, iscale,
-                          mid->pixels + (size_t)(textureColumn & mid->widthMask)
-                                            * (size_t)(mid->heightMask + 1),
-                          mid->heightMask, mid->mask, colormap, NULL,
-                          &tierPixels[R_DRAW_TIER_MID]);
+            if (R_PROBE_HAS(state)) {
+                r_raster_probe_t* probe = R_PROBE_OF(state);
+                const uint32_t now = R_PROBE_NOW();
+
+                probe->wallSetupCycle += now - setupStart;
+                ++probe->wallColumns;
+                /* The store is timed around the call, not inside it: the inner
+                 * loop is the one thing whose per-iteration cost must not
+                 * change. */
+                r_column_draw(surface, x, yl, yh, fragment.midTextureMid, iscale,
+                              mid->pixels + (size_t)(textureColumn & mid->widthMask)
+                                                * (size_t)(mid->heightMask + 1),
+                              mid->heightMask, mid->mask, colormap, NULL,
+                              &tierPixels[R_DRAW_TIER_MID]);
+                probe->wallStoreCycle += R_PROBE_NOW() - now;
+            } else {
+                r_column_draw(surface, x, yl, yh, fragment.midTextureMid, iscale,
+                              mid->pixels + (size_t)(textureColumn & mid->widthMask)
+                                                * (size_t)(mid->heightMask + 1),
+                              mid->heightMask, mid->mask, colormap, NULL,
+                              &tierPixels[R_DRAW_TIER_MID]);
+            }
 
             ceilingclip[x] = (int16_t)R_VIEW_HEIGHT;
             floorclip[x] = -1;
@@ -398,6 +442,9 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
         return;
     }
 
+    if (R_PROBE_HAS(state)) {
+        genericStart = R_PROBE_NOW();
+    }
     for (x = fragment.x1; x <= fragment.x2; ++x) {
         int yl = (int)((topfrac + (1 << 12) - 1) >> 12);
         int yh;
@@ -497,6 +544,9 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
         topfrac += topStep;
         bottomfrac += bottomStep;
     }
+    if (R_PROBE_HAS(state)) {
+        R_PROBE_OF(state)->wallGenericCycle += R_PROBE_NOW() - genericStart;
+    }
 }
 
 /* --- Public API ---------------------------------------------------------- */
@@ -515,6 +565,8 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
     int column;
     r_name_t proven[R_SEGS_PREFLIGHT_MEMO];
     int provenCount = 0;
+    uint32_t preflightStart = 0u;
+    uint32_t clipSaveStart = 0u;
 
     if (state == NULL) {
         return R_SEGS_ERR_NULL_STATE;
@@ -553,6 +605,9 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
      * blocks, and a fragment open is a chain of mapped-flash record reads. */
     clipBlocks = R_DRAWSEG_RESERVED_BLOCKS;
     openingBlocks = 0u;
+    if (R_PROBE_HAS(state)) {
+        preflightStart = R_PROBE_NOW();
+    }
     for (index = 0; index < state->drawsegCount; ++index) {
         r_drawseg_t* drawseg = &state->storage.drawsegs[index];
         r_wall_fragment_t fragment;
@@ -605,6 +660,9 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
             }
         }
     }
+    if (R_PROBE_HAS(state)) {
+        R_PROBE_OF(state)->wallPreflightCycle += R_PROBE_NOW() - preflightStart;
+    }
     if (state->storage.clipBlockCapacity < clipBlocks) {
         return R_SEGS_ERR_SMALL_CLIP_POOL;
     }
@@ -616,17 +674,24 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
     }
 
     /* R_ClearPlanes()' opening/closing determination, and this pass's records. */
-    for (column = 0; column < R_SCREEN_WIDTH; ++column) {
-        state->storage.floorClip[column] = (int16_t)R_VIEW_HEIGHT;
-        state->storage.ceilingClip[column] = -1;
-        if (surface->covered != NULL) {
-            surface->covered[column] = 0u;
+    {
+        const uint32_t poolStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
+
+        for (column = 0; column < R_SCREEN_WIDTH; ++column) {
+            state->storage.floorClip[column] = (int16_t)R_VIEW_HEIGHT;
+            state->storage.ceilingClip[column] = -1;
+            if (surface->covered != NULL) {
+                surface->covered[column] = 0u;
+            }
+        }
+        surface->tierPixels[R_DRAW_TIER_MID] = 0u;
+        surface->tierPixels[R_DRAW_TIER_TOP] = 0u;
+        surface->tierPixels[R_DRAW_TIER_BOTTOM] = 0u;
+        fill_constant_clip_blocks(clipPool);
+        if (R_PROBE_HAS(state)) {
+            R_PROBE_OF(state)->wallPoolCycle += R_PROBE_NOW() - poolStart;
         }
     }
-    surface->tierPixels[R_DRAW_TIER_MID] = 0u;
-    surface->tierPixels[R_DRAW_TIER_TOP] = 0u;
-    surface->tierPixels[R_DRAW_TIER_BOTTOM] = 0u;
-    fill_constant_clip_blocks(clipPool);
 
     for (index = 0; index < state->drawsegCount; ++index) {
         r_drawseg_t* drawseg = &state->storage.drawsegs[index];
@@ -637,8 +702,13 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
         int16_t topBlock = R_DRAWSEG_NO_BLOCK;
         int16_t bottomBlock = R_DRAWSEG_NO_BLOCK;
         int16_t maskedBlock = R_DRAWSEG_NO_BLOCK;
+        uint32_t openStart;
 
+        openStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
         r_wall_fragment_open(state->map, &state->params, drawseg->seg, &fragment);
+        if (R_PROBE_HAS(state)) {
+            R_PROBE_OF(state)->wallOpenCycle += R_PROBE_NOW() - openStart;
+        }
         masked = fragment.hasBack && r_has_name(fragment.midTexture) ? 1 : 0;
         if (masked) {
             maskedBlock = (int16_t)nextOpeningBlock;
@@ -655,11 +725,20 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
         if (textures->beginFragment != NULL) {
             textures->beginFragment(textures->context);
         }
-        emit_fragment(state, surface, textures, light, drawseg, &fragment, maskedColumns);
+        {
+            const uint32_t emitStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
+
+            emit_fragment(state, surface, textures, light, drawseg, &fragment,
+                          maskedColumns);
+            if (R_PROBE_HAS(state)) {
+                R_PROBE_OF(state)->wallEmitCycle += R_PROBE_NOW() - emitStart;
+            }
+        }
 
         /* R_StoreWallRange's tail: the clip arrays as the column loop left
          * them, then the edges a masked texture forces. */
         silhouette = fragment.silhouette;
+        clipSaveStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
         if (fragment.hasBack) {
             if (fragment.clipTopSolid) {
                 topBlock = R_DRAWSEG_CLIP_TOP;
@@ -684,6 +763,9 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
         } else {
             topBlock = R_DRAWSEG_CLIP_TOP;
             bottomBlock = R_DRAWSEG_CLIP_BOTTOM;
+        }
+        if (R_PROBE_HAS(state)) {
+            R_PROBE_OF(state)->wallClipSaveCycle += R_PROBE_NOW() - clipSaveStart;
         }
 
         if (masked) {

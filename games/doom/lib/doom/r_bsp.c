@@ -237,6 +237,11 @@ static int check_bbox(r_view_state_t* state, const fixed_t* bbox) {
     int sx1;
     int sx2;
     int start;
+    r_raster_probe_t* probe = R_PROBE_OF(state);
+
+    if (probe != NULL) {
+        ++probe->bboxTests;
+    }
 
     if (state->params.x <= bbox[2]) {
         boxx = 0;
@@ -301,6 +306,11 @@ static int check_bbox(r_view_state_t* state, const fixed_t* bbox) {
     start = 0;
     while (solid[start].last < sx2) {
         ++start;
+    }
+    if (probe != NULL) {        /* `start` is the number of posts the scan walked past, so the count is
+         * free: adding a counter inside the loop would cost more than the
+         * loop. */
+        probe->clipScanSteps += (uint32_t)start;
     }
 
     return !(sx1 >= solid[start].first && sx2 <= solid[start].last);
@@ -680,26 +690,42 @@ static void store_wall_range(r_view_state_t* state, int start, int stop) {
     r_wall_fragment_t fragment;
     r_drawseg_t* drawseg;
     r_plane_error_t planeError;
+    uint32_t mark;
 
     if (state->drawsegCount >= state->storage.drawsegCapacity) {
         state->drawsegOverflowed = 1;
         return;
     }
 
+    mark = state->probe != NULL ? R_PROBE_NOW() : 0u;
     r_wall_fragment_open(state->map, &state->params, state->currentSeg, &fragment);
     wall_fragment_range(&fragment, &state->params, state->rwAngle1, start, stop);
 
+    if (state->probe != NULL) {
+        ++state->probe->wallRangeStores;
+    }
+
     if (fragment.markCeiling) {
+        const uint32_t checkStart = state->probe != NULL ? R_PROBE_NOW() : 0u;
+
         planeError = r_plane_check(&state->storage.planes, state->ceilingPlane,
                                    fragment.x1, fragment.x2, &state->ceilingPlane);
+        if (state->probe != NULL) {
+            state->probe->walkPlaneCheckCycle += R_PROBE_NOW() - checkStart;
+        }
         if (planeError != R_PLANE_OK) {
             fail(state, R_BSP_ERR_VISPLANE_OVERFLOW);
             return;
         }
     }
     if (fragment.markFloor) {
+        const uint32_t checkStart = state->probe != NULL ? R_PROBE_NOW() : 0u;
+
         planeError = r_plane_check(&state->storage.planes, state->floorPlane,
                                    fragment.x1, fragment.x2, &state->floorPlane);
+        if (state->probe != NULL) {
+            state->probe->walkPlaneCheckCycle += R_PROBE_NOW() - checkStart;
+        }
         if (planeError != R_PLANE_OK) {
             fail(state, R_BSP_ERR_VISPLANE_OVERFLOW);
             return;
@@ -707,7 +733,14 @@ static void store_wall_range(r_view_state_t* state, int start, int stop) {
     }
 
     r_wall_fragment_step(&fragment, fragment.scale1, fragment.scaleStep);
-    render_seg_loop(state, &fragment);
+    {
+        const uint32_t loopStart = state->probe != NULL ? R_PROBE_NOW() : 0u;
+
+        render_seg_loop(state, &fragment);
+        if (state->probe != NULL) {
+            state->probe->walkSegLoopCycle += R_PROBE_NOW() - loopStart;
+        }
+    }
 
     drawseg = &state->storage.drawsegs[state->drawsegCount];
     drawseg->seg = state->currentSeg;
@@ -731,6 +764,9 @@ static void store_wall_range(r_view_state_t* state, int start, int stop) {
     drawseg->sprBottomClip = R_DRAWSEG_NO_BLOCK;
     drawseg->maskedTextureCol = R_DRAWSEG_NO_BLOCK;
     state->drawsegCount = (uint16_t)(state->drawsegCount + 1);
+    if (state->probe != NULL) {
+        state->probe->walkStoreCycle += R_PROBE_NOW() - mark;
+    }
 }
 
 /* --- Wall clipping (r_bsp.c) -------------------------------------------- */
@@ -869,6 +905,11 @@ static void add_line(r_view_state_t* state, uint16_t segIndex) {
     doom_map_get_vertex(state->map, seg.v1, &v1);
     doom_map_get_vertex(state->map, seg.v2, &v2);
 
+    if (state->probe != NULL) {
+        ++state->probe->segVisits;
+        state->probe->walkMapReads += 3u;
+    }
+
     state->currentSeg = segIndex;
     angle1 = point_to_angle(&state->params, v1.x, v1.y);
     angle2 = point_to_angle(&state->params, v2.x, v2.y);
@@ -952,44 +993,69 @@ static void render_subsector(r_view_state_t* state, uint16_t number) {
     doom_sector_t sector;
     uint16_t sectorIndex;
     uint16_t index;
+    uint32_t subsectorStart;
 
     if (state->error != R_BSP_OK) {
         return;
     }
 
+    subsectorStart = state->probe != NULL ? R_PROBE_NOW() : 0u;
+    if (state->probe != NULL) {
+        ++state->probe->subsectorVisits;
+    }
     doom_map_get_subsector(state->map, number, &subsector);
     sectorIndex = doom_map_subsector_sector(state->map, &subsector);
     state->frontSector = sectorIndex;
     doom_map_get_sector(state->map, sectorIndex, &sector);
 
-    if (sector.floorHeight < state->params.z) {
-        if (r_plane_find(&state->storage.planes, sector.floorHeight,
-                         sector.floorPic, sector.lightLevel, state->params.skyPicNum,
-                         &state->floorPlane) != R_PLANE_OK) {
-            fail(state, R_BSP_ERR_VISPLANE_OVERFLOW);
-            return;
-        }
-    } else {
-        state->floorPlane = NULL;
-    }
+    {
+        const uint32_t planeStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
 
-    if (sector.ceilingHeight > state->params.z ||
-        sector.ceilingPic == state->params.skyPicNum) {
-        if (r_plane_find(&state->storage.planes, sector.ceilingHeight,
-                         sector.ceilingPic, sector.lightLevel,
-                         state->params.skyPicNum, &state->ceilingPlane) != R_PLANE_OK) {
-            fail(state, R_BSP_ERR_VISPLANE_OVERFLOW);
-            return;
+        if (sector.floorHeight < state->params.z) {
+            if (r_plane_find(&state->storage.planes, sector.floorHeight,
+                             sector.floorPic, sector.lightLevel, state->params.skyPicNum,
+                             &state->floorPlane) != R_PLANE_OK) {
+                fail(state, R_BSP_ERR_VISPLANE_OVERFLOW);
+                return;
+            }
+        } else {
+            state->floorPlane = NULL;
         }
-    } else {
-        state->ceilingPlane = NULL;
+
+        if (sector.ceilingHeight > state->params.z ||
+            sector.ceilingPic == state->params.skyPicNum) {
+            if (r_plane_find(&state->storage.planes, sector.ceilingHeight,
+                             sector.ceilingPic, sector.lightLevel,
+                             state->params.skyPicNum, &state->ceilingPlane) != R_PLANE_OK) {
+                fail(state, R_BSP_ERR_VISPLANE_OVERFLOW);
+                return;
+            }
+        } else {
+            state->ceilingPlane = NULL;
+        }
+
+        if (R_PROBE_HAS(state)) {
+            r_raster_probe_t* probe = R_PROBE_OF(state);
+
+            probe->planeFindCycle += R_PROBE_NOW() - planeStart;
+            probe->planeFindCalls += 2u;
+        }
     }
 
     for (index = 0; index < subsector.numSegs; ++index) {
+        const uint32_t lineStart = state->probe != NULL ? R_PROBE_NOW() : 0u;
+
         add_line(state, (uint16_t)(subsector.firstSeg + index));
+        if (state->probe != NULL) {
+            state->probe->walkLineCycle += R_PROBE_NOW() - lineStart;
+        }
         if (state->error != R_BSP_OK) {
             return;
         }
+    }
+    if (state->probe != NULL) {
+        state->probe->walkSubsectorCycle += R_PROBE_NOW() - subsectorStart;
+        state->probe->walkMapReads += 2u + (uint32_t)subsector.numSegs;
     }
 }
 
@@ -1016,6 +1082,11 @@ static void render_bsp_node(r_view_state_t* state, int bspnum, int depth) {
 
     doom_map_get_node(state->map, (uint16_t)bspnum, &node);
     side = point_on_side(state->params.x, state->params.y, &node);
+
+    if (state->probe != NULL) {
+        ++state->probe->nodeVisits;
+        ++state->probe->walkMapReads;
+    }
 
     render_bsp_node(state, node.children[side], depth + 1);
     if (state->error != R_BSP_OK) {
@@ -1113,7 +1184,6 @@ r_bsp_error_t r_bsp_render(r_view_state_t* state, const r_view_params_t* params)
 
     return state->error;
 }
-
 r_bsp_error_t r_bsp_point_in_subsector(const doom_map_t* map, fixed_t x, fixed_t y,
                                        uint16_t* out) {
     int nodenum;
