@@ -1,0 +1,1089 @@
+/*
+ * The BSP walk of the DOOM port (r_bsp.h), from upstream's r_bsp.c and the
+ * marking half of r_segs.c.
+ *
+ * WHAT IS PORTED, AND FROM WHERE
+ *
+ *   R_PointOnSide, R_CheckBBox, R_AddLine, R_ClipSolidWallSegment,
+ *   R_ClipPassWallSegment, R_ClearClipSegs, R_Subsector, R_RenderBSPNode
+ *       r_bsp.c. Traversal order, clip-post arithmetic and every cull are
+ *       kept; the clip list is an array in the caller instead of solidsegs[].
+ *
+ *   R_PointToAngle, R_PointToDist, R_ScaleFromGlobalAngle
+ *       r_main.c, using the same arc-tangent table and the same wrap-around
+ *       arithmetic.
+ *
+ *   R_StoreWallRange, and the floor/ceiling marking of R_RenderSegLoop
+ *       r_segs.c. The texture-column lookup, the three wall tiers and all
+ *       pixel writes are D3.2's; what remains is the silhouette decision, the
+ *       light index, the two scales and the plane marks.
+ *
+ * DELIBERATE DIVERGENCES (each is visible in behaviour and named for review)
+ *
+ *   1. Every global upstream uses became a field of r_view_state_t, so two
+ *      views can coexist and nothing mutable is file-scope.
+ *   2. The clip list has a checked capacity. Upstream writes past solidsegs[31]
+ *      if a view ever needs more posts; here that is R_BSP_ERR_CLIP_OVERFLOW
+ *      and the walk stops with a complete, shorter result.
+ *   3. The plane set has a checked capacity (r_plane.c), for the same reason.
+ *   4. fixed_div() is integer division, not the double division of upstream's
+ *      FixedDiv2(). m_fixed.h documents the one-unit worst case.
+ *   5. Sprite clipping arrays and masked-texture columns are not recorded.
+ *      They live in upstream's openings[] and are only read by D3.4/D3.2; the
+ *      drawseg struct is documented with that omission.
+ *   6. The clip-list "crunch" is written as a removal (`start+1 .. next` are
+ *      deleted and the tail shifts down) instead of upstream's pointer walk
+ *      `while (next++ != newend) *++start = *next;`. Upstream's loop copies
+ *      one element past the list end, which leaves the [width, +inf] sentinel
+ *      one slot early and a stale, never-read entry inside newend. Both stop
+ *      every later scan at the same sentinel, so the fragment decisions are
+ *      identical; this version simply cannot let the stale slot consume clip
+ *      capacity.
+ *
+ * This is C99 only: no allocation, no globals, no stdio, no floating point.
+ */
+#include "r_bsp.h"
+
+#include "r_tables.h"
+
+/* The projection constants R_ExecuteSetViewSize() derives for the fixed
+ * 320x200 view: centerx == 160, centery == 100, projection == centerx << 16. */
+#define R_CENTER_X_FRAC (((fixed_t)(R_SCREEN_WIDTH / 2)) << FRACBITS)
+#define R_CENTER_Y_FRAC (((fixed_t)(R_SCREEN_HEIGHT / 2)) << FRACBITS)
+
+/* The eight name bytes of the sky flat, written out so no string literal is
+ * read past its terminator. */
+static const uint8_t kSkyName[8] = {'F', '_', 'S', 'K', 'Y', '1', 0, 0};
+
+/* --- Small helpers ------------------------------------------------------- */
+
+static void fail(r_view_state_t* state, r_bsp_error_t error) {
+    if (state->error == R_BSP_OK) {
+        state->error = error;
+    }
+}
+
+static fixed_t abs_fixed(fixed_t value) {
+    const int64_t wide = value;
+
+    return (fixed_t)(wide < 0 ? -wide : wide);
+}
+
+static int abs_angle_32(angle_t value) {
+    const int32_t signed_value = (int32_t)value;
+
+    return signed_value < 0 ? -signed_value : signed_value;
+}
+
+/* --- Geometry ------------------------------------------------------------ */
+
+/* R_PointOnSide(): which half-plane of a node's partition a point is in. The
+ * sign-bit fast path is upstream's, including the 32-bit xor trick. */
+static int point_on_side(fixed_t x, fixed_t y, const doom_node_t* node) {
+    fixed_t dx;
+    fixed_t dy;
+    fixed_t left;
+    fixed_t right;
+
+    if (node->dx == 0) {
+        if (x <= node->x) {
+            return node->dy > 0;
+        }
+        return node->dy < 0;
+    }
+    if (node->dy == 0) {
+        if (y <= node->y) {
+            return node->dx < 0;
+        }
+        return node->dx > 0;
+    }
+
+    dx = (fixed_t)((uint32_t)x - (uint32_t)node->x);
+    dy = (fixed_t)((uint32_t)y - (uint32_t)node->y);
+
+    if (((node->dy ^ node->dx ^ dx ^ dy) & (fixed_t)0x80000000) != 0) {
+        return ((node->dy ^ dx) & (fixed_t)0x80000000) != 0 ? 1 : 0;
+    }
+
+    left = fixed_mul(node->dy >> FRACBITS, dx);
+    right = fixed_mul(dy, node->dx >> FRACBITS);
+
+    return right < left ? 0 : 1;
+}
+
+/* R_PointToAngle(): octant-normalised arc tangent through the table. */
+static angle_t point_to_angle(const r_view_state_t* state, fixed_t x, fixed_t y) {
+    fixed_t dx = (fixed_t)((uint32_t)x - (uint32_t)state->params.x);
+    fixed_t dy = (fixed_t)((uint32_t)y - (uint32_t)state->params.y);
+
+    if (dx == 0 && dy == 0) {
+        return 0;
+    }
+
+    if (dx >= 0) {
+        if (dy >= 0) {
+            if (dx > dy) {
+                return r_tan_to_angle[slope_div((uint32_t)dy, (uint32_t)dx)];
+            }
+            return ANG90 - 1u - r_tan_to_angle[slope_div((uint32_t)dx, (uint32_t)dy)];
+        }
+        dy = (fixed_t)(0u - (uint32_t)dy);
+        if (dx > dy) {
+            return 0u - r_tan_to_angle[slope_div((uint32_t)dy, (uint32_t)dx)];
+        }
+        return ANG270 + r_tan_to_angle[slope_div((uint32_t)dx, (uint32_t)dy)];
+    }
+
+    dx = (fixed_t)(0u - (uint32_t)dx);
+    if (dy >= 0) {
+        if (dx > dy) {
+            return ANG180 - 1u - r_tan_to_angle[slope_div((uint32_t)dy, (uint32_t)dx)];
+        }
+        return ANG90 + r_tan_to_angle[slope_div((uint32_t)dx, (uint32_t)dy)];
+    }
+    dy = (fixed_t)(0u - (uint32_t)dy);
+    if (dx > dy) {
+        return ANG180 + r_tan_to_angle[slope_div((uint32_t)dy, (uint32_t)dx)];
+    }
+    return ANG270 - 1u - r_tan_to_angle[slope_div((uint32_t)dx, (uint32_t)dy)];
+}
+
+/* R_PointToDist(): distance from the viewpoint to a point, 16.16. */
+static fixed_t point_to_dist(const r_view_state_t* state, fixed_t x, fixed_t y) {
+    fixed_t dx = abs_fixed((fixed_t)((uint32_t)x - (uint32_t)state->params.x));
+    fixed_t dy = abs_fixed((fixed_t)((uint32_t)y - (uint32_t)state->params.y));
+    fixed_t temp;
+    angle_t angle;
+
+    if (dy > dx) {
+        temp = dx;
+        dx = dy;
+        dy = temp;
+    }
+    if (dx == 0) {
+        /* Both points coincide. Upstream would divide by zero here; no real
+         * map reaches it, and answering zero keeps a corrupt map from reading
+         * a table out of bounds. */
+        return 0;
+    }
+
+    angle = (r_tan_to_angle[fixed_div(dy, dx) >> (FRACBITS - 11)] + ANG90) >>
+            ANGLETOFINESHIFT;
+    return fixed_div(dx, r_fine_sine[angle]);
+}
+
+/* R_ScaleFromGlobalAngle(): the texture scale at one column, 16.16. */
+static fixed_t scale_from_global_angle(const r_view_state_t* state,
+                                       angle_t visangle) {
+    const angle_t anglea = ANG90 + (visangle - state->params.angle);
+    const angle_t angleb = ANG90 + (visangle - state->rwNormalAngle);
+    const fixed_t sinea = r_fine_sine[anglea >> ANGLETOFINESHIFT];
+    const fixed_t sineb = r_fine_sine[angleb >> ANGLETOFINESHIFT];
+    const fixed_t num = fixed_mul(R_CENTER_X_FRAC, sineb);
+    const fixed_t den = fixed_mul(state->rwDistance, sinea);
+    fixed_t scale;
+
+    if (den > (num >> FRACBITS)) {
+        scale = fixed_div(num, den);
+        if (scale > 64 * FRACUNIT) {
+            scale = 64 * FRACUNIT;
+        } else if (scale < 256) {
+            scale = 256;
+        }
+        return scale;
+    }
+    return 64 * FRACUNIT;
+}
+
+/* --- Clip posts (r_bsp.c R_ClearClipSegs and friends) -------------------- */
+
+static void clear_clip_segs(r_view_state_t* state) {
+    r_clip_range_t* solid = state->storage.clipRanges;
+
+    solid[0].first = -0x7fffffff;
+    solid[0].last = -1;
+    solid[1].first = R_SCREEN_WIDTH;
+    solid[1].last = 0x7fffffff;
+    state->clipRangeCount = 2;
+}
+
+static int check_bbox(r_view_state_t* state, const fixed_t* bbox) {
+    static const int checkcoord[11][4] = {
+        {3, 0, 2, 1}, {3, 0, 2, 0}, {3, 1, 2, 0},
+        {0, 0, 0, 0},
+        {2, 0, 2, 1}, {0, 0, 0, 0}, {3, 1, 3, 0},
+        {0, 0, 0, 0},
+        {2, 0, 3, 1}, {2, 1, 3, 1}, {2, 1, 3, 0}
+    };
+    const r_clip_range_t* solid = state->storage.clipRanges;
+    int boxx;
+    int boxy;
+    int boxpos;
+    fixed_t x1;
+    fixed_t y1;
+    fixed_t x2;
+    fixed_t y2;
+    angle_t angle1;
+    angle_t angle2;
+    angle_t span;
+    angle_t tspan;
+    int sx1;
+    int sx2;
+    int start;
+
+    if (state->params.x <= bbox[2]) {
+        boxx = 0;
+    } else if (state->params.x < bbox[3]) {
+        boxx = 1;
+    } else {
+        boxx = 2;
+    }
+
+    if (state->params.y >= bbox[0]) {
+        boxy = 0;
+    } else if (state->params.y > bbox[1]) {
+        boxy = 1;
+    } else {
+        boxy = 2;
+    }
+
+    boxpos = (boxy << 2) + boxx;
+    if (boxpos == 5) {
+        return 1;
+    }
+
+    x1 = bbox[checkcoord[boxpos][0]];
+    y1 = bbox[checkcoord[boxpos][1]];
+    x2 = bbox[checkcoord[boxpos][2]];
+    y2 = bbox[checkcoord[boxpos][3]];
+
+    angle1 = point_to_angle(state, x1, y1) - state->params.angle;
+    angle2 = point_to_angle(state, x2, y2) - state->params.angle;
+    span = angle1 - angle2;
+
+    if (span >= ANG180) {
+        return 1;
+    }
+
+    tspan = angle1 + r_clip_angle;
+    if (tspan > 2 * r_clip_angle) {
+        tspan -= 2 * r_clip_angle;
+        if (tspan >= span) {
+            return 0;
+        }
+        angle1 = r_clip_angle;
+    }
+
+    tspan = r_clip_angle - angle2;
+    if (tspan > 2 * r_clip_angle) {
+        tspan -= 2 * r_clip_angle;
+        if (tspan >= span) {
+            return 0;
+        }
+        angle2 = (angle_t)(0u - r_clip_angle);
+    }
+
+    sx1 = r_view_angle_to_x[(angle1 + ANG90) >> ANGLETOFINESHIFT];
+    sx2 = r_view_angle_to_x[(angle2 + ANG90) >> ANGLETOFINESHIFT];
+
+    if (sx1 == sx2) {
+        return 0;
+    }
+    sx2 -= 1;
+
+    start = 0;
+    while (solid[start].last < sx2) {
+        ++start;
+    }
+
+    return !(sx1 >= solid[start].first && sx2 <= solid[start].last);
+}
+
+/* --- Wall ranges (r_segs.c R_StoreWallRange, marking half) --------------- */
+
+static void render_seg_loop(r_view_state_t* state) {
+    const int viewheight = R_SCREEN_HEIGHT;
+    int16_t* floorclip = state->storage.floorClip;
+    int16_t* ceilingclip = state->storage.ceilingClip;
+    r_visplane_t* floorplane = state->floorPlane;
+    r_visplane_t* ceilingplane = state->ceilingPlane;
+    fixed_t topfrac = state->topFrac;
+    fixed_t bottomfrac = state->bottomFrac;
+    fixed_t topstep = state->topStep;
+    fixed_t bottomstep = state->bottomStep;
+    fixed_t pixhigh = state->pixHigh;
+    fixed_t pixlow = state->pixLow;
+    int x;
+
+    for (x = state->rwX; x < state->rwStopX; ++x) {
+        int yl = (int)((topfrac + (1 << 12) - 1) >> 12);
+        int yh;
+
+        if (yl < ceilingclip[x] + 1) {
+            yl = ceilingclip[x] + 1;
+        }
+
+        if (state->markCeiling) {
+            int top = ceilingclip[x] + 1;
+            int bottom = yl - 1;
+
+            if (bottom >= floorclip[x]) {
+                bottom = floorclip[x] - 1;
+            }
+            if (top <= bottom) {
+                ceilingplane->top[x] = (uint8_t)top;
+                ceilingplane->bottom[x] = (uint8_t)bottom;
+            }
+        }
+
+        yh = (int)(bottomfrac >> 12);
+        if (yh >= floorclip[x]) {
+            yh = floorclip[x] - 1;
+        }
+
+        if (state->markFloor) {
+            int top = yh + 1;
+            int bottom = floorclip[x] - 1;
+
+            if (top <= ceilingclip[x]) {
+                top = ceilingclip[x] + 1;
+            }
+            if (top <= bottom) {
+                floorplane->top[x] = (uint8_t)top;
+                floorplane->bottom[x] = (uint8_t)bottom;
+            }
+        }
+
+        if (state->wallMid) {
+            ceilingclip[x] = (int16_t)viewheight;
+            floorclip[x] = -1;
+        } else {
+            if (state->wallTop) {
+                int mid = (int)(pixhigh >> 12);
+
+                pixhigh += state->pixHighStep;
+                if (mid >= floorclip[x]) {
+                    mid = floorclip[x] - 1;
+                }
+                if (mid >= yl) {
+                    ceilingclip[x] = (int16_t)mid;
+                } else {
+                    ceilingclip[x] = (int16_t)(yl - 1);
+                }
+            } else if (state->markCeiling) {
+                ceilingclip[x] = (int16_t)(yl - 1);
+            }
+
+            if (state->wallBottom) {
+                int mid = (int)((pixlow + (1 << 12) - 1) >> 12);
+
+                pixlow += state->pixLowStep;
+                if (mid <= ceilingclip[x]) {
+                    mid = ceilingclip[x] + 1;
+                }
+                if (mid <= yh) {
+                    floorclip[x] = (int16_t)mid;
+                } else {
+                    floorclip[x] = (int16_t)(yh + 1);
+                }
+            } else if (state->markFloor) {
+                floorclip[x] = (int16_t)(yh + 1);
+            }
+        }
+
+        topfrac += topstep;
+        bottomfrac += bottomstep;
+    }
+}
+
+static void store_wall_range(r_view_state_t* state, int start, int stop) {
+    doom_seg_t seg;
+    doom_line_t line;
+    doom_side_t sidedef;
+    doom_sector_t front;
+    doom_sector_t back;
+    doom_vertex_t v1;
+    doom_vertex_t v2;
+    uint16_t frontIndex;
+    uint16_t backIndex;
+    int hasBack;
+    fixed_t offsetangle;
+    fixed_t distangle;
+    fixed_t hyp;
+    fixed_t sineval;
+    fixed_t worldtop;
+    fixed_t worldbottom;
+    fixed_t worldhigh = 0;
+    fixed_t worldlow = 0;
+    fixed_t scale1;
+    fixed_t scale2;
+    fixed_t scaleStep;
+    fixed_t bsilheight = INT32_MAX;
+    fixed_t tsilheight = INT32_MIN;
+    int silhouette = R_SIL_NONE;
+    int markfloor = 0;
+    int markceiling = 0;
+    int wallmid = 0;
+    int walltop = 0;
+    int wallbottom = 0;
+    r_drawseg_t* drawseg;
+    r_plane_error_t planeError;
+
+    if (state->drawsegCount >= state->storage.drawsegCapacity) {
+        state->drawsegOverflowed = 1;
+        return;
+    }
+
+    doom_map_get_seg(state->map, state->currentSeg, &seg);
+    doom_map_get_line(state->map, seg.linedef, &line);
+    doom_map_get_side(state->map, seg.side != 0 ? line.sideNum[1] : line.sideNum[0],
+                      &sidedef);
+    doom_map_get_sector(state->map, state->frontSector, &front);
+    doom_map_get_vertex(state->map, seg.v1, &v1);
+    doom_map_get_vertex(state->map, seg.v2, &v2);
+    hasBack = doom_map_seg_sectors(state->map, &seg, &frontIndex, &backIndex);
+    (void)frontIndex;
+
+    /* rw_distance: the scale needs the distance along the seg's normal. */
+    state->rwNormalAngle = seg.angle + ANG90;
+    offsetangle = (fixed_t)abs_angle_32(state->rwNormalAngle - state->rwAngle1);
+    if (offsetangle > (fixed_t)ANG90) {
+        offsetangle = (fixed_t)ANG90;
+    }
+    distangle = (fixed_t)(ANG90 - (angle_t)offsetangle);
+    hyp = point_to_dist(state, v1.x, v1.y);
+    sineval = r_fine_sine[(angle_t)distangle >> ANGLETOFINESHIFT];
+    state->rwDistance = fixed_mul(hyp, sineval);
+
+    state->rwX = start;
+    state->rwStopX = stop + 1;
+    scale1 = scale_from_global_angle(state,
+                                     state->params.angle + r_x_to_view_angle[start]);
+    if (stop > start) {
+        scale2 = scale_from_global_angle(state,
+                                         state->params.angle + r_x_to_view_angle[stop]);
+        /* C's division truncates toward zero; the columns are positive. */
+        scaleStep = (scale2 - scale1) / (stop - start);
+    } else {
+        scale2 = scale1;
+        scaleStep = 0;
+    }
+    state->rwScale = scale1;
+    state->rwScaleStep = scaleStep;
+
+    worldtop = front.ceilingHeight - state->params.z;
+    worldbottom = front.floorHeight - state->params.z;
+
+    if (!hasBack) {
+        wallmid = r_has_name(sidedef.midTexture);
+        markfloor = 1;
+        markceiling = 1;
+        silhouette = R_SIL_BOTH;
+    } else {
+        doom_map_get_sector(state->map, backIndex, &back);
+
+        if (front.floorHeight > back.floorHeight) {
+            silhouette = R_SIL_BOTTOM;
+            bsilheight = front.floorHeight;
+        } else if (back.floorHeight > state->params.z) {
+            silhouette = R_SIL_BOTTOM;
+            bsilheight = INT32_MAX;
+        }
+
+        if (front.ceilingHeight < back.ceilingHeight) {
+            silhouette |= R_SIL_TOP;
+            tsilheight = front.ceilingHeight;
+        } else if (back.ceilingHeight < state->params.z) {
+            silhouette |= R_SIL_TOP;
+            tsilheight = INT32_MIN;
+        }
+
+        if (back.ceilingHeight <= front.floorHeight) {
+            bsilheight = INT32_MAX;
+            silhouette |= R_SIL_BOTTOM;
+        }
+        if (back.floorHeight >= front.ceilingHeight) {
+            tsilheight = INT32_MIN;
+            silhouette |= R_SIL_TOP;
+        }
+
+        worldhigh = back.ceilingHeight - state->params.z;
+        worldlow = back.floorHeight - state->params.z;
+
+        if (front.ceilingPic == state->params.skyPicNum &&
+            back.ceilingPic == state->params.skyPicNum) {
+            worldtop = worldhigh;
+        }
+
+        if (worldlow != worldbottom || back.floorPic != front.floorPic ||
+            back.lightLevel != front.lightLevel) {
+            markfloor = 1;
+        }
+        if (worldhigh != worldtop || back.ceilingPic != front.ceilingPic ||
+            back.lightLevel != front.lightLevel) {
+            markceiling = 1;
+        }
+        if (back.ceilingHeight <= front.floorHeight ||
+            back.floorHeight >= front.ceilingHeight) {
+            markfloor = 1;
+            markceiling = 1;
+        }
+
+        if (worldhigh < worldtop) {
+            walltop = r_has_name(sidedef.topTexture);
+        }
+        if (worldlow > worldbottom) {
+            wallbottom = r_has_name(sidedef.bottomTexture);
+        }
+    }
+
+    if (front.floorHeight >= state->params.z) {
+        markfloor = 0;
+    }
+    if (front.ceilingHeight <= state->params.z &&
+        front.ceilingPic != state->params.skyPicNum) {
+        markceiling = 0;
+    }
+
+    /* Wall light index: sector light, gun flash, and the axis correction. */
+    state->lightNum = (int16_t)((front.lightLevel >> 4) + state->params.extralight);
+    if (v1.y == v2.y) {
+        state->lightNum = (int16_t)(state->lightNum - 1);
+    } else if (v1.x == v2.x) {
+        state->lightNum = (int16_t)(state->lightNum + 1);
+    }
+
+    /* Height to 12.4 for the incremental steppers, exactly as upstream does. */
+    worldtop >>= 4;
+    worldbottom >>= 4;
+    state->worldTop = worldtop;
+    state->worldBottom = worldbottom;
+    state->topStep = -fixed_mul(state->rwScaleStep, worldtop);
+    state->topFrac = (R_CENTER_Y_FRAC >> 4) - fixed_mul(worldtop, state->rwScale);
+    state->bottomStep = -fixed_mul(state->rwScaleStep, worldbottom);
+    state->bottomFrac = (R_CENTER_Y_FRAC >> 4) - fixed_mul(worldbottom, state->rwScale);
+    state->markFloor = markfloor;
+    state->markCeiling = markceiling;
+    state->wallMid = wallmid;
+    state->wallTop = walltop;
+    state->wallBottom = wallbottom;
+
+    state->pixHigh = 0;
+    state->pixLow = 0;
+    state->pixHighStep = 0;
+    state->pixLowStep = 0;
+    if (hasBack) {
+        worldhigh >>= 4;
+        worldlow >>= 4;
+        state->worldHigh = worldhigh;
+        state->worldLow = worldlow;
+        if (worldhigh < worldtop) {
+            state->pixHigh = (R_CENTER_Y_FRAC >> 4) - fixed_mul(worldhigh, state->rwScale);
+            state->pixHighStep = -fixed_mul(state->rwScaleStep, worldhigh);
+        }
+        if (worldlow > worldbottom) {
+            state->pixLow = (R_CENTER_Y_FRAC >> 4) - fixed_mul(worldlow, state->rwScale);
+            state->pixLowStep = -fixed_mul(state->rwScaleStep, worldlow);
+        }
+    }
+
+    if (markceiling) {
+        planeError = r_plane_check(&state->storage.planes, state->ceilingPlane,
+                                   state->rwX, state->rwStopX - 1,
+                                   &state->ceilingPlane);
+        if (planeError != R_PLANE_OK) {
+            fail(state, R_BSP_ERR_VISPLANE_OVERFLOW);
+            return;
+        }
+    }
+    if (markfloor) {
+        planeError = r_plane_check(&state->storage.planes, state->floorPlane,
+                                   state->rwX, state->rwStopX - 1,
+                                   &state->floorPlane);
+        if (planeError != R_PLANE_OK) {
+            fail(state, R_BSP_ERR_VISPLANE_OVERFLOW);
+            return;
+        }
+    }
+
+    render_seg_loop(state);
+
+    drawseg = &state->storage.drawsegs[state->drawsegCount];
+    drawseg->seg = state->currentSeg;
+    drawseg->x1 = (int16_t)start;
+    drawseg->x2 = (int16_t)stop;
+    drawseg->scale1 = scale1;
+    drawseg->scale2 = scale2;
+    drawseg->scaleStep = scaleStep;
+    drawseg->silhouette = (uint8_t)silhouette;
+    drawseg->bottomSilhouette = bsilheight;
+    drawseg->topSilhouette = tsilheight;
+    drawseg->lightLevel = front.lightLevel;
+    drawseg->lightNum = state->lightNum;
+    state->drawsegCount = (uint16_t)(state->drawsegCount + 1);
+}
+
+/* --- Wall clipping (r_bsp.c) -------------------------------------------- */
+
+static void clip_solid_wall_segment(r_view_state_t* state, int first, int last) {
+    r_clip_range_t* solid = state->storage.clipRanges;
+    int start = 0;
+    int next;
+    int index;
+
+    while (solid[start].last < first - 1) {
+        ++start;
+    }
+
+    if (first < solid[start].first) {
+        if (last < solid[start].first - 1) {
+            store_wall_range(state, first, last);
+            if (state->error != R_BSP_OK) {
+                return;
+            }
+            if (state->clipRangeCount >= state->storage.clipRangeCapacity) {
+                fail(state, R_BSP_ERR_CLIP_OVERFLOW);
+                return;
+            }
+            for (index = (int)state->clipRangeCount; index > start; --index) {
+                solid[index] = solid[index - 1];
+            }
+            solid[start].first = first;
+            solid[start].last = last;
+            state->clipRangeCount = (uint16_t)(state->clipRangeCount + 1);
+            return;
+        }
+        store_wall_range(state, first, solid[start].first - 1);
+        if (state->error != R_BSP_OK) {
+            return;
+        }
+        solid[start].first = first;
+    }
+
+    if (last <= solid[start].last) {
+        return;
+    }
+
+    next = start;
+    while (last >= solid[next + 1].first - 1) {
+        store_wall_range(state, solid[next].last + 1, solid[next + 1].first - 1);
+        if (state->error != R_BSP_OK) {
+            return;
+        }
+        ++next;
+        if (last <= solid[next].last) {
+            solid[start].last = solid[next].last;
+            goto crunch;
+        }
+    }
+
+    store_wall_range(state, solid[next].last + 1, last);
+    if (state->error != R_BSP_OK) {
+        return;
+    }
+    solid[start].last = last;
+
+crunch:
+    if (next == start) {
+        return;
+    }
+    /* Drop solid[start+1 .. next]: `next`'s range is now start's tail. */
+    for (index = next + 1; index < (int)state->clipRangeCount; ++index) {
+        solid[start + 1 + (index - (next + 1))] = solid[index];
+    }
+    state->clipRangeCount = (uint16_t)(state->clipRangeCount - (next - start));
+}
+
+static void clip_pass_wall_segment(r_view_state_t* state, int first, int last) {
+    const r_clip_range_t* solid = state->storage.clipRanges;
+    int start = 0;
+
+    while (solid[start].last < first - 1) {
+        ++start;
+    }
+
+    if (first < solid[start].first) {
+        if (last < solid[start].first - 1) {
+            store_wall_range(state, first, last);
+            return;
+        }
+        store_wall_range(state, first, solid[start].first - 1);
+        if (state->error != R_BSP_OK) {
+            return;
+        }
+    }
+
+    if (last <= solid[start].last) {
+        return;
+    }
+
+    while (last >= solid[start + 1].first - 1) {
+        store_wall_range(state, solid[start].last + 1, solid[start + 1].first - 1);
+        if (state->error != R_BSP_OK) {
+            return;
+        }
+        ++start;
+        if (last <= solid[start].last) {
+            return;
+        }
+    }
+
+    store_wall_range(state, solid[start].last + 1, last);
+}
+
+/* --- Segs and subsectors ------------------------------------------------- */
+
+static void add_line(r_view_state_t* state, uint16_t segIndex) {
+    doom_seg_t seg;
+    doom_line_t line;
+    doom_side_t sidedef;
+    doom_vertex_t v1;
+    doom_vertex_t v2;
+    doom_sector_t front;
+    doom_sector_t back;
+    uint16_t frontIndex;
+    uint16_t backIndex;
+    int hasBack;
+    angle_t angle1;
+    angle_t angle2;
+    angle_t span;
+    angle_t tspan;
+    int x1;
+    int x2;
+
+    if (state->error != R_BSP_OK) {
+        return;
+    }
+
+    doom_map_get_seg(state->map, segIndex, &seg);
+    doom_map_get_vertex(state->map, seg.v1, &v1);
+    doom_map_get_vertex(state->map, seg.v2, &v2);
+
+    state->currentSeg = segIndex;
+    angle1 = point_to_angle(state, v1.x, v1.y);
+    angle2 = point_to_angle(state, v2.x, v2.y);
+
+    span = angle1 - angle2;
+
+    /* Back side. */
+    if (span >= ANG180) {
+        return;
+    }
+
+    state->rwAngle1 = angle1;
+    angle1 -= state->params.angle;
+    angle2 -= state->params.angle;
+
+    tspan = angle1 + r_clip_angle;
+    if (tspan > 2 * r_clip_angle) {
+        tspan -= 2 * r_clip_angle;
+        if (tspan >= span) {
+            return;
+        }
+        angle1 = r_clip_angle;
+    }
+
+    tspan = r_clip_angle - angle2;
+    if (tspan > 2 * r_clip_angle) {
+        tspan -= 2 * r_clip_angle;
+        if (tspan >= span) {
+            return;
+        }
+        angle2 = (angle_t)(0u - r_clip_angle);
+    }
+
+    x1 = r_view_angle_to_x[(angle1 + ANG90) >> ANGLETOFINESHIFT];
+    x2 = r_view_angle_to_x[(angle2 + ANG90) >> ANGLETOFINESHIFT];
+
+    if (x1 == x2) {
+        return;
+    }
+
+    doom_map_get_line(state->map, seg.linedef, &line);
+    doom_map_get_side(state->map,
+                      seg.side != 0 ? line.sideNum[1] : line.sideNum[0],
+                      &sidedef);
+    hasBack = doom_map_seg_sectors(state->map, &seg, &frontIndex, &backIndex);
+    doom_map_get_sector(state->map, state->frontSector, &front);
+
+    if (!hasBack) {
+        clip_solid_wall_segment(state, x1, x2 - 1);
+        return;
+    }
+
+    doom_map_get_sector(state->map, backIndex, &back);
+
+    /* Closed door: the back sector's planes meet or cross the front's. */
+    if (back.ceilingHeight <= front.floorHeight ||
+        back.floorHeight >= front.ceilingHeight) {
+        clip_solid_wall_segment(state, x1, x2 - 1);
+        return;
+    }
+
+    /* Window: the two sides do not share both planes. */
+    if (back.ceilingHeight != front.ceilingHeight ||
+        back.floorHeight != front.floorHeight) {
+        clip_pass_wall_segment(state, x1, x2 - 1);
+        return;
+    }
+
+    /* Both sides are identical and there is no middle texture: the line exists
+     * for a trigger, not for the eye. */
+    if (back.ceilingPic == front.ceilingPic && back.floorPic == front.floorPic &&
+        back.lightLevel == front.lightLevel && !r_has_name(sidedef.midTexture)) {
+        return;
+    }
+
+    clip_pass_wall_segment(state, x1, x2 - 1);
+}
+
+static void render_subsector(r_view_state_t* state, uint16_t number) {
+    doom_subsector_t subsector;
+    doom_sector_t sector;
+    uint16_t sectorIndex;
+    uint16_t index;
+
+    if (state->error != R_BSP_OK) {
+        return;
+    }
+
+    doom_map_get_subsector(state->map, number, &subsector);
+    sectorIndex = doom_map_subsector_sector(state->map, &subsector);
+    state->frontSector = sectorIndex;
+    doom_map_get_sector(state->map, sectorIndex, &sector);
+
+    if (sector.floorHeight < state->params.z) {
+        if (r_plane_find(&state->storage.planes, sector.floorHeight,
+                         sector.floorPic, sector.lightLevel, state->params.skyPicNum,
+                         &state->floorPlane) != R_PLANE_OK) {
+            fail(state, R_BSP_ERR_VISPLANE_OVERFLOW);
+            return;
+        }
+    } else {
+        state->floorPlane = NULL;
+    }
+
+    if (sector.ceilingHeight > state->params.z ||
+        sector.ceilingPic == state->params.skyPicNum) {
+        if (r_plane_find(&state->storage.planes, sector.ceilingHeight,
+                         sector.ceilingPic, sector.lightLevel,
+                         state->params.skyPicNum, &state->ceilingPlane) != R_PLANE_OK) {
+            fail(state, R_BSP_ERR_VISPLANE_OVERFLOW);
+            return;
+        }
+    } else {
+        state->ceilingPlane = NULL;
+    }
+
+    for (index = 0; index < subsector.numSegs; ++index) {
+        add_line(state, (uint16_t)(subsector.firstSeg + index));
+        if (state->error != R_BSP_OK) {
+            return;
+        }
+    }
+}
+
+static void render_bsp_node(r_view_state_t* state, int bspnum, int depth) {
+    doom_node_t node;
+    int side;
+
+    if (state->error != R_BSP_OK) {
+        return;
+    }
+    if (depth > R_BSP_MAX_DEPTH) {
+        fail(state, R_BSP_ERR_DEPTH);
+        return;
+    }
+
+    if ((bspnum & (int)R_NF_SUBSECTOR) != 0) {
+        if (bspnum == -1) {
+            render_subsector(state, 0);
+        } else {
+            render_subsector(state, (uint16_t)(bspnum & ~(int)R_NF_SUBSECTOR));
+        }
+        return;
+    }
+
+    doom_map_get_node(state->map, (uint16_t)bspnum, &node);
+    side = point_on_side(state->params.x, state->params.y, &node);
+
+    render_bsp_node(state, node.children[side], depth + 1);
+    if (state->error != R_BSP_OK) {
+        return;
+    }
+
+    if (check_bbox(state, node.bbox[side ^ 1])) {
+        render_bsp_node(state, node.children[side ^ 1], depth + 1);
+    }
+}
+
+/* --- Public API ---------------------------------------------------------- */
+
+r_bsp_error_t r_bsp_init(r_view_state_t* state, const doom_map_t* map,
+                         const r_view_storage_t* storage) {
+    if (state == NULL) {
+        return R_BSP_ERR_NULL_STATE;
+    }
+    *state = (r_view_state_t){0};
+    if (map == NULL) {
+        state->error = R_BSP_ERR_NULL_MAP;
+        return state->error;
+    }
+    if (map->open == 0) {
+        state->error = R_BSP_ERR_MAP_NOT_OPEN;
+        return state->error;
+    }
+    if (storage == NULL) {
+        state->error = R_BSP_ERR_NULL_STORAGE;
+        return state->error;
+    }
+    if (storage->drawsegs == NULL || storage->drawsegCapacity == 0) {
+        state->error = R_BSP_ERR_NULL_DRAWSEGS;
+        return state->error;
+    }
+    if (storage->planes.planes == NULL || storage->planes.capacity == 0) {
+        state->error = R_BSP_ERR_NULL_PLANES;
+        return state->error;
+    }
+    if (storage->clipRanges == NULL) {
+        state->error = R_BSP_ERR_NULL_CLIPS;
+        return state->error;
+    }
+    if (storage->clipRangeCapacity < R_MAX_CLIP_SEGS) {
+        state->error = R_BSP_ERR_SMALL_CLIPS;
+        return state->error;
+    }
+    if (storage->floorClip == NULL || storage->ceilingClip == NULL) {
+        state->error = R_BSP_ERR_NULL_CLIP_ARRAYS;
+        return state->error;
+    }
+
+    state->map = map;
+    state->storage = *storage;
+    state->storage.planes.count = 0;
+    state->error = R_BSP_OK;
+    return R_BSP_OK;
+}
+
+r_bsp_error_t r_bsp_render(r_view_state_t* state, const r_view_params_t* params) {
+    int column;
+
+    if (state == NULL) {
+        return R_BSP_ERR_NULL_STATE;
+    }
+    if (params == NULL) {
+        state->error = R_BSP_ERR_NULL_PARAMS;
+        return state->error;
+    }
+    if (state->map == NULL || state->map->open == 0) {
+        state->error = R_BSP_ERR_MAP_NOT_OPEN;
+        return state->error;
+    }
+
+    state->error = R_BSP_OK;
+    state->drawsegCount = 0;
+    state->drawsegOverflowed = 0;
+    state->depth = 0;
+    state->params = *params;
+    r_plane_clear(&state->storage.planes);
+    clear_clip_segs(state);
+
+    for (column = 0; column < R_SCREEN_WIDTH; ++column) {
+        state->storage.floorClip[column] = (int16_t)R_SCREEN_HEIGHT;
+        state->storage.ceilingClip[column] = -1;
+    }
+
+    if (state->map->lumps[DOOM_MAP_NODES].count == 0) {
+        render_subsector(state, 0);
+    } else {
+        render_bsp_node(state, (int)state->map->lumps[DOOM_MAP_NODES].count - 1, 0);
+    }
+
+    return state->error;
+}
+
+r_bsp_error_t r_bsp_point_in_subsector(const doom_map_t* map, fixed_t x, fixed_t y,
+                                       uint16_t* out) {
+    int nodenum;
+    int depth = 0;
+
+    if (map == NULL || map->open == 0) {
+        return R_BSP_ERR_MAP_NOT_OPEN;
+    }
+    if (out == NULL) {
+        return R_BSP_ERR_NULL_OUT;
+    }
+
+    if (map->lumps[DOOM_MAP_NODES].count == 0) {
+        *out = 0;
+        return R_BSP_OK;
+    }
+
+    nodenum = (int)map->lumps[DOOM_MAP_NODES].count - 1;
+    while ((nodenum & (int)R_NF_SUBSECTOR) == 0) {
+        doom_node_t node;
+
+        if (++depth > R_BSP_MAX_DEPTH) {
+            return R_BSP_ERR_DEPTH;
+        }
+        doom_map_get_node(map, (uint16_t)nodenum, &node);
+        nodenum = node.children[point_on_side(x, y, &node)];
+    }
+
+    nodenum &= ~(int)R_NF_SUBSECTOR;
+    if ((uint32_t)nodenum >= map->lumps[DOOM_MAP_SSECTORS].count) {
+        return R_BSP_ERR_SUBSECTOR_RANGE;
+    }
+    *out = (uint16_t)nodenum;
+    return R_BSP_OK;
+}
+
+r_bsp_error_t r_bsp_spawn_view(const doom_map_t* map, int playerIndex,
+                               r_view_params_t* out) {
+    doom_thing_t thing;
+    doom_thing_t start;
+    uint32_t index;
+    int found = 0;
+    uint16_t subsector;
+    uint16_t sectorIndex;
+    doom_subsector_t sub;
+    doom_sector_t sector;
+    r_bsp_error_t result;
+
+    if (map == NULL || map->open == 0) {
+        return R_BSP_ERR_MAP_NOT_OPEN;
+    }
+    if (out == NULL) {
+        return R_BSP_ERR_NULL_OUT;
+    }
+    if (playerIndex < 0 || playerIndex > 3) {
+        return R_BSP_ERR_NO_PLAYER_START;
+    }
+
+    for (index = 0; index < map->lumps[DOOM_MAP_THINGS].count; ++index) {
+        doom_map_get_thing(map, index, &thing);
+        if (thing.type == playerIndex + 1) {
+            start = thing;
+            found = 1;
+        }
+    }
+    if (!found) {
+        return R_BSP_ERR_NO_PLAYER_START;
+    }
+
+    out->x = (fixed_t)((uint32_t)(uint16_t)start.x << FRACBITS);
+    out->y = (fixed_t)((uint32_t)(uint16_t)start.y << FRACBITS);
+    out->angle = ANG45 * (uint32_t)(start.angle / 45);
+    out->extralight = 0;
+    out->skyPicNum = r_pack_name(kSkyName);
+
+    result = r_bsp_point_in_subsector(map, out->x, out->y, &subsector);
+    if (result != R_BSP_OK) {
+        return result;
+    }
+    doom_map_get_subsector(map, subsector, &sub);
+    sectorIndex = doom_map_subsector_sector(map, &sub);
+    doom_map_get_sector(map, sectorIndex, &sector);
+    out->z = sector.floorHeight + R_VIEWHEIGHT;
+    return R_BSP_OK;
+}
