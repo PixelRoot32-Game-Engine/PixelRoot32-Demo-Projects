@@ -11,9 +11,16 @@ renderer passes and the WAD reader -- loads E1M1's world through
 
     A1  the static THINGS sprite list and the live-mobj list render the same
         frame at the host harness's frame-00 viewpoint;
-    A2  the same equality holds at the player's spawn viewpoint at tic 1 and
-        after 10 and 35 tics, so a sector-light thinker cannot quietly move a
-        sprite's light between the two lists;
+    A2  the static list and a live list PINNED to each mobj's spawn-state row
+        render the same frame at the player's spawn viewpoint at tic 1 and after
+        10 and 35 tics, so a sector-light thinker cannot quietly move a sprite's
+        light between the two lists. Pinning is the honest comparison: the
+        static list is a load-time snapshot, so A2 is about the submission
+        agreeing at spawn, not about the panel being frozen;
+    A2b the live list actually advances a chain: at tics 10 and 35 a submitted
+        mobj asks for a baked row other than its type's spawn row, and no chain
+        frame falls back. The one counted fallback is the player avatar, whose
+        S_PLAY_STND is deliberately not baked;
     B1  a live puff changes the frame and the masked pass asks the resolver for
         PUFFA0 (the puff's own lump, not "nothing" and not another type's row);
     C1  the puff walks S_PUFF1 -> S_PUFF2 -> S_PUFF3 -> S_PUFF4;
@@ -31,10 +38,11 @@ PROVING THE GATE CAN FAIL
 
     python tools/sprite_check.py --wad ... --perturb frame
 
-adds ``-DSPRITE_CHECK_PERTURB_FRAME`` to the C build only. The live list then
-uses every mobj's spawn-state row instead of its live frame -- the static
-behaviour T23 replaces -- so the puff stops advancing. C1/C2/C3 fail and the
-process exits 1. A comparison that cannot fail is not a gate.
+adds ``-DSPRITE_CHECK_PERTURB_FRAME`` to the C build only. Every live list then
+uses each mobj's spawn-state row instead of its live frame -- the static
+behaviour T23 replaced -- so A2b sees zero advances and the puff stops
+advancing: A2b, C1, C2 and C3 fail and the process exits 1. A comparison that
+cannot fail is not a gate.
 
 USAGE
 

@@ -18,9 +18,19 @@
  * and r_masked_emit(), the same four passes the board runs, and asserts:
  *
  *   A. NO PIXEL MOVED AT SPAWN. The static THINGS list (the old behaviour) and
- *      the live-mobj list render the identical frame at the host harness's
- *      frame-00 viewpoint and at the player's spawn viewpoint. This is the
- *      host-side counterpart of the board's fffb3c5c / 50fb3d9c invariants.
+ *      a live-mobj list PINNED to each mobj's spawn-state row render the
+ *      identical frame at the host harness's frame-00 viewpoint and at the
+ *      player's spawn viewpoint. Pinning is the honest comparison: the static
+ *      list is a load-time snapshot, so the assertion is "the live submission
+ *      derives the same sprite for the same mobj at the same position", not
+ *      "the panel is frozen". The light still comes from the live world (D).
+ *      This is the host-side counterpart of the board's fffb3c5c / 50fb3d9c
+ *      invariants.
+ *   A2b. THE LIVE LIST ADVANCES A CHAIN. At tics 10 and 35 at least one
+ *      submitted mobj asks for a baked frame other than its type's spawn row,
+ *      and no chain frame falls back. This is the property T25 delivers: a
+ *      monster's walk/pain/death frames and an item's blink frames are baked,
+ *      so the world's state machines actually change what is drawn.
  *   B. A LIVE PUFF IS SUBMITTED. The same viewpoint rendered with a live puff
  *      differs from the same viewpoint without one, and the masked pass asks
  *      the resolver for the puff's own lump (PUFFA0), not for "nothing" and not
@@ -46,22 +56,24 @@
  *
  * WHAT A FRAME THE FIXTURE DOES NOT NAME DOES
  *
- * The container bakes 51 sprite lumps: the frames E1M1's THINGS show plus the
- * puff, blood and rocket chains T22 added. A monster's pain and death frames
- * are not among them. Such a mobj still draws -- the fallback is its type's
- * spawn-state row, the frame the old static list always showed -- because
- * refusing the whole frame over one unbakeable frame would blank the panel. The
- * tool records how many submissions took that fallback, so the gap is a number
- * and not a silence.
+ * The container bakes 201 sprite lumps (T25): the frames E1M1's THINGS show,
+ * every state chain of the mobj types it places, and the puff, blood and rocket
+ * chains T22 added. The only submission left without a row is the player avatar
+ * (MT_PLAYER's S_PLAY_STND), which is deliberately not baked because it stands
+ * at the viewpoint and is skipped. Any other unbaked frame still draws -- the
+ * fallback is its type's spawn-state row -- and the tool counts it, so a gap is
+ * a number and not a silence. A2b asserts that the count stays at that one
+ * avatar: a chain frame that fell back fails the gate.
  *
  * PROVING THE GATE CAN FAIL
  *
  *     python tools/sprite_check.py --wad ... --perturb frame
  *
- * compiles the harness with SPRITE_CHECK_PERTURB_FRAME, which makes the live
- * list use every mobj's spawn-state row instead of its live frame -- exactly the
- * static behaviour T23 replaces. The puff then stops advancing, assertion C
- * fails and the process exits 1. A gate that cannot fail only proves it runs.
+ * compiles the harness with SPRITE_CHECK_PERTURB_FRAME, which makes every live
+ * list use each mobj's spawn-state row instead of its live frame -- exactly the
+ * static behaviour T23/T25 replace. A2b then sees zero advances, the puff stops
+ * advancing, assertion C fails and the process exits 1. A gate that cannot fail
+ * only proves it runs.
  *
  * USAGE
  *
@@ -674,17 +686,38 @@ static int worldContainsMobj(const p_level_t* level, const r_mobj_t* wanted) {
 
 /* The replacement: every live mobj, removed ones skipped, its own state's
  * sprite and frame naming the lump. `skip` lets the same world render with and
- * without one mobj (the puff) so the difference is the submission alone. */
+ * without one mobj (the puff) so the difference is the submission alone.
+ *
+ * `pinSpawn` draws each mobj's type spawn-state row instead of its live frame.
+ * A2 asks for that on purpose. The static THINGS list is a load-time snapshot
+ * by definition: it can only ever show the spawn frame, so "the live list draws
+ * the same frame as the static list" is only an honest assertion at spawn. What
+ * A2 proves is that the live submission derives that same sprite for the same
+ * mobj at the same position -- and the light still comes from the live world,
+ * which is the half of A2 the sector-light thinkers could move.
+ *
+ * `advancedCount` counts the submissions whose live frame resolved to a row
+ * other than the type's spawn row: the chain actually moved. A2b asserts it is
+ * non-zero at tics 10 and 35, so a fixture -- or the perturbation -- that pins
+ * every frame to spawn cannot pass by drawing the static list twice. */
 static int buildLiveSprites(const p_level_t* level, const r_view_params_t* view,
                             r_sprite_t* out, int capacity, const r_mobj_t* skip,
-                            int* fallbackCount) {
+                            int pinSpawn, int* fallbackCount,
+                            int* advancedCount) {
     const r_mobj_t* mobj;
     int count = 0;
 
     *fallbackCount = 0;
+    *advancedCount = 0;
+#if defined(SPRITE_CHECK_PERTURB_FRAME)
+    /* The failing perturbation: force the spawn row everywhere, exactly the
+     * static behaviour T23 replaces. A2b then reports zero advances. */
+    pinSpawn = 1;
+#endif
     mobj = p_level_first_mobj(level);
     while (mobj != NULL) {
         const e1m1_sprite_rule_t* rule;
+        const e1m1_sprite_rule_t* spawn;
         const char* spriteName;
         angle_t facing;
         int rotation;
@@ -703,25 +736,29 @@ static int buildLiveSprites(const p_level_t* level, const r_view_params_t* view,
 
         frame = (int)(mobj->frame & 0x7FFF);
         spriteName = sprnames[mobj->sprite];
+        spawn = spawnRuleForType(mobj->type);
         rule = spriteFrameRule(spriteName, frame);
         if (rule == NULL) {
-            /* No baked lump for this frame: draw the type's spawn row, counted. */
-            rule = spawnRuleForType(mobj->type);
+            /* No baked lump for this frame: draw the type's spawn row, counted.
+             * The only E1M1 mobj here is the player avatar, whose S_PLAY_STND
+             * is deliberately not baked (it stands at the viewpoint). */
             *fallbackCount += 1;
+            rule = spawn;
             if (rule == NULL) {
                 mobj = p_level_next_mobj(mobj);
                 continue;
             }
+        } else if (pinSpawn) {
+            /* A2's pinned list: the same mobj, the spawn frame it was placed in. */
+            rule = spawn;
+            if (rule == NULL) {
+                mobj = p_level_next_mobj(mobj);
+                continue;
+            }
+        } else if (rule != spawn) {
+            /* The live frame is not the spawn row: a baked frame of the chain. */
+            *advancedCount += 1;
         }
-#if defined(SPRITE_CHECK_PERTURB_FRAME)
-        /* The failing perturbation: ignore the live frame and draw the spawn
-         * row, which is exactly what the static list did. */
-        rule = spawnRuleForType(mobj->type);
-        if (rule == NULL) {
-            mobj = p_level_next_mobj(mobj);
-            continue;
-        }
-#endif
 
         facing = nextPointToAngle(view, mobj->x, mobj->y);
         rotation = (int)((facing - mobj->angle + ((ANG45 / 2u) * 9u)) >> 29);
@@ -756,6 +793,7 @@ typedef struct render_result {
     char hash[65];
     int spriteCount;
     int fallbackCount;
+    int advancedCount;
     r_masked_stats_t stats;
     int error;
 } render_result_t;
@@ -763,7 +801,7 @@ typedef struct render_result {
 static int renderFrame(const doom_map_t* map, r_view_state_t* view, r_draw_surface_t* surface,
                        const r_tex_source_t* texSource, const r_light_t* light,
                        const r_view_params_t* params, const p_level_t* level,
-                       const r_mobj_t* skip, sprite_cache_t* spriteCache,
+                       const r_mobj_t* skip, int pinSpawn, sprite_cache_t* spriteCache,
                        r_sprite_source_t* spriteSource, render_result_t* out) {
     r_segs_error_t walls;
     r_plane_error_t planes;
@@ -800,10 +838,12 @@ static int renderFrame(const doom_map_t* map, r_view_state_t* view, r_draw_surfa
     spriteCache->resolvedCount = 0;
     if (level != NULL) {
         out->spriteCount = buildLiveSprites(level, params, g_sprites, HARNESS_SPRITES, skip,
-                                            &out->fallbackCount);
+                                            pinSpawn, &out->fallbackCount,
+                                            &out->advancedCount);
     } else {
         out->spriteCount = buildStaticSprites(map, params, g_sprites, HARNESS_SPRITES);
         out->fallbackCount = -1;
+        out->advancedCount = -1;
     }
     if (out->spriteCount < 0) {
         out->error = -1;
@@ -911,6 +951,7 @@ int main(int argc, char** argv) {
     r_sprite_source_t spriteSource;
     render_result_t staticResult;
     render_result_t liveResult;
+    render_result_t pinnedResult;
     render_result_t withoutPuff;
     render_result_t withPuff;
     r_view_params_t params;
@@ -1101,9 +1142,9 @@ int main(int argc, char** argv) {
     params.skyPicNum = r_pack_name((const uint8_t*)"F_SKY1");
 
     if (!renderFrame(&map, &view, &surface, &texSource, &light, &params, NULL, NULL,
-                     &spriteCache, &spriteSource, &staticResult)
+                     0, &spriteCache, &spriteSource, &staticResult)
         || !renderFrame(&map, &view, &surface, &texSource, &light, &params, &level, NULL,
-                        &spriteCache, &spriteSource, &liveResult)) {
+                        0, &spriteCache, &spriteSource, &liveResult)) {
         fprintf(stderr, "sprite_check: frame00 render failed (%d)\n", staticResult.error);
         p_level_shutdown(&level);
         free(arena);
@@ -1153,10 +1194,19 @@ int main(int argc, char** argv) {
              * half height toward VIEWHEIGHT over the first ~82 tics, so the
              * comparison must follow it instead of freezing the tic-1 value. */
             params.z = level.playerState.viewz;
+            /* A2 compares two load-time-equivalent lists: the static THINGS
+             * build and a live build pinned to each mobj's spawn-state row. The
+             * static list is a snapshot, so animation is out of its reach by
+             * definition; what the comparison isolates is the submission -- the
+             * same mobj, at the same position, on the frame it was placed with,
+             * and its light read from the LIVE world, which is the part the
+             * sector-light thinkers could quietly move. */
             if (!renderFrame(&map, &view, &surface, &texSource, &light, &params, NULL, NULL,
-                             &spriteCache, &spriteSource, &staticResult)
+                             0, &spriteCache, &spriteSource, &staticResult)
                 || !renderFrame(&map, &view, &surface, &texSource, &light, &params, &level,
-                                NULL, &spriteCache, &spriteSource, &liveResult)) {
+                                NULL, 1, &spriteCache, &spriteSource, &pinnedResult)
+                || !renderFrame(&map, &view, &surface, &texSource, &light, &params, &level,
+                                NULL, 0, &spriteCache, &spriteSource, &liveResult)) {
                 fprintf(stderr, "sprite_check: player-view render failed (%d)\n",
                         staticResult.error);
                 p_level_shutdown(&level);
@@ -1165,12 +1215,29 @@ int main(int argc, char** argv) {
                 return 2;
             }
             snprintf(detail, sizeof detail,
-                     "leveltime=%ld static=%s live=%s fallback=%d",
-                     (long)level.leveltime, staticResult.hash, liveResult.hash,
-                     liveResult.fallbackCount);
-            report(strcmp(staticResult.hash, liveResult.hash) == 0 ? "status=pass"
-                                                                   : "status=fail",
+                     "leveltime=%ld static=%s pinned=%s fallback=%d",
+                     (long)level.leveltime, staticResult.hash, pinnedResult.hash,
+                     pinnedResult.fallbackCount);
+            report(strcmp(staticResult.hash, pinnedResult.hash) == 0 ? "status=pass"
+                                                                     : "status=fail",
                    "a2-spawn-player", detail);
+            /* A2b is the half the old A2 was accidentally wearing: the live
+             * list actually advances a chain. `advanced` counts the submissions
+             * whose live frame resolved to a row other than the type's spawn
+             * row -- every one of those is a baked lump by construction. The
+             * one fallback is the player avatar, whose S_PLAY_STND is
+             * deliberately not baked (it stands at the viewpoint); a chain
+             * frame that fell back would raise the count and fail. Under
+             * --perturb frame every submission is pinned, so `advanced` is 0. */
+            if (step > 0) {
+                snprintf(detail, sizeof detail,
+                         "leveltime=%ld advanced=%d fallback=%d",
+                         (long)level.leveltime, liveResult.advancedCount,
+                         liveResult.fallbackCount);
+                report(liveResult.advancedCount > 0 && liveResult.fallbackCount == 1
+                           ? "status=pass" : "status=fail",
+                       "a2b-live-chain", detail);
+            }
             if (step == ticCount - 1) {
                 // The board's settled spawn-view hash (L28, T22). The host frame
                 // at the same viewpoint must reproduce it, which is what makes
@@ -1197,7 +1264,7 @@ int main(int argc, char** argv) {
     playerZ = level.playerState.viewz;
     params.z = playerZ;
     if (!renderFrame(&map, &view, &surface, &texSource, &light, &params, &level, NULL,
-                     &spriteCache, &spriteSource, &withoutPuff)) {
+                     0, &spriteCache, &spriteSource, &withoutPuff)) {
         fprintf(stderr, "sprite_check: baseline render failed (%d)\n", withoutPuff.error);
         p_level_shutdown(&level);
         free(arena);
@@ -1219,7 +1286,7 @@ int main(int argc, char** argv) {
     }
 
     if (!renderFrame(&map, &view, &surface, &texSource, &light, &params, &level, NULL,
-                     &spriteCache, &spriteSource, &withPuff)) {
+                     0, &spriteCache, &spriteSource, &withPuff)) {
         fprintf(stderr, "sprite_check: puff render failed (%d)\n", withPuff.error);
         p_level_shutdown(&level);
         free(arena);
@@ -1298,7 +1365,7 @@ int main(int argc, char** argv) {
 
             (void)p_set_mobj_state(&level.context, puff, kStates[step], NULL);
             if (!renderFrame(&map, &view, &surface, &texSource, &light, &params, &level, NULL,
-                             &spriteCache, &spriteSource, &one)) {
+                             0, &spriteCache, &spriteSource, &one)) {
                 fprintf(stderr, "sprite_check: state render failed (%d)\n", one.error);
                 p_level_shutdown(&level);
                 free(arena);

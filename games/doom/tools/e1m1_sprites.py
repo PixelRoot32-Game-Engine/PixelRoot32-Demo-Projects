@@ -16,22 +16,31 @@ WHAT IS TRANSCRIBED, AND FROM WHERE
 
 ``THING_SPRITES`` is upstream's ``mobjinfo[]`` (linuxdoom-1.10/info.c) reduced
 to three things per DoomEd number: the spawnstate, the state's sprite, and the
-state's frame. The state is the *spawn* state, because there is no state machine
-here: the first tic of every thing is its spawnstate, and a fixture that showed
-any other frame would not be the thing the map placed. For a monster or an item
-that is frame 0; for a corpse (DoomEd 10, 12, 15) it is the death frame the map
-author chose, which is exactly what the map shows at rest. No animation, no
-tics, no AI, no pickups: all of that is Phase 4.
+state's frame. It is the *static* list: the first tic of every thing is its
+spawnstate, and a fixture that showed any other frame would not be the thing the
+map placed. For a monster or an item that is frame 0; for a corpse (DoomEd 10,
+12, 15) it is the death frame the map author chose, which is exactly what the
+map shows at rest. The state machine itself lives in lib/doom/; this module only
+says which frame belongs to which state.
+
+The generated ``tools/e1m1_sprites.inc`` is larger than this tuple. For every
+placed type, tools/gen_e1m1_sprites.py appends one row per other state the type
+can enter, walking lib/doom/info_tables.h's mobjinfo[]/states[] rows. The static
+list cannot ask for them (``spriteRule()`` answers a THINGS record with the
+first row of its type, which is the spawn row) but they are what makes the .inc
+a complete bake manifest: the container bakes every lump a live mobj in one of
+those chains can name, so a monster's walk, attack, pain, death and corpse
+frames are all there when the state machine starts using them.
 
 ``RUNTIME_SPRITES`` is the other half of the list, and it is not a level
 transcription: those rows are the mobj types the simulation *creates* after the
 level is loaded, which no THINGS record can ever place (P_SpawnPuff,
 P_SpawnBlood, the player's own missiles). They are keyed by ``mobjtype_t``, not
-by DoomEd number, and they carry one row per state of the spawn-state chain
-because this file is also the container's bake manifest
+by DoomEd number, and they carry one row per state of their own chain because
+this file is also the container's bake manifest
 (``whd_encode.py --sprite-list``): every frame a shot can be drawn in has to
 name its lump, or the renderer refuses the frame that shows it. Each entry names
-its spawn site.
+its spawn site, and gen_e1m1_sprites.py checks the set against info_tables.h.
 
 The sprite and frame come from the state table, not from the doomednum:
 
@@ -413,9 +422,11 @@ def emit_inc(tables: dict[str, dict[int, FrameTable]],
     fullbright flag and the eight (or one) rotation lumps with their flip flags.
     A non-rotating frame stores only entry 0 and sets ``rotations = 0``.
 
-    Map rows are ordered by DoomEd number; runtime rows keep the order they were
-    given in, which puts each runtime type's spawnstate first -- ``spriteRule()``
-    is a first-match scan, so the first row for a type is the one it answers.
+    Map rows are grouped by DoomEd number; runtime rows keep the order they were
+    given in. Within one key the given order is preserved -- the generator puts
+    the spawnstate first, because ``spriteRule()`` is a first-match scan and the
+    first row for a type is the one it answers. The LATER rows of a key are found
+    by ``spriteFrameRule()``'s (sprite, frame) scan, never by the type.
     """
     lines: list[str] = []
     lines.append("/*")
@@ -426,10 +437,12 @@ def emit_inc(tables: dict[str, dict[int, FrameTable]],
     lines.append(" *")
     lines.append(" * `type` is the DoomEd number for a thing the map places, and the")
     lines.append(" * mobjtype number (lib/doom/info_tables.h) for a thing the simulation")
-    lines.append(" * creates at runtime: no THINGS record can produce one of those, and")
-    lines.append(" * a runtime mobj is answered by the first row of its type, which is its")
-    lines.append(" * spawnstate. The remaining rows of that type are the frames the")
-    lines.append(" * spawn-state chain can show, named here so the container bakes them.")
+    lines.append(" * creates at runtime: no THINGS record can produce one of those. The first")
+    lines.append(" * row of a type is its spawnstate -- spriteRule() answers a THINGS lookup")
+    lines.append(" * with the first row of its type -- and the remaining rows are every other")
+    lines.append(" * state its chain can enter (see, pain, melee, missile, death, xdeath,")
+    lines.append(" * raise). They are named here so the container bakes every frame a live")
+    lines.append(" * mobj of that type can ask for.")
     lines.append(" *")
     lines.append(" * Fixture data, not renderer code: it is compiled into the host")
     lines.append(" * harness (tools/rsegs_check.c) and is never included by lib/doom/.")

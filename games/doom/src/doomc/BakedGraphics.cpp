@@ -82,12 +82,13 @@ const char* bakedErrorName(BakedError error) {
     return "unknown";
 }
 
-BakedError bakedManifestParse(const std::uint8_t* data, std::size_t size,
-                              std::uint32_t lumpCount, BakedManifest* out) {
-    if (data == nullptr || out == nullptr) {
+BakedError bakedManifestParseInto(const std::uint8_t* data, std::size_t size,
+                                  std::uint32_t lumpCount, BakedEntry* entries,
+                                  int capacity, int* count) {
+    if (data == nullptr || entries == nullptr || count == nullptr || capacity < 0) {
         return BakedError::Null;
     }
-    out->count = 0;
+    *count = 0;
     if (size < kBakedManifestHeaderSize) {
         return BakedError::TooSmall;
     }
@@ -97,7 +98,7 @@ BakedError bakedManifestParse(const std::uint8_t* data, std::size_t size,
 
     const std::uint16_t version = readLe16(data + 4);
     const std::uint16_t recordSize = readLe16(data + 6);
-    const std::uint32_t count = readLe32(data + 8);
+    const std::uint32_t declared = readLe32(data + 8);
     const std::uint32_t reserved = readLe32(data + 12);
 
     if (version != kBakedManifestVersion) {
@@ -109,17 +110,17 @@ BakedError bakedManifestParse(const std::uint8_t* data, std::size_t size,
     if (reserved != 0u) {
         return BakedError::BadReserved;
     }
-    if (count > static_cast<std::uint32_t>(kBakedCapacity)) {
+    if (declared > static_cast<std::uint32_t>(capacity)) {
         return BakedError::TooMany;
     }
-    if (kBakedManifestHeaderSize + static_cast<std::size_t>(count) * recordSize > size) {
+    if (kBakedManifestHeaderSize + static_cast<std::size_t>(declared) * recordSize > size) {
         return BakedError::Truncated;
     }
 
-    for (std::uint32_t index = 0u; index < count; ++index) {
+    for (std::uint32_t index = 0u; index < declared; ++index) {
         const std::uint8_t* at = data + kBakedManifestHeaderSize
                                  + static_cast<std::size_t>(index) * recordSize;
-        BakedEntry& entry = out->entries[index];
+        BakedEntry& entry = entries[index];
 
         std::memcpy(entry.name, at, kBakedNameSize);
         entry.name[kBakedNameSize] = '\0';
@@ -162,18 +163,28 @@ BakedError bakedManifestParse(const std::uint8_t* data, std::size_t size,
 
     // Names are unique inside a kind; a wall texture and a flat may legitimately
     // share a name because the renderer looks them up in different namespaces.
-    for (std::uint32_t left = 0u; left < count; ++left) {
-        for (std::uint32_t right = left + 1u; right < count; ++right) {
-            if (out->entries[left].kind == out->entries[right].kind
-                && std::memcmp(out->entries[left].name, out->entries[right].name,
+    for (std::uint32_t left = 0u; left < declared; ++left) {
+        for (std::uint32_t right = left + 1u; right < declared; ++right) {
+            if (entries[left].kind == entries[right].kind
+                && std::memcmp(entries[left].name, entries[right].name,
                                kBakedNameSize) == 0) {
                 return BakedError::DuplicateName;
             }
         }
     }
 
-    out->count = static_cast<int>(count);
+    *count = static_cast<int>(declared);
     return BakedError::Ok;
+}
+
+BakedError bakedManifestParse(const std::uint8_t* data, std::size_t size,
+                              std::uint32_t lumpCount, BakedManifest* out) {
+    if (out == nullptr) {
+        return BakedError::Null;
+    }
+    out->count = 0;
+    return bakedManifestParseInto(data, size, lumpCount, out->entries,
+                                  kBakedCapacity, &out->count);
 }
 
 int BakedGraphics::find(const SortedView& view, const BakedEntry* entries, r_name_t name) {
@@ -220,22 +231,21 @@ BakedError BakedGraphics::open(const whd_state_t* container) {
     }
     manifestBytes_ = manifestBytes;
 
-    // The parse result is 5,120 B at the episode's 256-entry capacity, and the
-    // Arduino loop task's stack is already the tightest budget in this build
-    // (D3.9 moved the probe's formatters to .bss for the same reason). open()
-    // runs once at boot, so a file-local static is the right home: it costs
-    // .bss and no stack.
-    static BakedManifest manifest;
-    const BakedError parsed = bakedManifestParse(
+    // The manifest is parsed straight into entries_: the parsed records ARE the
+    // adapter's records, so there is no second capacity-sized buffer in .bss and
+    // no copy loop. open() runs once at boot, and the Arduino loop task's stack
+    // is the tightest budget in this build (D3.9), so nothing here goes on the
+    // stack either.
+    const BakedError parsed = bakedManifestParseInto(
         manifestData, manifestBytes,
-        static_cast<std::uint32_t>(whd_lump_count(container)), &manifest);
+        static_cast<std::uint32_t>(whd_lump_count(container)), entries_,
+        kBakedCapacity, &count_);
     if (parsed != BakedError::Ok) {
         return parsed;
     }
 
-    for (int index = 0; index < manifest.count; ++index) {
-        const BakedEntry& entry = manifest.entries[index];
-        entries_[index] = entry;
+    for (int index = 0; index < count_; ++index) {
+        const BakedEntry& entry = entries_[index];
 
         const std::uint8_t* data = nullptr;
         std::uint32_t size = 0u;
@@ -284,7 +294,6 @@ BakedError BakedGraphics::open(const whd_state_t* container) {
         }
     }
 
-    count_ = manifest.count;
     for (int index = 0; index < count_; ++index) {
         const BakedEntry& entry = entries_[index];
         SortedView* view = nullptr;
@@ -296,8 +305,9 @@ BakedError BakedGraphics::open(const whd_state_t* container) {
             view = &sprites_;
         }
 
-        // Insertion sort on at most 96 entries: the manifest is build-time data
-        // and this runs once, so a simple stable sort is clearer than a heap.
+        // Insertion sort on at most kBakedCapacity entries: the manifest is
+        // build-time data and this runs once, so a simple stable sort is clearer
+        // than a heap.
         int position = view->count;
         const r_name_t key = r_pack_name(reinterpret_cast<const std::uint8_t*>(entry.name));
         while (position > 0) {
