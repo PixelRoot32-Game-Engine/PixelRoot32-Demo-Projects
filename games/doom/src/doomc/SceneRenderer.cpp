@@ -24,9 +24,11 @@ bool SceneRenderer::open() {
         return false;
     }
 
-    // The rasteriser wrote DOOM palette indices; the surface's bytes are RGB332.
-    // The table is the whole bridge, and it comes from the WAD's own PLAYPAL so
-    // the panel shows 1993's colours instead of the shell's synthetic ramp.
+    // The rasteriser writes DOOM palette indices, so the colour bridge is the
+    // WAD's own PLAYPAL. This builds both forms once: the RGB565 table the scene
+    // installs on the 8bpp surface with setPalette8(), and the RGB332 byte table
+    // for any pass that still stores colours. The panel shows 1993's palette,
+    // not the shell's synthetic ramp.
     const std::uint8_t* rgb888 = frameLevelPlaypal();
     if (rgb888 == nullptr) {
         writeLine("SHOW,setup,status=fail,reason=playpal\n");

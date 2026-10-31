@@ -169,9 +169,12 @@ void reportFrameContract(Renderer& renderer) {
     const bool hasRgb565 = surface.getPixelBuffer() != nullptr;
     const int bytesPerPixel = has8bpp ? 1 : (hasRgb565 ? 2 : 0);
 
-    // "rgb565" names the palette the drawer presents, not the byte packing: the
-    // 8bpp buffer holds RGB332 and the drawer expands it to RGB565 on the wire.
-    // A driver with neither buffer has no palette to name.
+    // "rgb565" names the palette the drawer presents, not the byte packing: an
+    // 8bpp buffer's bytes are colours by default (RGB332, expanded by the
+    // drawer) or, under PIXELROOT32_DOOM_SHOW_E1M1, DOOM palette indices
+    // expanded through the PLAYPAL table installed with setPalette8(). Either
+    // way the panel receives RGB565. A driver with neither buffer has no palette
+    // to name.
     const char* palette = bytesPerPixel != 0 ? "rgb565" : "none";
 
     char line[128];
@@ -684,6 +687,13 @@ void DoomScene::init() {
     // `SHOW,...` line belongs to the first frame this scene drew.
     if (!sceneRenderer_.open()) {
         writeConsoleLine("SHOW,setup,status=fail,reason=scene\n");
+    } else {
+        // The 8bpp surface holds DOOM palette indices now, so hand the engine
+        // the PLAYPAL -> RGB565 table once: the driver expands each index as it
+        // presents, one lookup per pixel and no per-frame pass. The call is a
+        // no-op on a surface without an 8-bit buffer (DrawSurface's default), so
+        // the desktop mirror keeps its own conversion below.
+        engine.getRenderer().getDrawSurface().setPalette8(palette::playpal565Table());
     }
     showFrame_ = 0;
     showPendingReport_ = false;
@@ -809,9 +819,10 @@ void DoomScene::update(unsigned long deltaTime) {
 
 void DoomScene::draw(Renderer& renderer) {
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
-    // D4.0's game frame: E1M1's spawn viewpoint, converted in place and presented
-    // by the engine. It takes precedence over the palette test and the shell, but
-    // the flags never meet: this environment defines only this one.
+    // D4.0's game frame: E1M1's spawn viewpoint, presented by the engine with
+    // the PLAYPAL expansion the surface was given in init(). It takes precedence
+    // over the palette test and the shell, but the flags never meet: this
+    // environment defines only this one.
     drawSceneFrame(renderer);
 #elif defined(PIXELROOT32_DOOM_PALETTE_TEST)
     // A separate build (env:esp32dev_ILI9341_palette) shows the palette
@@ -898,11 +909,12 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
     const std::uint32_t drawStart = sampleMicros();
     bool rendered = false;
 
-    // The panel path: one byte per pixel, RGB332. The renderer writes DOOM
-    // palette indices into this same buffer, and the pass below turns each byte
-    // into the colour TFT_eSPI's LUT expects. It is in place and each byte is
-    // independent, so no scratch buffer is needed and nothing is read past the
-    // surface.
+    // The panel path: one byte per pixel, and the byte is a DOOM palette index.
+    // init() installed the PLAYPAL -> RGB565 table on this surface through
+    // setPalette8(), so the driver expands each index while it presents. There
+    // is no conversion pass here: the buffer the hash covers is the exact buffer
+    // the panel draws from, and the frame costs one lookup per pixel inside the
+    // present it already paid for.
     if (std::uint8_t* pixels = surface.getSpriteBuffer()) {
         if (sceneRenderer_.isOpen() && width == kLogicalWidth && height == kLogicalHeight) {
             doomc::SceneFrameMeasurements measured;
@@ -917,14 +929,8 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
                     showHash_[0] = '\0';
                 }
 
-                const std::uint8_t* table = palette::playpalTable();
-                const std::size_t count =
-                    static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-                const std::uint32_t convertStart = sampleMicros();
-                for (std::size_t index = 0; index < count; ++index) {
-                    pixels[index] = table[pixels[index]];
-                }
-                showConvertMicros_ = sampleMicros() - convertStart;
+                // Nothing to convert: the surface's expansion table owns it.
+                showConvertMicros_ = 0;
                 rendered = true;
             }
         }
@@ -952,12 +958,16 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
                     showHash_[0] = '\0';
                 }
 
-                const std::uint8_t* table = palette::playpalTable();
+                // This surface stores colours, not indices, so the expansion is
+                // necessarily a pass here. It reads the same PLAYPAL -> RGB565
+                // table the panel's driver uses, which keeps the window and the
+                // panel on one palette instead of two conversions.
+                const std::uint16_t* table = palette::playpal565Table();
                 const std::size_t count =
                     static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
                 const std::uint32_t convertStart = sampleMicros();
                 for (std::size_t index = 0; index < count; ++index) {
-                    pixels[index] = palette::expandRgb332(table[indices[index]]);
+                    pixels[index] = table[indices[index]];
                 }
                 showConvertMicros_ = sampleMicros() - convertStart;
                 rendered = true;

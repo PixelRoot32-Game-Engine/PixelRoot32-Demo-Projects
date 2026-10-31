@@ -53,24 +53,24 @@ struct SceneFrameMeasurements {
 class SceneRenderer {
 public:
     /**
-     * @brief Opens the container, loads E1M1 and builds the PLAYPAL colour table.
+     * @brief Opens the container, loads E1M1 and builds the PLAYPAL colour tables.
      *
      * Prints one `SHOW,setup,...` line (from the session it delegates to) and one
      * `SHOW,mem,...` line from `frameLevelFormatMemory()`. Idempotent: a second
      * call on an open renderer returns true and does nothing.
      *
-     * @return true when the session is open and the palette table was installed.
+     * @return true when the session is open and the palette tables were installed.
      */
     bool open();
 
     /**
      * @brief Renders the spawn viewpoint into a caller-owned 8bpp surface.
      *
-     * The surface receives DOOM palette indices, not RGB332: the conversion is
-     * the scene's, because the scene owns the buffer contract and has to choose
-     * between the panel's byte-per-pixel RGB332 and the desktop's RGB565. The
-     * hash, when requested, is taken here -- before the caller overwrites the
-     * indices -- so it can be compared with the host's `framehash`.
+     * The surface receives DOOM palette indices, not colours: on the panel the
+     * engine's installed PLAYPAL table expands them during the present, and on
+     * the desktop the scene expands them itself because that surface has no
+     * 8-bit buffer. The hash, when requested, is taken here -- before any caller
+     * expansion -- so it can be compared with the host's `framehash`.
      *
      * @param indexPixels Surface bytes, at least width * height.
      * @param width       Stride in bytes; must be >= R_SCREEN_WIDTH.

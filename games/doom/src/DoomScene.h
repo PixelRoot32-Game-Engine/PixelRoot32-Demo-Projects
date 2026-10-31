@@ -25,9 +25,11 @@ namespace doom {
  * 1. The framebuffer contract. Both shipped drivers expose the logical surface
  *    as a linear buffer, one entry per pixel, stride = the logical width,
  *    top-left origin:
- *      - ESP32 (`TFT_eSPI_Drawer::getSpriteBuffer()`): one byte per pixel,
- *        RRRGGGBB (RGB332), which the drawer expands to RGB565 as it presents.
- *        This is the buffer DOOM's renderer writes into.
+ *      - ESP32 (`TFT_eSPI_Drawer::getSpriteBuffer()`): one byte per pixel. The
+ *        shell paints RRRGGGBB (RGB332) colours into it; the game frame writes
+ *        DOOM palette indices and installs the PLAYPAL -> RGB565 table with
+ *        `DrawSurface::setPalette8()`, so the drawer expands each byte as it
+ *        presents. This is the buffer DOOM's renderer writes into.
  *      - native (`SDL2_Drawer::getPixelBuffer()`): one `uint16_t` per pixel,
  *        RGB565. It exists so the desktop mirror shows the same frame.
  *    The scene paints the whole surface through those pointers and never
@@ -107,9 +109,12 @@ namespace doom {
  *
  * `PIXELROOT32_DOOM_SHOW_E1M1` (D4.0) replaces the shell with the game: `draw()`
  * renders E1M1's spawn viewpoint through `doomc/SceneRenderer.h` into the engine's
- * 8bpp surface as DOOM palette indices, converts that buffer in place to RGB332
- * through the WAD's PLAYPAL table, and lets the engine present it. The level is
- * opened once in `init()` and stays open: the same setup `frameProbeRun()` uses
+ * 8bpp surface as DOOM palette indices, and `init()` installs the WAD PLAYPAL as
+ * an RGB565 expansion table through `DrawSurface::setPalette8()`, so the engine's
+ * present path expands those indices as it transfers. There is no per-frame
+ * conversion pass: the panel shows the real palette, and the bytes the frame hash
+ * covers are the bytes the panel draws from. The level is opened once in `init()`
+ * and stays open: the same setup `frameProbeRun()` uses
  * (`doomc/FrameDriver.cpp`), so the board frame and the measurement cannot drift.
  * It prints `SHOW,setup`, `SHOW,mem`, then one bounded `SHOW,frame=...` line: the
  * first ten frames and one per second after, until frame 600. The tic clock, the
@@ -145,12 +150,13 @@ private:
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
     /**
-     * @brief Renders the game frame, converts it and closes the measurement.
+     * @brief Renders the game frame, measures it and closes the measurement.
      *
      * This is D4.0's frame: E1M1's spawn viewpoint as DOOM palette indices in
-     * the engine's 8bpp buffer, converted in place to RGB332, presented by the
-     * engine. It prints one bounded `SHOW,...` line per reported frame and
-     * leaves the tic clock, input lines and console behaviour untouched.
+     * the engine's 8bpp buffer, presented by the engine through the PLAYPAL
+     * table installed in `init()`. It prints one bounded `SHOW,...` line per
+     * reported frame and leaves the tic clock, input lines and console behaviour
+     * untouched.
      */
     void drawSceneFrame(pixelroot32::graphics::Renderer& renderer);
 #endif

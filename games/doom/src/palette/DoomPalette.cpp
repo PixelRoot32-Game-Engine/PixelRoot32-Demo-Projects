@@ -123,6 +123,12 @@ bool g_built = false;
 std::uint8_t g_playpalTable[kEntryCount];
 bool g_playpalBuilt = false;
 
+/// The same PLAYPAL in the panel's native format (D4.0b): 512 bytes of RGB565,
+/// handed to the engine's 8bpp surface through `DrawSurface::setPalette8()` so
+/// the driver expands each index as it presents. Built in the same one-shot
+/// pass as `g_playpalTable`, from the same 768 source bytes.
+std::uint16_t g_playpal565Table[kEntryCount];
+
 }  // namespace
 
 void buildIndexTable(const std::uint8_t* rgb888, std::uint8_t* out) {
@@ -152,10 +158,17 @@ void initFromPlaypal(const std::uint8_t* rgb888) {
         return;
     }
     buildIndexTable(rgb888, g_playpalTable);
+    for (int index = 0; index < kEntryCount; ++index) {
+        const int base = index * 3;
+        g_playpal565Table[index] = rgb888To565(rgb888[base + 0], rgb888[base + 1],
+                                               rgb888[base + 2]);
+    }
     g_playpalBuilt = true;
 }
 
 const std::uint8_t* playpalTable() { return g_playpalTable; }
+
+const std::uint16_t* playpal565Table() { return g_playpal565Table; }
 
 }  // namespace palette
 }  // namespace doom
