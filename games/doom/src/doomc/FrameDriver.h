@@ -508,5 +508,91 @@ void frameProbeRun(std::uint8_t* surface, int width, int height);
 
 #endif
 
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+
+/**
+ * @brief The level session the shipped scene renders through (D4.0).
+ *
+ * The frame probe and the game frame want the same expensive thing: one open
+ * container, E1M1's map bound into the walk state, the light table, the sprite
+ * list and the four renderer passes. D3.6-D3.11 built all of it inside
+ * `frameProbeRun()`, which is compiled only for a measurement build. D4.0 moved
+ * that setup behind this API instead of writing a second one, so there is one
+ * implementation of "the level is loaded" and both callers use it:
+ *
+ *   - `frameProbeRun()` opens it, renders 20 views and closes it, exactly as
+ *     before (its `FRAMEPROF,...` lines are unchanged);
+ *   - the shipped `_show` environment opens it once in `DoomScene::init()`,
+ *     renders the spawn viewpoint every frame, and closes it only at shutdown.
+ *
+ * The session owns no memory of its own beyond the file-scope statics the probe
+ * already had: the walk state, the clip pools and the baked manifest adapter are
+ * the same 71 KB of `.bss`, and the mapping stays live until `frameLevelClose()`
+ * rather than being released at the end of a boot-time probe.
+ *
+ * OPEN
+ *
+ * `frameLevelOpen()` maps the `wad` partition, opens the baked manifest, binds
+ * E1M1's map lumps (raw views into the mapping in the flash path), initialises
+ * the light table, allocates the sprite list from the heap, initialises the walk
+ * state and binds the three resolvers. It prints exactly one
+ * `<tag>,setup,status=ok,...` line, or one `<tag>,setup,status=fail,reason=...`
+ * line and leaves nothing open. The `tag` is "FRAMEPROF" for the probe and
+ * "SHOW" for the game, so a captured log says which caller opened the session.
+ *
+ * RENDER
+ *
+ * `frameLevelRenderSpawn()` renders the host harness's frame 0 -- the first
+ * player-start THING, its sector's floor plus R_VIEWHEIGHT, angle 0, built by
+ * the same `buildFrames()` rule the probe and `tools/rsegs_check.py` use -- into
+ * a caller-owned 8bpp surface as DOOM palette indices. It does not convert:
+ * colour is the scene's job, because the scene owns the surface contract.
+ *
+ * When @p wantHash is true it also writes the SHA-256 of the 64,000 index bytes
+ * followed by the 320 covered bytes, which is the host's `SPRSTAT ... framehash`
+ * for the same viewpoint. It is opt-in because a software SHA-256 over 64 KB
+ * costs milliseconds, and a framework that paid it on every frame would report a
+ * frame rate nobody gets.
+ *
+ * @param surface  The 8bpp surface, at least 320x200 bytes.
+ * @param width    Its stride in bytes (must be >= R_SCREEN_WIDTH).
+ * @param height   Its rows (must be >= R_VIEW_HEIGHT).
+ * @param sample   Receives the renderer's own measurements (`frameMicros`,
+ *                 `drawsegs` and the pass times); may be NULL.
+ * @param hash     65 bytes for the hash and its NUL; untouched when
+ *                 @p wantHash is false.
+ * @param wantHash Take the SHA-256 of the index surface.
+ * @param hashMicros Optional: the time the hash itself took, 0 when not taken.
+ * @return false when no session is open or a pass refused the frame.
+ */
+bool frameLevelOpen(const char* tag, char marker[5]);
+bool frameLevelRenderSpawn(std::uint8_t* surface, int width, int height,
+                           FrameProfileSample* sample, char hash[65], bool wantHash,
+                           std::uint32_t* hashMicros);
+void frameLevelClose();
+
+/**
+ * @brief Palette 0 of the WAD's PLAYPAL lump, 768 bytes, or NULL before OPEN.
+ *
+ * The session decodes the lump out of the container once. The caller turns it
+ * into the 256-entry index -> RGB332 conversion table
+ * (`palette::initFromPlaypal()`); the session itself does not know the palette
+ * module, so the colour contract stays in one place.
+ */
+const std::uint8_t* frameLevelPlaypal();
+
+/**
+ * @brief Formats one `SHOW,mem,...` line for the open session.
+ *
+ * The same numbers `FRAMEPROF,mem` prints -- `sizeof` of every static block, the
+ * heap before the level was bound, the decoded level bytes (0 in the flash
+ * path) -- under the tag the game's log uses. The caller owns the buffer.
+ *
+ * @return The line length excluding the NUL, or 0 when it does not fit.
+ */
+std::size_t frameLevelFormatMemory(char* out, std::size_t capacity);
+
+#endif
+
 }  // namespace doomc
 }  // namespace doom

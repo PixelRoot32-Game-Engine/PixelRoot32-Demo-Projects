@@ -116,6 +116,13 @@ static_assert(wireAt(191) == 0x03, "synthetic palette: index 191 must be pure bl
 std::uint8_t g_indexTable[kEntryCount];
 bool g_built = false;
 
+/// The PLAYPAL-built table (D4.0): 256 bytes, zero until the container has
+/// supplied the real palette. Separate from `g_indexTable` so the shell's
+/// synthetic-palette contract and the game's real-palette frame can coexist in
+/// one binary without one install overwriting the other.
+std::uint8_t g_playpalTable[kEntryCount];
+bool g_playpalBuilt = false;
+
 }  // namespace
 
 void buildIndexTable(const std::uint8_t* rgb888, std::uint8_t* out) {
@@ -139,6 +146,16 @@ const std::uint8_t* indexTable() {
     init();
     return g_indexTable;
 }
+
+void initFromPlaypal(const std::uint8_t* rgb888) {
+    if (g_playpalBuilt || rgb888 == nullptr) {
+        return;
+    }
+    buildIndexTable(rgb888, g_playpalTable);
+    g_playpalBuilt = true;
+}
+
+const std::uint8_t* playpalTable() { return g_playpalTable; }
 
 }  // namespace palette
 }  // namespace doom

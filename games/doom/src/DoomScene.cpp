@@ -676,6 +676,26 @@ void DoomScene::init() {
     }
 #endif  // PIXELROOT32_DOOM_FRAME_PROBE
 
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    // D4.0's game frame: one open level for the life of the scene. It reads the
+    // `wad` partition, so this is the only environment that can render the game;
+    // when it fails the reason is already on the serial line and draw() keeps
+    // painting the shell. The measurement counters start here so the first
+    // `SHOW,...` line belongs to the first frame this scene drew.
+    if (!sceneRenderer_.open()) {
+        writeConsoleLine("SHOW,setup,status=fail,reason=scene\n");
+    }
+    showFrame_ = 0;
+    showPendingReport_ = false;
+    showRenderMicros_ = 0;
+    showConvertMicros_ = 0;
+    showHashMicros_ = 0;
+    showUpdateMicros_ = 0;
+    showUpdateEntry_ = 0;
+    showHash_[0] = '\0';
+    showLastReportUs_ = sampleMicros();
+#endif  // PIXELROOT32_DOOM_SHOW_E1M1
+
     // Anchors the tic clock at the scene's first microsecond sample, which is
     // tic 0. The sentinel makes the first update() report it, so the serial
     // stream starts with a TIC line instead of hiding tic 0 behind the filter.
@@ -717,6 +737,12 @@ void DoomScene::pollTicClock() {
 }
 
 void DoomScene::update(unsigned long deltaTime) {
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    // The frame measurement needs the scene's own update time: the engine calls
+    // update() before draw(), and its present() runs after draw(), so this sample
+    // is what separates the two from the loop period.
+    const std::uint32_t updateEntry = sampleMicros();
+#endif
 #if defined(PIXELROOT32_DOOM_FRAME_LOG)
     // Close the previous frame at the first instant of this update. The line is
     // written inside endFrame(); the start sample below is taken after that
@@ -756,6 +782,10 @@ void DoomScene::update(unsigned long deltaTime) {
     }
 
     if (buttons == buttons_) {
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+        showUpdateEntry_ = updateEntry;
+        showUpdateMicros_ = sampleMicros() - updateEntry;
+#endif
         return;
     }
     buttons_ = buttons;
@@ -770,10 +800,20 @@ void DoomScene::update(unsigned long deltaTime) {
     std::snprintf(line, sizeof line, "INPUT,buttons=0x%02X\n", static_cast<unsigned>(buttons));
     writeConsoleLine(line);
 #endif
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    showUpdateEntry_ = updateEntry;
+    showUpdateMicros_ = sampleMicros() - updateEntry;
+#endif
 }
 
 void DoomScene::draw(Renderer& renderer) {
-#if defined(PIXELROOT32_DOOM_PALETTE_TEST)
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    // D4.0's game frame: E1M1's spawn viewpoint, converted in place and presented
+    // by the engine. It takes precedence over the palette test and the shell, but
+    // the flags never meet: this environment defines only this one.
+    drawSceneFrame(renderer);
+#elif defined(PIXELROOT32_DOOM_PALETTE_TEST)
     // A separate build (env:esp32dev_ILI9341_palette) shows the palette
     // contract instead of the shell. The shipped environments never define the
     // flag, so their frame is the one above, untouched.
@@ -790,5 +830,155 @@ void DoomScene::draw(Renderer& renderer) {
     frameLog_.endDraw(sampleMicros(), sampleFreeHeap());
 #endif
 }
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+
+void DoomScene::drawSceneFrame(Renderer& renderer) {
+    DrawSurface& surface = renderer.getDrawSurface();
+    const int width = renderer.getLogicalWidth();
+    const int height = renderer.getLogicalHeight();
+
+    // This call happens after the engine's update() and before its present().
+    // `arrival` closes the measurement of the frame that just finished; the
+    // draw start below is taken *after* the optional serial write, so a reported
+    // frame's own line is not charged to any frame period.
+    const std::uint32_t arrival = sampleMicros();
+
+    if (showFrame_ > 0u && showPendingReport_) {
+        // present_us: the gap between the previous draw's last instruction and
+        // the update() that followed it. The engine presents outside draw()
+        // (`drawer->present()` after the scene returns, then
+        // flushPendingTransfers() under PIXELROOT32_DRAIN_PRESENT), so this gap
+        // is the tightest measurement the scene can take; it is the whole wire
+        // transfer plus the Arduino yield() between loop iterations. `other_us`
+        // is what is left of the period: the engine's input sample, event pump
+        // and loop bookkeeping, which the scene does not own.
+        const std::uint32_t presentUs = showUpdateEntry_ - showDrawEnd_;
+        // The reporting hash is a diagnostic, not part of the game's frame: it is
+        // one software SHA-256 over 64 KB that only a reported frame pays.
+        // Subtract it from the period so `frame_us` and `fps_x10` describe every
+        // frame, and keep its cost visible as `hash_us`.
+        const std::uint32_t rawInterval = arrival - showDrawStart_;
+        const std::uint32_t frameUs =
+            rawInterval > showHashMicros_ ? rawInterval - showHashMicros_ : rawInterval;
+        const std::uint32_t accounted =
+            showRenderMicros_ + showConvertMicros_ + presentUs + showUpdateMicros_;
+        const std::uint32_t otherUs = frameUs > accounted ? frameUs - accounted : 0u;
+        const std::uint32_t fpsX10 = frameUs != 0u ? 10000000u / frameUs : 0u;
+
+        char line[256];
+        std::snprintf(line, sizeof line,
+                      "SHOW,frame=%u,render_us=%u,convert_us=%u,present_us=%u,"
+                      "frame_us=%u,fps_x10=%u,update_us=%u,hash_us=%u,other_us=%u,"
+                      "hash=%s\n",
+                      static_cast<unsigned>(showFrame_ - 1u),
+                      static_cast<unsigned>(showRenderMicros_),
+                      static_cast<unsigned>(showConvertMicros_),
+                      static_cast<unsigned>(presentUs),
+                      static_cast<unsigned>(frameUs),
+                      static_cast<unsigned>(fpsX10),
+                      static_cast<unsigned>(showUpdateMicros_),
+                      static_cast<unsigned>(showHashMicros_),
+                      static_cast<unsigned>(otherUs), showHash_);
+        writeConsoleLine(line);
+    }
+
+    // Decide whether this frame takes a hash and gets a line at the next draw.
+    // Bounded two ways: the first frames every frame, then one per second, and
+    // nothing at all after kShowReportFrameLimit -- the scene keeps drawing, so
+    // the panel does not freeze when reporting stops.
+    showPendingReport_ = false;
+    if (showFrame_ < kShowReportFrameLimit
+        && (showFrame_ < kShowReportFirstFrames
+            || (arrival - showLastReportUs_) >= kShowReportIntervalMicros)) {
+        showPendingReport_ = true;
+        showLastReportUs_ = arrival;
+    }
+
+    const std::uint32_t drawStart = sampleMicros();
+    bool rendered = false;
+
+    // The panel path: one byte per pixel, RGB332. The renderer writes DOOM
+    // palette indices into this same buffer, and the pass below turns each byte
+    // into the colour TFT_eSPI's LUT expects. It is in place and each byte is
+    // independent, so no scratch buffer is needed and nothing is read past the
+    // surface.
+    if (std::uint8_t* pixels = surface.getSpriteBuffer()) {
+        if (sceneRenderer_.isOpen() && width == kLogicalWidth && height == kLogicalHeight) {
+            doomc::SceneFrameMeasurements measured;
+            if (sceneRenderer_.render(pixels, width, height, showPendingReport_, &measured)) {
+                showRenderMicros_ = measured.renderMicros;
+                showHashMicros_ = measured.hashMicros;
+                if (measured.hashed) {
+                    for (int index = 0; index < 65; ++index) {
+                        showHash_[index] = measured.hash[index];
+                    }
+                } else {
+                    showHash_[0] = '\0';
+                }
+
+                const std::uint8_t* table = palette::playpalTable();
+                const std::size_t count =
+                    static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+                const std::uint32_t convertStart = sampleMicros();
+                for (std::size_t index = 0; index < count; ++index) {
+                    pixels[index] = table[pixels[index]];
+                }
+                showConvertMicros_ = sampleMicros() - convertStart;
+                rendered = true;
+            }
+        }
+    }
+#if defined(PLATFORM_NATIVE)
+    // The desktop mirror: SDL2 has no 8bpp surface, so the indices land in a
+    // scratch plane and are expanded to RGB565 exactly the way the panel's LUT
+    // expands them, which keeps the window showing the panel's colours instead of
+    // a second, slightly different conversion. Guarded by PLATFORM_NATIVE because
+    // on the board the scratch would cost 64,000 B of DRAM for a branch the TFT
+    // driver never takes.
+    else if (std::uint16_t* pixels = surface.getPixelBuffer()) {
+        static std::uint8_t indices[static_cast<std::size_t>(kLogicalWidth)
+                                    * static_cast<std::size_t>(kLogicalHeight)];
+        if (sceneRenderer_.isOpen() && width == kLogicalWidth && height == kLogicalHeight) {
+            doomc::SceneFrameMeasurements measured;
+            if (sceneRenderer_.render(indices, width, height, showPendingReport_, &measured)) {
+                showRenderMicros_ = measured.renderMicros;
+                showHashMicros_ = measured.hashMicros;
+                if (measured.hashed) {
+                    for (int index = 0; index < 65; ++index) {
+                        showHash_[index] = measured.hash[index];
+                    }
+                } else {
+                    showHash_[0] = '\0';
+                }
+
+                const std::uint8_t* table = palette::playpalTable();
+                const std::size_t count =
+                    static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+                const std::uint32_t convertStart = sampleMicros();
+                for (std::size_t index = 0; index < count; ++index) {
+                    pixels[index] = palette::expandRgb332(table[indices[index]]);
+                }
+                showConvertMicros_ = sampleMicros() - convertStart;
+                rendered = true;
+            }
+        }
+    }
+#endif
+
+    if (!rendered) {
+        // A closed session (missing partition, rejected container) or a surface
+        // the renderer cannot use: keep the shell instead of freezing the last
+        // frame, and drop the pending line so it cannot describe a shell frame.
+        paintShellFrame(renderer, buttons_);
+        showPendingReport_ = false;
+    }
+
+    showDrawStart_ = drawStart;
+    showDrawEnd_ = sampleMicros();
+    ++showFrame_;
+}
+
+#endif  // PIXELROOT32_DOOM_SHOW_E1M1
 
 }  // namespace doom

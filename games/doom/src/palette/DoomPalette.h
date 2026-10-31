@@ -122,8 +122,39 @@ void init();
  * The pointer is stable for the lifetime of the program. DOOM's rasteriser
  * writes `indexTable()[paletteIndex]` straight into the 8bpp framebuffer, one
  * byte per pixel, which is why this table is the whole of Plan B.
+ *
+ * This is the *synthetic* palette built by `init()`, used by the shell and by
+ * the palette contract screen. The shipped game frame uses `playpalTable()`.
  */
 const std::uint8_t* indexTable();
+
+/**
+ * @brief Installs the table built from the WAD's own PLAYPAL lump (D4.0).
+ *
+ * The rasteriser writes DOOM palette indices into the engine's 8bpp surface,
+ * whose bytes are RGB332. Converting a finished frame in place is one pass of
+ * `buffer[i] = table[buffer[i]]`, so this table is the frame path's whole colour
+ * contract: entry `i` is the wire byte palette index `i` must become.
+ *
+ * @param rgb888 768 bytes, palette 0 of the PLAYPAL lump (256 R,G,B triples).
+ *               The caller owns it; this copies through `buildIndexTable()`.
+ *
+ * Idempotent in the same sense as `init()`: the table is built once per boot
+ * and a second call is a no-op, so the caller cannot install a second mapping
+ * over the one the frame is already using. The pointer `playpalTable()` returns
+ * is stable for the lifetime of the program.
+ */
+void initFromPlaypal(const std::uint8_t* rgb888);
+
+/**
+ * @brief The 256-entry PLAYPAL index -> RGB332 table, in palette order.
+ *
+ * Zero-filled until `initFromPlaypal()` runs, which the D4.0 scene does once,
+ * right after the container is open. Unlike `indexTable()` it never falls back
+ * to the synthetic palette: a frame converted through an unbuilt table is black,
+ * which is a visible failure instead of a wrong-coloured one.
+ */
+const std::uint8_t* playpalTable();
 
 }  // namespace palette
 }  // namespace doom

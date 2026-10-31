@@ -8,6 +8,10 @@
 #include "perf/FrameLog.h"
 #endif
 
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+#include "doomc/SceneRenderer.h"
+#endif
+
 #include "time/TicClock.h"
 
 namespace doom {
@@ -101,6 +105,17 @@ namespace doom {
  * along with that buffer. Nothing on the frame path changes: the probe runs once,
  * inside `init()`, before the shell draws its first frame.
  *
+ * `PIXELROOT32_DOOM_SHOW_E1M1` (D4.0) replaces the shell with the game: `draw()`
+ * renders E1M1's spawn viewpoint through `doomc/SceneRenderer.h` into the engine's
+ * 8bpp surface as DOOM palette indices, converts that buffer in place to RGB332
+ * through the WAD's PLAYPAL table, and lets the engine present it. The level is
+ * opened once in `init()` and stays open: the same setup `frameProbeRun()` uses
+ * (`doomc/FrameDriver.cpp`), so the board frame and the measurement cannot drift.
+ * It prints `SHOW,setup`, `SHOW,mem`, then one bounded `SHOW,frame=...` line: the
+ * first ten frames and one per second after, until frame 600. The tic clock, the
+ * input line and every event line keep running unchanged. The shipped
+ * environments never define it and keep painting the shell.
+ *
  * The logical surface is a constant here on purpose. DOOM's renderer is
  * column-indexed: `distscale[SCREENWIDTH]`, `visplane_t::top[SCREENWIDTH]`,
  * `floorclip` / `ceilingclip` and the status bar layout all assume 320x200.
@@ -128,6 +143,18 @@ private:
      */
     void pollTicClock();
 
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    /**
+     * @brief Renders the game frame, converts it and closes the measurement.
+     *
+     * This is D4.0's frame: E1M1's spawn viewpoint as DOOM palette indices in
+     * the engine's 8bpp buffer, converted in place to RGB332, presented by the
+     * engine. It prints one bounded `SHOW,...` line per reported frame and
+     * leaves the tic clock, input lines and console behaviour untouched.
+     */
+    void drawSceneFrame(pixelroot32::graphics::Renderer& renderer);
+#endif
+
     /**
      * @brief Buttons held at the last `update()`, packed as `INPUT` reports them.
      *
@@ -147,6 +174,46 @@ private:
     /// Last tic written to the serial line; the change filter behind the
     /// once-per-tic (never per-frame) reporting.
     std::uint32_t reportedTic_ = kNoTic;
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    /**
+     * @brief The level the game frame renders (D4.0).
+     *
+     * Declared only under the flag. It holds no buffers: the walk state and the
+     * manifest adapter are the ones `src/doomc/FrameDriver.cpp` already owns for
+     * the probe, so the game and the measurement share one copy of each.
+     */
+    doomc::SceneRenderer sceneRenderer_;
+
+    /// Frames rendered since boot, and the ones after which reporting stops.
+    /// The scene keeps drawing past the cap; only the serial line ends, so a
+    /// capture collected over minutes cannot grow without bound.
+    static constexpr std::uint32_t kShowReportFirstFrames = 10u;
+    static constexpr std::uint32_t kShowReportFrameLimit = 600u;
+    /// One reported line per this many microseconds after the first frames.
+    static constexpr std::uint32_t kShowReportIntervalMicros = 1000000u;
+
+    std::uint32_t showFrame_ = 0;
+
+    /// The previous frame's CPU parts and the timestamps that bound it. The line
+    /// is written at the top of the *next* draw, after the interval is known.
+    std::uint32_t showRenderMicros_ = 0;
+    std::uint32_t showConvertMicros_ = 0;
+    std::uint32_t showHashMicros_ = 0;
+    std::uint32_t showDrawStart_ = 0;
+    std::uint32_t showDrawEnd_ = 0;
+
+    /// `sampleMicros()` at the top of the last `update()` and how long the scene
+    /// spent in it. The engine's present runs between the end of `draw()` and
+    /// that sample, so it is measurable from here without an engine change.
+    std::uint32_t showUpdateEntry_ = 0;
+    std::uint32_t showUpdateMicros_ = 0;
+
+    /// Whether the previous frame took its index hash, and the hash itself.
+    bool showPendingReport_ = false;
+    std::uint32_t showLastReportUs_ = 0;
+    char showHash_[65] = {0};
+#endif
 
 #if defined(PIXELROOT32_DOOM_FRAME_LOG)
     /**

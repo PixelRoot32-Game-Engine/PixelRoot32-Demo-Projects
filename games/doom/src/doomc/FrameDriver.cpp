@@ -436,7 +436,8 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 
 // --- The board driver (D3.6) -------------------------------------------------
 
-#if defined(PIXELROOT32_DOOM_FRAME_PROBE) && (defined(ESP32) || defined(ESP_PLATFORM))
+#if (defined(PIXELROOT32_DOOM_FRAME_PROBE) || defined(PIXELROOT32_DOOM_SHOW_E1M1)) && \
+    (defined(ESP32) || defined(ESP_PLATFORM))
 
 #include <cstring>
 #include <cstddef>
@@ -2046,12 +2047,63 @@ void runMemoryProbe(std::uint8_t* scratch, int stride, const r_walltex_t* textur
 }
 #endif /* PIXELROOT32_DOOM_RASTER_PROBE */
 
+// --- The level session (D4.0) -----------------------------------------------
+
+/// Palette 0 of the WAD's PLAYPAL lump: 256 entries of R, G, B.
+constexpr std::size_t kPlaypalBytes = 768u;
+
+/**
+ * @brief What the probe and the game frame share: one open level.
+ *
+ * `Driver` already holds the map, the walk state, the surface and the three
+ * resolvers, and it is the caller's: the probe keeps its copy on the stack
+ * exactly as it did before D4.0, because `env:esp32dev_ILI9341_frameram` has
+ * less than 1 KB of `dram0_0_seg` headroom and a 464 B file-scope copy would
+ * overflow it. The game frame owns one static copy (`gShowDriver`) instead. The
+ * session adds only what has to outlive one render call: the spawn viewpoint,
+ * the marker name and the heap sample the memory line needs.
+ */
+struct LevelSession {
+    Driver* driver;
+    FrameView spawn;
+    char marker[5];
+    bool open;
+    bool spawnValid;
+    std::uint32_t heapBefore;
+};
+
+LevelSession gSession;
+
+/// One formatted-line buffer shared by the session setup and the probe's own
+/// output. They never run at the same time, and one 512-byte buffer instead of
+/// two is what keeps `env:esp32dev_ILI9341_frameram` inside `dram0_0_seg`.
+char gSessionLine[kFrameProfileLineCapacity];
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+/// The game frame's Driver. The probe passes its own stack copy instead; the
+/// two paths never run in one build, and keeping the probe's off .bss is what
+/// leaves the RAM control environment linkable.
+Driver gShowDriver;
+#endif
+
+/// PLAYPAL's palette 0, decoded once at open. The scene turns it into the
+/// index -> RGB332 table; this file only carries the 768 bytes. Compiled only
+/// for the game frame: the probe renders palette indices and must not spend
+/// 768 B of `dram0_0_seg` its RAM control environment does not have.
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+std::uint8_t gPlaypal[kPlaypalBytes];
+constexpr std::size_t kPlaypalStaticBytes = kPlaypalBytes;
+#else
+constexpr std::size_t kPlaypalStaticBytes = 0u;
+#endif
+bool gPlaypalValid = false;
+
 /// One `FRAMEPROF,mem` field, from `sizeof`: the driver's RAM cost is a printed/// number, never an estimate. `state_static` is the .bss half, `level_ram` is the
 /// decoded level (0 in the flash build) and `heap_before/after` bound the rest.
 /// D3.8's `cache_*` fields are the bytes the cache and scratch used to cost;
 /// they are constants now because the code that owned them is gone.
-void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore,
-                      std::uint32_t heapAfterAlloc) {
+void formatMemoryLine(const char* tag, bool sceneFrame, char* line, std::size_t capacity,
+                      std::uint32_t heapBefore, std::uint32_t heapAfterAlloc) {
     const std::size_t drawsegs = sizeof(gState.drawsegs);
     const std::size_t planes = sizeof(gState.planes);
     const std::size_t clipRanges = sizeof(gState.clipRanges);
@@ -2069,14 +2121,18 @@ void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore
 #endif
 
     std::snprintf(line, capacity,
-                  "FRAMEPROF,mem,surface=engine8bpp,index_writes=1,present=no,no_rgb332=1,"
+                  "%s,mem,surface=engine8bpp,index_writes=1,%s,"
                   "arena=%s,lump_blocks=%u,baked_records=%u,baked_entries=%d,baked_bytes=%u,"
                   "state_static=%u,drawsegs=%u,planes=%u,clip_ranges=%u,clip_arrays=%u,"
                   "clip_blocks=%u,sprite_pools=%u,covered=%u,driver_total=%u,drawseg_cap=%d,"
                   "plane_cap=%d,clip_block_cap=%d,vissprite_cap=%d,heap_before=%u,"
                   "heap_after_alloc=%u,map=%s,map_in_ram=%d,raw_views=%u,level_ram=%u,"
                   "level_released=%u,cache_static=%u,scratch=35080,cache_entries=1920,"
-                  "cache_heap_max=%u,phases=4\n",
+                  "cache_heap_max=%u,session_static=%u,driver_static=%u,playpal=%u,phases=4\n",
+                  tag,
+                  // The probe measures renderer CPU only; the game frame converts
+                  // the same surface to RGB332 and the engine presents it.
+                  sceneFrame ? "present=engine,rgb332=1" : "present=no,no_rgb332=1",
                   gPlacement, static_cast<unsigned>(gLumpBlockCount),
                   static_cast<unsigned>(bakedRecords), gBaked.entryCount(),
                   static_cast<unsigned>(gBaked.payloadBytes()),
@@ -2095,84 +2151,126 @@ void formatMemoryLine(char* line, std::size_t capacity, std::uint32_t heapBefore
 #endif
                   static_cast<unsigned>(gRawViews), static_cast<unsigned>(gLevelRamUsed),
                   static_cast<unsigned>(gLevelReleasedBytes), kRemovedCacheStatic,
-                  kRemovedCacheHeap);
+                  kRemovedCacheHeap, static_cast<unsigned>(sizeof(LevelSession)),
+                  static_cast<unsigned>(sizeof(Driver)),
+                  static_cast<unsigned>(kPlaypalStaticBytes));
 }
 
-}  // namespace
+// --- The level session (D4.0) -----------------------------------------------
 
-void frameProbeRun(std::uint8_t* surface, int width, int height) {
-    // The three line buffers are the probe's largest stack locals and the call
-    // graph below them -- the BSP recursion, the wall column emitter and the
-    // masked pass's two clip arrays -- already runs close to the loop task's
-    // stack. D3.9's attribution added a few words to several of those frames and
-    // that was enough to trip the canary, so the buffers moved to .bss: they are
-    // written once per line and never reentrant.
-    static char line[kFrameProfileLineCapacity];
-    static char attrLine[kFrameAttributionLineCapacity];
-    static char memLine[kFrameAttributionLineCapacity];
-    if (surface == nullptr || width < R_SCREEN_WIDTH || height < R_VIEW_HEIGHT) {
-        std::snprintf(line, sizeof line, "FRAMEPROF,mem,surface=missing,need=%dx%d,have=%dx%d\n",
-                      R_SCREEN_WIDTH, R_VIEW_HEIGHT, width, height);
-        writeLine(line);
-        return;
-    }
-    if (!sha256SelfTest()) {
-        writeLine("FRAMEPROF,setup,status=fail,reason=sha256\n");
-        return;
-    }
+/**
+ * @brief Opens the container, binds E1M1 and leaves the mapping live.
+ *
+ * This is the setup `frameProbeRun()` performed inline before D4.0, moved here
+ * unchanged so the shipped scene renders through the same code the probe proved.
+ * The order of the operations, the lump list and every capacity are deliberately
+ * the probe's: a second copy would be the place a frame hash could start
+ * disagreeing with the host.
+ *
+ * @param session   Caller-owned session record; it points at @p driver.
+ * @param driver    The caller-owned Driver to fill. The probe passes a stack
+ *                  local, the game frame its `gShowDriver`.
+ * @param tag      "FRAMEPROF" or "SHOW": the prefix of the one record it prints.
+ * @param loadPlaypal Decode PLAYPAL's palette 0 for the game frame. The probe
+ *                 passes false: it renders palette indices and must not spend
+ *                 heap the RAM build needs for the decoded map.
+ * @param markerOut Receives the level marker ("E1M1").
+ * @return true when the session is open. On false nothing is left open and the
+ *         reason has already been printed as `<tag>,setup,status=fail,...`.
+ */
+bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
+                      bool loadPlaypal, char markerOut[5]) {
+    *session = LevelSession{};
+    session->driver = driver;
+    *driver = Driver{};
+    gLevelRamUsed = 0u;
+    gRawViews = 0u;
+    gNotRaw = 0u;
+    gLevelReleasedBytes = 0u;
+    gSample = FrameProfileSample{};
+    gDecodeDepth = 0;
+    gPlaypalValid = false;
+    gPlacement = "baked-flash";
+
+    // The reason line writes into the shared session buffer: the setup call
+    // graph below already runs near the loop task's stack, and a second 512-byte
+    // static is enough to overflow the RAM control environment. The reference
+    // keeps `sizeof line` meaningful at every snprintf below.
+    char (&line)[kFrameProfileLineCapacity] = gSessionLine;
+
+    session->heapBefore = static_cast<std::uint32_t>(esp_get_free_heap_size());
+    const std::int64_t setupStart = nowMicros();
 
     const int openCode = doom_whd_source_open(&gWhd);
     if (openCode != DOOM_WHD_SOURCE_OK) {
-        std::snprintf(line, sizeof line, "FRAMEPROF,setup,status=fail,reason=open,code=%d\n",
+        std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=open,code=%d\n", tag,
                       openCode);
         writeLine(line);
-        return;
+        return false;
     }
     // A new container, a new manifest: the adapter validates every raw payload
     // once, builds one record per name and allocates nothing. A container built
     // without the bake is a reported failure here, not a fallback decode.
     const BakedError baked = gBaked.open(&gWhd);
     if (baked != BakedError::Ok) {
-        std::snprintf(line, sizeof line,
-                      "FRAMEPROF,setup,status=fail,reason=baked,code=%s\n",
+        std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=baked,code=%s\n", tag,
                       bakedErrorName(baked));
         writeLine(line);
         doom_whd_source_close();
-        return;
+        return false;
     }
 
-    // --- The working set ----------------------------------------------------
+    // Palette 0 of PLAYPAL, for the frame's index -> RGB332 table. The probe
+    // never needs it, so a missing or short lump is recorded and left for the
+    // caller to report: it must not turn a measurement build into a failure.
     //
-    // The graphics are already in flash: the only graphics state this build
-    // holds is the manifest adapter. `FRAMEPROF,mem` prints its record bytes and
-    // the heap before/after, so the released cache is a measured number.
-    const std::uint32_t heapBefore = static_cast<std::uint32_t>(esp_get_free_heap_size());
-    const std::uint32_t largestBefore = static_cast<std::uint32_t>(
-        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    gPlacement = "baked-flash";
-    const std::uint32_t heapAfterAlloc = static_cast<std::uint32_t>(esp_get_free_heap_size());
-    // --- Setup: the working set, timed once and reported separately ----------
-    const std::int64_t setupStart = nowMicros();
-    gLevelRamUsed = 0u;
-    gRawViews = 0u;
-    gNotRaw = 0u;
-    gSample = FrameProfileSample{};
-    gDecodeDepth = 0;
+    // PLAYPAL is 14 palettes (10,752 B), not the 768 the frame converts with, and
+    // the reader has no partial-decode entry point, so the lump is decoded into one
+    // transient heap block and the first palette is copied out. The block is
+    // released before the map is bound, so it costs no steady-state RAM and does
+    // not compete with the sprite list's allocation.
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    const int playpalLump = loadPlaypal ? doom_whd_source_lump_index(&gWhd, "PLAYPAL") : -1;
+    if (playpalLump >= 0) {
+        const std::int32_t playpalLumpBytes = doom_whd_source_lump_size(&gWhd, playpalLump);
+        if (playpalLumpBytes >= static_cast<std::int32_t>(kPlaypalBytes)) {
+            std::uint8_t* decode = static_cast<std::uint8_t*>(
+                heap_caps_malloc(static_cast<std::size_t>(playpalLumpBytes),
+                                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            std::uint32_t decoded = 0u;
+            if (decode != nullptr
+                && doom_whd_source_read_lump(&gWhd, playpalLump, decode,
+                                             static_cast<std::size_t>(playpalLumpBytes),
+                                             &decoded)
+                       == DOOM_WHD_SOURCE_OK
+                && decoded >= kPlaypalBytes) {
+                std::memcpy(gPlaypal, decode, kPlaypalBytes);
+                gPlaypalValid = true;
+            }
+            if (decode != nullptr) {
+                heap_caps_free(decode);
+            }
+        }
+    }
+#else
+    (void)loadPlaypal;
+#endif
 
     char mapMarker[5];
     if (!frameMapMarker(kFrameLevel, mapMarker)) {
-        writeLine("FRAMEPROF,setup,status=fail,reason=level\n");
+        std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=level\n", tag);
+        writeLine(line);
         doom_whd_source_close();
-        return;
+        return false;
     }
 
     const int marker = doom_whd_source_lump_index(&gWhd, mapMarker);
     if (marker < 0) {
-        std::snprintf(line, sizeof line,
-                      "FRAMEPROF,setup,status=fail,reason=marker,level=%s\n", mapMarker);
+        std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=marker,level=%s\n", tag,
+                      mapMarker);
         writeLine(line);
         doom_whd_source_close();
-        return;
+        return false;
     }
 
     doom_map_source_t source = {};
@@ -2189,7 +2287,8 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     // TEXTURE1 and PNAMES are build-time inputs now: the bake used them and the
     // runtime reads the manifest. They stay in the container for the C check.
     // THINGS is a view in both builds: see viewMapLump(). It stays alive for the
-    // whole run because the masked pass builds one sprite list per view from it.
+    // whole session because the masked pass builds one sprite list per view from
+    // it.
     if (!viewMapLump(marker, DOOM_MAP_THINGS, &source)) {
         ++mapFailures;
     }
@@ -2204,10 +2303,10 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
         mapFailures == 0 ? doom_map_open(&map, &source) : DOOM_MAP_ERR_REQUIRED_LUMP;
     if (mapFailures != 0 || !directoriesLoaded || mapError != DOOM_MAP_OK) {
         std::snprintf(line, sizeof line,
-                      "FRAMEPROF,setup,status=fail,reason=lump,map=%s,map_failures=%d,"
+                      "%s,setup,status=fail,reason=lump,map=%s,map_failures=%d,"
                       "fail_lump=%s,not_raw=%u,directories=%d,map_error=%d,"
                       "colormap=%u,heap=%u,largest=%u,level_ram=%u\n",
-                      kMapPath, static_cast<int>(mapFailures),
+                      tag, kMapPath, static_cast<int>(mapFailures),
                       (gFailLump >= 0 && gFailLump < DOOM_MAP_LUMP_COUNT)
                           ? kMapLumpNames[gFailLump] : "none",
                       static_cast<unsigned>(gNotRaw), directoriesLoaded ? 1 : 0,
@@ -2220,7 +2319,7 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
         writeLine(line);
         doom_whd_source_close();
         releaseWorkingSet();
-        return;
+        return false;
     }
 
     gLevelReleasedBytes = 20742u;
@@ -2234,132 +2333,276 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
 #endif
 
     if (r_light_init(&gLight, gColormap, gColormapBytes) != R_LIGHT_OK) {
-        writeLine("FRAMEPROF,setup,status=fail,reason=colormap\n");
+        std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=colormap\n", tag);
+        writeLine(line);
         doom_whd_source_close();
         releaseWorkingSet();
-        return;
+        return false;
     }
 
-    // The sprite list. D3.6 never allocated it because the masked pass never ran;
-    // it is the caller's thing list, so it is the caller's block. It is taken
-    // *after* the map is open and the level's blocks are bound, and it is exactly
-    // one record per THINGS entry: E1M1 needs 129, E1M6 389, and a fixed 130 was
-    // the E1M1-only build's size. The upper bound is the level's own THINGS
-    // count, so a level the fixture cannot place costs no more than it names.
+    // The sprite list. It is the caller's thing list, so it is the caller's
+    // block. It is taken *after* the map is open and the level's blocks are
+    // bound, and it is exactly one record per THINGS entry: E1M1 needs 129, E1M6
+    // 389, and the upper bound is the level's own THINGS count.
     const std::uint32_t thingCount = map.lumps[DOOM_MAP_THINGS].count;
     if (thingCount == 0u || thingCount > static_cast<std::uint32_t>(kSpriteCapacity)) {
         std::snprintf(line, sizeof line,
-                      "FRAMEPROF,setup,status=fail,reason=sprites,things=%u,capacity=%d\n",
+                      "%s,setup,status=fail,reason=sprites,things=%u,capacity=%d\n", tag,
                       static_cast<unsigned>(thingCount), kSpriteCapacity);
         writeLine(line);
         doom_whd_source_close();
         releaseWorkingSet();
-        return;
+        return false;
     }
     gSprites = static_cast<r_sprite_t*>(
         heap_caps_malloc(static_cast<std::size_t>(thingCount) * sizeof(r_sprite_t),
                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     if (gSprites == nullptr) {
         std::snprintf(line, sizeof line,
-                      "FRAMEPROF,setup,status=fail,reason=sprites,need=%u,heap=%u,"
+                      "%s,setup,status=fail,reason=sprites,need=%u,heap=%u,"
                       "largest=%u\n",
-                      static_cast<unsigned>(thingCount * sizeof(r_sprite_t)),
+                      tag, static_cast<unsigned>(thingCount * sizeof(r_sprite_t)),
                       static_cast<unsigned>(esp_get_free_heap_size()),
                       static_cast<unsigned>(heap_caps_get_largest_free_block(
                           MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
         writeLine(line);
         releaseWorkingSet();
         doom_whd_source_close();
-        return;
+        return false;
     }
+
+
+
+    driver->map = map;
+    driver->storage.drawsegs = gState.drawsegs;
+    driver->storage.drawsegCapacity = kDrawsegCapacity;
+    driver->storage.planes.planes = gState.planes;
+    driver->storage.planes.capacity = kPlaneCapacity;
+    driver->storage.planes.count = 0;
+    driver->storage.clipRanges = gState.clipRanges;
+    driver->storage.clipRangeCapacity = kClipRangeCapacity;
+    driver->storage.floorClip = gState.floorClip;
+    driver->storage.ceilingClip = gState.ceilingClip;
+    driver->storage.clipBlocks = gState.clipBlocks;
+    driver->storage.clipBlockCapacity = kClipBlockCapacity;
+    // All four phases run, so the D3.4 pools are part of the frame: the masked
+    // pass projects into visSprites and records its deferred columns in
+    // openingBlocks.
+    driver->storage.visSprites = gState.visSprites;
+    driver->storage.visSpriteCapacity = kVisspriteCapacity;
+    driver->storage.openingBlocks = gState.openingBlocks;
+    driver->storage.openingBlockCapacity = kOpeningBlockCapacity;
+    // D3.9: the baked patches cannot change under an unchanged record address,
+    // so their proof belongs to the residency and not to the frame.
+    gSpriteProofs.count = 0;
+    driver->storage.spriteProofs = &gSpriteProofs;
+
+    if (r_bsp_init(&driver->view, &driver->map, &driver->storage) != R_BSP_OK) {
+        std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=storage\n", tag);
+        writeLine(line);
+        doom_whd_source_close();
+        releaseWorkingSet();
+        return false;
+    }
+
+    driver->light = gLight;
+    driver->textures.resolve = resolveWall;
+    driver->textures.context = nullptr;
+    driver->textures.resolveFlat = resolveFlat;
+    driver->textures.flatContext = nullptr;
+    driver->textures.skyTexture = r_pack_name(kSkyTextureName);
+    driver->textures.beginFragment = nullptr;
+    driver->sprites.resolve = resolveSprite;
+    driver->sprites.context = nullptr;
+#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
+    // D3.9: the four passes fold their cycle buckets into this state. Assigned
+    // after r_bsp_init() because that call zeroes the state.
+    driver->view.probe = &driver->probe;
+#endif
+
+    for (int index = 0; index < 5; ++index) {
+        session->marker[index] = mapMarker[index];
+        markerOut[index] = mapMarker[index];
+    }
+    session->open = true;
 
     // The bake and the map path are the setup's two decisions, so they are
     // printed with the setup that made them.
     std::snprintf(line, sizeof line,
-                  "FRAMEPROF,setup,status=ok,map=%s,map_in_ram=%d,level=%s,raw_views=%u,"
+                  "%s,setup,status=ok,map=%s,map_in_ram=%d,level=%s,raw_views=%u,"
                   "level_ram=%u,"
                   "baked_entries=%d,baked_walls=%d,baked_flats=%d,baked_sprites=%d,"
                   "baked_bytes=%u,colormap=%u,map_lumps=%d,map_skipped=%d,"
                   "setup_us=%u\n",
-                  kMapPath,
+                  tag, kMapPath,
 #if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
                   1,
 #else
                   0,
 #endif
-                  mapMarker,
-                  static_cast<unsigned>(gRawViews), static_cast<unsigned>(gLevelRamUsed),
-                  gBaked.entryCount(),
+                  mapMarker, static_cast<unsigned>(gRawViews),
+                  static_cast<unsigned>(gLevelRamUsed), gBaked.entryCount(),
                   gBaked.count(BakedKind::kBakedKindWall),
                   gBaked.count(BakedKind::kBakedKindFlat),
                   gBaked.count(BakedKind::kBakedKindSprite),
                   static_cast<unsigned>(gBaked.payloadBytes()),
-                  static_cast<unsigned>(gColormapBytes),
-                  DOOM_MAP_LUMP_COUNT, kMapLumpCount - kFirstSkippedMapLump,
+                  static_cast<unsigned>(gColormapBytes), DOOM_MAP_LUMP_COUNT,
+                  kMapLumpCount - kFirstSkippedMapLump,
                   static_cast<unsigned>(elapsedMicros(setupStart)));
     writeLine(line);
+    return true;
+}
+
+/// Releases everything the session holds. Safe on a closed session.
+void closeLevelSession() {
+    if (!gSession.open) {
+        return;
+    }
+    doom_whd_source_close();
+    releaseWorkingSet();
+    gSession.open = false;
+    gSession.spawnValid = false;
+}
+
+/**
+ * @brief Renders the host harness's frame 0 into an index surface.
+ *
+ * The viewpoint is `frames[0]` from the same `buildFrames()` rule the probe and
+ * `tools/rsegs_check.py` use, computed once and cached: the first player-start
+ * THING's position, its sector's floor plus R_VIEWHEIGHT, and angle 0. It is
+ * *not* `r_bsp_spawn_view()`, which would use the THING record's own facing and
+ * therefore hash differently from the host's frame 00.
+ */
+bool renderSessionSpawn(std::uint8_t* surface, int width, int height,
+                        FrameProfileSample* sample, char hash[65], bool wantHash,
+                        std::uint32_t* hashMicros) {
+    if (hashMicros != nullptr) {
+        *hashMicros = 0u;
+    }
+    if (!gSession.open || surface == nullptr || width < R_SCREEN_WIDTH
+        || height < R_VIEW_HEIGHT) {
+        return false;
+    }
+
+    if (!gSession.spawnValid) {
+        FrameView frames[kViewCount];
+        if (!buildFrames(&gSession.driver->map, frames)) {
+            return false;
+        }
+        gSession.spawn = frames[0];
+        gSession.spawnValid = true;
+    }
+
+    bindSurface(gSession.driver, surface, width, height);
+    FrameProfileSample local;
+    FrameProfileSample* out = sample != nullptr ? sample : &local;
+    if (!renderOnce(gSession.driver, gSession.spawn, surface, width, height, out)) {
+        return false;
+    }
+
+    if (hash != nullptr) {
+        if (wantHash) {
+            const std::int64_t hashStart = nowMicros();
+            hashSurface(surface,
+                        static_cast<std::size_t>(width) * static_cast<std::size_t>(height),
+                        hash);
+            if (hashMicros != nullptr) {
+                *hashMicros = elapsedMicros(hashStart);
+            }
+        } else {
+            hash[0] = '\0';
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+
+bool frameLevelOpen(const char* tag, char marker[5]) {
+    if (tag == nullptr || marker == nullptr) {
+        return false;
+    }
+    return openLevelSession(&gSession, &gShowDriver, tag, true, marker);
+}
+
+bool frameLevelRenderSpawn(std::uint8_t* surface, int width, int height,
+                           FrameProfileSample* sample, char hash[65], bool wantHash,
+                           std::uint32_t* hashMicros) {
+    return renderSessionSpawn(surface, width, height, sample, hash, wantHash, hashMicros);
+}
+
+void frameLevelClose() { closeLevelSession(); }
+
+const std::uint8_t* frameLevelPlaypal() { return gPlaypalValid ? gPlaypal : nullptr; }
+
+std::size_t frameLevelFormatMemory(char* out, std::size_t capacity) {
+    if (out == nullptr || capacity == 0u) {
+        return 0u;
+    }
+    out[0] = '\0';
+    if (!gSession.open) {
+        return 0u;
+    }
+    formatMemoryLine("SHOW", true, out, capacity, gSession.heapBefore,
+                     static_cast<std::uint32_t>(esp_get_free_heap_size()));
+    return std::strlen(out);
+}
+
+#endif  // PIXELROOT32_DOOM_SHOW_E1M1
+
+void frameProbeRun(std::uint8_t* surface, int width, int height) {
+    // The three line buffers are the probe's largest stack locals and the call
+    // graph below them -- the BSP recursion, the wall column emitter and the
+    // masked pass's two clip arrays -- already runs close to the loop task's
+    // stack. D3.9's attribution added a few words to several of those frames and
+    // that was enough to trip the canary, so the buffers moved to .bss: they are
+    // written once per line and never reentrant. `line` is the session's shared
+    // buffer; this function runs only after the session has finished setting up.
+    char (&line)[kFrameProfileLineCapacity] = gSessionLine;
+    static char attrLine[kFrameAttributionLineCapacity];
+    static char memLine[kFrameAttributionLineCapacity];
+    if (surface == nullptr || width < R_SCREEN_WIDTH || height < R_VIEW_HEIGHT) {
+        std::snprintf(line, sizeof line, "FRAMEPROF,mem,surface=missing,need=%dx%d,have=%dx%d\n",
+                      R_SCREEN_WIDTH, R_VIEW_HEIGHT, width, height);
+        writeLine(line);
+        return;
+    }
+    if (!sha256SelfTest()) {
+        writeLine("FRAMEPROF,setup,status=fail,reason=sha256\n");
+        return;
+    }
+
+    // The one setup implementation, shared with the game frame (D4.0): it maps
+    // the container, binds E1M1 and leaves the mapping live. Every line it prints
+    // is this probe's own `FRAMEPROF,setup,...` record, unchanged.
+    // The probe keeps its Driver on the stack, exactly as D3.6 did: the RAM
+    // control environment has under 1 KB of `dram0_0_seg` headroom and a 464 B
+    // file-scope copy is enough to overflow it. The session points at this
+    // object; only the game frame uses its own static `gShowDriver`.
+    Driver driver;
+    char mapMarker[5];
+    if (!openLevelSession(&gSession, &driver, "FRAMEPROF", false, mapMarker)) {
+        return;
+    }
+
+    LevelSession& session = gSession;
 
     // --- The walk's storage and the pass contracts --------------------------
     FrameView frames[kViewCount];
-    if (!buildFrames(&map, frames)) {
+    if (!buildFrames(&driver.map, frames)) {
         writeLine("FRAMEPROF,setup,status=fail,reason=views\n");
-        doom_whd_source_close();
-        releaseWorkingSet();
+        closeLevelSession();
         return;
     }
-
-    Driver driver;
-    driver.map = map;
-    driver.storage.drawsegs = gState.drawsegs;
-    driver.storage.drawsegCapacity = kDrawsegCapacity;
-    driver.storage.planes.planes = gState.planes;
-    driver.storage.planes.capacity = kPlaneCapacity;
-    driver.storage.planes.count = 0;
-    driver.storage.clipRanges = gState.clipRanges;
-    driver.storage.clipRangeCapacity = kClipRangeCapacity;
-    driver.storage.floorClip = gState.floorClip;
-    driver.storage.ceilingClip = gState.ceilingClip;
-    driver.storage.clipBlocks = gState.clipBlocks;
-    driver.storage.clipBlockCapacity = kClipBlockCapacity;
-    // All four phases run, so the D3.4 pools are part of the frame: the masked
-    // pass projects into visSprites and records its deferred columns in
-    // openingBlocks.
-    driver.storage.visSprites = gState.visSprites;
-    driver.storage.visSpriteCapacity = kVisspriteCapacity;
-    driver.storage.openingBlocks = gState.openingBlocks;
-    driver.storage.openingBlockCapacity = kOpeningBlockCapacity;
-    // D3.9: the baked patches cannot change under an unchanged record address,
-    // so their proof belongs to the residency and not to the frame. Reset the
-    // count here because this is where the run's resolver is bound.
-    gSpriteProofs.count = 0;
-    driver.storage.spriteProofs = &gSpriteProofs;
-
-    if (r_bsp_init(&driver.view, &driver.map, &driver.storage) != R_BSP_OK) {
-        writeLine("FRAMEPROF,setup,status=fail,reason=storage\n");
-        doom_whd_source_close();
-        releaseWorkingSet();
-        return;
-    }
-
-    driver.light = gLight;
-    driver.textures.resolve = resolveWall;
-    driver.textures.context = nullptr;
-    driver.textures.resolveFlat = resolveFlat;
-    driver.textures.flatContext = nullptr;
-    driver.textures.skyTexture = r_pack_name(kSkyTextureName);
-    driver.textures.beginFragment = nullptr;
-    driver.sprites.resolve = resolveSprite;
-    driver.sprites.context = nullptr;
-#if defined(PIXELROOT32_DOOM_RASTER_PROBE)
-    // D3.9: the four passes fold their cycle buckets into this state. Assigned
-    // after r_bsp_init() because that call zeroes the state.
-    driver.view.probe = &driver.probe;
-#endif
-    bindSurface(&driver, surface, width, height);
 
     // --- The table ----------------------------------------------------------
-    formatMemoryLine(memLine, sizeof memLine, heapBefore, heapAfterAlloc);
+    formatMemoryLine("FRAMEPROF", false, memLine, sizeof memLine, session.heapBefore,
+                     session.heapBefore);
     writeLine(memLine);
+
+    bindSurface(&driver, surface, width, height);
 
     FrameProfileStats stats;
     frameProfileReset(&stats);
@@ -2375,8 +2618,7 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
                               "tex=%s,why=%s\n", frame,
                               run, kMapPath, driver.stage, gStageCode, gFailTexture, gFailWhy);
                 writeLine(line);
-                doom_whd_source_close();
-                releaseWorkingSet();
+                closeLevelSession();
                 return;
             }
             if (run == 1) {
@@ -2444,12 +2686,10 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
                   kMeasuredRuns, kTotalRuns - kMeasuredRuns, kMapPath, mapMarker);
     writeLine(line);
 
-    doom_whd_source_close();
-
     // The blocks go back before the shell's first frame: a probe that left the
     // graphics and the decoded level held would be a state its caller never asked
     // for, exactly as the D2.3 probe releases its mapping.
-    releaseWorkingSet();
+    closeLevelSession();
 
     std::snprintf(line, sizeof line, "FRAMEPROF,heap,after_free=%u\n",
                   static_cast<unsigned>(esp_get_free_heap_size()));
@@ -2471,6 +2711,54 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     (void)surface;
     (void)width;
     (void)height;
+}
+
+}  // namespace doomc
+}  // namespace doom
+
+#elif defined(PIXELROOT32_DOOM_SHOW_E1M1)
+
+// Host build with the game flag set: there is no `wad` partition to map, so the
+// session cannot open. The shipped `_show` environment is an ESP32 one; this
+// branch exists so a host build that defines the flag still links and reports a
+// closed session instead of failing at link time.
+namespace doom {
+namespace doomc {
+
+bool frameLevelOpen(const char* tag, char marker[5]) {
+    (void)tag;
+    if (marker != nullptr) {
+        marker[0] = '\0';
+    }
+    return false;
+}
+
+bool frameLevelRenderSpawn(std::uint8_t* surface, int width, int height,
+                           FrameProfileSample* sample, char hash[65], bool wantHash,
+                           std::uint32_t* hashMicros) {
+    (void)surface;
+    (void)width;
+    (void)height;
+    (void)sample;
+    (void)wantHash;
+    if (hash != nullptr) {
+        hash[0] = '\0';
+    }
+    if (hashMicros != nullptr) {
+        *hashMicros = 0u;
+    }
+    return false;
+}
+
+void frameLevelClose() {}
+
+const std::uint8_t* frameLevelPlaypal() { return nullptr; }
+
+std::size_t frameLevelFormatMemory(char* out, std::size_t capacity) {
+    if (out != nullptr && capacity > 0u) {
+        out[0] = '\0';
+    }
+    return 0u;
 }
 
 }  // namespace doomc
