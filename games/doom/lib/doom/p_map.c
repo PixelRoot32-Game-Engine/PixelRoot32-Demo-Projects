@@ -24,6 +24,7 @@
 
 #include <string.h>
 
+#include "p_inter.h"
 #include "p_setup.h"
 #include "p_spec.h"
 #include "r_bsp.h"
@@ -40,6 +41,13 @@ static int64_t distance_abs(fixed_t a, fixed_t b) {
     const int64_t difference = (int64_t)a - (int64_t)b;
 
     return difference < 0 ? -difference : difference;
+}
+
+/* Upstream's `leveltime` is a global; here it is p_level_t::leveltime. A
+ * hand-built context (a unit test) has no level and answers 0, which is the tic
+ * PIT_ChangeSector's crush gate reads before any world has ticked. */
+static int32_t level_time(const p_mobj_context_t* world) {
+    return world->level != NULL ? world->level->leveltime : 0;
 }
 
 /* P_AproxDistance(): the cheap distance an angle/speed decision needs, not the
@@ -215,9 +223,11 @@ static fixed_t intercept_vector(fixed_t tx, fixed_t ty, fixed_t tdx, fixed_t tdy
     return fixed_div(num, den);
 }
 
-/* R_PointToAngle() with the view at the origin, which is all P_HitSlideLine
- * asks for (R_PointToAngle2 (0,0, dx, dy)). */
-static angle_t point_to_angle(fixed_t x, fixed_t y) {
+/* R_PointToAngle() with the view at the origin: what P_HitSlideLine asks for as
+ * R_PointToAngle2 (0,0, dx, dy), and what P_DamageMobj's thrust asks for from
+ * the inflictor's position. Because both callers need the same rule, it is
+ * public (p_map.h) rather than repeated per file. */
+angle_t p_point_to_angle(fixed_t x, fixed_t y) {
     if (x == 0 && y == 0) {
         return 0;
     }
@@ -483,21 +493,29 @@ static int check_line(const p_mobj_context_t* world, const r_mobj_t* thing,
 /*
  * PIT_CheckThing: one thing against the destination box.
  *
- * The damage and pickup branches are not here: P_DamageMobj and
- * P_TouchSpecialThing are p_inter.c's, which D4.2d owns. What each branch
- * decides about *blocking* is reproduced, because that is what P_CheckPosition
- * returns and the move depends on:
+ * The three branches upstream wires into this test are all here now:
  *
  *   - a flying skull stops, clears MF_SKULLFLY and returns to its spawn state;
- *   - a missile stops on the thing it would have damaged, and passes over or
- *     under it otherwise;
- *   - a non-solid special is walked over;
- *   - any other MF_SOLID thing blocks.
+ *   - a missile stops on the thing it would have damaged, passes over or under
+ *     it otherwise, and otherwise rolls `((P_Random()%8)+1) *
+ *     tmthing->info->damage` and hands it to P_DamageMobj -- the draw is part of
+ *     the sequence, so it happens exactly here;
+ *   - a non-solid MF_SPECIAL is walked over, and P_TouchSpecialThing gets the
+ *     chance to pick it up.
+ *
+ * A thing already marked for removal is skipped. Upstream's P_RemoveMobj unlinks
+ * the item from the blockmap, so the iterator never offers it again; this walk
+ * reads the thinker list, where the node survives until the next
+ * p_run_thinkers(), so the same exclusion has to be written down.
  */
 static int check_thing(const p_mobj_context_t* world, r_mobj_t* thing,
                        const r_mobj_t* other, fixed_t x, fixed_t y) {
+    p_mobj_context_t* context = (p_mobj_context_t*)world;
     int64_t blockDistance;
 
+    if (other->thinker.removed != 0u) {
+        return 1; /* already gone: nothing to hit, nothing to pick up */
+    }
     if ((other->flags & (MF_SOLID | MF_SPECIAL | MF_SHOOTABLE)) == 0u) {
         return 1;
     }
@@ -510,13 +528,15 @@ static int check_thing(const p_mobj_context_t* world, r_mobj_t* thing,
         return 1; /* don't clip against self */
     }
 
-    /* `if (tmthing->flags & MF_SKULLFLY)` -- upstream damages, then stops. */
+    /* `if (tmthing->flags & MF_SKULLFLY)` -- upstream stops the skull here and
+     * lets P_DamageMobj's SKULLFLY branch (a no-op once the flag is gone) be
+     * skipped; the port keeps the same stop. */
     if ((thing->flags & MF_SKULLFLY) != 0u) {
         thing->flags &= ~MF_SKULLFLY;
         thing->momx = 0;
         thing->momy = 0;
         thing->momz = 0;
-        (void)p_set_mobj_state((p_mobj_context_t*)world, thing,
+        (void)p_set_mobj_state(context, thing,
                                (statenum_t)mobjinfo[thing->type].spawnstate, NULL);
         return 0; /* stop moving */
     }
@@ -542,13 +562,18 @@ static int check_thing(const p_mobj_context_t* world, r_mobj_t* thing,
         if ((other->flags & MF_SHOOTABLE) == 0u) {
             return (other->flags & MF_SOLID) == 0u;
         }
-        /* `P_DamageMobj (thing, tmthing, tmthing->target, damage)` is D4.2d. */
+        /* `damage = ((P_Random()%8)+1)*tmthing->info->damage;` then
+         * `P_DamageMobj (thing, tmthing, tmthing->target, damage);` -- the draw
+         * is part of the sequence, so it is taken before the call. */
+        p_damage_mobj(context, (r_mobj_t*)other, thing, thing->target,
+                      ((int)p_random(context->random) % 8 + 1) *
+                          (int)mobjinfo[thing->type].damage);
         return 0; /* don't traverse any more */
     }
 
     if ((other->flags & MF_SPECIAL) != 0u) {
-        /* `P_TouchSpecialThing()` is D4.2d/D5; only the blocking answer is
-         * this layer's. */
+        /* `P_TouchSpecialThing (thing, tmthing)` -- the candidate first. */
+        p_touch_special_thing(context, (r_mobj_t*)other, thing);
         return (other->flags & MF_SOLID) == 0u;
     }
 
@@ -905,12 +930,12 @@ static void hit_slide_line(const r_mobj_t* mo, uint16_t lineIndex,
     }
 
     side = point_on_line_side(mo->x, mo->y, &v1, dx, dy);
-    lineAngle = point_to_angle(dx, dy);
+    lineAngle = p_point_to_angle(dx, dy);
     if (side == 1) {
         lineAngle += ANG180;
     }
 
-    moveAngle = point_to_angle(*tmxmove, *tmymove);
+    moveAngle = p_point_to_angle(*tmxmove, *tmymove);
     deltaAngle = moveAngle - lineAngle;
     if (deltaAngle > ANG180) {
         deltaAngle += ANG180;
@@ -1134,12 +1159,25 @@ static int sector_bounds(const p_mobj_context_t* world, uint16_t sectorIndex,
 /*
  * PIT_ChangeSector: one thing against the changed sector.
  *
- * The damage half of the last branch is P_DamageMobj's (p_inter.c, D4.2d). The
- * counter is the honest substitute: every thing upstream would have damaged is
- * one unsupportedCrush.
+ * Upstream's body, in upstream's order, and the damage half is the reason this
+ * task exists:
+ *
+ *   - a thing that fits is left alone;
+ *   - a corpse is crunched to S_GIBS and loses its box;
+ *   - a dropped item is removed;
+ *   - anything else does not fit: the sector reports it, and if the move may
+ *     crush, ten points land every fourth tic and a blood mobj is sprayed.
+ *
+ * The blood spray's four draws (`(P_Random()-P_Random())<<12` twice) are part of
+ * the sequence and happen after the damage, exactly as upstream. The mobj is
+ * spawned at the victim's mid-height, which after a fatal crush is the *halved*
+ * height P_KillMobj wrote -- upstream measures the same value because it reads
+ * `thing->height` after the damage call.
  */
 static void change_sector_thing(p_mobj_context_t* world, r_mobj_t* mobj,
-                                int* nofit) {
+                                int crushChange, int* nofit) {
+    r_mobj_t* blood;
+
     if (p_thing_height_clip(world, mobj)) {
         return; /* keep checking */
     }
@@ -1166,16 +1204,27 @@ static void change_sector_thing(p_mobj_context_t* world, r_mobj_t* mobj,
 
     *nofit = 1;
 
-    /* `if (crushchange && !(leveltime&3)) P_DamageMobj (thing,NULL,NULL,10);`
-     * -- P_DamageMobj does not exist yet (D4.2d), and this entry point does not
-     * receive `crushchange`, so the counter is a superset of the damage calls:
-     * it counts the thing, not the tic the damage would have landed on. */
-    if (world->specStats != NULL) {
-        world->specStats->unsupportedCrush += 1u;
+    /* `if (crushchange && !(leveltime&3)) { P_DamageMobj (thing,NULL,NULL,10);
+     * P_SpawnMobj (..., MT_BLOOD) with a random momentum; }` */
+    if (crushChange && (level_time(world) & 3) == 0) {
+        p_damage_mobj(world, mobj, NULL, NULL, P_CRUSH_DAMAGE);
+        if (world->specStats != NULL) {
+            world->specStats->crushedThings += 1u;
+        }
+
+        /* spray blood in a random direction */
+        blood = p_spawn_mobj(world, mobj->x, mobj->y,
+                             mobj->z + mobj->height / 2, MT_BLOOD, NULL);
+        if (blood != NULL) {
+            blood->momx =
+                (p_random(world->random) - p_random(world->random)) << 12;
+            blood->momy =
+                (p_random(world->random) - p_random(world->random)) << 12;
+        }
     }
 }
 
-int p_change_sector(p_mobj_context_t* world, uint16_t sector) {
+int p_change_sector(p_mobj_context_t* world, uint16_t sector, int crushChange) {
     const r_mobj_t* mobj;
     fixed_t box[4];
     int nofit = 0;
@@ -1193,6 +1242,11 @@ int p_change_sector(p_mobj_context_t* world, uint16_t sector) {
 
     for (mobj = mobj_first(world); mobj != NULL;
          mobj = mobj_next(world, mobj)) {
+        if (mobj->thinker.removed != 0u) {
+            /* Already gone: upstream unlinked it from the blockmap, this walk
+             * still sees the thinker node. */
+            continue;
+        }
         if (haveBox &&
             (mobj->x < box[P_BOXLEFT] || mobj->x > box[P_BOXRIGHT] ||
              mobj->y < box[P_BOXBOTTOM] || mobj->y > box[P_BOXTOP])) {
@@ -1201,7 +1255,7 @@ int p_change_sector(p_mobj_context_t* world, uint16_t sector) {
         /* p_level_first_mobj()/p_level_next_mobj() hand out a const view; the
          * mobjs in the level's zone are mutable, and the height clip is exactly
          * what P_ChangeSector does to them. */
-        change_sector_thing(world, (r_mobj_t*)mobj, &nofit);
+        change_sector_thing(world, (r_mobj_t*)mobj, crushChange, &nofit);
     }
 
     if (!nofit && world->specStats != NULL) {

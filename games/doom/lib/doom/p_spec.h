@@ -82,14 +82,14 @@
  *
  * NOT IMPLEMENTED AT ALL, DELIBERATELY
  *
- *   - P_ChangeSector's crush *damage*. The height clip, the step and the
- *     "does not fit" answer are p_map.c's p_change_sector(); P_DamageMobj is
- *     p_inter.c's, which D4.2d owns. Every thing upstream would have damaged
- *     raises `p_spec_stats_t::unsupportedCrush` instead of being dropped
- *     silently.
  *   - EV_BuildStairs, EV_Teleport, G_ExitLevel/G_SecretExitLevel, the level
  *     timer (-avg/-timer), texture animation and P_UpdateSpecials' scrolling.
  *   - EV_SlidingDoor (compiled out upstream too).
+ *
+ * P_ChangeSector's crush *damage* is no longer on this list: p_map.c's
+ * p_change_sector() calls P_DamageMobj (p_inter.c) with T_MovePlane's own
+ * `crush` flag, so a crushing floor or ceiling damages what it traps exactly as
+ * upstream does, and nothing on this path is counted as unsupported.
  *
  * WHAT ONE SECTOR COSTS
  *
@@ -202,9 +202,10 @@ typedef struct p_sector {
  *   deathmatchSpecials      P_SpawnDeathmatchSpecials' counter (see p_spec.c)
  *   changeSectorCalls       every P_ChangeSector() call, from every mover
  *   changeSectorClear       the calls that answered "clear"
- *   unsupportedCrush        a thing that did not fit and that upstream's
- *                           PIT_ChangeSector would have damaged; P_DamageMobj
- *                           is p_inter.c's and D4.2d has not written it
+ *   crushedThings           things that did not fit and were therefore damaged
+ *                           by the crushing move (P_CRUSH_DAMAGE, every fourth
+ *                           tic); a move without `crush` reverts and damages
+ *                           nothing, so this counts only real crushes
  *   thingRefreshes          cached mobj floorz/ceilingz updates
  *   allocationFailures      the zone refused a thinker record
  *   adjacentOverflow        a sector with more than 20 neighbours
@@ -228,7 +229,7 @@ typedef struct p_spec_stats {
     uint32_t deathmatchSpecials;
     uint32_t changeSectorCalls;
     uint32_t changeSectorClear;
-    uint32_t unsupportedCrush;
+    uint32_t crushedThings;
     uint32_t thingRefreshes;
     uint32_t allocationFailures;
     uint32_t adjacentOverflow;
@@ -307,12 +308,16 @@ void* p_spec_alloc_thinker(struct p_mobj_context* world, size_t size,
  * is counted in `specStats->changeSectorCalls`, and a clear answer additionally
  * in `specStats->changeSectorClear`.
  *
- * PIT_ChangeSector's crush damage is P_DamageMobj's (D4.2d); each thing that
- * would have been damaged raises `specStats->unsupportedCrush`.
+ * PIT_ChangeSector's crush damage is delivered here: a thing that does not fit
+ * and whose move may crush takes P_CRUSH_DAMAGE every fourth level tic, sprays a
+ * blood mobj, and is counted in `specStats->crushedThings`.
  *
+ * @param crush Nonzero when the moving plane may crush instead of reverting;
+ *              this is T_MovePlane's own flag, forwarded unchanged.
  * @return 1 when something does not fit, 0 when the sector is clear.
  */
-int p_spec_p_change_sector(struct p_mobj_context* world, uint16_t sector);
+int p_spec_p_change_sector(struct p_mobj_context* world, uint16_t sector,
+                           int crush);
 
 /**
  * @brief False: P_ChangeSector() is the rule, not a stub.

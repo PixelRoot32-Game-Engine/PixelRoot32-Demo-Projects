@@ -33,7 +33,9 @@
  * P_ChangeSector() is p_map.c's p_change_sector(); p_spec_p_change_sector() is
  * the entry point the movers call. It walks the things the sector can touch,
  * clips their heights and reports whether any no longer fits, which is what
- * T_MovePlane's revert/crush branches read. The call sites are upstream's.
+ * T_MovePlane's revert/crush branches read. The call sites are upstream's, and
+ * each passes its own `crush` flag through, because that flag is also what
+ * decides whether the things that no longer fit are damaged.
  *
  * THE CACHED HEIGHT RULE
  *

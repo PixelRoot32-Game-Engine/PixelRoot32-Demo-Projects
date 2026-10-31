@@ -404,6 +404,78 @@ p_thing_outcome_t p_spawn_map_thing(p_mobj_context_t* world,
     return outcome;
 }
 
+/* --- Blood and puffs ---------------------------------------------------- */
+
+/*
+ * P_SpawnPuff and P_SpawnBlood (p_mobj.c's "GAME SPAWN FUNCTIONS" section).
+ *
+ * Both share upstream's z jitter, and both jitters are draws from the random
+ * sequence: `z += ((P_Random()-P_Random())<<10)`. That is two calls before the
+ * spawn (which itself draws for `lastlook`) and one after it for the tic
+ * jitter, so a spray costs four draws and their order is part of the sequence a
+ * demo replays. P_BLOOD_Z_SHIFT is the one constant a caller may override.
+ */
+static fixed_t spray_z(p_mobj_context_t* world, fixed_t z) {
+    const int32_t jitter = p_random(world->random) - p_random(world->random);
+
+    return z + (fixed_t)(jitter << P_BLOOD_Z_SHIFT);
+}
+
+r_mobj_t* p_spawn_puff(p_mobj_context_t* world, fixed_t x, fixed_t y,
+                       fixed_t z) {
+    r_mobj_t* th;
+
+    if (world == NULL) {
+        return NULL;
+    }
+
+    th = p_spawn_mobj(world, x, y, spray_z(world, z), MT_PUFF, NULL);
+    if (th == NULL) {
+        return NULL;
+    }
+
+    th->momz = FRACUNIT;
+    th->tics = (int16_t)(th->tics - (int16_t)(p_random(world->random) & 3));
+    if (th->tics < 1) {
+        th->tics = 1;
+    }
+
+    /* `if (attackrange == MELEERANGE) P_SetMobjState (th, S_PUFF3);` -- the
+     * attack trace's range is T14's (the fist and the chainsaw), so a puff
+     * always starts at S_PUFF1 here. */
+    return th;
+}
+
+r_mobj_t* p_spawn_blood(p_mobj_context_t* world, fixed_t x, fixed_t y, fixed_t z,
+                        int damage) {
+    r_mobj_t* th;
+
+    if (world == NULL) {
+        return NULL;
+    }
+
+    th = p_spawn_mobj(world, x, y, spray_z(world, z), MT_BLOOD, NULL);
+    if (th == NULL) {
+        return NULL;
+    }
+
+    /* The drops fall: `th->momz = FRACUNIT*2;` */
+    th->momz = FRACUNIT * 2;
+    th->tics = (int16_t)(th->tics - (int16_t)(p_random(world->random) & 3));
+    if (th->tics < 1) {
+        th->tics = 1;
+    }
+
+    /* The spray starts further into the burst for a smaller wound, which is
+     * upstream's way of making a pistol hit look different from a rocket. */
+    if (damage <= 12 && damage >= 9) {
+        (void)p_set_mobj_state(world, th, S_BLOOD2, NULL);
+    } else if (damage < 9) {
+        (void)p_set_mobj_state(world, th, S_BLOOD3, NULL);
+    }
+    return th;
+}
+
 /* --- Removal ------------------------------------------------------------ */
 
 p_mobj_error_t p_remove_mobj(p_mobj_context_t* world, r_mobj_t* mobj) {
@@ -528,9 +600,9 @@ static fixed_t sector_floor(const p_mobj_context_t* world, uint16_t sector) {
 /*
  * P_ExplodeMissile(): stop, enter the death state and lose MF_MISSILE.
  *
- * The deathsound is D4.2e's (no sound layer yet) and the sky-wall hack that
- * decides whether a missile explodes at all lives with the rest of the missile
- * work in D4.2d; everything that changes the thing is here.
+ * The deathsound is the audio layer's (S2) and the sky-wall hack that decides
+ * whether a missile explodes at all lives with the rest of the missile work in
+ * T14; everything that changes the thing is here.
  */
 static void explode_missile(p_mobj_context_t* world, r_mobj_t* mobj) {
     mobj->momx = 0;
@@ -692,7 +764,7 @@ void p_z_movement(p_mobj_context_t* world, r_mobj_t* mobj) {
         if (mobj->momz < 0) {
             /* Upstream's player branch here squashes the viewheight and plays
              * sfx_oof when the landing is hard; no player view (D5) and no
-             * sound layer (D4.2e) exist yet. */
+             * sound layer (S2) exist yet. */
             mobj->momz = 0;
         }
         mobj->z = mobj->floorz;
@@ -741,7 +813,7 @@ void p_mobj_thinker(p_thinker_t* thinker, void* context) {
     }
 
     /* Upstream's two momenta tests and the `acv == -1` ("was I removed?")
-     * return after each. P_CheckSight/P_NoiseAlert are D4.2e's and are not
+     * return after each. P_CheckSight/P_NoiseAlert are T15's and are not
      * called here. */
     if (mobj->momx != 0 || mobj->momy != 0 ||
         (mobj->flags & MF_SKULLFLY) != 0u) {

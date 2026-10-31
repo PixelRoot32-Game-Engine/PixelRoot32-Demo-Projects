@@ -1189,7 +1189,10 @@ void test_specs_door_closing_over_a_thing_stops_at_its_height(void) {
     TEST_ASSERT_EQUAL_INT(-1, doorOf(door)->direction);
     TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
     TEST_ASSERT_EQUAL_INT32(mobj->height, mobj->ceilingz);
-    TEST_ASSERT_TRUE(fixture.level.specStats.unsupportedCrush > 0u);
+    // A door that reverts damages nothing: the move is undone, so the thing is
+    // left behind but no crush is counted and its health is untouched.
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.level.specStats.crushedThings);
+    TEST_ASSERT_EQUAL_INT32(mobjinfo[MT_PLAYER].spawnhealth, mobj->health);
     TEST_ASSERT_TRUE(fixture.level.specStats.changeSectorClear <
                      fixture.level.specStats.changeSectorCalls);
     TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector_is_stubbed());
@@ -1476,8 +1479,10 @@ void test_specs_p_change_sector_counts_and_answers_clear(void) {
     // With nothing in the sector the real rule answers "clear" like the stub
     // did, but the function is no longer a stub.
     TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector_is_stubbed());
-    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector(&fixture.level.context, 0));
-    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector(&fixture.level.context, 0));
+    TEST_ASSERT_EQUAL_INT(0,
+                          p_spec_p_change_sector(&fixture.level.context, 0, 0));
+    TEST_ASSERT_EQUAL_INT(0,
+                          p_spec_p_change_sector(&fixture.level.context, 0, 0));
     TEST_ASSERT_EQUAL_UINT32(before + 2u,
                              fixture.level.specStats.changeSectorCalls);
     TEST_ASSERT_EQUAL_UINT32(before + 2u,
@@ -1867,7 +1872,7 @@ void test_move_z_movement_gravity_floor_and_ceiling(void) {
     TEST_ASSERT_EQUAL_INT32(0, mobj->momz);
 }
 
-void test_move_change_sector_steps_up_and_counts_an_unsupported_crush(void) {
+void test_move_change_sector_reports_and_crushes_only_when_told_to(void) {
     SpecFixture fixture({{0, 128, 160, 0, 0}});
     fixture.builder.addLine(1, 0, 0, 0, 0, false);
     TEST_ASSERT_TRUE(fixture.open());
@@ -1878,18 +1883,39 @@ void test_move_change_sector_steps_up_and_counts_an_unsupported_crush(void) {
 
     // A floor rising under a standing thing lifts it.
     fixture.level.sectors[0].floorHeight = 10 * kFrac;
-    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector(&fixture.level.context, 0));
+    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector(&fixture.level.context, 0, 0));
     TEST_ASSERT_EQUAL_INT32(10 * kFrac, mobj->z);
     TEST_ASSERT_EQUAL_INT32(10 * kFrac, mobj->floorz);
 
-    // A ceiling that leaves less room than the thing's height does not fit.
+    // A ceiling that leaves less room than the thing's height does not fit. A
+    // move that may not crush reports the thing and leaves it completely alone:
+    // upstream's `if (crushchange && !(leveltime&3))` is the whole damage rule,
+    // and this is the half where the flag is false.
     const u32 calls = fixture.level.specStats.changeSectorCalls;
     const u32 clear = fixture.level.specStats.changeSectorClear;
+    const i32 health = mobj->health;
     fixture.level.sectors[0].ceilingHeight = 40 * kFrac;
-    TEST_ASSERT_EQUAL_INT(1, p_spec_p_change_sector(&fixture.level.context, 0));
+    TEST_ASSERT_EQUAL_INT(1, p_spec_p_change_sector(&fixture.level.context, 0, 0));
     TEST_ASSERT_EQUAL_UINT32(calls + 1u, fixture.level.specStats.changeSectorCalls);
     TEST_ASSERT_EQUAL_UINT32(clear, fixture.level.specStats.changeSectorClear);
-    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.unsupportedCrush);
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.level.specStats.crushedThings);
+    TEST_ASSERT_EQUAL_INT32(health, mobj->health);
+
+    // The same thing under a move that may crush is damaged, once, by the rule's
+    // amount: PIT_ChangeSector calls P_DamageMobj (thing, NULL, NULL, 10) and
+    // the thing survives at spawnhealth - 10.
+    fixture.level.leveltime = 0;                     // `!(leveltime&3)`
+    TEST_ASSERT_EQUAL_INT(1, p_spec_p_change_sector(&fixture.level.context, 0, 1));
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.crushedThings);
+    TEST_ASSERT_EQUAL_INT32(health - 10, mobj->health);
+    TEST_ASSERT_EQUAL_INT32(mobjinfo[MT_PLAYER].spawnhealth - 10, mobj->health);
+
+    // One damage per fourth tic: the next tic's call reports again but does not
+    // damage, and the counter does not move.
+    fixture.level.leveltime = 1;
+    TEST_ASSERT_EQUAL_INT(1, p_spec_p_change_sector(&fixture.level.context, 0, 1));
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.crushedThings);
+    TEST_ASSERT_EQUAL_INT32(mobjinfo[MT_PLAYER].spawnhealth - 10, mobj->health);
 
     // The plane itself is never written by the change: only things move.
     TEST_ASSERT_EQUAL_INT32(40 * kFrac, fixture.level.sectors[0].ceilingHeight);
@@ -2287,7 +2313,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_move_drop_off_needs_mf_dropoff);
     RUN_TEST(test_move_thrust_and_friction_reach_the_stop_speed);
     RUN_TEST(test_move_z_movement_gravity_floor_and_ceiling);
-    RUN_TEST(test_move_change_sector_steps_up_and_counts_an_unsupported_crush);
+    RUN_TEST(test_move_change_sector_reports_and_crushes_only_when_told_to);
     RUN_TEST(test_move_use_lines_triggers_the_special_line_in_front);
     RUN_TEST(test_player_init_wires_the_avatar_and_reborn_defaults);
     RUN_TEST(test_player_think_turns_walks_and_raises_the_view);

@@ -181,6 +181,18 @@ typedef struct p_move_stats {
 fixed_t p_aprox_distance(fixed_t dx, fixed_t dy);
 
 /**
+ * @brief R_PointToAngle2() from (0,0) to (@p dx, @p dy): the binary angle.
+ *
+ * The octant-normalised arc tangent through `r_tan_to_angle[]`, with upstream's
+ * exact quadrant arithmetic (`ANG90 - 1 - tac` and friends). P_HitSlideLine and
+ * P_DamageMobj's thrust both need it, so it is public: the orientation of a
+ * hit's push is part of the damage rule, not of the renderer.
+ *
+ * R_PointToAngle2(x1, y1, x2, y2) is this function applied to (x2-x1, y2-y1).
+ */
+angle_t p_point_to_angle(fixed_t dx, fixed_t dy);
+
+/**
  * @brief P_LineOpening(): the window a two-sided line leaves between its sides.
  *
  * `openTop` is the lower of the two ceilings, `openBottom` the higher of the
@@ -289,16 +301,30 @@ int p_thing_height_clip(p_mobj_context_t* world, r_mobj_t* mobj);
  *   - a dead thing becomes S_GIBS, loses MF_SOLID and its box;
  *   - an MF_DROPPED item is removed;
  *   - a non-shootable thing (gibs) is ignored;
- *   - anything else does not fit: the sector reports it and the caller undoes
- *     or keeps the move.
+ *   - anything else does not fit: the sector reports it, and -- when the move is
+ *     allowed to crush -- it takes P_CRUSH_DAMAGE every fourth level tic and
+ *     sprays a blood mobj in a random direction.
  *
- * The crushing *damage* is P_DamageMobj's, which p_inter.c owns and D4.2d has
- * not written yet. Instead of silently dropping it, each thing that upstream
- * would damage raises `specStats->unsupportedCrush`, so the gap is a number.
+ * The damage is `if (crushchange && !(leveltime&3)) { P_DamageMobj (thing, NULL,
+ * NULL, 10); ... MT_BLOOD ... }`: no inflictor, so no thrust, and no source, so
+ * a monster's death by crushing is credited to player 0 by P_KillMobj's
+ * environment branch. `crushChange` is T_MovePlane's `crush` argument, which is
+ * why every mover forwards its own flag: a door closing on a player reports
+ * "does not fit" and is undone, while a crushing floor keeps the height and
+ * applies the damage.
  *
+ * A thing already marked for removal is skipped: upstream's P_RemoveMobj unlinks
+ * it from the blockmap, and this walk visits the thinker list, where the node
+ * survives until the next p_run_thinkers(). Without the test a picked-up item
+ * would be touched twice in one tic.
+ *
+ * @param world       The level's context: zone, RNG, player record, sectors.
+ * @param sector      The sector whose plane just moved.
+ * @param crushChange Nonzero when the moving plane may crush instead of
+ *                    reverting.
  * @return 1 when at least one thing does not fit, 0 when the sector is clear.
  */
-int p_change_sector(p_mobj_context_t* world, uint16_t sector);
+int p_change_sector(p_mobj_context_t* world, uint16_t sector, int crushChange);
 
 /**
  * @brief P_UseLines(): use the nearest special line in front of a thing.

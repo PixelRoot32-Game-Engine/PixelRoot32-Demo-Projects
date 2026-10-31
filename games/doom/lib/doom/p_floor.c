@@ -26,9 +26,12 @@
 
 /* The rule itself lives in p_map.c with the tests it needs (P_ThingHeightClip
  * and PIT_ChangeSector); this is T_MovePlane's entry point, kept where the
- * movers have always called it. */
-int p_spec_p_change_sector(struct p_mobj_context* world, uint16_t sector) {
-    return p_change_sector(world, sector);
+ * movers have always called it. The `crush` flag is T_MovePlane's own argument,
+ * forwarded unchanged: it decides both what the move does when blocked (revert
+ * or keep the height) and whether PIT_ChangeSector damages what it traps. */
+int p_spec_p_change_sector(struct p_mobj_context* world, uint16_t sector,
+                           int crush) {
+    return p_change_sector(world, sector, crush);
 }
 
 int p_spec_p_change_sector_is_stubbed(void) {
@@ -59,20 +62,20 @@ p_move_result_t p_move_plane(struct p_mobj_context* world, uint16_t sectorIndex,
             if (sector->floorHeight - speed < dest) {
                 lastPos = sector->floorHeight;
                 sector->floorHeight = dest;
-                blocked = p_spec_p_change_sector(world, sectorIndex);
+                blocked = p_spec_p_change_sector(world, sectorIndex, crush);
                 if (blocked) {
                     sector->floorHeight = lastPos;
-                    (void)p_spec_p_change_sector(world, sectorIndex);
+                    (void)p_spec_p_change_sector(world, sectorIndex, crush);
                 }
                 p_spec_refresh_things(world, sectorIndex);
                 return P_MOVE_PASTDEST;
             }
             lastPos = sector->floorHeight;
             sector->floorHeight -= speed;
-            blocked = p_spec_p_change_sector(world, sectorIndex);
+            blocked = p_spec_p_change_sector(world, sectorIndex, crush);
             if (blocked) {
                 sector->floorHeight = lastPos;
-                (void)p_spec_p_change_sector(world, sectorIndex);
+                (void)p_spec_p_change_sector(world, sectorIndex, crush);
                 p_spec_refresh_things(world, sectorIndex);
                 return P_MOVE_CRUSHED;
             }
@@ -80,10 +83,10 @@ p_move_result_t p_move_plane(struct p_mobj_context* world, uint16_t sectorIndex,
             if (sector->floorHeight + speed > dest) {
                 lastPos = sector->floorHeight;
                 sector->floorHeight = dest;
-                blocked = p_spec_p_change_sector(world, sectorIndex);
+                blocked = p_spec_p_change_sector(world, sectorIndex, crush);
                 if (blocked) {
                     sector->floorHeight = lastPos;
-                    (void)p_spec_p_change_sector(world, sectorIndex);
+                    (void)p_spec_p_change_sector(world, sectorIndex, crush);
                 }
                 p_spec_refresh_things(world, sectorIndex);
                 return P_MOVE_PASTDEST;
@@ -91,14 +94,14 @@ p_move_result_t p_move_plane(struct p_mobj_context* world, uint16_t sectorIndex,
             /* COULD GET CRUSHED: a crushing raise keeps the new height. */
             lastPos = sector->floorHeight;
             sector->floorHeight += speed;
-            blocked = p_spec_p_change_sector(world, sectorIndex);
+            blocked = p_spec_p_change_sector(world, sectorIndex, crush);
             if (blocked) {
                 if (crush) {
                     p_spec_refresh_things(world, sectorIndex);
                     return P_MOVE_CRUSHED;
                 }
                 sector->floorHeight = lastPos;
-                (void)p_spec_p_change_sector(world, sectorIndex);
+                (void)p_spec_p_change_sector(world, sectorIndex, crush);
                 p_spec_refresh_things(world, sectorIndex);
                 return P_MOVE_CRUSHED;
             }
@@ -109,24 +112,24 @@ p_move_result_t p_move_plane(struct p_mobj_context* world, uint16_t sectorIndex,
             if (sector->ceilingHeight - speed < dest) {
                 lastPos = sector->ceilingHeight;
                 sector->ceilingHeight = dest;
-                blocked = p_spec_p_change_sector(world, sectorIndex);
+                blocked = p_spec_p_change_sector(world, sectorIndex, crush);
                 if (blocked) {
                     sector->ceilingHeight = lastPos;
-                    (void)p_spec_p_change_sector(world, sectorIndex);
+                    (void)p_spec_p_change_sector(world, sectorIndex, crush);
                 }
                 p_spec_refresh_things(world, sectorIndex);
                 return P_MOVE_PASTDEST;
             }
             lastPos = sector->ceilingHeight;
             sector->ceilingHeight -= speed;
-            blocked = p_spec_p_change_sector(world, sectorIndex);
+            blocked = p_spec_p_change_sector(world, sectorIndex, crush);
             if (blocked) {
                 if (crush) {
                     p_spec_refresh_things(world, sectorIndex);
                     return P_MOVE_CRUSHED;
                 }
                 sector->ceilingHeight = lastPos;
-                (void)p_spec_p_change_sector(world, sectorIndex);
+                (void)p_spec_p_change_sector(world, sectorIndex, crush);
                 p_spec_refresh_things(world, sectorIndex);
                 return P_MOVE_CRUSHED;
             }
@@ -134,10 +137,10 @@ p_move_result_t p_move_plane(struct p_mobj_context* world, uint16_t sectorIndex,
             if (sector->ceilingHeight + speed > dest) {
                 lastPos = sector->ceilingHeight;
                 sector->ceilingHeight = dest;
-                blocked = p_spec_p_change_sector(world, sectorIndex);
+                blocked = p_spec_p_change_sector(world, sectorIndex, crush);
                 if (blocked) {
                     sector->ceilingHeight = lastPos;
-                    (void)p_spec_p_change_sector(world, sectorIndex);
+                    (void)p_spec_p_change_sector(world, sectorIndex, crush);
                 }
                 p_spec_refresh_things(world, sectorIndex);
                 return P_MOVE_PASTDEST;
@@ -147,7 +150,7 @@ p_move_result_t p_move_plane(struct p_mobj_context* world, uint16_t sectorIndex,
             /* p_floor.c's revert in this branch is `#if 0`: a ceiling moving up
              * never undoes itself, so the hook is called and the answer ignored.
              */
-            (void)p_spec_p_change_sector(world, sectorIndex);
+            (void)p_spec_p_change_sector(world, sectorIndex, crush);
             (void)lastPos;
         }
     }

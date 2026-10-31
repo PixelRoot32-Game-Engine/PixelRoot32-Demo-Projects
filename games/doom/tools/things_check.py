@@ -90,6 +90,9 @@ def compile_harness(workdir: Path, compiler: str) -> Path:
         # files come with it. None of them is called by this harness; they are
         # linked because the movement functions are real symbols now.
         str(root / "lib" / "doom" / "p_map.c"),
+        # p_map.c's PIT_CheckThing and PIT_ChangeSector call the damage and
+        # pickup rules (D4.2d1), so p_inter.c joins the link closure.
+        str(root / "lib" / "doom" / "p_inter.c"),
         str(root / "lib" / "doom" / "p_spec.c"),
         str(root / "lib" / "doom" / "p_floor.c"),
         str(root / "lib" / "doom" / "p_doors.c"),

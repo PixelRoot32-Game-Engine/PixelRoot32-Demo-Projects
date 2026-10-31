@@ -3399,6 +3399,11 @@ def movement_check_line(level: "SpecLevel", mo: dict, box: list[int],
 
 def movement_check_thing(level: "SpecLevel", mo: dict, other: dict,
                          x: int, y: int) -> bool:
+    # A thing already marked for removal is not offered again: upstream's
+    # P_RemoveMobj unlinks it from the blockmap, and both walks here read a list
+    # where the record survives until the next tick.
+    if other.get("removed"):
+        return True
     if not (other["flags"] & (MF_SOLID | MF_SPECIAL | MF_SHOOTABLE)):
         return True
     blockdist = other["radius"] + mo["radius"]
@@ -3432,6 +3437,11 @@ def movement_check_thing(level: "SpecLevel", mo: dict, other: dict,
         return False
 
     if other["flags"] & MF_SPECIAL:
+        # `P_TouchSpecialThing (thing, tmthing)` -- only when this run carries the
+        # interaction layer (--damage); the movement and player gates keep their
+        # original "walked over" answer.
+        if getattr(level, "pickups", False):
+            damage_touch_special(level, other, mo)
         return not (other["flags"] & MF_SOLID)
 
     return not (other["flags"] & MF_SOLID)
@@ -4109,6 +4119,862 @@ def report_player(lumps: list[Lump], map_name: str, tics: int) -> None:
     print(f"SUMMARY tics={tics} finalx={mo['x']} finaly={mo['y']} "
           f"finalangle={mo['angle'] & 0xFFFFFFFF} "
           f"finalviewz={player['viewz']} used={player['useTriggers']}")
+
+
+# --- Damage, death and pickups (D4.2d1) -------------------------------------
+#
+# A second implementation of linuxdoom-1.10 p_inter.c (P_GiveAmmo, P_GiveWeapon,
+# P_GiveBody, P_GiveArmor, P_GiveCard, P_GivePower, P_TouchSpecialThing,
+# P_KillMobj, P_DamageMobj), of p_mobj.c's P_SpawnPuff/P_SpawnBlood, and of
+# p_map.c's PIT_ChangeSector. It reuses this file's movement core (P_CheckPosition
+# and P_XYMovement/P_ZMovement are the same rules) and never calls the C.
+#
+# WHAT IS TRANSCRIBED, AND FROM WHERE
+#
+# DAMAGE_MOBJINFO is a *second* reading of upstream info.c's mobjinfo rows for
+# the eight types this script uses: flags, radius, height, mass, spawnhealth,
+# painchance and the six state numbers. DAMAGE_STATES is a second reading of
+# info.h/info.c's state rows for the states the script reaches. Both were read
+# from upstream, not from lib/doom/info_tables.h, so a disagreement between the
+# two is a real defect in one of them. The oracle switches on the sprite *name*
+# rather than its number, because a name is what upstream's P_TouchSpecialThing
+# switch reads.
+#
+# WHERE THE PLAYER RECORD COMES FROM
+#
+# Upstream reads `mobj->player`. This port's `player` flag marks the avatar and
+# the record is the level's, so the oracle keeps one `level.damage_player` and
+# every rule that needs it tests the flag first, exactly as the C does.
+
+DAMAGE_SCRIPT = "damage-death-crush-pickup"
+DAMAGE_CRUSH_STEPS = 32
+DAMAGE_CRUSH_STEP = 8 * FRACUNIT
+DAMAGE_TICKS_AFTER_DEATH = 24
+DAMAGE_STEPS = 84
+
+DAMAGE_MG0_DX = 64
+DAMAGE_MG1_DY = 64
+DAMAGE_MG2_DX = -64
+DAMAGE_MB0_DX = -96
+DAMAGE_REACH = 20 * FRACUNIT
+DAMAGE_STEP_FORWARD = 8 * FRACUNIT
+DAMAGE_DROP_HEIGHT = 96 * FRACUNIT
+DAMAGE_SPRAY_Z = 28 * FRACUNIT
+
+DAMAGE_BONUSADD = 6
+DAMAGE_BASETHRESHOLD = 100
+DAMAGE_MAXHEALTH = 100
+DAMAGE_MAXAMMO = (200, 50, 300, 50)
+DAMAGE_CLIPAMMO = (10, 4, 20, 1)
+# d_items.c's weaponinfo[].ammo, by weapon slot: fist, pistol, shotgun, chaingun,
+# missile, plasma, bfg, chainsaw, super shotgun. None is a pool.
+DAMAGE_NOAMMO = -1
+DAMAGE_WEAPON_AMMO = (DAMAGE_NOAMMO, 0, 1, 0, 3, 2, 2, DAMAGE_NOAMMO, 1)
+DAMAGE_INVULNTICS = 30 * 35
+DAMAGE_INVISTICS = 60 * 35
+DAMAGE_INFRATICS = 120 * 35
+DAMAGE_IRONTICS = 60 * 35
+
+# The constants the C build can be perturbed with: the oracle holds the shipped
+# values, so a build that changes one and still agrees would mean the gate is not
+# comparing what it claims to.
+DAMAGE_GREEN_DIVISOR = 3
+DAMAGE_BLUE_DIVISOR = 2
+DAMAGE_CRUSH_DAMAGE = 10
+DAMAGE_BLOOD_Z_SHIFT = 10
+
+MF_JUSTHIT = 0x00000040
+MF_PICKUP = 0x00000800
+MF_DROPPED = 0x00020000
+MF_SHADOW = 0x00040000
+MF_NOBLOOD = 0x00080000
+
+MT_BLOOD = 38
+MT_PUFF = 37
+MT_MISC0 = 43
+MT_MISC2 = 45
+MT_MISC3 = 46
+MT_CLIP = 63
+
+S_GIBS = 895
+
+# mobjtype: (flags, radius, height, mass, spawnhealth, painchance,
+#            spawnstate, painstate, deathstate, xdeathstate, seestate)
+DAMAGE_MOBJINFO = {
+    0: (0x02000C06, 16 * FRACUNIT, 56 * FRACUNIT, 100, 100, 255,
+        149, 156, 158, 165, 150),          # MT_PLAYER
+    1: (0x00400006, 20 * FRACUNIT, 56 * FRACUNIT, 100, 20, 200,
+        174, 187, 189, 194, 176),          # MT_POSSESSED
+    30: (0x00080006, 10 * FRACUNIT, 42 * FRACUNIT, 100, 20, 0,
+         806, 0, 808, 0, 0),               # MT_BARREL
+    37: (0x00000210, 20 * FRACUNIT, 16 * FRACUNIT, 100, 1000, 0,
+         93, 0, 0, 0, 0),                  # MT_PUFF
+    38: (0x00000010, 20 * FRACUNIT, 16 * FRACUNIT, 100, 1000, 0,
+         90, 0, 0, 0, 0),                  # MT_BLOOD
+    43: (0x00000001, 20 * FRACUNIT, 16 * FRACUNIT, 100, 1000, 0,
+         802, 0, 0, 0, 0),                 # MT_MISC0, the green armor
+    45: (0x00800001, 20 * FRACUNIT, 16 * FRACUNIT, 100, 1000, 0,
+         816, 0, 0, 0, 0),                 # MT_MISC2, the health bonus
+    46: (0x00800001, 20 * FRACUNIT, 16 * FRACUNIT, 100, 1000, 0,
+         822, 0, 0, 0, 0),                 # MT_MISC3, the armor bonus
+    63: (0x00000001, 20 * FRACUNIT, 16 * FRACUNIT, 100, 1000, 0,
+         870, 0, 0, 0, 0),                 # MT_CLIP
+}
+
+# statenum: (tics, nextstate, action, sprite name). Only the states this script
+# can reach are carried; an unknown state raises, which is how a rule that walks
+# somewhere unexpected is caught instead of silently doing nothing.
+DAMAGE_STATES = {
+    90: (8, 91, "NULL", "BLUD"),        # S_BLOOD1
+    91: (8, 92, "NULL", "BLUD"),        # S_BLOOD2
+    92: (8, 0, "NULL", "BLUD"),         # S_BLOOD3
+    93: (4, 94, "NULL", "PUFF"),        # S_PUFF1
+    94: (4, 95, "NULL", "PUFF"),        # S_PUFF2
+    95: (4, 96, "NULL", "PUFF"),        # S_PUFF3
+    96: (4, 0, "NULL", "PUFF"),         # S_PUFF4
+    149: (-1, 0, "NULL", "PLAY"),       # S_PLAY
+    156: (4, 157, "NULL", "PLAY"),      # S_PLAY_PAIN
+    157: (4, 149, "A_Pain", "PLAY"),    # S_PLAY_PAIN2
+    158: (10, 159, "NULL", "PLAY"),     # S_PLAY_DIE1
+    159: (10, 160, "A_PlayerScream", "PLAY"),
+    160: (10, 161, "A_Fall", "PLAY"),
+    161: (10, 162, "NULL", "PLAY"),
+    162: (10, 163, "NULL", "PLAY"),
+    163: (10, 164, "NULL", "PLAY"),
+    164: (-1, 0, "NULL", "PLAY"),       # S_PLAY_DIE7
+    165: (5, 166, "NULL", "PLAY"),      # S_PLAY_XDIE1
+    166: (5, 167, "A_XScream", "PLAY"),
+    174: (10, 175, "A_Look", "POSS"),   # S_POSS_STND
+    175: (10, 174, "A_Look", "POSS"),
+    176: (4, 177, "A_Chase", "POSS"),   # S_POSS_RUN1
+    177: (4, 178, "A_Chase", "POSS"),
+    178: (4, 179, "A_Chase", "POSS"),
+    179: (4, 180, "A_Chase", "POSS"),
+    187: (3, 188, "NULL", "POSS"),      # S_POSS_PAIN
+    188: (3, 176, "A_Pain", "POSS"),
+    189: (5, 190, "NULL", "POSS"),      # S_POSS_DIE1
+    190: (5, 191, "A_Scream", "POSS"),
+    191: (5, 192, "A_Fall", "POSS"),
+    192: (5, 193, "NULL", "POSS"),
+    193: (-1, 0, "NULL", "POSS"),       # S_POSS_DIE5
+    194: (5, 195, "NULL", "POSS"),      # S_POSS_XDIE1
+    195: (5, 196, "A_XScream", "POSS"),
+    196: (5, 197, "A_Fall", "POSS"),
+    197: (5, 198, "NULL", "POSS"),
+    198: (5, 199, "NULL", "POSS"),
+    199: (5, 200, "NULL", "POSS"),
+    200: (5, 201, "NULL", "POSS"),
+    201: (5, 202, "NULL", "POSS"),
+    202: (-1, 0, "NULL", "POSS"),       # S_POSS_XDIE9
+    802: (6, 803, "NULL", "ARM1"),      # S_ARM1
+    803: (7, 802, "NULL", "ARM1"),      # S_ARM1A
+    806: (6, 807, "NULL", "BAR1"),      # S_BAR1
+    807: (6, 806, "NULL", "BAR1"),
+    808: (5, 809, "NULL", "BEXP"),      # S_BEXP
+    809: (5, 810, "A_Scream", "BEXP"),
+    810: (5, 811, "NULL", "BEXP"),
+    811: (10, 812, "A_Explode", "BEXP"),
+    812: (10, 0, "NULL", "BEXP"),
+    816: (6, 817, "NULL", "BON1"),      # S_BON1
+    817: (6, 818, "NULL", "BON1"),
+    822: (6, 823, "NULL", "BON2"),      # S_BON2
+    823: (6, 824, "NULL", "BON2"),
+    870: (-1, 0, "NULL", "CLIP"),       # S_CLIP
+    895: (-1, 0, "NULL", "POL5"),       # S_GIBS
+}
+
+# The drop table P_KillMobj switches on: a zombie leaves a clip, a shotgun guy a
+# shotgun, a chaingun guy a chaingun. The other two arms are unreachable here
+# because the script spawns no such monster, so they are named and not carried.
+DAMAGE_DROPS = {
+    1: MT_CLIP,     # MT_POSSESSED -> MT_CLIP
+    23: 63,         # MT_WOLFSS -> MT_CLIP (same arm as MT_POSSESSED)
+}
+
+# P_TouchSpecialThing's switch, derived from upstream's arms rather than copied as
+# a statement list: sprite name -> (kind, payload).
+#   armor        payload is the armortype
+#   health_bonus one point, up to 200
+#   armor_bonus  one point, up to 200, armortype 1 if none
+#   health       payload is the amount, clamped at 200
+#   mega         refused outside commercial DOOM
+#   card         payload is the card index
+#   body         payload is the amount, through P_GiveBody
+#   power        payload is the power index
+#   ammo         (pool, loads); a dropped clip halves the load
+#   backpack     doubles every ceiling, then one load of each pool
+#   weapon       (weapon slot, honours MF_DROPPED)
+DAMAGE_PICKUPS = {
+    "ARM1": ("armor", 1),
+    "ARM2": ("armor", 2),
+    "BON1": ("health_bonus", 1),
+    "BON2": ("armor_bonus", 1),
+    "SOUL": ("health", 100),
+    "MEGA": ("mega", 0),
+    "BKEY": ("card", 0),
+    "YKEY": ("card", 1),
+    "RKEY": ("card", 2),
+    "BSKU": ("card", 3),
+    "YSKU": ("card", 4),
+    "RSKU": ("card", 5),
+    "STIM": ("body", 10),
+    "MEDI": ("body", 25),
+    "PINV": ("power", 0),
+    "PSTR": ("power", 1),
+    "PINS": ("power", 2),
+    "SUIT": ("power", 3),
+    "PMAP": ("power", 4),
+    "PVIS": ("power", 5),
+    "CLIP": ("ammo", 0, 1),
+    "AMMO": ("ammo", 0, 5),
+    "ROCK": ("ammo", 3, 1),
+    "BROK": ("ammo", 3, 5),
+    "CELL": ("ammo", 2, 1),
+    "CELP": ("ammo", 2, 5),
+    "SHEL": ("ammo", 1, 1),
+    "SBOX": ("ammo", 1, 5),
+    "BPAK": ("backpack", 0),
+    "BFUG": ("weapon", 6),
+    "MGUN": ("weapon", 3),
+    "CSAW": ("weapon", 7),
+    "LAUN": ("weapon", 4),
+    "PLAS": ("weapon", 5),
+    "SHOT": ("weapon", 2),
+    "SGN2": ("weapon", 8),
+}
+
+
+def damage_mobj(type_: int) -> dict:
+    flags, radius, height, mass, health, painchance, spawnstate, pain, death, \
+        xdeath, see = DAMAGE_MOBJINFO[type_]
+    return {"type": type_, "flags": flags, "radius": radius, "height": height,
+            "mass": mass, "spawnhealth": health, "painchance": painchance,
+            "spawnstate": spawnstate, "painstate": pain,
+            "deathstate": death, "xdeathstate": xdeath, "seestate": see}
+
+
+def damage_spawn(level: "SpecLevel", type_: int, x: int, y: int, z) -> dict:
+    """P_SpawnMobj(): one lastlook draw, the states' spawn row, and z."""
+    info = damage_mobj(type_)
+    level.rng.next()                                    # `lastlook`
+    subsector = point_in_subsector(level.bsp, x, y)
+    sector = sector_of_subsector(level.bsp, subsector)
+    floor = level.sectors[sector]["floor"]
+    ceiling = level.sectors[sector]["ceiling"]
+    if z == "floor":
+        z = floor
+    elif z == "ceiling":
+        z = ceiling - info["height"]
+    tics, _next, _action, sprite = DAMAGE_STATES[info["spawnstate"]]
+    mo = {
+        "type": type_, "x": x, "y": y, "z": i32(z),
+        "momx": 0, "momy": 0, "momz": 0, "angle": 0,
+        "radius": info["radius"], "height": info["height"],
+        "flags": info["flags"], "health": info["spawnhealth"],
+        "state": info["spawnstate"], "tics": tics, "sprite": sprite,
+        "floorz": floor, "ceilingz": ceiling,
+        "subsector": subsector, "sector": sector,
+        "player": False, "target": None, "reactiontime": 0,
+        "threshold": 0, "removed": False,
+    }
+    level.mobjs.append(mo)
+    return mo
+
+
+def damage_remove(level: "SpecLevel", mo: dict) -> None:
+    """P_RemoveMobj(): the mark. The next walk drops the record."""
+    mo["removed"] = True
+
+
+def damage_set_state(level: "SpecLevel", mo: dict, state: int) -> bool:
+    """P_SetMobjState(): follow zero-tic states, run A_Fall, stop at S_NULL."""
+    while True:
+        if state == 0:
+            mo["state"] = 0
+            damage_remove(level, mo)
+            return False
+        tics, nxt, action, sprite = DAMAGE_STATES[state]
+        mo["state"] = state
+        mo["tics"] = tics
+        mo["sprite"] = sprite
+        # A_Fall is the only action here that changes the mobj. A_Scream,
+        # A_XScream, A_PlayerScream and A_Pain are sound only, A_Look and A_Chase
+        # are not implemented in the C (T15), and A_Explode is T14's, so none of
+        # them has an observable effect on either side.
+        if action == "A_Fall":
+            mo["flags"] &= ~MF_SOLID
+        state = nxt
+        if tics != 0:
+            break
+    return True
+
+
+def damage_player_of(level: "SpecLevel", mo: dict):
+    return level.damage_player if mo.get("player") else None
+
+
+def damage_give_ammo(level: "SpecLevel", player: dict, ammo: int, num: int) -> bool:
+    if ammo == DAMAGE_NOAMMO:
+        return False
+    if player["ammo"][ammo] == player["maxammo"][ammo]:
+        return False
+    if num:
+        num *= DAMAGE_CLIPAMMO[ammo]
+    else:
+        num = DAMAGE_CLIPAMMO[ammo] // 2
+    if level.damage_skill in (0, 4):          # sk_baby / sk_nightmare
+        num <<= 1
+    player["ammo"][ammo] = min(player["ammo"][ammo] + num,
+                               player["maxammo"][ammo])
+    return True
+
+
+def damage_give_weapon(level: "SpecLevel", player: dict, weapon: int,
+                       dropped: bool) -> bool:
+    ammo = DAMAGE_WEAPON_AMMO[weapon]
+    gaveammo = False
+    if ammo != DAMAGE_NOAMMO:
+        gaveammo = damage_give_ammo(level, player, ammo, 1 if dropped else 2)
+    if player["weaponowned"][weapon]:
+        gaveweapon = False
+    else:
+        gaveweapon = True
+        player["weaponowned"][weapon] = 1
+        player["pendingweapon"] = weapon
+    return gaveweapon or gaveammo
+
+
+def damage_give_body(player: dict, num: int, mo: dict) -> bool:
+    if player["health"] >= DAMAGE_MAXHEALTH:
+        return False
+    player["health"] = min(player["health"] + num, DAMAGE_MAXHEALTH)
+    mo["health"] = player["health"]
+    return True
+
+
+def damage_give_armor(player: dict, armortype: int) -> bool:
+    hits = armortype * 100
+    if player["armorpoints"] >= hits:
+        return False
+    player["armortype"] = armortype
+    player["armorpoints"] = hits
+    return True
+
+
+def damage_give_card(player: dict, card: int) -> None:
+    if player["cards"][card]:
+        return
+    player["bonuscount"] = DAMAGE_BONUSADD
+    player["cards"][card] = 1
+
+
+def damage_give_power(player: dict, mo: dict, power: int) -> bool:
+    if power == 0:
+        player["powers"][power] = DAMAGE_INVULNTICS
+        return True
+    if power == 2:
+        player["powers"][power] = DAMAGE_INVISTICS
+        mo["flags"] |= MF_SHADOW
+        return True
+    if power == 5:
+        player["powers"][power] = DAMAGE_INFRATICS
+        return True
+    if power == 3:
+        player["powers"][power] = DAMAGE_IRONTICS
+        return True
+    if power == 1:
+        damage_give_body(player, 100, mo)
+        player["powers"][power] = 1
+        return True
+    if player["powers"][power]:
+        return False
+    player["powers"][power] = 1
+    return True
+
+
+def damage_touch_special(level: "SpecLevel", special: dict, toucher: dict) -> None:
+    """P_TouchSpecialThing(), upstream's order: reach, dead, the sprite's arm."""
+    player = damage_player_of(level, toucher)
+    if player is None:
+        return
+    if special["z"] - toucher["z"] > toucher["height"]:
+        return
+    if special["z"] - toucher["z"] < -8 * FRACUNIT:
+        return
+    if toucher["health"] <= 0:
+        return
+
+    sprite = special["sprite"]
+    if sprite not in DAMAGE_PICKUPS:
+        return                                        # I_Error upstream
+    arm = DAMAGE_PICKUPS[sprite]
+    kind = arm[0]
+    dropped = bool(special["flags"] & MF_DROPPED)
+
+    if kind == "armor":
+        if not damage_give_armor(player, arm[1]):
+            return
+    elif kind == "health_bonus":
+        player["health"] = min(player["health"] + 1, 200)
+        toucher["health"] = player["health"]
+    elif kind == "armor_bonus":
+        player["armorpoints"] = min(player["armorpoints"] + 1, 200)
+        if not player["armortype"]:
+            player["armortype"] = 1
+    elif kind == "health":
+        player["health"] = min(player["health"] + arm[1], 200)
+        toucher["health"] = player["health"]
+    elif kind == "mega":
+        return                                        # gamemode != commercial
+    elif kind == "card":
+        damage_give_card(player, arm[1])
+    elif kind == "body":
+        if not damage_give_body(player, arm[1], toucher):
+            return
+    elif kind == "power":
+        if not damage_give_power(player, toucher, arm[1]):
+            return
+    elif kind == "ammo":
+        pool, loads = arm[1], arm[2]
+        if not damage_give_ammo(level, player, pool, 0 if dropped else loads):
+            return
+    elif kind == "backpack":
+        if not player["backpack"]:
+            for i in range(4):
+                player["maxammo"][i] *= 2
+            player["backpack"] = 1
+        for i in range(4):
+            damage_give_ammo(level, player, i, 1)
+    elif kind == "weapon":
+        if not damage_give_weapon(level, player, arm[1], dropped):
+            return
+
+    if special["flags"] & MF_COUNTITEM:
+        player["itemcount"] += 1
+    damage_remove(level, special)
+    player["bonuscount"] += DAMAGE_BONUSADD
+
+
+def damage_kill(level: "SpecLevel", source, target: dict) -> None:
+    """P_KillMobj(): the flags, the totals, the state chain and the drop."""
+    info = damage_mobj(target["type"])
+    target["flags"] &= ~(MF_SHOOTABLE | MF_FLOAT | MF_SKULLFLY)
+    if target["type"] != 18:                          # MT_SKULL
+        target["flags"] &= ~MF_NOGRAVITY
+    target["flags"] |= MF_CORPSE | MF_DROPOFF
+    target["height"] >>= 2
+
+    source_player = damage_player_of(level, source) if source is not None else None
+    if source_player is not None:
+        if target["flags"] & MF_COUNTKILL:
+            source_player["killcount"] += 1
+        # frags: deathmatch, D5
+    elif not level.damage_netgame and target["flags"] & MF_COUNTKILL:
+        level.damage_player["killcount"] += 1
+
+    victim = damage_player_of(level, target)
+    if victim is not None:
+        target["flags"] &= ~MF_SOLID
+        victim["playerstate"] = PST_DEAD
+
+    if target["health"] < -info["spawnhealth"] and info["xdeathstate"]:
+        damage_set_state(level, target, info["xdeathstate"])
+    else:
+        damage_set_state(level, target, info["deathstate"])
+    target["tics"] -= level.rng.next() & 3
+    if target["tics"] < 1:
+        target["tics"] = 1
+
+    item = DAMAGE_DROPS.get(target["type"])
+    if item is None:
+        return
+    mo = damage_spawn(level, item, target["x"], target["y"], "floor")
+    mo["flags"] |= MF_DROPPED
+
+
+def damage_damage(level: "SpecLevel", target: dict, inflictor, source,
+                  damage: int) -> None:
+    """P_DamageMobj(): thrust, armor, the skull stop, pain and the target."""
+    if not (target["flags"] & MF_SHOOTABLE):
+        return
+    if target["health"] <= 0:
+        return
+    info = damage_mobj(target["type"])
+
+    if target["flags"] & MF_SKULLFLY:
+        target["momx"] = target["momy"] = target["momz"] = 0
+
+    player = damage_player_of(level, target)
+    if player is not None and level.damage_skill == 0:      # sk_baby
+        damage >>= 1
+
+    if inflictor is not None and not (target["flags"] & MF_NOCLIP):
+        ang = point_to_angle(0, 0, target["x"] - inflictor["x"],
+                             target["y"] - inflictor["y"])
+        thrust = (damage * (FRACUNIT >> 3) * 100) // info["mass"]
+        if (damage < 40 and damage > target["health"]
+                and target["z"] - inflictor["z"] > 64 * FRACUNIT
+                and level.rng.next() & 1):
+            ang = u32(ang + ANG180)
+            thrust *= 4
+        ang >>= ANGLETOFINESHIFT
+        target["momx"] = i32(target["momx"] +
+                             fixed_mul(thrust, FINE_SINE[ang + FINEANGLES // 4]))
+        target["momy"] = i32(target["momy"] +
+                             fixed_mul(thrust, FINE_SINE[ang]))
+
+    if player is not None:
+        if level.sectors[target["sector"]]["special"] == 11 and \
+                damage >= target["health"]:
+            damage = target["health"] - 1
+        if damage < 1000 and player["powers"][0]:
+            return
+        if player["armortype"]:
+            if player["armortype"] == 1:
+                saved = damage // DAMAGE_GREEN_DIVISOR
+            else:
+                saved = damage // DAMAGE_BLUE_DIVISOR
+            if player["armorpoints"] <= saved:
+                saved = player["armorpoints"]
+                player["armortype"] = 0
+            player["armorpoints"] -= saved
+            damage -= saved
+        player["health"] = max(player["health"] - damage, 0)
+        player["attacker"] = source
+        player["damagecount"] = min(player["damagecount"] + damage, 100)
+
+    target["health"] -= damage
+    if target["health"] <= 0:
+        damage_kill(level, source, target)
+        return
+
+    if level.rng.next() < info["painchance"] and not (target["flags"] & MF_SKULLFLY):
+        target["flags"] |= MF_JUSTHIT
+        damage_set_state(level, target, info["painstate"])
+
+    target["reactiontime"] = 0
+    if (not target["threshold"] or target["type"] == 3) and \
+            source is not None and source is not target and source["type"] != 3:
+        target["target"] = source
+        target["threshold"] = DAMAGE_BASETHRESHOLD
+        if target["state"] == info["spawnstate"] and info["seestate"]:
+            damage_set_state(level, target, info["seestate"])
+
+
+def damage_spray_z(level: "SpecLevel", z: int) -> int:
+    jitter = (level.rng.next() - level.rng.next()) << DAMAGE_BLOOD_Z_SHIFT
+    return i32(z + jitter)
+
+
+def damage_spawn_puff(level: "SpecLevel", x: int, y: int, z: int) -> dict:
+    """P_SpawnPuff(): two draws for z, one for the tic jitter, then S_PUFF1."""
+    th = damage_spawn(level, MT_PUFF, x, y, damage_spray_z(level, z))
+    th["momz"] = FRACUNIT
+    th["tics"] -= level.rng.next() & 3
+    if th["tics"] < 1:
+        th["tics"] = 1
+    # `if (attackrange == MELEERANGE) P_SetMobjState (th, S_PUFF3)`: T14's.
+    return th
+
+
+def damage_spawn_blood(level: "SpecLevel", x: int, y: int, z: int,
+                       damage: int) -> dict:
+    """P_SpawnBlood(): the same draws, then the damage band's state."""
+    th = damage_spawn(level, MT_BLOOD, x, y, damage_spray_z(level, z))
+    th["momz"] = FRACUNIT * 2
+    th["tics"] -= level.rng.next() & 3
+    if th["tics"] < 1:
+        th["tics"] = 1
+    if 9 <= damage <= 12:
+        damage_set_state(level, th, 91)
+    elif damage < 9:
+        damage_set_state(level, th, 92)
+    return th
+
+
+def damage_height_clip(level: "SpecLevel", mo: dict) -> bool:
+    """P_ThingHeightClip(): follow the floor or ceiling, answer "still fits"."""
+    on_floor = mo["z"] == mo["floorz"]
+    _ok, result = movement_check_position(level, mo, mo["x"], mo["y"])
+    mo["floorz"] = result["floorz"]
+    mo["ceilingz"] = result["ceilingz"]
+    if on_floor:
+        mo["z"] = mo["floorz"]
+    elif mo["z"] + mo["height"] > mo["ceilingz"]:
+        mo["z"] = mo["ceilingz"] - mo["height"]
+    return mo["ceilingz"] - mo["floorz"] >= mo["height"]
+
+
+def damage_sector_bounds(level: "SpecLevel", sector_index: int):
+    """P_GroupLines' sector box, widened by MAXRADIUS: P_ChangeSector's walk."""
+    top = -(2 ** 31)
+    bottom = 2 ** 31 - 1
+    left = 2 ** 31 - 1
+    right = -(2 ** 31)
+    found = False
+    for line in level.bsp.linedefs:
+        front = _front_sector(level, line)
+        back = _back_sector(level, line)
+        if front != sector_index and back != sector_index:
+            continue
+        v1 = level.bsp.vertexes[line["v1"]]
+        v2 = level.bsp.vertexes[line["v2"]]
+        top = max(top, v1["y"], v2["y"])
+        bottom = min(bottom, v1["y"], v2["y"])
+        left = min(left, v1["x"], v2["x"])
+        right = max(right, v1["x"], v2["x"])
+        found = True
+    if not found:
+        return None
+    return (top + MOVEMENT_MAXRADIUS, bottom - MOVEMENT_MAXRADIUS,
+            left - MOVEMENT_MAXRADIUS, right + MOVEMENT_MAXRADIUS)
+
+
+def damage_change_sector(level: "SpecLevel", sector_index: int,
+                         crush: bool) -> bool:
+    """P_ChangeSector(): the height clip, giblets, dropped items and the crush."""
+    box = damage_sector_bounds(level, sector_index)
+    nofit = False
+    for mo in level.mobjs:
+        if mo.get("removed"):
+            continue
+        if box is not None:
+            top, bottom, left, right = box
+            if mo["x"] < left or mo["x"] > right or \
+                    mo["y"] < bottom or mo["y"] > top:
+                continue
+        if damage_height_clip(level, mo):
+            continue
+        if mo["health"] <= 0:
+            damage_set_state(level, mo, S_GIBS)
+            mo["flags"] &= ~MF_SOLID
+            mo["height"] = 0
+            mo["radius"] = 0
+            continue
+        if mo["flags"] & MF_DROPPED:
+            damage_remove(level, mo)
+            continue
+        if not (mo["flags"] & MF_SHOOTABLE):
+            continue
+        nofit = True
+        if crush and not (level.leveltime & 3):
+            damage_damage(level, mo, None, None, DAMAGE_CRUSH_DAMAGE)
+            level.crushed += 1
+            blood = damage_spawn(level, MT_BLOOD, mo["x"], mo["y"],
+                                 mo["z"] + mo["height"] // 2)
+            blood["momx"] = i32((level.rng.next() - level.rng.next()) << 12)
+            blood["momy"] = i32((level.rng.next() - level.rng.next()) << 12)
+    return nofit
+
+
+def damage_think(level: "SpecLevel", mo: dict) -> None:
+    """P_MobjThinker(): movement, then the state tic."""
+    if mo["momx"] or mo["momy"] or (mo["flags"] & MF_SKULLFLY):
+        movement_xy_movement(level, mo)
+        if mo.get("removed"):
+            return
+    if mo["z"] != mo["floorz"] or mo["momz"]:
+        movement_z_movement(level, mo)
+        if mo.get("removed"):
+            return
+    if mo["tics"] != -1:
+        mo["tics"] -= 1
+        if mo["tics"] == 0:
+            damage_set_state(level, mo, DAMAGE_STATES[mo["state"]][1])
+
+
+def damage_run_thinkers(level: "SpecLevel") -> None:
+    """P_RunThinkers(): every node once, in insertion order, drops included."""
+    index = 0
+    while index < len(level.mobjs):
+        mo = level.mobjs[index]
+        index += 1
+        if mo.get("removed"):
+            continue
+        damage_think(level, mo)
+    level.mobjs = [mo for mo in level.mobjs if not mo.get("removed")]
+
+
+def damage_slot_of(level: "SpecLevel", mo) -> int:
+    if mo is None:
+        return -1
+    for index, each in enumerate(level.mobjs):
+        if each is mo:
+            return index
+    return -1
+
+
+def damage_print_mobj(level: "SpecLevel", slot: int, mo: dict) -> None:
+    print(f"MOBJ {slot} type={mo['type']} x={mo['x']} y={mo['y']} z={mo['z']} "
+          f"health={mo['health']} flags=0x{mo['flags'] & 0xFFFFFFFF:08x} "
+          f"state={mo['state']} tics={mo['tics']} "
+          f"tgt={damage_slot_of(level, mo.get('target'))} "
+          f"momx={mo['momx']} momy={mo['momy']}")
+
+
+def damage_print_player(level: "SpecLevel") -> None:
+    player = level.damage_player
+    weapons = 0
+    for index, owned in enumerate(player["weaponowned"]):
+        if owned:
+            weapons |= 1 << index
+    cards = 0
+    for index, held in enumerate(player["cards"]):
+        if held:
+            cards |= 1 << index
+    print(f"PLAYER hp={player['health']} ar={player['armorpoints']} "
+          f"at={player['armortype']} item={player['itemcount']} "
+          f"kill={player['killcount']} "
+          f"att={damage_slot_of(level, player['attacker'])} "
+          f"ps={player['playerstate']} dmg={player['damagecount']} "
+          f"bonus={player['bonuscount']} "
+          f"ammo={','.join(str(a) for a in player['ammo'])} "
+          f"maxammo={','.join(str(a) for a in player['maxammo'])} "
+          f"w={weapons} cards={cards} pack={player['backpack']} "
+          f"pend={player['pendingweapon']} "
+          f"pow={','.join(str(p) for p in player['powers'])}")
+
+
+def damage_emit(level: "SpecLevel", step: list[int], op: str) -> None:
+    print(f"STEP {step[0]} op={op} rng={level.rng.index} crushed={level.crushed}")
+    for slot, mo in enumerate(level.mobjs):
+        damage_print_mobj(level, slot, mo)
+    damage_print_player(level)
+    step[0] += 1
+
+
+def report_damage(lumps: list[Lump], map_name: str) -> None:
+    """The `--damage` protocol: P_DamageMobj, P_KillMobj, pickups and the crush."""
+    bsp = read_bsp_map(lumps, map_name)
+    things = run_things(bsp, 2)                 # the RNG position the load leaves
+    level = SpecLevel(bsp, RandomState(things.rng))
+    level.leveltime = 0
+    level.move_stats = {"checks": 0, "blocked": 0, "crossed": 0, "slides": 0}
+    level.pickups = True
+    level.damage_skill = 2                      # sk_medium, p_spawn_rules_default
+    level.damage_netgame = False
+    level.crushed = 0
+
+    mo = movement_player(level)
+    level.mobjs = [mo]
+    # The avatar's record lacks the two fields only the interaction rules read:
+    # the chase threshold and the state's sprite name.
+    mo["threshold"] = 0
+    mo["sprite"] = "PLAY"
+    player = player_record(mo)
+    # G_PlayerReborn's item state: 50 bullets, the fists and the pistol, the
+    # ammo ceilings, and the pistol as the pending weapon (p_player_wire).
+    player["ammo"] = [50, 0, 0, 0]
+    player["maxammo"] = list(DAMAGE_MAXAMMO)
+    player["weaponowned"] = [1, 1, 0, 0, 0, 0, 0, 0, 0]
+    player["cards"] = [0] * 6
+    player["powers"] = [0] * 6
+    player["pendingweapon"] = 1
+    player["backpack"] = 0
+    level.damage_player = player
+
+    sector = mo["sector"]
+    print(f"DAMAGE {map_name} script={DAMAGE_SCRIPT} steps={DAMAGE_STEPS}")
+    print(f"SETUP rng={level.rng.index} mobjs={len(level.mobjs)} "
+          f"sector={sector} floor={level.sectors[sector]['floor']} "
+          f"ceiling={level.sectors[sector]['ceiling']} "
+          f"player={damage_slot_of(level, mo)}")
+
+    mg0 = damage_spawn(level, 1, mo["x"] + DAMAGE_MG0_DX * FRACUNIT, mo["y"],
+                       "floor")
+    mg1 = damage_spawn(level, 1, mo["x"], mo["y"] + DAMAGE_MG1_DY * FRACUNIT,
+                       "floor")
+    mb0 = damage_spawn(level, 30, mo["x"] + DAMAGE_MB0_DX * FRACUNIT, mo["y"],
+                       "floor")
+    mg2 = damage_spawn(level, 1, mo["x"] + DAMAGE_MG2_DX * FRACUNIT, mo["y"],
+                       mo["z"] + DAMAGE_DROP_HEIGHT)
+    mh0 = damage_spawn(level, MT_PUFF, mg2["x"], mg2["y"], mo["z"])
+
+    step = [0]
+    damage_damage(level, mg2, mh0, mo, 25)
+    damage_emit(level, step, "damage-mg2-fallforward")
+
+    for type_, op in ((MT_MISC2, "pickup-health"), (MT_MISC3, "pickup-armor"),
+                      (MT_CLIP, "pickup-ammo")):
+        damage_spawn(level, type_, mo["x"], mo["y"] + DAMAGE_REACH, "floor")
+        movement_try_move(level, mo, mo["x"], mo["y"] + DAMAGE_STEP_FORWARD)
+        damage_emit(level, step, op)
+
+    damage_run_thinkers(level)
+    level.leveltime += 1
+    damage_emit(level, step, "tick-release-items")
+
+    damage_give_armor(player, 1)
+    damage_emit(level, step, "give-armor-green")
+    damage_damage(level, mo, None, None, 40)
+    damage_emit(level, step, "damage-player-40")
+    damage_damage(level, mo, mg0, mg0, 30)
+    damage_emit(level, step, "damage-player-30-from-mg0")
+    damage_damage(level, mo, None, None, 1)
+    damage_emit(level, step, "damage-player-1")
+    damage_give_armor(player, 2)
+    damage_emit(level, step, "give-armor-blue")
+    damage_damage(level, mo, None, None, 60)
+    damage_emit(level, step, "damage-player-60")
+    damage_damage(level, mo, None, None, 5)
+    damage_emit(level, step, "damage-player-5")
+
+    armour = damage_spawn(level, MT_MISC0, mo["x"], mo["y"] + DAMAGE_REACH,
+                          "floor")
+    damage_touch_special(level, armour, mo)
+    damage_emit(level, step, "touch-armor-refused")
+
+    damage_damage(level, mg0, mo, mo, 15)
+    damage_emit(level, step, "damage-mg0-pain")
+    damage_run_thinkers(level)
+    level.leveltime += 1
+    damage_emit(level, step, "tick-mg0-pain")
+    damage_damage(level, mg0, mo, mo, 25)
+    damage_emit(level, step, "damage-mg0-kill")
+    damage_run_thinkers(level)
+    level.leveltime += 1
+    damage_emit(level, step, "tick-mg0-death")
+    damage_damage(level, mb0, mo, mo, 60)
+    damage_emit(level, step, "damage-barrel")
+    damage_run_thinkers(level)
+    level.leveltime += 1
+    damage_emit(level, step, "tick-barrel-death")
+    damage_damage(level, mg1, mo, mo, 60)
+    damage_emit(level, step, "damage-mg1-gib")
+    damage_run_thinkers(level)
+    level.leveltime += 1
+    damage_emit(level, step, "tick-mg1-gib")
+
+    x = mo["x"] + 16 * FRACUNIT
+    z = mo["z"] + DAMAGE_SPRAY_Z
+    damage_spawn_blood(level, x, mo["y"], z, 15)
+    damage_emit(level, step, "spawn-blood-15")
+    damage_spawn_blood(level, x, mo["y"], z, 10)
+    damage_emit(level, step, "spawn-blood-10")
+    damage_spawn_blood(level, x, mo["y"], z, 5)
+    damage_emit(level, step, "spawn-blood-5")
+    damage_spawn_puff(level, x, mo["y"], z)
+    damage_emit(level, step, "spawn-puff")
+    for _ in range(3):
+        damage_run_thinkers(level)
+        level.leveltime += 1
+        damage_emit(level, step, "tick-sprays")
+
+    for index in range(DAMAGE_CRUSH_STEPS):
+        level.leveltime = index
+        level.sectors[sector]["floor"] += DAMAGE_CRUSH_STEP
+        damage_change_sector(level, sector, True)
+        damage_emit(level, step, "crush")
+
+    for _ in range(DAMAGE_TICKS_AFTER_DEATH):
+        damage_run_thinkers(level)
+        level.leveltime += 1
+        damage_emit(level, step, "tick-death")
+
+    print(f"SUMMARY steps={step[0]} rng={level.rng.index} "
+          f"crushed={level.crushed} kill={player['killcount']} "
+          f"item={player['itemcount']} health={player['health']} "
+          f"spawns={len(level.mobjs)}")
 
 
 # --- BSP reporting ----------------------------------------------------------
@@ -5489,6 +6355,10 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
                         help="run the 200-tic player script through P_PlayerThink "
                              "(walk, run, turn, strafe, backpedal, use, friction) "
                              "and print the avatar and view every tic (D4.2c)")
+    parser.add_argument("--damage", metavar="NAME",
+                        help="run the damage/death/pickup/crush script against the "
+                             "damage rules and print every mobj and the player "
+                             "record each step (D4.2d1)")
     parser.add_argument("--tics", type=int, default=420, metavar="N",
                         help="with --specials, --movement or --player: tics to run "
                              "(default: 420 for --specials; the movement gate "
@@ -5530,10 +6400,10 @@ def main(argv: list[str] | None = None) -> int:
     if not (patches_wanted or textures_wanted or flats_wanted or arguments.map
             or arguments.stats or arguments.bsp or arguments.segs
             or arguments.things or arguments.specials or arguments.movement
-            or arguments.player):
+            or arguments.player or arguments.damage):
         parser.error("nothing to do: pass --patches, --textures, --flats, --all, "
                      "--map, --stats, --bsp, --segs, --things, --specials, "
-                     "--movement or --player")
+                     "--movement, --player or --damage")
     if arguments.limit is not None and arguments.limit < 0:
         parser.error("--limit cannot be negative")
     if arguments.tics < 0:
@@ -5602,6 +6472,8 @@ def main(argv: list[str] | None = None) -> int:
             report_movement(lumps, arguments.movement.upper(), arguments.tics)
         if arguments.player:
             report_player(lumps, arguments.player.upper(), arguments.tics)
+        if arguments.damage:
+            report_damage(lumps, arguments.damage.upper())
     except FormatError as error:
         print(f"doom_ref: {error}", file=sys.stderr)
         return EXIT_INPUT

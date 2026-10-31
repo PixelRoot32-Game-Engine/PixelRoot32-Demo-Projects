@@ -95,6 +95,10 @@ EXIT_USAGE = 2
 
 SOURCES = (
     "p_setup.c", "p_mobj.c", "p_map.c", "p_user.c", "p_tick.c", "p_action.c",
+    # p_map.c's PIT_CheckThing and PIT_ChangeSector call p_inter.c's damage and
+    # pickup rules (D4.2d1), so the interaction layer is part of the movement
+    # core's link closure now.
+    "p_inter.c",
     "m_random.c", "z_zone.c", "doom_map.c", "r_bsp.c", "r_plane.c", "r_tables.c",
     "w_wad.c", "p_spec.c", "p_floor.c", "p_doors.c", "p_plats.c", "p_ceilng.c",
     "p_lights.c",

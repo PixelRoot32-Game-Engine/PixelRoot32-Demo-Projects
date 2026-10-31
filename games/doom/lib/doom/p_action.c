@@ -12,11 +12,21 @@
  * action can never be forgotten silently -- it is reported as not implemented
  * and the harness and the unit tests can see the number.
  *
- * A_Look is the only entry D4.1a ships, and it is a stub: upstream's A_Look
- * (p_enemy.c) scans the sector for a visible player, plays the see sound and
- * enters the run state. That needs P_CheckSight, the blockmap and the sound
- * layer, all of which arrive later; the stub leaves the state machine's shape
- * alone (tics and nextstate are untouched) so the world still ticks.
+ * WHAT IS HERE, AND WHY SOME OF IT IS A STUB
+ *
+ *   A_Look       D4.1a's deliberate stub: upstream's A_Look (p_enemy.c) scans
+ *                the sector for a visible player, plays the see sound and enters
+ *                the run state, all of which need P_CheckSight and the sound
+ *                layer (T15). The state machine's shape is left alone.
+ *   A_Fall       real, and the smallest real action in the game:
+ *                `actor->flags &= ~MF_SOLID;` -- a corpse stops blocking. This
+ *                is the action the player's death chain carries (S_PLAY_DIE3) and
+ *                every monster's death chain too.
+ *   A_Scream, A_XScream, A_PlayerScream, A_Pain
+ *                sound only, so they are stubs until the APU layer exists (S2).
+ *                They are counted rather than skipped for the same reason A_Look
+ *                is: "the death played its sound" and "the death was silent" must
+ *                not look the same from a counter.
  *
  * This is C99 only: no allocation, no globals, no stdio, no floating point.
  */
@@ -63,6 +73,31 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
     switch (action) {
         case A_Look:
             /* D4.1a stub: a spawned monster stands and looks at nothing. */
+            if (stats != NULL) {
+                stats->calls += 1u;
+                stats->stubs += 1u;
+            }
+            return P_ACTION_STUB;
+
+        case A_Fall:
+            /* `actor->flags &= ~MF_SOLID;` (p_enemy.c) -- the corpse lies down
+             * and stops being an obstacle. */
+            mobj->flags &= ~MF_SOLID;
+            if (stats != NULL) {
+                stats->calls += 1u;
+                stats->done += 1u;
+            }
+            return P_ACTION_DONE;
+
+        case A_Scream:
+        case A_XScream:
+        case A_PlayerScream:
+        case A_Pain:
+            /* Pure sound in upstream: A_Scream picks deathsound (gibdth for the
+             * three zombie variants), A_XScream plays sfx_slop for a gibbed
+             * thing, A_PlayerScream picks pldeth or pdiehi, A_Pain plays
+             * painsound. No APU layer exists yet (S2), so nothing happens; the
+             * counter is what says so. */
             if (stats != NULL) {
                 stats->calls += 1u;
                 stats->stubs += 1u;

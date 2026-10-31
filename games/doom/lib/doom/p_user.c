@@ -137,7 +137,7 @@ static void p_calc_height(p_level_t* level, p_player_t* player) {
     bob = fixed_mul(player->bob / 2, r_fine_sine[angle]);
 
     /* `if (player->playerstate == PST_LIVE)` -- the dead caller is
-     * P_DeathThink's, which D4.2d owns; this function only runs live today. */
+     * P_DeathThink's, which T14 owns; this function only runs live today. */
     if (player->playerstate == P_PST_LIVE) {
         player->viewheight += player->deltaviewheight;
 
@@ -212,7 +212,7 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
     player->useTriggered = 0u;
 
     /* `if (player->playerstate == PST_DEAD) { P_DeathThink (player); return; }`
-     * P_DeathThink is D4.2d's. A record that is not live is counted rather
+     * P_DeathThink is T14's. A record that is not live is counted rather
      * than pretended to live: the tic changes nothing except this counter. */
     if (player->playerstate != P_PST_LIVE) {
         player->unsupportedDeath += 1u;
@@ -232,7 +232,7 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
     p_calc_height(level, player);
 
     /* `if (player->mo->subsector->sector->special) P_PlayerInSpecialSector`
-     * is sector damage and belongs to D4.2d. */
+     * is sector damage and belongs to T14/T15. */
 
     /* `if (cmd->buttons & BT_SPECIAL) cmd->buttons = 0;` -- "A special event
      * has no other buttons." The pause/save side of the word is G_Ticker's,
@@ -242,7 +242,7 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
     }
 
     /* Weapon change: `newweapon = (cmd->buttons&BT_WEAPONMASK)>>BT_WEAPONSHIFT`
-     * and the weaponowned[] tests are D4.2d's. Counted so a pressed key is not
+     * and the weaponowned[] tests are T14's. Counted so a pressed key is not
      * silent. */
     if ((command->buttons & BT_CHANGE) != 0u) {
         player->unsupportedWeaponChange += 1u;
@@ -260,13 +260,13 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
     }
 
     /* The fire button is consumed by A_WeaponReady inside P_MovePsprites, which
-     * needs the weapon sprite state machine (D4.2d). Count it here so a press
+     * needs the weapon sprite state machine (T14). Count it here so a press
      * is a number instead of a no-op. */
     if ((command->buttons & BT_ATTACK) != 0u) {
         player->unsupportedAttack += 1u;
     }
 
-    /* `P_MovePsprites (player);` -- D4.2d. */
+    /* `P_MovePsprites (player);` -- T14. */
 
     /* `if (player->damagecount) player->damagecount--;
      *  if (player->bonuscount) player->bonuscount--;` */
@@ -277,7 +277,7 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
         player->bonuscount--;
     }
 
-    /* The power-up counters and the fixedcolormap they select are D4.2d's;
+    /* The power-up timers and the fixedcolormap they select are T14's;
      * fixedcolormap stays 0 because no power-up can be active. */
 }
 

@@ -90,6 +90,14 @@ extern "C" {
 #define ONFLOORZ INT32_MIN
 #define ONCEILINGZ INT32_MAX
 
+/* P_SpawnPuff's and P_SpawnBlood's z jitter: `z += ((P_Random()-P_Random())<<10)`
+ * scatters the sprite over a 128-unit band so a burst of hits does not stack.
+ * Overridable so tools/damage_check.py can prove its comparison fails; no
+ * shipped build defines it. */
+#ifndef P_BLOOD_Z_SHIFT
+#define P_BLOOD_Z_SHIFT 10
+#endif
+
 /* Upstream's MTF_AMBUSH (doomdef.h): the THINGS options bit that makes a
  * monster deaf. Bit 4 (value 16) is "not in single player" and is tested
  * literally by P_SpawnMapThing(); bit 8 is this one. */
@@ -465,6 +473,43 @@ p_thing_outcome_t p_spawn_map_thing(p_mobj_context_t* world,
                                     const p_mapthing_t* thing);
 
 /**
+ * @brief P_SpawnPuff(): the spark a hitscan leaves where it stops.
+ *
+ * Upstream's body, including its three draws from the random sequence, in this
+ * order: the z jitter (`z + ((P_Random()-P_Random()) << 10)`), the spawn, then
+ * `tics -= P_Random()&3` clamped to at least one. The state is S_PUFF1.
+ *
+ * Upstream's last statement, `if (attackrange == MELEERANGE) P_SetMobjState (th,
+ * S_PUFF3)`, needs the attack trace's range; `attackrange` is T14's, so a puff
+ * always starts at S_PUFF1 here. Once T14 lands, the fist's sparks need that
+ * line and nothing else.
+ *
+ * @param world The level's context: zone, thinker list, RNG.
+ * @param x,y   Where the hit stopped, 16.16.
+ * @param z     The hittable surface's height; the jitter is added to it.
+ * @return The puff mobj, or NULL when the world refused the spawn.
+ */
+r_mobj_t* p_spawn_puff(p_mobj_context_t* world, fixed_t x, fixed_t y,
+                       fixed_t z);
+
+/**
+ * @brief P_SpawnBlood(): the spray a bullet or a crush leaves on a thing.
+ *
+ * Upstream's body, in upstream's order: the same z jitter, the spawn, `momz =
+ * 2*FRACUNIT` so the drops fall, `tics -= P_Random()&3` clamped to one, and
+ * then the damage decides how far into the three-state burst it starts --
+ * S_BLOOD2 for 9..12 points ("a small hit"), S_BLOOD3 below 9, S_BLOOD1 above.
+ *
+ * @param world  The level's context.
+ * @param x,y    The victim's position, 16.16.
+ * @param z      The victim's mid-height.
+ * @param damage The damage that produced the spray.
+ * @return The blood mobj, or NULL when the world refused the spawn.
+ */
+r_mobj_t* p_spawn_blood(p_mobj_context_t* world, fixed_t x, fixed_t y, fixed_t z,
+                        int damage);
+
+/**
  * @brief P_RemoveMobj(): marks the mobj for removal, frees nothing yet.
  *
  * Upstream does three things here; this port does the third and leaves the
@@ -524,7 +569,7 @@ int p_set_mobj_state(p_mobj_context_t* world, r_mobj_t* mobj, statenum_t state,
  * movement gate here) decides how much and how often.
  *
  * @param world The level's context (unused today, kept so the signature does
- *              not change when D4.2e's noise/attack work needs it).
+ *              not change when T15's noise/attack work needs it).
  * @param mobj  The thing.
  * @param angle Binary angle.
  * @param move  Momentum to add, 16.16.
@@ -549,7 +594,7 @@ void p_thrust(p_mobj_context_t* world, r_mobj_t* mobj, angle_t angle,
  * The port has no player_t, so the two player-only branches upstream guards on
  * `mo->player` use the mobj's own `player` flag: the S_PLAY_RUN* to S_PLAY
  * state change is kept, and the CF_NOMOMENTUM cheat is absent because there
- * are no cheats (D5). `P_CheckSight`/`P_NoiseAlert` are not called; D4.2e owns
+ * are no cheats (D5). `P_CheckSight`/`P_NoiseAlert` are not called; T15 owns
  * them.
  */
 void p_xy_movement(p_mobj_context_t* world, r_mobj_t* mobj);
@@ -563,7 +608,7 @@ void p_xy_movement(p_mobj_context_t* world, r_mobj_t* mobj);
  * flying skull, exploding a missile).
  *
  * The player view-height squash and its sound are not here: this port has no
- * player_t view state yet (D5) and no sound layer (D4.2e).
+ * player_t view state yet (D5) and no sound layer (S2).
  */
 void p_z_movement(p_mobj_context_t* world, r_mobj_t* mobj);
 

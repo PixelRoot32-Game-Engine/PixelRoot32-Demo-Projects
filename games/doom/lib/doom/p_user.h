@@ -69,6 +69,82 @@ extern "C" {
  * is upstream's: 8192/20 is 409 fine angles per tic. */
 #define P_BOB_FINE_STEP (FINEANGLES / 20)
 
+/* --- Item and weapon enumeration (doomdef.h) ------------------------------ */
+
+/*
+ * The four enumerations d_player.h and doomdef.h define, with upstream's values
+ * and upstream's order. The numbers are the save/demo layout and the ammo
+ * table's indices, so they are not free to renumber; the `P_` prefix only says
+ * that this port owns the definition.
+ *
+ *   p_ammo_t    ammotype_t.  The four pools, then NUMAMMO, then the "unlimited"
+ *               sentinel a weapon with no ammo names (fist, chainsaw).
+ *   p_weapon_t  weapontype_t.  Nine slots; `pendingweapon` holds one of these
+ *               (or P_WP_NOCHANGE, upstream's wp_nochange, one past the end).
+ *   p_card_t    card_t.  The three keycards and the three skull keys, in
+ *               upstream's order.
+ *   p_power_t   powertype_t.  The six power-ups; the array holds tic counters,
+ *               not flags, because P_GivePower stores a duration.
+ */
+typedef enum p_ammo {
+    P_AM_CLIP = 0,
+    P_AM_SHELL = 1,
+    P_AM_CELL = 2,
+    P_AM_MISL = 3,
+    P_NUMAMMO = 4,
+    P_AM_NOAMMO = 5
+} p_ammo_t;
+
+typedef enum p_weapon {
+    P_WP_FIST = 0,
+    P_WP_PISTOL = 1,
+    P_WP_SHOTGUN = 2,
+    P_WP_CHAINGUN = 3,
+    P_WP_MISSILE = 4,
+    P_WP_PLASMA = 5,
+    P_WP_BFG = 6,
+    P_WP_CHAINSAW = 7,
+    P_WP_SUPERSHOTGUN = 8,
+    P_NUMWEAPONS = 9,
+    P_WP_NOCHANGE = 9
+} p_weapon_t;
+
+typedef enum p_card {
+    P_IT_BLUECARD = 0,
+    P_IT_YELLOWCARD = 1,
+    P_IT_REDCARD = 2,
+    P_IT_BLUESKULL = 3,
+    P_IT_YELLOWSKULL = 4,
+    P_IT_REDSKULL = 5,
+    P_NUMCARDS = 6
+} p_card_t;
+
+typedef enum p_power {
+    P_PW_INVULNERABILITY = 0,
+    P_PW_STRENGTH = 1,
+    P_PW_INVISIBILITY = 2,
+    P_PW_IRONFEET = 3,
+    P_PW_ALLMAP = 4,
+    P_PW_INFRARED = 5,
+    P_NUMPOWERS = 6
+} p_power_t;
+
+/* doomdef.h's powerduration_t: the tic count P_GivePower stores. P_TICRATE (35)
+ * is p_spec.h's and reaches this header through p_mobj.h. */
+#define P_INVULNTICS (30 * P_TICRATE)
+#define P_INVISTICS (60 * P_TICRATE)
+#define P_INFRATICS (120 * P_TICRATE)
+#define P_IRONTICS (60 * P_TICRATE)
+
+/* d_items.c globals: `maxammo[NUMAMMO] = {200,50,300,50}` and
+ * `clipammo[NUMAMMO] = {10,4,20,1}`. G_PlayerReborn copies maxammo into the
+ * player record, so these are the level-start ceilings; clipammo is the unit
+ * P_GiveAmmo's `num` parameter is counted in and lives in p_inter.c. */
+#define P_MAXAMMO_CLIP 200
+#define P_MAXAMMO_SHELL 50
+#define P_MAXAMMO_CELL 300
+#define P_MAXAMMO_MISL 50
+
 /* --- One tic's command ---------------------------------------------------- */
 
 /*
@@ -112,11 +188,11 @@ typedef struct p_ticcmd {
  * is `BT_SPECIAL | BTS_*`, and G_Ticker tests the low two bits after masking.
  */
 typedef enum p_button {
-    BT_ATTACK = 1,              /* fire; D4.2d (P_FireWeapon) */
+    BT_ATTACK = 1,              /* fire; T14 (P_FireWeapon) */
     BT_USE = 2,                 /* honoured: P_UseLines through the latch */
-    BT_CHANGE = 4,              /* weapon change; D4.2d */
-    BT_WEAPONMASK = (8 + 16 + 32), /* the weapon number inside BT_CHANGE; D4.2d */
-    BT_WEAPONSHIFT = 3,         /* BT_WEAPONMASK >> BT_WEAPONSHIFT; D4.2d */
+    BT_CHANGE = 4,              /* weapon change; T14 */
+    BT_WEAPONMASK = (8 + 16 + 32), /* the weapon number inside BT_CHANGE; T14 */
+    BT_WEAPONSHIFT = 3,         /* BT_WEAPONMASK >> BT_WEAPONSHIFT; T14 */
     BT_SPECIAL = 128,           /* pause/save event, not a player action */
     BT_SPECIALMASK = 3,         /* BTS_* selector inside BT_SPECIAL */
     BTS_PAUSE = 1,              /* G_Ticker's pause toggle; the game loop's */
@@ -130,7 +206,7 @@ typedef enum p_button {
  * zeroed record is a live player, which is what G_PlayerReborn leaves.
  *
  *   P_PST_LIVE    playing; P_PlayerThink runs the whole body
- *   P_PST_DEAD    dead; P_DeathThink is D4.2d's, counted here
+ *   P_PST_DEAD    dead; P_DeathThink is T14's, counted here
  *   P_PST_REBORN  the game loop respawns before the next tic (G_Ticker)
  */
 typedef enum p_playerstate {
@@ -160,32 +236,48 @@ struct p_level;
  *   deltaviewheight  the per-tic view-height step; P_CalcHeight's half step.
  *   bob              the bounded, scaled horizontal momentum (MAXBOB).
  *   health           P_MAXHEALTH at spawn (G_PlayerReborn).
- *   armorpoints      the armor totals; items grant them (D4.2d).
- *   armortype        0-2, as upstream; D4.2d's P_DamageMobj reads it.
- *   attackdown       "button down last tic"; P_FireWeapon's latch (D4.2d).
+ *   armorpoints      the armor total, up to 200; P_DamageMobj spends it and
+ *                    P_TouchSpecialThing raises it (D4.2d1).
+ *   armortype        0 none, 1 green (damage/3 absorbed), 2 blue (damage/2);
+ *                    P_DamageMobj reads it (D4.2d1).
+ *   powers[]         the six power-up tic counters, P_INVULNTICS and friends.
+ *                    P_DamageMobj reads pw_invulnerability; the counters tick
+ *                    down in P_PlayerThink, which is T14's half (D4.2d1).
+ *   ammo[], maxammo[] the four pools and their ceilings, P_GiveAmmo's subject
+ *                    (D4.2d1). G_PlayerReborn's 50 bullets and the {200,50,
+ *                    300,50} ceilings are p_player_wire's.
+ *   weaponowned[]    one byte per weapon; P_GiveWeapon sets it (D4.2d1).
+ *   pendingweapon    the weapon a pickup selected; P_GiveWeapon writes it and
+ *                    T14's P_BringUpWeapon consumes it.
+ *   cards[], backpack  the six keys and the doubled-ammo flag: P_GiveCard and
+ *                    the backpack arm of P_TouchSpecialThing (D4.2d1).
+ *   attackdown       "button down last tic"; P_FireWeapon's latch (T14).
  *   usedown          "button down last tic"; P_PlayerThink's use latch (here).
- *   refire           P_FireWeapon's less-accurate-refire counter (D4.2d).
- *   killcount        intermission totals; P_KillMobj raises them (D4.2d).
- *   itemcount        intermission totals; P_TouchSpecialThing (D4.2d).
- *   secretcount      intermission totals; P_PlayerInSpecialSector (D4.2d).
- *   damagecount      the red screen-flash counter; P_PlayerThink decrements it.
- *   bonuscount       the gold screen-flash counter; P_PlayerThink decrements it.
- *   extralight       muzzle-flash light; P_FireWeapon (D4.2d), read by the HUD.
- *   fixedcolormap    the power-up colormap; powers are D4.2d's, so it stays 0.
- *   attacker         who last dealt damage; P_DamageMobj (D4.2d).
+ *   refire           P_FireWeapon's less-accurate-refire counter (T14).
+ *   killcount        intermission totals; P_KillMobj raises them (D4.2d1).
+ *   itemcount        intermission totals; P_TouchSpecialThing raises them.
+ *   secretcount      intermission totals; P_PlayerInSpecialSector (T14/T15).
+ *   damagecount      the red screen-flash counter; P_DamageMobj raises it and
+ *                    P_PlayerThink decrements it.
+ *   bonuscount       the gold screen-flash counter; a pickup adds BONUSADD.
+ *   extralight       muzzle-flash light; P_FireWeapon (T14), read by the HUD.
+ *   fixedcolormap    the power-up colormap; powers are D4.2d1's, the colormap
+ *                    selection is the HUD's (D5), so it stays 0.
+ *   attacker         who last dealt damage; P_DamageMobj (D4.2d1).
  *   message          the HUD's one-line message; the HUD owns the text (D5).
  *   didsecret        "the secret level was finished"; G_DoCompleted (D4.3).
  *
  * DELIBERATELY ABSENT, with the owner:
  *
- *   powers[NUMPOWERS], cards[NUMCARDS], backpack  power-ups and keys; D4.2d.
+ *   readyweapon                                  the weapon state machine; T14.
+ *                                                P_GiveAmmo's auto-select tail
+ *                                                compares it, so that tail is
+ *                                                T14's as well.
  *   frags[MAXPLAYERS]                            deathmatch; D5.
- *   readyweapon, pendingweapon, weaponowned[]    weapons; D4.2d.
- *   ammo[NUMAMMO], maxammo[NUMAMMO]              weapons; D4.2d.
  *   cheats                                       no cheats exist; D5.
  *   colormap                                     the translation map; D5.
  *   psprites[NUMPSPRITES]                        the weapon sprite state
- *                                                machine; D4.2d (p_pspr.c), and
+ *                                                machine; T14 (p_pspr.c), and
  *                                                declaring it would drag in that
  *                                                state type.
  *
@@ -200,9 +292,9 @@ struct p_level;
  *
  *   useTriggers            use presses that triggered a special line.
  *   useTriggered           this tic's answer, cleared at the top of the think.
- *   unsupportedAttack      tics a fire button was pressed (D4.2d owns firing).
- *   unsupportedWeaponChange tics a weapon-change button was pressed (D4.2d).
- *   unsupportedDeath       tics the think ran with playerstate != LIVE (D4.2d
+ *   unsupportedAttack      tics a fire button was pressed (T14 owns firing).
+ *   unsupportedWeaponChange tics a weapon-change button was pressed (T14).
+ *   unsupportedDeath       tics the think ran with playerstate != LIVE (T14
  *                          owns P_DeathThink).
  *   onground               P_MovePlayer's file-scope `onground`; 1 when the
  *                          avatar's z is on its floor.
@@ -220,6 +312,14 @@ typedef struct p_player {
     int32_t health;
     int32_t armorpoints;
     int32_t armortype;
+
+    int32_t ammo[P_NUMAMMO];
+    int32_t maxammo[P_NUMAMMO];
+    int32_t powers[P_NUMPOWERS];
+    int32_t pendingweapon;
+    uint8_t weaponowned[P_NUMWEAPONS];
+    uint8_t cards[P_NUMCARDS];
+    uint8_t backpack;
 
     int32_t attackdown;
     int32_t usedown;
@@ -258,6 +358,16 @@ typedef struct p_player {
  *   p->usedown = p->attackdown = true;   "don't do anything immediately"
  *   p->playerstate = PST_LIVE;
  *   p->health = MAXHEALTH;
+ *   p->pendingweapon = wp_pistol;
+ *   p->weaponowned[wp_fist] = p->weaponowned[wp_pistol] = true;
+ *   p->ammo[am_clip] = 50;
+ *   for (i = 0; i < NUMAMMO; ++i) p->maxammo[i] = maxammo[i];
+ *
+ * The ammo and weapon lines are G_PlayerReborn's too, and they matter here
+ * because a pickup adds to what the player already carries: a clip on a reborn
+ * player is 50 -> 60 rounds, not 0 -> 10. `readyweapon` is the one reborn field
+ * this port cannot set yet -- it belongs to T14's weapon state machine, and only
+ * `pendingweapon` (what a pickup *asks* for) is meaningful today.
  *
  * It is `static inline` because p_setup.c must wire the record during the
  * THINGS scan without hard-linking p_user.c: the two pre-existing gates
@@ -281,12 +391,24 @@ static inline void p_player_wire(p_player_t* player, r_mobj_t* mobj) {
     player->attackdown = 1;
     player->playerstate = P_PST_LIVE;
     player->health = P_MAXHEALTH;
+
+    /* G_PlayerReborn's item state: the pistol is what a pickup asks for until
+     * T14 owns `readyweapon`. */
+    player->pendingweapon = P_WP_PISTOL;
+    player->weaponowned[P_WP_FIST] = 1u;
+    player->weaponowned[P_WP_PISTOL] = 1u;
+    player->ammo[P_AM_CLIP] = 50;
+    player->maxammo[P_AM_CLIP] = P_MAXAMMO_CLIP;
+    player->maxammo[P_AM_SHELL] = P_MAXAMMO_SHELL;
+    player->maxammo[P_AM_CELL] = P_MAXAMMO_CELL;
+    player->maxammo[P_AM_MISL] = P_MAXAMMO_MISL;
 }
 
 /**
  * @brief G_PlayerReborn() for a level: wire `level->playerState` to @p mobj.
  *
- * The weapon/ammo defaults are D4.2d's and are named in the struct's comment.
+ * The opening ammo, weapons and pending weapon are G_PlayerReborn's and are
+ * set by p_player_wire(); `readyweapon` is T14's and is not in the record yet.
  *
  * @param level The level whose player record is written.
  * @param mobj  The avatar; NULL leaves the record empty.
@@ -300,17 +422,18 @@ void p_player_init(struct p_level* level, r_mobj_t* mobj);
  *
  *   1. copy the command into `player->cmd` (G_Ticker's memcpy);
  *   2. a live player runs the reactiontime gate and P_MovePlayer;
- *   3. P_CalcHeight() (P_DeathThink calls it too, in D4.2d);
+ *   3. P_CalcHeight() (P_DeathThink calls it too, in T14);
  *   4. BT_SPECIAL is cleared: "a special event has no other buttons";
  *   5. BT_CHANGE and BT_ATTACK are counted, because their handlers belong to
- *      D4.2d; BT_USE runs P_UseLines() once per press through `usedown`;
+ *      T14; BT_USE runs P_UseLines() once per press through `usedown`;
  *   6. the two screen-flash counters tick down.
  *
  * A player that is not PST_LIVE increments `unsupportedDeath` and returns:
- * P_DeathThink() is D4.2d's and is not faked here.
+ * P_DeathThink() is T14's and is not faked here.
  *
  * P_PlayerInSpecialSector() (sector damage), P_MovePsprites() and the power-up
- * colormaps are D4.2d's; fixedcolormap therefore stays 0.
+ * colormaps are T14's; fixedcolormap therefore stays 0. The power-up counters
+ * themselves are stored by D4.2d1's P_GivePower.
  *
  * @param level The level; its playerState record is the subject.
  * @param cmd   This tic's command. NULL is one tic of no input: the caller may
