@@ -116,10 +116,18 @@ namespace doom {
  * covers are the bytes the panel draws from. The level is opened once in `init()`
  * and stays open: the same setup `frameProbeRun()` uses
  * (`doomc/FrameDriver.cpp`), so the board frame and the measurement cannot drift.
- * It prints `SHOW,setup`, `SHOW,mem`, then one bounded `SHOW,frame=...` line: the
- * first ten frames and one per second after, until frame 600. The tic clock, the
- * input line and every event line keep running unchanged. The shipped
- * environments never define it and keep painting the shell.
+ * It prints `SHOW,setup`, `SHOW,mem`, two `SHOW,census` lines and then one
+ * bounded `SHOW,frame=...` line: the first ten frames and one per second after,
+ * until frame 600. The tic clock, the input line and every event line keep
+ * running unchanged. The shipped environments never define it and keep painting
+ * the shell.
+ *
+ * D4.0c asked whether a second 320x200 8-bit frame buffer could overlap the
+ * present with the render. The census answers that with the board's own numbers:
+ * the heap has one ~110 KB block at boot and a 47 KB largest hole once the sprite
+ * exists, so a second 64,000 B buffer does not fit. `SHOW,census,pool` prints the
+ * probe's verdict (`twin64=fits|no_fit`) on every boot, so a future board or a
+ * changed allocation order can be judged from the log instead of re-derived.
  *
  * The logical surface is a constant here on purpose. DOOM's renderer is
  * column-indexed: `distscale[SCREENWIDTH]`, `visplane_t::top[SCREENWIDTH]`,

@@ -30,6 +30,20 @@
 #include <Arduino.h>
 
 #include "time/Esp32TicSource.h"
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+#include <esp_heap_caps.h>
+
+// Bounds of the static DRAM image, provided by the ESP32 linker script. The
+// census reports what the image already owns before it talks about what a
+// second frame buffer would cost.
+extern "C" {
+extern std::uint8_t _data_start;
+extern std::uint8_t _data_end;
+extern std::uint8_t _bss_start;
+extern std::uint8_t _bss_end;
+}
+#endif
 #endif
 
 #include <core/Engine.h>
@@ -183,6 +197,137 @@ void reportFrameContract(Renderer& renderer) {
     writeConsoleLine(line);
 }
 #endif  // !PIXELROOT32_DOOM_FRAME_LOG
+
+// --- Memory census (D4.0c) --------------------------------------------------
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+
+/**
+ * @brief `dram0_0_seg`'s length in this build's `firmware.map`.
+ *
+ * The ESP32 linker carves the static image (`.dram0.data` + `.dram0.bss`) out of
+ * this region; the heap starts at `_bss_end` and continues in the DRAM regions
+ * the framework leaves outside the segment. The number is the map's
+ * `0x3ffbdb5c + 0x1e6a4`, stated here so the serial record names the pool the
+ * static allocations come from instead of the 327,680 B PlatformIO prints for
+ * the whole chip. If the image outgrows this region the link fails, so a stale
+ * constant is a report error, never a silent overflow.
+ */
+constexpr std::uint32_t kDramImageRegionBytes = 124580u;
+
+/**
+ * @brief Prints the DRAM/heap census once, before the first game frame.
+ *
+ * Two lines, both `SHOW,census,...`, because they answer two different
+ * questions and a single 400-character line is not a record anyone reads:
+ *
+ *  - `pool`: the static image's share of `dram0_0_seg` and the heap the rest of
+ *    the frame path is allocated from, split into the general internal pool and
+ *    the DMA-capable one the line buffers must come from. `heap_largest` is the
+ *    one a second 320x200 frame buffer has to fit inside.
+ *  - `frame`: every allocation the engine's present path owns, with the pool it
+ *    comes from named in the field. The sizes are the driver's literals, not
+ *    estimates: the sprite is `width*height + 1` because TFT_eSprite adds one
+ *    off-screen guard pixel, the line buffers are two blocks of
+ *    `physicalWidth * 2 B * linesPerBlock`, and the three LUTs are fixed.
+ *
+ * The port's own 512 B RGB565 table (palette::playpal565Table()) is a static
+ * array, not heap; it is named so the total is not silently larger than the
+ * engine's row.
+ */
+void reportMemoryCensus(Renderer& renderer) {
+    const int width = renderer.getLogicalWidth();
+    const int height = renderer.getLogicalHeight();
+
+    // The driver runs 1:1 here (physical == logical), which is what makes the
+    // line-buffer arithmetic below exact for this environment.
+    const std::uint32_t spriteBytes = static_cast<std::uint32_t>(width) * height + 1u;
+    const std::uint32_t dmaLineBytes =
+        static_cast<std::uint32_t>(width) * 2u * PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK;
+    const std::uint32_t dmaLineTotal = dmaLineBytes * 2u;
+    const std::uint32_t paletteLutBytes = 256u * 2u;
+    const std::uint32_t xLutBytes = static_cast<std::uint32_t>(width) * 2u;
+    const std::uint32_t yLutBytes = static_cast<std::uint32_t>(height) * 2u;
+    const std::uint32_t engineFrameBytes =
+        spriteBytes + dmaLineTotal + paletteLutBytes + xLutBytes + yLutBytes;
+
+#if defined(PLATFORM_NATIVE)
+    const std::uint32_t staticData = 0u;
+    const std::uint32_t staticBss = 0u;
+    const std::uint32_t heapTotal = 0u;
+    const std::uint32_t heapUsed = 0u;
+    const std::uint32_t heapFree = 0u;
+    const std::uint32_t heapLargest = 0u;
+    const std::uint32_t dmaTotal = 0u;
+    const std::uint32_t dmaFree = 0u;
+    const std::uint32_t dmaLargest = 0u;
+    const char* twinVerdict = "unknown";
+#else
+    const std::uint32_t staticData =
+        static_cast<std::uint32_t>(&_data_end - &_data_start);
+    const std::uint32_t staticBss =
+        static_cast<std::uint32_t>(&_bss_end - &_bss_start);
+    const std::uint32_t heapTotal =
+        static_cast<std::uint32_t>(heap_caps_get_total_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    const std::uint32_t heapFree =
+        static_cast<std::uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    const std::uint32_t heapUsed = heapTotal >= heapFree ? heapTotal - heapFree : 0u;
+    const std::uint32_t heapLargest = static_cast<std::uint32_t>(
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    const std::uint32_t dmaTotal = static_cast<std::uint32_t>(
+        heap_caps_get_total_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    const std::uint32_t dmaFree = static_cast<std::uint32_t>(
+        heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    const std::uint32_t dmaLargest = static_cast<std::uint32_t>(
+        heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+
+    // The one allocation a twin-framebuffer design needs, asked for instead of
+    // inferred: a second 320x200 8-bit frame must be ONE contiguous block. It
+    // is taken and returned at once, so the probe leaves the heap exactly as it
+    // found it; `heap_largest` alone cannot prove the answer because a smaller
+    // hole can sit next to a larger one without being coalesced.
+    void* twinProbe = heap_caps_malloc(
+        static_cast<std::size_t>(width) * static_cast<std::size_t>(height),
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const char* twinVerdict = twinProbe != nullptr ? "fits" : "no_fit";
+    if (twinProbe != nullptr) {
+        heap_caps_free(twinProbe);
+    }
+#endif
+
+    const std::uint32_t staticUsed = staticData + staticBss;
+    const std::uint32_t segFree =
+        kDramImageRegionBytes > staticUsed ? kDramImageRegionBytes - staticUsed : 0u;
+
+    char line[384];
+    std::snprintf(line, sizeof line,
+                  "SHOW,census,pool,dram_seg=%u,static_data=%u,static_bss=%u,"
+                  "static_used=%u,seg_free=%u,heap_total=%u,heap_used=%u,"
+                  "heap_free=%u,heap_largest=%u,dma_total=%u,dma_free=%u,"
+                  "dma_largest=%u,twin64=%s\n",
+                  static_cast<unsigned>(kDramImageRegionBytes),
+                  static_cast<unsigned>(staticData), static_cast<unsigned>(staticBss),
+                  static_cast<unsigned>(staticUsed), static_cast<unsigned>(segFree),
+                  static_cast<unsigned>(heapTotal), static_cast<unsigned>(heapUsed),
+                  static_cast<unsigned>(heapFree), static_cast<unsigned>(heapLargest),
+                  static_cast<unsigned>(dmaTotal), static_cast<unsigned>(dmaFree),
+                  static_cast<unsigned>(dmaLargest), twinVerdict);
+    writeConsoleLine(line);
+
+    std::snprintf(line, sizeof line,
+                  "SHOW,census,frame,sprite=%u,dma_line=%u,dma_lines=%u,"
+                  "palette_lut=%u,xlut=%u,ylut=%u,engine_frame=%u,port_lut=512,"
+                  "lines_per_block=%d\n",
+                  static_cast<unsigned>(spriteBytes), static_cast<unsigned>(dmaLineBytes),
+                  static_cast<unsigned>(dmaLineTotal),
+                  static_cast<unsigned>(paletteLutBytes), static_cast<unsigned>(xLutBytes),
+                  static_cast<unsigned>(yLutBytes),
+                  static_cast<unsigned>(engineFrameBytes),
+                  static_cast<int>(PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK));
+    writeConsoleLine(line);
+}
+
+#endif  // PIXELROOT32_DOOM_SHOW_E1M1
 
 // --- Tic clock ---------------------------------------------------------------
 
@@ -695,6 +840,15 @@ void DoomScene::init() {
         // the desktop mirror keeps its own conversion below.
         engine.getRenderer().getDrawSurface().setPalette8(palette::playpal565Table());
     }
+
+    // D4.0c's census: what the image owns in dram0_0_seg, what the heap holds,
+    // the exact size of every allocation the frame path made, and the one
+    // question the overlap design depends on -- whether a second 320x200 8-bit
+    // frame fits in ONE contiguous block. On this board it does not: the heap
+    // has a single ~110 KB block at boot and the sprite already owns it, so
+    // `twin64=no_fit` is the honest answer and the serialized present stays.
+    reportMemoryCensus(engine.getRenderer());
+
     showFrame_ = 0;
     showPendingReport_ = false;
     showRenderMicros_ = 0;
