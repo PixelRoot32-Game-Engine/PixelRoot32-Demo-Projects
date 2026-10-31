@@ -3327,10 +3327,19 @@ def movement_box_on_line_side(box: list[int], v1: dict, dx: int, dy: int) -> int
 
 def movement_intercept_vector(tx: int, ty: int, tdx: int, tdy: int,
                               lx: int, ly: int, ldx: int, ldy: int) -> int:
-    den = fixed_mul(tdy >> 8, ldx) - fixed_mul(tdx >> 8, ldy)
+    """P_InterceptVector(v2=trace, v1=line): upstream's own expression.
+
+    Upstream is
+    ``den = FixedMul(v1->dy>>8, v2->dx) - FixedMul(v1->dx>>8, v2->dy)`` and
+    ``num = FixedMul((v1->x - v2->x)>>8, v1->dy)
+           + FixedMul((v2->y - v1->y)>>8, v1->dx)``,
+    so every direction factor in the numerator is the *line's*. The trace is
+    ``tx..tdy`` (v2) and the line is ``lx..ldy`` (v1).
+    """
+    den = fixed_mul(ldy >> 8, tdx) - fixed_mul(ldx >> 8, tdy)
     if den == 0:
         return 0
-    num = fixed_mul((tx - lx) >> 8, tdy) + fixed_mul((ly - ty) >> 8, tdx)
+    num = fixed_mul((lx - tx) >> 8, ldy) + fixed_mul((ty - ly) >> 8, ldx)
     return fixed_div(num, den)
 
 
@@ -5606,22 +5615,6 @@ def attack_check_missile_spawn(level: "SpecLevel", th: dict) -> bool:
     return True
 
 
-def attack_intercept_vector(tx: int, ty: int, tdx: int, tdy: int,
-                            lx: int, ly: int, ldx: int, ldy: int) -> int:
-    """P_InterceptVector, from upstream's expression -- not movement's.
-
-    ``movement_intercept_vector`` passes the two direction vectors the other way
-    round and multiplies the trace's into the numerator, which agrees with
-    upstream for an axis-aligned ray and not otherwise. p_map.c says the same in
-    its own comment; the shot's fraction is the correct one.
-    """
-    den = fixed_mul(ldy >> 8, tdx) - fixed_mul(ldx >> 8, tdy)
-    if den == 0:
-        return 0
-    num = fixed_mul((lx - tx) >> 8, ldy) + fixed_mul((ty - ly) >> 8, ldx)
-    return fixed_div(num, den)
-
-
 def attack_trace_line(level: "SpecLevel", x1: int, y1: int, dx: int, dy: int,
                       index: int) -> int | None:
     """PIT_AddLineIntercepts, over one linedef."""
@@ -5638,7 +5631,7 @@ def attack_trace_line(level: "SpecLevel", x1: int, y1: int, dx: int, dy: int,
     if s1 == s2:
         return None
 
-    frac = attack_intercept_vector(x1, y1, dx, dy, v1["x"], v1["y"], ldx, ldy)
+    frac = movement_intercept_vector(x1, y1, dx, dy, v1["x"], v1["y"], ldx, ldy)
     if frac < 0 or frac > FRACUNIT:
         return None
     return frac
@@ -5671,8 +5664,8 @@ def attack_collect(level: "SpecLevel", x1: int, y1: int, dx: int, dy: int):
         s2 = movement_point_on_divline_side(cx2, cy2, x1, y1, dx, dy)
         if s1 == s2:
             continue
-        frac = attack_intercept_vector(x1, y1, dx, dy, cx1, cy1,
-                                      cx2 - cx1, cy2 - cy1)
+        frac = movement_intercept_vector(x1, y1, dx, dy, cx1, cy1,
+                                         cx2 - cx1, cy2 - cy1)
         if frac < 0 or frac > FRACUNIT:
             continue
         entries.append((frac, mo, None))

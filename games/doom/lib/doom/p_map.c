@@ -208,18 +208,27 @@ static int box_on_line_side(const fixed_t box[4], const doom_vertex_t* v1,
     return -1;
 }
 
-/* P_InterceptVector(): the fraction along v1 where the two rays meet. */
+/* P_InterceptVector(): the fraction along the trace where it meets the line.
+ *
+ * Upstream's signature is `P_InterceptVector (divline_t* v2, divline_t* v1)` and
+ * it is called as `P_InterceptVector (&trace, &dl)`, so `v2` is the trace and
+ * `v1` the line. Every direction factor in the numerator is the line's:
+ *
+ *   den = FixedMul (v1->dy>>8, v2->dx) - FixedMul (v1->dx>>8, v2->dy);
+ *   num = FixedMul ((v1->x - v2->x)>>8, v1->dy)
+ *       + FixedMul ((v2->y - v1->y)>>8, v1->dx);
+ */
 static fixed_t intercept_vector(fixed_t tx, fixed_t ty, fixed_t tdx, fixed_t tdy,
                                 fixed_t lx, fixed_t ly, fixed_t ldx,
                                 fixed_t ldy) {
     fixed_t den;
     fixed_t num;
 
-    den = fixed_mul(tdy >> 8, ldx) - fixed_mul(tdx >> 8, ldy);
+    den = fixed_mul(ldy >> 8, tdx) - fixed_mul(ldx >> 8, tdy);
     if (den == 0) {
         return 0;
     }
-    num = fixed_mul((tx - lx) >> 8, tdy) + fixed_mul((ly - ty) >> 8, tdx);
+    num = fixed_mul((lx - tx) >> 8, ldy) + fixed_mul((ty - ly) >> 8, ldx);
     return fixed_div(num, den);
 }
 
@@ -1473,43 +1482,11 @@ static int add_intercept(attack_trace_t* trace) {
     return 1;
 }
 
-/*
- * P_InterceptVector, for the shot's trace, and a note a reader needs.
- *
- * Upstream's signature is `P_InterceptVector (divline_t* v2, divline_t* v1)` and
- * it is called as `P_InterceptVector (&trace, &dl)`, so `v1` is the *line* and
- * `v2` the trace:
- *
- *   den = FixedMul (v1->dy>>8, v2->dx) - FixedMul (v1->dx>>8, v2->dy);
- *   num = FixedMul ((v1->x - v2->x)>>8, v1->dy)
- *       + FixedMul ((v2->y - v1->y)>>8, v1->dx);
- *
- * This file's shared intercept_vector() (above, D4.2b) takes the trace first and
- * multiplies the *trace's* direction into the numerator, which transposes the two
- * direction vectors; it agrees with upstream for an axis-aligned ray and not
- * otherwise. Correcting it there changes P_SlideMove's and P_UseLines' answers --
- * measured: the movement script's endpoint and its blocked count both move -- which
- * is D4.2b's rule, not this task's, and would change the two gates that ship it.
- * So the shot's fraction uses this function, which is upstream's expression
- * verbatim, and the defect in the shared one is reported instead of copied.
- */
-static fixed_t attack_intercept_vector(fixed_t tx, fixed_t ty, fixed_t tdx,
-                                       fixed_t tdy, fixed_t lx, fixed_t ly,
-                                       fixed_t ldx, fixed_t ldy) {
-    fixed_t den;
-    fixed_t num;
-
-    den = fixed_mul(ldy >> 8, tdx) - fixed_mul(ldx >> 8, tdy);
-    if (den == 0) {
-        return 0;
-    }
-    num = fixed_mul((lx - tx) >> 8, ldy) + fixed_mul((ty - ly) >> 8, ldx);
-    return fixed_div(num, den);
-}
-
-/* PIT_AddLineIntercepts' geometry, with the correct fraction. The short-trace
- * branch is upstream's: under 16 units it compares P_PointOnLineSide at the
- * trace's two endpoints, above it P_PointOnDivlineSide at the line's. */
+/* PIT_AddLineIntercepts' geometry. The fraction comes from the shared
+ * intercept_vector() above, so a shot and a slide agree on where a ray meets a
+ * line. The short-trace branch is upstream's: under 16 units it compares
+ * P_PointOnLineSide at the trace's two endpoints, above it P_PointOnDivlineSide
+ * at the line's. */
 static int attack_line_frac(const p_mobj_context_t* world, fixed_t x1, fixed_t y1,
                             fixed_t dx, fixed_t dy, uint16_t lineIndex,
                             fixed_t* fracOut) {
@@ -1539,7 +1516,7 @@ static int attack_line_frac(const p_mobj_context_t* world, fixed_t x1, fixed_t y
         return 0; /* line isn't crossed */
     }
 
-    frac = attack_intercept_vector(x1, y1, dx, dy, v1.x, v1.y, ldx, ldy);
+    frac = intercept_vector(x1, y1, dx, dy, v1.x, v1.y, ldx, ldy);
     if (frac < 0) {
         return 0; /* behind source */
     }
@@ -1627,8 +1604,8 @@ static void collect_things(attack_trace_t* trace) {
             continue; /* line isn't crossed */
         }
 
-        frac = attack_intercept_vector(trace->x1, trace->y1, trace->dx, trace->dy,
-                                       x1, y1, x2 - x1, y2 - y1);
+        frac = intercept_vector(trace->x1, trace->y1, trace->dx, trace->dy,
+                                x1, y1, x2 - x1, y2 - y1);
         if (frac < 0) {
             continue; /* behind source */
         }

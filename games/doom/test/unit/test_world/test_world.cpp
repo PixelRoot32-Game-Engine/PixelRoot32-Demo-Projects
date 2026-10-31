@@ -1943,6 +1943,45 @@ void test_move_use_lines_triggers_the_special_line_in_front(void) {
     TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
 }
 
+void test_move_slide_along_a_diagonal_wall_uses_the_lines_direction(void) {
+    // P_InterceptVector multiplies the *line's* direction into the numerator.
+    // With a 45-degree wall a diagonal move has to slide along it; a numerator
+    // built from the trace's own direction picks a larger fraction, drives the
+    // body through the wall, and P_TryMove refuses the whole move.
+    MoveFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addRoom(0);
+    // From (96,0) to (0,-96), so this side is the line's front for a body
+    // coming from the room's centre; a one-sided line is not hit from behind.
+    const u16 a = fixture.builder.addVertex(96, 0);
+    const u16 b = fixture.builder.addVertex(0, -96);
+    fixture.builder.addLine(a, b, DOOM_ML_BLOCKING, 0, 0, 0, -1);
+    TEST_ASSERT_TRUE(fixture.open());
+
+    r_mobj_t* mobj = fixture.player(-32 * kFrac, -32 * kFrac);
+    TEST_ASSERT_NOT_NULL(mobj);
+    mobj->momx = 80 * kFrac;
+    mobj->momy = -80 * kFrac;
+
+    p_slide_move(&fixture.context, mobj);
+
+    // P_HitSlideLine projects the move onto the wall, so the momentum now lies
+    // along it: both components are the wall's own direction and equal to
+    // within the table's half-angle rounding.
+    TEST_ASSERT_TRUE(mobj->momx < 0);
+    TEST_ASSERT_TRUE(mobj->momy < 0);
+    TEST_ASSERT_TRUE(mobj->momy - mobj->momx <= -mobj->momx / 100);
+
+    // The leading corner stops one fudge (0x800 of the move) short of the wall.
+    // The wall is y = x - 96 and the corner approaches from y - x > -96, so the
+    // gap is positive and small -- about five map units in this sum, which is
+    // 0x800 * 80 * two axes, not the tens of units a transposed numerator
+    // leaves behind.
+    const fixed_t gap = (mobj->y - mobj->radius) - (mobj->x + mobj->radius) +
+                        96 * kFrac;
+    TEST_ASSERT_TRUE(gap >= 2 * kFrac);
+    TEST_ASSERT_TRUE(gap <= 7 * kFrac);
+}
+
 // --- D4.2c: the player ------------------------------------------------------
 
 /*
@@ -2631,6 +2670,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_move_z_movement_gravity_floor_and_ceiling);
     RUN_TEST(test_move_change_sector_reports_and_crushes_only_when_told_to);
     RUN_TEST(test_move_use_lines_triggers_the_special_line_in_front);
+    RUN_TEST(test_move_slide_along_a_diagonal_wall_uses_the_lines_direction);
     RUN_TEST(test_player_init_wires_the_avatar_and_reborn_defaults);
     RUN_TEST(test_player_think_turns_walks_and_raises_the_view);
     RUN_TEST(test_player_think_strafes_at_minus_ninety_degrees);
