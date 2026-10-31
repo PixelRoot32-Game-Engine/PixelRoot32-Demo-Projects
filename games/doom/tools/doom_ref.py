@@ -1481,6 +1481,339 @@ def spawn_view(bsp: BspMap, player: int = 0) -> dict:
             "sky": b"F_SKY1\x00\x00"}
 
 
+# --- The THINGS run (D4.1a) -------------------------------------------------
+#
+# P_SpawnMapThing()'s filter chain, re-derived from linuxdoom-1.10 p_mobj.c:
+# the deathmatch-start branch, the player-start branch, the single-player
+# options bit, the skill bit, the doomednum scan, MF_NOTDMATCH, -nomonsters,
+# MF_SPAWNCEILING, and the ONFLOORZ/ONCEILINGZ rules (which do not clamp).
+#
+# The table below is a *second* reading of upstream's info.c: tools/gen_info.py
+# parses that file with an expression engine and emits lib/doom/info_tables.h;
+# this dict was transcribed from the same records by a separate, cruder parse.
+# A disagreement between them is therefore a real defect in one of the two, not
+# a tautology. Only the columns the dump prints are carried; sounds, mass, speed
+# and the rest would be unused weight.
+#
+#   doomednum: (mobjtype, flags, height, spawnhealth, spawnstate,
+#               spawnstate_has_tics)
+
+MAXPLAYERS = 4
+
+MF_SPAWNCEILING = 0x00000100
+MF_COUNTKILL = 0x00400000
+MF_COUNTITEM = 0x00800000
+MF_NOTDMATCH = 0x02000000
+MF_AMBUSH = 0x00000020
+MF_TRANSSHIFT = 26
+
+# The THINGS options bit that makes a monster deaf (upstream's MTF_AMBUSH).
+MTF_AMBUSH = 8
+
+SKILLS = ("baby", "easy", "medium", "hard", "nightmare")
+
+# MT_PLAYER's doomednum is -1, so it is not addressable from a THINGS record and
+# is not in the table: (flags, height, spawnhealth, state, timed). Its mobjtype
+# index is 0.
+PLAYER_INFO = (0x02000C06, 3670016, 100, 149, 0)
+
+MOBJINFO = {
+    3004: (  1, 0x00400006,   3670016,    20, 174, 1),  # MT_POSSESSED
+    9: (  2, 0x00400006,   3670016,    30, 207, 1),  # MT_SHOTGUY
+    64: (  3, 0x00400006,   3670016,   700, 241, 1),  # MT_VILE
+    66: (  5, 0x00400006,   3670016,   300, 321, 1),  # MT_UNDEAD
+    67: (  8, 0x00400006,   4194304,   600, 362, 1),  # MT_FATSO
+    65: ( 10, 0x00400006,   3670016,    70, 406, 1),  # MT_CHAINGUY
+    3001: ( 11, 0x00400006,   3670016,    60, 442, 1),  # MT_TROOP
+    3002: ( 12, 0x00400006,   3670016,   150, 475, 1),  # MT_SERGEANT
+    58: ( 13, 0x00440006,   3670016,   150, 475, 1),  # MT_SHADOWS
+    3005: ( 14, 0x00404206,   3670016,   400, 502, 1),  # MT_HEAD
+    3003: ( 15, 0x00400006,   4194304,  1000, 527, 1),  # MT_BRUISER
+    69: ( 17, 0x00400006,   4194304,   500, 556, 1),  # MT_KNIGHT
+    3006: ( 18, 0x00004206,   3670016,   100, 585, 1),  # MT_SKULL
+    7: ( 19, 0x00400006,   6553600,  3000, 601, 1),  # MT_SPIDER
+    68: ( 20, 0x00400006,   4194304,   500, 632, 1),  # MT_BABY
+    16: ( 21, 0x00400006,   7208960,  4000, 674, 1),  # MT_CYBORG
+    71: ( 22, 0x00404206,   3670016,   400, 701, 1),  # MT_PAIN
+    84: ( 23, 0x00400006,   3670016,    50, 726, 1),  # MT_WOLFSS
+    72: ( 24, 0x00400306,   4718592,   100, 763, 0),  # MT_KEEN
+    88: ( 25, 0x00000006,   1048576,   250, 778, 0),  # MT_BOSSBRAIN
+    89: ( 26, 0x00000018,   2097152,  1000, 784, 1),  # MT_BOSSSPIT
+    87: ( 27, 0x00000018,   2097152,  1000,   0, 0),  # MT_BOSSTARGET
+    2035: ( 30, 0x00080006,   2752512,    20, 806, 1),  # MT_BARREL
+    14: ( 41, 0x00000018,   1048576,  1000,   0, 0),  # MT_TELEPORTMAN
+    2018: ( 43, 0x00000001,   1048576,  1000, 802, 1),  # MT_MISC0
+    2019: ( 44, 0x00000001,   1048576,  1000, 804, 1),  # MT_MISC1
+    2014: ( 45, 0x00800001,   1048576,  1000, 816, 1),  # MT_MISC2
+    2015: ( 46, 0x00800001,   1048576,  1000, 822, 1),  # MT_MISC3
+    5: ( 47, 0x02000001,   1048576,  1000, 828, 1),  # MT_MISC4
+    13: ( 48, 0x02000001,   1048576,  1000, 830, 1),  # MT_MISC5
+    6: ( 49, 0x02000001,   1048576,  1000, 832, 1),  # MT_MISC6
+    39: ( 50, 0x02000001,   1048576,  1000, 838, 1),  # MT_MISC7
+    38: ( 51, 0x02000001,   1048576,  1000, 836, 1),  # MT_MISC8
+    40: ( 52, 0x02000001,   1048576,  1000, 834, 1),  # MT_MISC9
+    2011: ( 53, 0x00000001,   1048576,  1000, 840, 0),  # MT_MISC10
+    2012: ( 54, 0x00000001,   1048576,  1000, 841, 0),  # MT_MISC11
+    2013: ( 55, 0x00800001,   1048576,  1000, 842, 1),  # MT_MISC12
+    2022: ( 56, 0x00800001,   1048576,  1000, 848, 1),  # MT_INV
+    2023: ( 57, 0x00800001,   1048576,  1000, 852, 0),  # MT_MISC13
+    2024: ( 58, 0x00800001,   1048576,  1000, 853, 1),  # MT_INS
+    2025: ( 59, 0x00000001,   1048576,  1000, 861, 0),  # MT_MISC14
+    2026: ( 60, 0x00800001,   1048576,  1000, 862, 1),  # MT_MISC15
+    2045: ( 61, 0x00800001,   1048576,  1000, 868, 1),  # MT_MISC16
+    83: ( 62, 0x00800001,   1048576,  1000, 857, 1),  # MT_MEGA
+    2007: ( 63, 0x00000001,   1048576,  1000, 870, 0),  # MT_CLIP
+    2048: ( 64, 0x00000001,   1048576,  1000, 871, 0),  # MT_MISC17
+    2010: ( 65, 0x00000001,   1048576,  1000, 872, 0),  # MT_MISC18
+    2046: ( 66, 0x00000001,   1048576,  1000, 873, 0),  # MT_MISC19
+    2047: ( 67, 0x00000001,   1048576,  1000, 874, 0),  # MT_MISC20
+    17: ( 68, 0x00000001,   1048576,  1000, 875, 0),  # MT_MISC21
+    2008: ( 69, 0x00000001,   1048576,  1000, 876, 0),  # MT_MISC22
+    2049: ( 70, 0x00000001,   1048576,  1000, 877, 0),  # MT_MISC23
+    8: ( 71, 0x00000001,   1048576,  1000, 878, 0),  # MT_MISC24
+    2006: ( 72, 0x00000001,   1048576,  1000, 879, 0),  # MT_MISC25
+    2002: ( 73, 0x00000001,   1048576,  1000, 880, 0),  # MT_CHAINGUN
+    2005: ( 74, 0x00000001,   1048576,  1000, 881, 0),  # MT_MISC26
+    2003: ( 75, 0x00000001,   1048576,  1000, 882, 0),  # MT_MISC27
+    2004: ( 76, 0x00000001,   1048576,  1000, 883, 0),  # MT_MISC28
+    2001: ( 77, 0x00000001,   1048576,  1000, 884, 0),  # MT_SHOTGUN
+    82: ( 78, 0x00000001,   1048576,  1000, 885, 0),  # MT_SUPERSHOTGUN
+    85: ( 79, 0x00000002,   1048576,  1000, 959, 1),  # MT_MISC29
+    86: ( 80, 0x00000002,   1048576,  1000, 963, 1),  # MT_MISC30
+    2028: ( 81, 0x00000002,   1048576,  1000, 886, 0),  # MT_MISC31
+    30: ( 82, 0x00000002,   1048576,  1000, 907, 0),  # MT_MISC32
+    31: ( 83, 0x00000002,   1048576,  1000, 908, 0),  # MT_MISC33
+    32: ( 84, 0x00000002,   1048576,  1000, 909, 0),  # MT_MISC34
+    33: ( 85, 0x00000002,   1048576,  1000, 910, 0),  # MT_MISC35
+    37: ( 86, 0x00000002,   1048576,  1000, 913, 0),  # MT_MISC36
+    36: ( 87, 0x00000002,   1048576,  1000, 924, 1),  # MT_MISC37
+    41: ( 88, 0x00000002,   1048576,  1000, 917, 1),  # MT_MISC38
+    42: ( 89, 0x00000002,   1048576,  1000, 921, 1),  # MT_MISC39
+    43: ( 90, 0x00000002,   1048576,  1000, 914, 0),  # MT_MISC40
+    44: ( 91, 0x00000002,   1048576,  1000, 926, 1),  # MT_MISC41
+    45: ( 92, 0x00000002,   1048576,  1000, 930, 1),  # MT_MISC42
+    46: ( 93, 0x00000002,   1048576,  1000, 934, 1),  # MT_MISC43
+    55: ( 94, 0x00000002,   1048576,  1000, 938, 1),  # MT_MISC44
+    56: ( 95, 0x00000002,   1048576,  1000, 942, 1),  # MT_MISC45
+    57: ( 96, 0x00000002,   1048576,  1000, 946, 1),  # MT_MISC46
+    47: ( 97, 0x00000002,   1048576,  1000, 906, 0),  # MT_MISC47
+    48: ( 98, 0x00000002,   1048576,  1000, 916, 0),  # MT_MISC48
+    34: ( 99, 0x00000000,   1048576,  1000, 911, 0),  # MT_MISC49
+    35: (100, 0x00000002,   1048576,  1000, 912, 0),  # MT_MISC50
+    49: (101, 0x00000302,   4456448,  1000, 888, 1),  # MT_MISC51
+    50: (102, 0x00000302,   5505024,  1000, 902, 0),  # MT_MISC52
+    51: (103, 0x00000302,   5505024,  1000, 903, 0),  # MT_MISC53
+    52: (104, 0x00000302,   4456448,  1000, 904, 0),  # MT_MISC54
+    53: (105, 0x00000302,   3407872,  1000, 905, 0),  # MT_MISC55
+    59: (106, 0x00000300,   5505024,  1000, 902, 0),  # MT_MISC56
+    60: (107, 0x00000300,   4456448,  1000, 904, 0),  # MT_MISC57
+    61: (108, 0x00000300,   3407872,  1000, 903, 0),  # MT_MISC58
+    62: (109, 0x00000300,   3407872,  1000, 905, 0),  # MT_MISC59
+    63: (110, 0x00000300,   4456448,  1000, 888, 1),  # MT_MISC60
+    22: (111, 0x00000000,   1048576,  1000, 515, 0),  # MT_MISC61
+    15: (112, 0x00000000,   1048576,  1000, 164, 0),  # MT_MISC62
+    18: (113, 0x00000000,   1048576,  1000, 193, 0),  # MT_MISC63
+    21: (114, 0x00000000,   1048576,  1000, 495, 0),  # MT_MISC64
+    23: (115, 0x00000000,   1048576,  1000, 600, 1),  # MT_MISC65
+    20: (116, 0x00000000,   1048576,  1000, 461, 0),  # MT_MISC66
+    19: (117, 0x00000000,   1048576,  1000, 226, 0),  # MT_MISC67
+    10: (118, 0x00000000,   1048576,  1000, 173, 0),  # MT_MISC68
+    12: (119, 0x00000000,   1048576,  1000, 173, 0),  # MT_MISC69
+    28: (120, 0x00000002,   1048576,  1000, 894, 0),  # MT_MISC70
+    24: (121, 0x00000000,   1048576,  1000, 895, 0),  # MT_MISC71
+    27: (122, 0x00000002,   1048576,  1000, 896, 0),  # MT_MISC72
+    29: (123, 0x00000002,   1048576,  1000, 897, 1),  # MT_MISC73
+    25: (124, 0x00000002,   1048576,  1000, 899, 0),  # MT_MISC74
+    26: (125, 0x00000002,   1048576,  1000, 900, 1),  # MT_MISC75
+    54: (126, 0x00000002,   1048576,  1000, 915, 0),  # MT_MISC76
+    70: (127, 0x00000002,   1048576,  1000, 813, 1),  # MT_MISC77
+    73: (128, 0x00000302,   5767168,  1000, 950, 0),  # MT_MISC78
+    74: (129, 0x00000302,   5767168,  1000, 951, 0),  # MT_MISC79
+    75: (130, 0x00000302,   4194304,  1000, 952, 0),  # MT_MISC80
+    76: (131, 0x00000302,   4194304,  1000, 953, 0),  # MT_MISC81
+    77: (132, 0x00000302,   4194304,  1000, 954, 0),  # MT_MISC82
+    78: (133, 0x00000302,   4194304,  1000, 955, 0),  # MT_MISC83
+    79: (134, 0x00000010,   1048576,  1000, 956, 0),  # MT_MISC84
+    80: (135, 0x00000010,   1048576,  1000, 957, 0),  # MT_MISC85
+    81: (136, 0x00000010,   1048576,  1000, 958, 0),  # MT_MISC86
+}
+
+
+def sector_of_subsector(bsp: BspMap, index: int) -> int:
+    """P_GroupLines' `ss->sector = seg[ss->firstline].sidedef->sector`."""
+    subsector = bsp.ssectors[index]
+    seg = bsp.segs[subsector["firstseg"]]
+    line = bsp.linedefs[seg["linedef"]]
+    side = bsp.sidedefs[line["side0"] if seg["side"] == 0 else line["side1"]]
+    return side["sector"]
+
+
+class ThingRun:
+    """One level's THINGS pass: the mobjs, the counters and the RNG position.
+
+    The RNG is tracked as a position, not as values: every spawn consumes one
+    draw for `lastlook` and one more when the spawn state has tics, and the
+    position at the end is what the C side prints as RNG <index>. The values
+    themselves are pinned by test/unit/test_world, so a second copy of the table
+    here would test nothing new.
+    """
+
+    def __init__(self, bsp: BspMap, skill: int) -> None:
+        self.bsp = bsp
+        self.skill = skill
+        self.mobjs: list[dict] = []
+        self.rng = 0
+        self.player_starts: list[dict | None] = [None] * MAXPLAYERS
+        self.deathmatch_starts: list[dict] = []
+        self.player_index = -1
+        self.counters = {
+            "things": 0, "spawned": 0, "kills": 0, "items": 0, "secrets": 0,
+            "skill": 0, "single": 0, "nomonsters": 0, "dmskip": 0,
+            "unknown": 0, "invalid": 0, "failed": 0,
+            "playerstarts": 0, "deathmatchstarts": 0,
+        }
+
+    def draw(self) -> None:
+        """One P_Random() call: only the position matters here."""
+        self.rng = (self.rng + 1) & 0xFF
+
+    def spawn(self, mobj_type: int, x: int, y: int, z_rule: str, info: tuple,
+              angle_degrees: int, extra_flags: int = 0) -> int:
+        """P_SpawnMobj() with `z` resolved by the rule, then the tics draw."""
+        flags, height, health, spawnstate, timed = info
+        self.draw()                                     # lastlook
+        subsector = point_in_subsector(self.bsp, x, y)
+        sector = sector_of_subsector(self.bsp, subsector)
+        floor = self.bsp.sectors[sector]["floor"]
+        ceiling = self.bsp.sectors[sector]["ceiling"]
+        if z_rule == "floor":
+            z = floor
+        elif z_rule == "ceiling":
+            z = ceiling - height
+        else:
+            raise FormatError(f"unknown z rule {z_rule!r}")
+        if timed:
+            self.draw()                                 # `1 + P_Random() % tics`
+        self.mobjs.append({
+            "type": mobj_type,
+            "x": x,
+            "y": y,
+            "z": i32(z),
+            "angle": u32(ANG45 * trunc_div(angle_degrees, 45)),
+            "subsector": subsector,
+            "sector": sector,
+            "flags": u32(flags | extra_flags),
+            "health": health,
+            "state": spawnstate,
+        })
+        return len(self.mobjs) - 1
+
+
+def report_things(lumps: list[Lump], map_name: str, skill_name: str) -> None:
+    """The `--things` protocol: P_LoadThings() through P_SpawnMapThing()."""
+    if skill_name not in SKILLS:
+        raise FormatError(f"--skill must be one of {', '.join(SKILLS)}")
+    skill = SKILLS.index(skill_name)
+    if skill == 0:
+        bit = 1
+    elif skill == 4:
+        bit = 4
+    else:
+        bit = 1 << (skill - 1)
+
+    bsp = read_bsp_map(lumps, map_name)
+    run = ThingRun(bsp, skill)
+    player_in_game = [True, False, False, False]
+
+    print(f"THINGS {map_name} skill={skill} things={len(bsp.things)}")
+    for record in bsp.things:
+        kind = record["type"]
+        run.counters["things"] += 1
+
+        # 1. Deathmatch starts.
+        if kind == 11:
+            if len(run.deathmatch_starts) < 10:
+                run.deathmatch_starts.append(record)
+            run.counters["deathmatchstarts"] += 1
+            continue
+
+        # 2. Player starts.
+        if 1 <= kind <= MAXPLAYERS:
+            run.player_starts[kind - 1] = record
+            run.counters["playerstarts"] += 1
+            if player_in_game[kind - 1]:
+                extra = (kind - 1) << MF_TRANSSHIFT if kind > 1 else 0
+                index = run.spawn(0, _fixed16(record["x"]), _fixed16(record["y"]),
+                                  "floor", PLAYER_INFO, record["angle"], extra)
+                run.counters["spawned"] += 1
+                if kind == 1 and run.player_index < 0:
+                    run.player_index = index
+            continue
+
+        # 3. Not a thing.
+        if kind <= 0:
+            run.counters["invalid"] += 1
+            continue
+
+        # 4. The single-player options bit.
+        if record["options"] & 16:
+            run.counters["single"] += 1
+            continue
+
+        # 5. The skill bit.
+        if not record["options"] & bit:
+            run.counters["skill"] += 1
+            continue
+
+        # 6. The doomednum scan.
+        row = MOBJINFO.get(kind)
+        if row is None:
+            run.counters["unknown"] += 1
+            continue
+        mobj_type, flags, height, health, spawnstate, timed = row
+
+        # 7. MF_NOTDMATCH only filters in deathmatch and 8. -nomonsters is off,
+        #    so neither branch can fire in this single-player run. gen_info's
+        #    table and the C loader still carry both; see p_mobj.c.
+
+        z_rule = "ceiling" if flags & MF_SPAWNCEILING else "floor"
+        ambush = MF_AMBUSH if record["options"] & MTF_AMBUSH else 0
+        run.spawn(mobj_type, _fixed16(record["x"]), _fixed16(record["y"]), z_rule,
+                  (flags, height, health, spawnstate, timed), record["angle"],
+                  ambush)
+        run.counters["spawned"] += 1
+        if flags & MF_COUNTKILL:
+            run.counters["kills"] += 1
+        if flags & MF_COUNTITEM:
+            run.counters["items"] += 1
+
+    for index, mobj in enumerate(run.mobjs):
+        print(f"MOBJ {index} type={mobj['type']} x={mobj['x']} y={mobj['y']} "
+              f"z={mobj['z']} angle=0x{mobj['angle']:08x} "
+              f"subsector={mobj['subsector']} sector={mobj['sector']} "
+              f"flags=0x{mobj['flags']:08x} health={mobj['health']} "
+              f"state={mobj['state']}")
+    print(f"MOBJ-COUNT {len(run.mobjs)}")
+
+    ordered = ["things", "spawned", "kills", "items", "secrets", "skill", "single",
+               "nomonsters", "dmskip", "unknown", "invalid", "failed",
+               "playerstarts", "deathmatchstarts"]
+    print("COUNTERS " + " ".join(f"{name}={run.counters[name]}" for name in ordered))
+
+    for slot, record in enumerate(run.player_starts):
+        if record is not None:
+            print(f"PLAYERSTART {slot} x={record['x']} y={record['y']} "
+                  f"angle={record['angle']} type={record['type']} "
+                  f"options={record['options']}")
+    for index, record in enumerate(run.deathmatch_starts):
+        print(f"DEATHMATCHSTART {index} x={record['x']} y={record['y']} "
+              f"angle={record['angle']} type={record['type']} "
+              f"options={record['options']}")
+
+    print(f"PLAYER {run.player_index}")
+    print(f"RNG {run.rng}")
+
+
 # --- BSP reporting ----------------------------------------------------------
 
 def drawseg_digest(drawsegs: list[dict]) -> str:
@@ -2844,6 +3177,12 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
     parser.add_argument("--bsp", metavar="NAME",
                         help="walk the map's BSP from its player start and print the "
                              "drawsegs, the visplanes and their hashes (D3.1)")
+    parser.add_argument("--things", metavar="NAME",
+                        help="run the map's THINGS lump through P_SpawnMapThing()'s "
+                             "filters and print every mobj it produces (D4.1a)")
+    parser.add_argument("--skill", default="medium", metavar="NAME",
+                        help="with --things: baby, easy, medium, hard or nightmare "
+                             "(default: medium)")
     parser.add_argument("--drawsegs", type=int, default=256, metavar="N",
                         help="drawseg capacity for --bsp (default: 256, DOOM's "
                              "MAXDRAWSEGS)")
@@ -2876,9 +3215,10 @@ def main(argv: list[str] | None = None) -> int:
     textures_wanted = arguments.textures or arguments.all
     flats_wanted = arguments.flats or arguments.all
     if not (patches_wanted or textures_wanted or flats_wanted or arguments.map
-            or arguments.stats or arguments.bsp or arguments.segs):
+            or arguments.stats or arguments.bsp or arguments.segs
+            or arguments.things):
         parser.error("nothing to do: pass --patches, --textures, --flats, --all, "
-                     "--map, --stats, --bsp or --segs")
+                     "--map, --stats, --bsp, --segs or --things")
     if arguments.limit is not None and arguments.limit < 0:
         parser.error("--limit cannot be negative")
     if arguments.drawsegs < 1:
@@ -2937,6 +3277,8 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.segs:
             report_segs(lumps, arguments.segs.upper(), arguments.drawsegs,
                         arguments.planes, arguments.segs_detail, segs_column)
+        if arguments.things:
+            report_things(lumps, arguments.things.upper(), arguments.skill)
     except FormatError as error:
         print(f"doom_ref: {error}", file=sys.stderr)
         return EXIT_INPUT
