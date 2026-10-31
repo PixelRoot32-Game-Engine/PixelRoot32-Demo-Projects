@@ -298,12 +298,23 @@ static int point_on_seg_side(const doom_map_t* map, uint16_t segIndex, fixed_t x
     return right < left ? 0 : 1;
 }
 
-/* --- Clip blocks ---------------------------------------------------------- */
+/* --- Saved clip columns --------------------------------------------------- */
 
-static int16_t clip_block_value(const int16_t* pool, int16_t block,
-                                const r_drawseg_t* drawseg, int x) {
-    return pool[(size_t)block * (size_t)R_SCREEN_WIDTH
-                + (size_t)(x - drawseg->x1)];
+/*
+ * One saved clip column. A valid code is an entry offset into the caller's
+ * single pool; the two negative sentinels answer upstream's shared constants
+ * (`sprtopclip = screenheightarray`, `sprbottomclip = negonearray`) without
+ * reading the pool, which is why they cost no storage.
+ */
+static int16_t clip_value(const int16_t* pool, int16_t code, const r_drawseg_t* drawseg,
+                          int x) {
+    if (code == R_DRAWSEG_CLIP_TOP) {
+        return (int16_t)R_VIEW_HEIGHT;
+    }
+    if (code == R_DRAWSEG_CLIP_BOTTOM) {
+        return -1;
+    }
+    return pool[(size_t)code + (size_t)(x - drawseg->x1)];
 }
 
 /* --- One post (R_DrawMaskedColumn's inner R_DrawColumn) ------------------- */
@@ -451,7 +462,7 @@ static void draw_vis_sprite(r_view_state_t* state, r_draw_surface_t* surface,
 /*
  * Draws the columns [x1, x2] of one drawseg's deferred masked mid texture.
  *
- * The texture column comes from the opening block the wall pass recorded, the
+ * The texture column comes from the pool run the wall pass recorded, the
  * clip arrays are the drawseg's own saved blocks (upstream's
  * `mfloorclip = ds->sprbottomclip`), and the light is the *wall* rule, not the
  * sprite rule. A column is consumed as it is drawn, so a later call -- the
@@ -465,8 +476,7 @@ static void render_masked_range(r_view_state_t* state, r_draw_surface_t* surface
                                 uint32_t* written) {
     r_wall_fragment_t fragment;
     const r_walltex_t* texture = NULL;
-    const int16_t* topBlock;
-    const int16_t* bottomBlock;
+    int16_t* clipPool = state->storage.clipPool;
     int16_t* columns;
     fixed_t textureMid;
     fixed_t spryscale;
@@ -478,12 +488,9 @@ static void render_masked_range(r_view_state_t* state, r_draw_surface_t* surface
         return;
     }
 
-    topBlock = state->storage.clipBlocks
-               + (size_t)drawseg->sprTopClip * (size_t)R_SCREEN_WIDTH;
-    bottomBlock = state->storage.clipBlocks
-                  + (size_t)drawseg->sprBottomClip * (size_t)R_SCREEN_WIDTH;
-    columns = state->storage.openingBlocks
-              + (size_t)drawseg->maskedTextureCol * (size_t)R_SCREEN_WIDTH;
+    /* The masked mid's own run; the clip arrays are the drawseg's saved runs or
+     * the shared constants, answered by clip_value(). */
+    columns = clipPool + (size_t)drawseg->maskedTextureCol;
 
     /* R_RenderMaskedSegRange's pegging, from the fragment's view-relative
      * heights: max(front floor, back floor) + height, or min(front ceiling,
@@ -508,8 +515,8 @@ static void render_masked_range(r_view_state_t* state, r_draw_surface_t* surface
         const int16_t column = columns[x - drawseg->x1];
 
         if (column != R_MASKED_COLUMN_USED) {
-            const int yl = topBlock[x - drawseg->x1] + 1;
-            const int yh = bottomBlock[x - drawseg->x1] - 1;
+            const int yl = clip_value(clipPool, drawseg->sprTopClip, drawseg, x) + 1;
+            const int yh = clip_value(clipPool, drawseg->sprBottomClip, drawseg, x) - 1;
             const uint8_t* colormap =
                 r_light_wall(light, drawseg->lightNum, spryscale);
             const fixed_t iscale =
@@ -608,7 +615,7 @@ static void draw_sprite(r_view_state_t* state, r_draw_surface_t* surface,
             if (silhouette == R_SIL_BOTTOM) {
                 for (x = r1; x <= r2; ++x) {
                     if (clipbot[x] == R_SPRITE_CLIP_UNSET) {
-                        clipbot[x] = clip_block_value(state->storage.clipBlocks,
+                        clipbot[x] = clip_value(state->storage.clipPool,
                                                       drawseg->sprBottomClip,
                                                       drawseg, x);
                     }
@@ -616,7 +623,7 @@ static void draw_sprite(r_view_state_t* state, r_draw_surface_t* surface,
             } else if (silhouette == R_SIL_TOP) {
                 for (x = r1; x <= r2; ++x) {
                     if (cliptop[x] == R_SPRITE_CLIP_UNSET) {
-                        cliptop[x] = clip_block_value(state->storage.clipBlocks,
+                        cliptop[x] = clip_value(state->storage.clipPool,
                                                       drawseg->sprTopClip,
                                                       drawseg, x);
                     }
@@ -624,12 +631,12 @@ static void draw_sprite(r_view_state_t* state, r_draw_surface_t* surface,
             } else if (silhouette == R_SIL_BOTH) {
                 for (x = r1; x <= r2; ++x) {
                     if (clipbot[x] == R_SPRITE_CLIP_UNSET) {
-                        clipbot[x] = clip_block_value(state->storage.clipBlocks,
+                        clipbot[x] = clip_value(state->storage.clipPool,
                                                       drawseg->sprBottomClip,
                                                       drawseg, x);
                     }
                     if (cliptop[x] == R_SPRITE_CLIP_UNSET) {
-                        cliptop[x] = clip_block_value(state->storage.clipBlocks,
+                        cliptop[x] = clip_value(state->storage.clipPool,
                                                       drawseg->sprTopClip,
                                                       drawseg, x);
                     }
@@ -656,9 +663,29 @@ static void draw_sprite(r_view_state_t* state, r_draw_surface_t* surface,
 
 /* --- Validation helpers ---------------------------------------------------- */
 
+/* One clip code must name a run the pool actually holds (or one of the two
+ * shared constants). A valid code is >= 0 and its whole fragment-relative span
+ * is inside clipPoolCapacity: a drawseg's run is x2 - x1 + 1 entries, so a code
+ * near the end with a wide span is as invalid as one past the end. */
+static int saved_clip_ok(const r_view_state_t* state, int16_t code,
+                         const r_drawseg_t* drawseg) {
+    const uint32_t span = (uint32_t)(drawseg->x2 - drawseg->x1 + 1);
+
+    if (code == R_DRAWSEG_CLIP_TOP || code == R_DRAWSEG_CLIP_BOTTOM) {
+        return 1;
+    }
+    if (code < 0) {
+        return 0;
+    }
+    if (state->storage.clipPool == NULL) {
+        return 0;
+    }
+    return (uint32_t)code + span <= (uint32_t)state->storage.clipPoolCapacity;
+}
+
 /* A drawseg's saved columns must be inside the screen and inside the caller's
- * pools before anything is drawn. The wall pass produced them, so a violation
- * is a caller that changed the storage between the two passes. */
+ * pool before anything is drawn. The wall pass produced them, so a violation is
+ * a caller that changed the storage between the two passes. */
 static r_things_error_t validate_drawseg_clips(const r_view_state_t* state,
                                                const r_drawseg_t* drawseg) {
     if (drawseg->x1 < 0 || drawseg->x2 >= R_SCREEN_WIDTH
@@ -666,21 +693,22 @@ static r_things_error_t validate_drawseg_clips(const r_view_state_t* state,
         return R_THINGS_ERR_MASKED_RANGE;
     }
     if (drawseg->sprTopClip != R_DRAWSEG_NO_BLOCK
-        && (drawseg->sprTopClip < 0
-            || drawseg->sprTopClip >= (int16_t)state->storage.clipBlockCapacity)) {
+        && !saved_clip_ok(state, drawseg->sprTopClip, drawseg)) {
         return R_THINGS_ERR_MASKED_RANGE;
     }
     if (drawseg->sprBottomClip != R_DRAWSEG_NO_BLOCK
-        && (drawseg->sprBottomClip < 0
-            || drawseg->sprBottomClip
-                 >= (int16_t)state->storage.clipBlockCapacity)) {
+        && !saved_clip_ok(state, drawseg->sprBottomClip, drawseg)) {
         return R_THINGS_ERR_MASKED_RANGE;
     }
-    if (drawseg->maskedTextureCol != R_DRAWSEG_NO_BLOCK
-        && (drawseg->maskedTextureCol < 0
-            || drawseg->maskedTextureCol
-                 >= (int16_t)state->storage.openingBlockCapacity)) {
-        return R_THINGS_ERR_MASKED_RANGE;
+    /* A masked mid's run is an offset, never one of the shared constants. */
+    if (drawseg->maskedTextureCol != R_DRAWSEG_NO_BLOCK) {
+        const uint32_t span = (uint32_t)(drawseg->x2 - drawseg->x1 + 1);
+
+        if (drawseg->maskedTextureCol < 0 || state->storage.clipPool == NULL
+            || (uint32_t)drawseg->maskedTextureCol + span
+                   > (uint32_t)state->storage.clipPoolCapacity) {
+            return R_THINGS_ERR_MASKED_RANGE;
+        }
     }
     return R_THINGS_OK;
 }

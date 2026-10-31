@@ -340,17 +340,19 @@ static uint8_t g_wallPixels[R_SCREEN_WIDTH * R_SCREEN_HEIGHT];
 static uint8_t g_covered[R_SCREEN_WIDTH];
 static uint8_t g_wallCovered[R_SCREEN_WIDTH];
 
-/* D3.4's three caller-owned pools. The capacities are the measured peak with
- * room to spare: the report states the peak, so shrinking these is a decision
- * with evidence rather than a guess. */
+/* D3.4's caller-owned pools. The capacities are the measured peak with room to
+ * spare: the report states the peak, so shrinking these is a decision with
+ * evidence rather than a guess. D4.2h merged the two block pools into one
+ * entry-addressed pool (upstream's openings[]); the total is unchanged, so the
+ * harness capacity is not the thing under test here. */
 #define HARNESS_VISSPRITES 192
 #define HARNESS_CLIP_BLOCKS 32
 #define HARNESS_OPENING_BLOCKS 8
+#define HARNESS_CLIP_POOL (HARNESS_CLIP_BLOCKS + HARNESS_OPENING_BLOCKS)
 #define HARNESS_SPRITES 256
 
 static r_vissprite_t g_visSprites[HARNESS_VISSPRITES];
-static int16_t g_clipBlocks[HARNESS_CLIP_BLOCKS * R_SCREEN_WIDTH];
-static int16_t g_openingBlocks[HARNESS_OPENING_BLOCKS * R_SCREEN_WIDTH];
+static int16_t g_clipPool[HARNESS_CLIP_POOL * R_SCREEN_WIDTH];
 static r_sprite_t g_sprites[HARNESS_SPRITES];
 
 /* --- Texture residency --------------------------------------------------- */
@@ -1013,10 +1015,8 @@ int main(int argc, char** argv) {
     storage.ceilingClip = g_ceilingClip;
     storage.visSprites = g_visSprites;
     storage.visSpriteCapacity = HARNESS_VISSPRITES;
-    storage.clipBlocks = g_clipBlocks;
-    storage.clipBlockCapacity = HARNESS_CLIP_BLOCKS;
-    storage.openingBlocks = g_openingBlocks;
-    storage.openingBlockCapacity = HARNESS_OPENING_BLOCKS;
+    storage.clipPool = g_clipPool;
+    storage.clipPoolCapacity = (uint16_t)(HARNESS_CLIP_POOL * R_SCREEN_WIDTH);
     if (r_bsp_init(&view, &map, &storage) != R_BSP_OK) {
         fprintf(stderr, "rsegs_check: view rejected\n");
         free(bytes);

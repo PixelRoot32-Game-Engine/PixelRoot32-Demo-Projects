@@ -541,6 +541,50 @@ void test_walk_reports_plane_overflow() {
     TEST_ASSERT_EQUAL_UINT16(0u, fixture.view.drawsegCount);
 }
 
+/* D4.2h: a view that outgrows the drawseg array used to lose its later
+ * fragments silently -- `drawsegOverflowed` was a flag nobody failed on, so a
+ * player walking E1M1 saw walls vanish. It is now the walk's own error, on the
+ * same path as R_BSP_ERR_CLIP_OVERFLOW, and the partial list is consistent. */
+void test_walk_that_outgrows_the_drawseg_array_fails_instead_of_dropping() {
+    MapBuilder builder;
+    doom_map_t map;
+
+    const std::uint16_t nearSector = builder.addSector(0, 128, "FLOOR0", "CEIL0", 160);
+    const std::uint16_t farSector = builder.addSector(0, 128, "FLOOR0", "CEIL0", 160);
+
+    // Two disjoint walls, so the walk stores two drawsegs.
+    const std::uint16_t nearV1 = builder.addVertex(100, 50);
+    const std::uint16_t nearV2 = builder.addVertex(100, 0);
+    const std::uint16_t nearSide = builder.addSide(0, 0, "-", "-", "STONE", nearSector);
+    const std::uint16_t nearLine = builder.addLine(nearV1, nearV2, 0, nearSide);
+    builder.addSeg(nearV1, nearV2, 49152u, nearLine, 0);
+    builder.addSubsector(1, 0);
+
+    const std::uint16_t farV1 = builder.addVertex(200, 150);
+    const std::uint16_t farV2 = builder.addVertex(200, 100);
+    const std::uint16_t farSide = builder.addSide(0, 0, "-", "-", "STONE", farSector);
+    const std::uint16_t farLine = builder.addLine(farV1, farV2, 0, farSide);
+    builder.addSeg(farV1, farV2, 49152u, farLine, 0);
+    builder.addSubsector(1, 1);
+
+    builder.addNode(0, 100, 1, 0, {60, -10, 50, 150}, {180, 90, 150, 250},
+                    static_cast<std::uint16_t>(0x8000u | 0u),
+                    static_cast<std::uint16_t>(0x8000u | 1u));
+
+    Fixture fixture;
+    TEST_ASSERT_EQUAL_INT(DOOM_MAP_OK, builder.open(&map));
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.init(&map));
+    // Only one entry: the second visible wall cannot be stored.
+    fixture.view.storage.drawsegCapacity = 1u;
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_ERR_DRAWSEG_OVERFLOW,
+                          fixture.render(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_UINT16(1u, fixture.view.drawsegCount);
+    TEST_ASSERT_EQUAL_UINT8(1u, fixture.view.drawsegOverflowed);
+    // The stored fragment is complete, so the shorter result is still usable.
+    TEST_ASSERT_EQUAL_INT16(81, fixture.drawsegs[0].x1);
+}
+
 void test_map_loader_rejects_a_linedef_vertex() {
     OneWall world(100, 50, -50);
     doom_map_t map;
@@ -591,6 +635,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_plane_split_preserves_the_original_plane);
     RUN_TEST(test_plane_capacity_fails_without_writing);
     RUN_TEST(test_walk_reports_plane_overflow);
+    RUN_TEST(test_walk_that_outgrows_the_drawseg_array_fails_instead_of_dropping);
     RUN_TEST(test_map_loader_rejects_a_linedef_vertex);
     RUN_TEST(test_spawn_view_uses_the_last_player_start);
 

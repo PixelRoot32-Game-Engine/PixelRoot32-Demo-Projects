@@ -88,10 +88,10 @@
  * written past. The projection tables are `const` in flash and cost no DRAM
  * (r_tables.h).
  *
- * The three D3.4 pools (the sprite list, the sprite clip blocks and the masked
- * opening blocks) are *not* in that total: they belong to the two passes that
- * read them, and their capacities are the caller's. They are listed in
- * r_view_storage_t and their measured peak use is in the D3.4 report.
+ * The two D3.4 pools (the sprite list and the unified clip/opening pool) are
+ * *not* in that total: they belong to the passes that read them, and their
+ * capacities are the caller's. They are listed in r_view_storage_t, and the
+ * unified pool's peak is measured by tools/capacity_check.py (D4.2h).
  *
  * THE WALL FRAGMENT, AND WHY IT IS NOT STORED
  *
@@ -193,8 +193,9 @@ extern "C" {
  *   R_BSP_ERR_DEPTH           the BSP recursed past R_BSP_MAX_DEPTH
  *   R_BSP_ERR_CLIP_OVERFLOW   the solid clip list ran out of posts
  *   R_BSP_ERR_VISPLANE_OVERFLOW the plane set ran out of capacity
+ *   R_BSP_ERR_DRAWSEG_OVERFLOW the drawseg array ran out of entries
  *
- * The last two are the "fail cleanly" cases: the walk stops and keeps a
+ * The last three are the "fail cleanly" cases: the walk stops and keeps a
  * complete, shorter result instead of writing past an array.
  */
 typedef enum r_bsp_error {
@@ -214,7 +215,8 @@ typedef enum r_bsp_error {
     R_BSP_ERR_SUBSECTOR_RANGE = 13,
     R_BSP_ERR_DEPTH = 14,
     R_BSP_ERR_CLIP_OVERFLOW = 15,
-    R_BSP_ERR_VISPLANE_OVERFLOW = 16
+    R_BSP_ERR_VISPLANE_OVERFLOW = 16,
+    R_BSP_ERR_DRAWSEG_OVERFLOW = 17
 } r_bsp_error_t;
 
 /* --- View parameters ----------------------------------------------------- */
@@ -237,25 +239,33 @@ typedef struct r_view_params {
 /* --- Drawseg ------------------------------------------------------------- */
 
 /*
- * A drawseg's clip fields are block indices into the caller's clip pool
- * (r_view_storage_t::clipBlocks), or R_DRAWSEG_NO_BLOCK when the drawseg has no
- * such clip. Two blocks are reserved and shared:
+ * A drawseg's clip fields are *entry offsets* into the caller's single clip
+ * pool (r_view_storage_t::clipPool), or one of three negative codes:
  *
+ *   R_DRAWSEG_NO_BLOCK      no such clip for this drawseg.
  *   R_DRAWSEG_CLIP_TOP      every column is R_VIEW_HEIGHT (upstream's
- *                           `sprtopclip = screenheightarray`)
+ *                           `sprtopclip = screenheightarray`).
  *   R_DRAWSEG_CLIP_BOTTOM   every column is -1 (upstream's
- *                           `sprbottomclip = negonearray`)
+ *                           `sprbottomclip = negonearray`).
  *
- * They are the two global arrays upstream shares between every solid
- * drawseg, stored once instead of once per fragment. A block holds
- * R_SCREEN_WIDTH int16_t entries; a fragment's block holds its own columns at
- * offsets 0 .. x2-x1, so a consumer reads `block[x - ds->x1]`. The constant
- * blocks hold the same value in every entry, which makes the offset
- * irrelevant and is exactly what the shared arrays meant.
+ * The two constants are upstream's global `screenheightarray` and
+ * `negonearray`, shared by every solid drawseg. They are *not* pool entries:
+ * a negative code cannot be a valid offset, and a consumer answers it with the
+ * constant instead of reading the pool. That keeps the pool's entries entirely
+ * variable-length wall data, which is upstream's layout: `openings[]` is one
+ * bump-allocated `short` array, and a clipped span occupies `rw_stopx - start`
+ * entries, not a whole screen row.
+ *
+ * A valid offset is >= 0 and less than the pool's capacity. A fragment's span
+ * holds its own columns at offsets 0 .. x2-x1, so a consumer reads
+ * `pool[offset + (x - ds->x1)]` (r_things.c's clip_value()). The fields are
+ * int16_t, so the pool capacity must stay at or below INT16_MAX entries.
  */
 #define R_DRAWSEG_NO_BLOCK ((int16_t)-1)
-#define R_DRAWSEG_CLIP_TOP ((int16_t)0)
-#define R_DRAWSEG_CLIP_BOTTOM ((int16_t)1)
+#define R_DRAWSEG_CLIP_TOP ((int16_t)-2)
+#define R_DRAWSEG_CLIP_BOTTOM ((int16_t)-3)
+/* The two shared constant arrays, counted as block-equivalents on the SPRSTAT
+ * protocol line. They cost no pool entries in this layout. */
 #define R_DRAWSEG_RESERVED_BLOCKS 2
 
 /* The value that says "this masked column has already been drawn". Upstream's
@@ -266,11 +276,12 @@ typedef struct r_view_params {
  * One visible wall fragment, in screen columns [x1, x2] inclusive.
  *
  * Upstream's drawseg_t also carries `maskedtexturecol` and the two sprite
- * clipping arrays. This port records the same three things as *block indices*
- * into the caller's pools (D3.4) instead of as pointers into a global
- * `openings[]`: an index cannot go stale if the storage moves, costs two bytes
- * instead of four on the ESP32, and makes a capacity overflow a reported error
- * instead of a silent write past the array.
+ * clipping arrays. This port records the same three things as *entry offsets*
+ * into the caller's single clip pool (D3.4) instead of as pointers into a
+ * global `openings[]`: an index cannot go stale if the storage moves, costs two
+ * bytes instead of four on the ESP32, and makes a capacity overflow a reported
+ * error instead of a silent write past the array. The layout is upstream's:
+ * one bump-allocated `int16_t` array, each clipped span `x2 - x1 + 1` entries.
  *
  * Field by field, and where it comes from:
  *
@@ -281,16 +292,16 @@ typedef struct r_view_params {
  *   x1, x2           first and last screen column, inclusive. R_StoreWallRange
  *                    stores `start` and `stop` after the clip posts have
  *                    removed the covered pieces.
- *   sprTopClip       R_DrawSegRange's `sprtopclip`: the block of ceilingclip[]
- *                    values this fragment leaves for a sprite behind it, or
- *                    R_DRAWSEG_CLIP_TOP / R_DRAWSEG_NO_BLOCK. Written by
- *                    r_wall_emit(), not by the walk, because the values are the
- *                    clip arrays after the column loop has run.
+ *   sprTopClip       R_DrawSegRange's `sprtopclip`: the pool offset of the
+ *                    ceilingclip[] values this fragment leaves for a sprite
+ *                    behind it, or R_DRAWSEG_CLIP_TOP / R_DRAWSEG_NO_BLOCK.
+ *                    Written by the wall pass, not by the walk, because the
+ *                    values are the clip arrays after the column loop has run.
  *   sprBottomClip    the same for floorclip[].
- *   maskedTextureCol the block of texture columns a two-sided line's masked mid
- *                    texture recorded, or R_DRAWSEG_NO_BLOCK. Each entry is the
- *                    texture column of one screen column, exactly upstream's
- *                    `maskedtexturecol[x]`, and is overwritten with
+ *   maskedTextureCol the pool offset of the texture columns a two-sided line's
+ *                    masked mid texture recorded, or R_DRAWSEG_NO_BLOCK. Each
+ *                    entry is the texture column of one screen column, exactly
+ *                    upstream's `maskedtexturecol[x]`, and is overwritten with
  *                    R_MASKED_COLUMN_USED once drawn.
  *   scale1, scale2  16.16 texture scale at x1 and x2, from
  *                    R_ScaleFromGlobalAngle(); scale2 equals scale1 when the
@@ -463,24 +474,31 @@ typedef struct r_clip_range {
  * A capacity of zero is rejected. clipRangeCapacity must be at least
  * R_MAX_CLIP_SEGS (32): upstream's MAXSEGS, which is the number of interior
  * posts a 320-wide view can need. drawsegs may be smaller than R_MAX_DRAWSEGS;
- * going over sets `drawsegOverflowed` and drops further fragments, exactly as
- * upstream's `if (ds_p == &drawsegs[MAXDRAWSEGS]) return;` does.
+ * going over is R_BSP_ERR_DRAWSEG_OVERFLOW, the walk's own error on the same
+ * path as the clip-post and visplane overflows. It used to set
+ * `drawsegOverflowed` alone, which upstream's `if (ds_p == &drawsegs[...])
+ * return;` also does -- but a *dropped* fragment is not a shorter list the
+ * caller can draw, it is a hole in the picture, and the driver never failed on
+ * the flag. On E1M1 that silently lost geometry from 99 walkable viewpoints.
  *
- * THE THREE D3.4 POOLS
+ * THE TWO D3.4 POOLS
  *
  *   visSprites        one r_vissprite_t (r_things.h) per projected sprite,
  *                     i.e. upstream's `vissprites[MAXVISSPRITES]`. The walk does
  *                     not touch it; only the masked pass does.
- *   clipBlocks        `clipBlockCapacity` blocks of R_SCREEN_WIDTH int16_t,
- *                     the sprite clip arrays (upstream's
- *                     `sprtopclip`/`sprbottomclip` storage). Blocks 0 and 1 are
- *                     reserved for the two constant clip arrays
- *                     (R_DRAWSEG_CLIP_TOP / R_DRAWSEG_CLIP_BOTTOM).
- *   openingBlocks     `openingBlockCapacity` blocks of R_SCREEN_WIDTH int16_t,
- *                     the deferred masked mid texture columns (upstream's
- *                     `openings[]`).
+ *   clipPool          `clipPoolCapacity` int16_t *entries*, the single
+ *                     bump-allocated array of upstream's `openings[]`
+ *                     (p_setup.c: `Z_Malloc(MAXOPENINGS * sizeof(*openings))`,
+ *                     MAXOPENINGS = SCREENWIDTH * 64). A clipped edge occupies
+ *                     the fragment's own `x2 - x1 + 1` entries, not a whole
+ *                     R_SCREEN_WIDTH block, which is what makes a frame with 71
+ *                     clipped edges cost kilobytes instead of 45,440 B. It holds
+ *                     both the sprite clip arrays (`sprtopclip`/
+ *                     `sprbottomclip`) and the deferred masked mid texture
+ *                     columns; offset zero is a valid entry, so the fields use
+ *                     the negative sentinels above rather than 0/1.
  *
- * r_bsp_init() deliberately ignores these three: the walk neither reads nor
+ * r_bsp_init() deliberately ignores these two: the walk neither reads nor
  * writes them, and a walk-only caller (the D3.1 harness) must keep compiling
  * without them. The passes that own them validate the pointers and the
  * capacities before writing a pixel, and report a capacity that is too small
@@ -543,7 +561,7 @@ typedef struct r_raster_probe {
     uint32_t wallSetupCycle;   /* one fragment column: yl/yh, tangent, light */
     uint32_t wallStoreCycle;   /* the r_column_draw() call for that column */
     uint32_t wallOpenCycle;    /* the two r_wall_fragment_open() per drawseg */
-    uint32_t wallPoolCycle;    /* the constant clip blocks and the clear loop */
+    uint32_t wallPoolCycle;    /* the clip/coverage clear loop */
     uint32_t wallGenericCycle; /* the two-sided loop, all of it */
     uint32_t wallEmitCycle;    /* one emit_fragment() call, all of it */
     uint32_t wallPrologueCycle; /* fragment copy, 3 resolves, peg and step */
@@ -602,10 +620,9 @@ typedef struct r_view_storage {
     /* D3.4: the pass-owned pools. See above. */
     struct r_vissprite* visSprites;
     uint16_t visSpriteCapacity;
-    int16_t* clipBlocks;
-    uint16_t clipBlockCapacity;
-    int16_t* openingBlocks;
-    uint16_t openingBlockCapacity;
+    /* The unified clip/opening pool: upstream's openings[] as entries. */
+    int16_t* clipPool;
+    uint16_t clipPoolCapacity;
     /* D3.9: an optional, caller-owned proof cache for the sprite patches the
      * masked pass validates. NULL means the pass proves each distinct patch once
      * per call, which is the behaviour every earlier revision had. See
@@ -633,13 +650,19 @@ typedef struct r_view_state {
     r_bsp_error_t error;
 
     /* Result of the D3.4 clip capture, valid after a successful r_wall_emit():
-     * 1 when every drawseg's clip blocks and masked columns are recorded, 0
+     * 1 when every drawseg's clip spans and masked columns are recorded, 0
      * after a walk (so the masked pass can refuse a frame whose walls were
-     * never emitted). `clipBlocksUsed` and `openingBlocksUsed` are the peak
-     * block counts that pass allocated, reserved blocks included. */
+     * never emitted). `clipBlocksUsed` and `openingBlocksUsed` are the
+     * *block-equivalent* counts the previous per-block layout reported --
+     * reserved constants included -- kept unchanged because SPRSTAT compares
+     * them with the oracle. `clipPoolUsed` and `clipPoolEntries` are the real
+     * currency of the unified pool: the entries a frame consumed and the
+     * entries it needed, both measured in int16_t entries. */
     uint8_t clipCaptured;
     uint16_t clipBlocksUsed;
     uint16_t openingBlocksUsed;
+    uint16_t clipPoolEntries; /* set by the wall preflight: what the frame needs */
+    uint16_t clipPoolUsed;    /* set by the wall draw: what it consumed */
 
     /* INTERNAL: walk state. */
     r_view_params_t params;
@@ -692,8 +715,10 @@ r_bsp_error_t r_bsp_init(r_view_state_t* state, const doom_map_t* map,
  * On success the result is:
  *
  *   drawsegCount        entries, in near-to-far BSP order;
- *   drawsegOverflowed   1 when the drawseg capacity was reached and later
- *                       fragments were dropped (upstream's behaviour);
+ *   drawsegOverflowed   1 when the drawseg capacity was reached. The call then
+ *                       returns R_BSP_ERR_DRAWSEG_OVERFLOW, because a dropped
+ *                       fragment is a hole in the picture, not a shorter list a
+ *                       caller may draw (D4.2h);
  *   planes.count        planes allocated by find()/check(), in creation order.
  *                       A plane with minX > maxX was allocated and never marked;
  *                       R_DrawPlanes() would skip it, and so does the oracle's

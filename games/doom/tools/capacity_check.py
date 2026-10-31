@@ -3,11 +3,11 @@
 
 WHY THIS EXISTS
 
-``src/doomc/FrameDriver.cpp`` sizes its drawseg array, visplane set, clip-block
-pool and opening-block pool from 20 sampled viewpoints (D3.10). A player walking
-the map reaches viewpoints nobody sampled, and a pass that runs out of one of
-those capacities refuses the whole frame -- which used to paint the Phase 0 shell
-over the level, intermittently, exactly as the panel showed.
+``src/doomc/FrameDriver.cpp`` sizes its drawseg array, visplane set and unified
+clip/opening pool from 20 sampled viewpoints (D3.10). A player walking the map
+reaches viewpoints nobody sampled, and a pass that runs out of one of those
+capacities refuses the whole frame -- which used to paint the Phase 0 shell over
+the level, intermittently, exactly as the panel showed.
 
 This script builds ``tools/capacity_check.c`` -- which drives
 ``lib/doom/r_bsp.c``, ``r_segs.c``, ``r_plane.c`` and ``r_things.c`` over a
@@ -31,10 +31,13 @@ SCOPES
 
 CAPACITIES
 
-By default the six capacities are read out of ``FrameDriver.cpp`` itself, so the
+By default the five capacities are read out of ``FrameDriver.cpp`` itself, so the
 table always compares the measurement against what the image actually ships.
-``--capacities D,P,R,B,V,O`` overrides them, which is how a proposed set is
-checked before it is written into the source.
+``--capacities D,P,R,POOL,V`` overrides them, which is how a proposed set is
+checked before it is written into the source. ``POOL`` is the unified
+clip/opening pool in int16_t *entries* (D4.2h); the ``clipblocks`` and
+``openings`` rows are the old block-equivalent counts, printed for comparison
+and not checked against a capacity.
 
 Each scope renders twice: once with pools far above any need (the peak is the
 need, not the capacity) and once with the capacities in effect (which viewpoints
@@ -43,15 +46,15 @@ refuse). A capacity that is too small is reported, never clamped.
 EXIT CODES
 
     0  every walkable viewpoint of every requested level and every script tic
-       rendered: no refusal, no dropped drawseg
-    1  at least one refusal or dropped drawseg
+       rendered: no refusal (a drawseg overflow is a refusal too, D4.2h)
+    1  at least one refusal
     2  the command line, the compiler or the input was unusable
 
 USAGE
 
     python tools/capacity_check.py --wad path/to/DOOM1.WAD
     python tools/capacity_check.py --wad ... --maps E1M1
-    python tools/capacity_check.py --wad ... --capacities 128,64,32,89,256,10
+    python tools/capacity_check.py --wad ... --capacities 128,64,32,3200,256
 
 The WAD is copyrighted shareware data and is never committed. The harnesses are
 compiled into a temporary directory that is removed before the script returns;
@@ -88,16 +91,19 @@ RENDER_SOURCES = (
 MAP_NAME = "E1M1"
 SCRIPT_TICS = 200
 
-# The six capacities in the order --capacities takes them, and the constant each
-# one is read from in FrameDriver.cpp.
+# The five capacities in the order --capacities takes them, and the constant each
+# one is read from in FrameDriver.cpp. `clippool` is the unified clip/opening
+# pool in int16_t entries (D4.2h); `clipblocks`/`openings` are informational
+# block-equivalent counts and have no capacity of their own.
 CAPACITY_SOURCES = (
     ("drawsegs", "kDrawsegCapacity"),
     ("planes", "kPlaneCapacity"),
     ("clipranges", "kClipRangeCapacity"),
-    ("clipblocks", "kClipBlockCapacity"),
+    ("clippool", "kClipPoolCapacity"),
     ("vissprites", "kVisspriteCapacity"),
-    ("openings", "kOpeningBlockCapacity"),
 )
+
+INFORMATIONAL_METRICS = ("clipblocks", "openings")
 
 EXIT_OK = 0
 EXIT_SHORT = 1
@@ -150,7 +156,7 @@ def shipped_capacities(root: Path) -> tuple[int, ...]:
 
 
 def parse_capacities(text: str) -> tuple[int, ...]:
-    """Parses --capacities D,P,R,B,V,O."""
+    """Parses --capacities D,P,R,POOL,V."""
     parts = text.split(",")
     if len(parts) != len(CAPACITY_SOURCES):
         raise argparse.ArgumentTypeError(
@@ -229,8 +235,8 @@ def table_line(name: str, peak: int, where: str, capacity: int) -> str:
 
 
 def report_scope(map_name: str, scope: str, output: str,
-                 capacities: tuple[int, ...]) -> tuple[int, int, list[str]]:
-    """Prints one scope's table and returns (refusals, overflows, problems)."""
+                 capacities: tuple[int, ...]) -> tuple[int, list[str]]:
+    """Prints one scope's table and returns (refusals, problems)."""
     records = harness_records(output)
     problems: list[str] = []
 
@@ -238,7 +244,7 @@ def report_scope(map_name: str, scope: str, output: str,
                  if item.get("scope") == scope), None)
     if caps is None:
         problems.append(f"{map_name} {scope}: the harness printed no CAP line")
-        return 0, 0, problems
+        return 0, problems
 
     print(f"{map_name} {scope}: {caps['viewpoints']} viewpoints")
     print(f"  {'capacity':<12}{'peak':>6}  {'at':<24}{'effective':>10}  verdict")
@@ -248,9 +254,11 @@ def report_scope(map_name: str, scope: str, output: str,
         if peak > capacity:
             problems.append(f"{map_name} {scope}: {name} peak {peak} exceeds "
                             f"{capacity} ({where})")
+    for name in INFORMATIONAL_METRICS:
+        peak, where = peak_of(caps.get(name, "0@-"))
+        print(f"  {name:<12}{peak:>6}  {where:<24}{'-':>10}  (block-equivalent)")
 
     refusals = 0
-    overflows = 0
     for item in records.get("CAP-REFUSE", []):
         if item.get("scope") != scope:
             continue
@@ -259,19 +267,9 @@ def report_scope(map_name: str, scope: str, output: str,
         print(f"  refused: {count:>6} viewpoints at stage={item['stage']} "
               f"code={item['code']}, first={item['first']} "
               f"(map units)")
-    for item in records.get("CAP-OVERFLOW", []):
-        if item.get("scope") != scope:
-            continue
-        count = int(item["drawsegs"])
-        overflows += count
-        print(f"  dropped: {count:>6} viewpoints reached the drawseg array and "
-              f"lost fragments (drawsegOverflowed)")
     if refusals:
         problems.append(f"{map_name} {scope}: {refusals} refused viewpoints")
-    if overflows:
-        problems.append(f"{map_name} {scope}: {overflows} viewpoints dropped "
-                        f"drawsegs")
-    return refusals, overflows, problems
+    return refusals, problems
 
 
 def report_script(map_name: str, output: str) -> tuple[int, list[str]]:
@@ -309,9 +307,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--maps", default="E1M1,E1M2", metavar="LIST",
                         help="comma-separated levels to sweep (default: E1M1,E1M2)")
     parser.add_argument("--capacities", type=parse_capacities, default=None,
-                        metavar="D,P,R,B,V,O",
+                        metavar="D,P,R,POOL,V",
                         help="compare against these capacities instead of the ones "
-                             "FrameDriver.cpp declares")
+                             "FrameDriver.cpp declares; POOL is the unified "
+                             "clip/opening pool in int16_t entries")
     parser.add_argument("--cc", default="gcc", metavar="NAME",
                         help="C compiler to build the harnesses with (default: gcc)")
     arguments = parser.parse_args(argv)
@@ -351,12 +350,11 @@ def main(argv: list[str] | None = None) -> int:
                 output = run([str(render), str(arguments.wad), "--map", map_name,
                               "--scope", scope, "--capacities", capacity_text],
                              f"the {map_name} {scope} sweep")
-                refusals, overflows, found = report_scope(map_name, scope, output,
-                                                          capacities)
+                refusals, found = report_scope(map_name, scope, output, capacities)
                 print()
                 if scope == "walkable":
                     problems.extend(found)
-                    shortfall = shortfall or refusals > 0 or overflows > 0
+                    shortfall = shortfall or refusals > 0
 
         movement = compile_harness(workdir, arguments.cc, "movement_check",
                                    "movement_check.c", MOVEMENT_SOURCES, root)

@@ -693,7 +693,11 @@ static void store_wall_range(r_view_state_t* state, int start, int stop) {
     uint32_t mark;
 
     if (state->drawsegCount >= state->storage.drawsegCapacity) {
+        /* D4.2h: a dropped fragment is missing geometry, not a shorter view.
+         * It fails the walk on the same path as the clip-post overflow; the
+         * old silent drop hid 99 walkable E1M1 viewpoints from every report. */
         state->drawsegOverflowed = 1;
+        fail(state, R_BSP_ERR_DRAWSEG_OVERFLOW);
         return;
     }
 
@@ -1167,6 +1171,8 @@ r_bsp_error_t r_bsp_render(r_view_state_t* state, const r_view_params_t* params)
     state->clipCaptured = 0;
     state->clipBlocksUsed = 0;
     state->openingBlocksUsed = 0;
+    state->clipPoolEntries = 0;
+    state->clipPoolUsed = 0;
     state->params = *params;
     r_plane_clear(&state->storage.planes);
     clear_clip_segs(state);

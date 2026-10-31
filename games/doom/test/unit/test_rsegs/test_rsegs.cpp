@@ -458,8 +458,9 @@ struct Fixture {
     std::array<std::int16_t, kScreenWidth> floorClip{};
     std::array<std::int16_t, kScreenWidth> ceilingClip{};
     std::array<r_vissprite_t, 16> visSprites{};
-    std::array<std::int16_t, 32u * kScreenWidth> clipBlocks{};
-    std::array<std::int16_t, 8u * kScreenWidth> openingBlocks{};
+    // The unified clip/opening pool: 32 whole-screen runs' worth of entries. A
+    // real frame needs the fragment's own span, not 320 per edge (D4.2h).
+    std::array<std::int16_t, 32u * kScreenWidth> clipPool{};
     r_view_state_t view{};
 
     std::vector<std::uint8_t> pixels;
@@ -546,10 +547,8 @@ struct Fixture {
         storage.ceilingClip = ceilingClip.data();
         storage.visSprites = visSprites.data();
         storage.visSpriteCapacity = static_cast<std::uint16_t>(visSprites.size());
-        storage.clipBlocks = clipBlocks.data();
-        storage.clipBlockCapacity = 32u;
-        storage.openingBlocks = openingBlocks.data();
-        storage.openingBlockCapacity = 8u;
+        storage.clipPool = clipPool.data();
+        storage.clipPoolCapacity = static_cast<std::uint16_t>(clipPool.size());
         return r_bsp_init(&view, &map, &storage);
     }
 
@@ -1887,7 +1886,7 @@ void test_a_sprite_in_front_of_a_two_sided_line_is_not_clipped() {
     TEST_ASSERT_NOT_NULL(near);
     TEST_ASSERT_EQUAL_UINT8(R_SIL_BOTTOM, near->silhouette);
     TEST_ASSERT_EQUAL_INT16(R_DRAWSEG_NO_BLOCK, near->sprTopClip);
-    TEST_ASSERT_TRUE(near->sprBottomClip >= R_DRAWSEG_RESERVED_BLOCKS);
+    TEST_ASSERT_TRUE(near->sprBottomClip >= 0);
 
     r_sprite_t sprite = makeSprite(32 * kFracUnit, 0, 33 * kFracUnit, "SPRTA0");
 
@@ -2291,9 +2290,9 @@ void test_a_clip_pool_that_cannot_hold_the_frame_is_reported_before_writing() {
 
     TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
     TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
-    // Only the two reserved constant blocks fit: the two-sided line's copies
-    // cannot, and that is a reported error with the surface untouched.
-    fixture.view.storage.clipBlockCapacity = R_DRAWSEG_RESERVED_BLOCKS;
+    // No pool entries at all: the two-sided line's copies cannot be saved, and
+    // that is a reported error with the surface untouched.
+    fixture.view.storage.clipPoolCapacity = 0u;
     fixture.prefill(0xAAu);
 
     TEST_ASSERT_EQUAL_INT(R_SEGS_ERR_SMALL_CLIP_POOL, fixture.emit());
@@ -2328,6 +2327,69 @@ void test_a_back_face_sprite_and_a_zero_span_sprite_draw_nothing() {
     TEST_ASSERT_EQUAL_UINT16(0u, fixture.stats.drawn);
     TEST_ASSERT_EQUAL_UINT32(0u, fixture.surface.spritePixels);
     TEST_ASSERT_EQUAL_INT(320 * 200, countValue(fixture, kUncovered));
+}
+
+/* D4.2h: the pool is upstream's openings[] -- one run of x2-x1+1 entries per
+ * clipped edge, not one R_SCREEN_WIDTH block. This test measures the demand the
+ * pass itself computes, then proves a pool of exactly that size draws the frame
+ * and one entry less refuses it with the surface untouched. Under the old
+ * per-block layout the same frame cost 2 * R_SCREEN_WIDTH entries. */
+void test_a_clip_pool_holds_span_runs_instead_of_whole_screen_blocks() {
+    Fixture fixture;
+    TestTexture top;
+    TestTexture bottom;
+    TestTexture far;
+
+    top.setSolid(11u, 8, 8);
+    bottom.setSolid(22u, 8, 8);
+    far.setSolid(33u, 8, 8);
+    fixture.textures.add("TOPTX", &top.texture);
+    fixture.textures.add("BOTTXT", &bottom.texture);
+    fixture.textures.add("FARTX", &far.texture);
+
+    MapBuilder& map = fixture.mapBytes;
+    const std::uint16_t front = map.addSector(16, 128, "FLOOR0", "CEIL0", 255);
+    const std::uint16_t back = map.addSector(0, 128, "FLOOR1", "CEIL1", 255);
+    const std::uint16_t nearV1 = map.addVertex(64, 100);
+    const std::uint16_t nearV2 = map.addVertex(64, -100);
+    const std::uint16_t side0 = map.addSide(0, 0, "TOPTX", "BOTTXT", "-", front);
+    const std::uint16_t side1 = map.addSide(0, 0, "-", "-", "-", back);
+    const std::uint16_t nearLine =
+        map.addLine(nearV1, nearV2, DOOM_ML_TWOSIDED, side0, side1);
+    map.addSeg(nearV1, nearV2, 49152u, nearLine, 0);
+    map.addSubsector(1, 0);
+
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.start());
+    TEST_ASSERT_EQUAL_INT(R_BSP_OK, fixture.walk(0, 0, 41 * kFracUnit, 0));
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+
+    const std::uint16_t demand = fixture.view.clipPoolEntries;
+
+    TEST_ASSERT_GREATER_THAN_UINT16(0u, demand);
+    TEST_ASSERT_EQUAL_UINT16(fixture.view.clipPoolUsed, demand);
+    // One or two spans, each narrower than the screen: the old layout would
+    // have rounded this up to 320 or 640 entries.
+    TEST_ASSERT_TRUE(demand < 2u * static_cast<std::uint16_t>(kScreenWidth));
+
+    fixture.prefill(kUncovered);
+    fixture.view.storage.clipPoolCapacity = demand;
+    TEST_ASSERT_EQUAL_INT(R_SEGS_OK, fixture.emit());
+    TEST_ASSERT_EQUAL_UINT16(demand, fixture.view.clipPoolUsed);
+
+    fixture.prefill(0xAAu);
+    fixture.view.storage.clipPoolCapacity = static_cast<std::uint16_t>(demand - 1u);
+    TEST_ASSERT_EQUAL_INT(R_SEGS_ERR_SMALL_CLIP_POOL, fixture.emit());
+    TEST_ASSERT_EQUAL_INT(320 * 200, countValue(fixture, 0xAAu));
+}
+
+/* The three negative codes must stay distinguishable from every valid offset:
+ * offset zero is a real pool entry, which is why the constants are -2/-3 and
+ * not the 0/1 the block layout used. */
+void test_the_clip_codes_cannot_collide_with_a_pool_offset() {
+    TEST_ASSERT_EQUAL_INT16(-1, R_DRAWSEG_NO_BLOCK);
+    TEST_ASSERT_EQUAL_INT16(-2, R_DRAWSEG_CLIP_TOP);
+    TEST_ASSERT_EQUAL_INT16(-3, R_DRAWSEG_CLIP_BOTTOM);
+    TEST_ASSERT_TRUE(R_DRAWSEG_CLIP_BOTTOM < R_DRAWSEG_NO_BLOCK);
 }
 
 void test_the_drawseg_layout_is_unchanged_at_fifty_two_bytes() {
@@ -2380,6 +2442,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_a_vis_sprite_overflow_fails_before_any_write);
     RUN_TEST(test_a_clip_pool_that_cannot_hold_the_frame_is_reported_before_writing);
     RUN_TEST(test_a_back_face_sprite_and_a_zero_span_sprite_draw_nothing);
+    RUN_TEST(test_a_clip_pool_holds_span_runs_instead_of_whole_screen_blocks);
+    RUN_TEST(test_the_clip_codes_cannot_collide_with_a_pool_offset);
     RUN_TEST(test_the_drawseg_layout_is_unchanged_at_fifty_two_bytes);
 
     const int result = UNITY_END();

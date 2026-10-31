@@ -4,10 +4,11 @@
  * WHY THIS EXISTS
  *
  * The shipped capacities in src/doomc/FrameDriver.cpp (kDrawsegCapacity,
- * kPlaneCapacity, kClipBlockCapacity, kVisspriteCapacity, kOpeningBlockCapacity)
+ * kPlaneCapacity, kClipRangeCapacity, kClipPoolCapacity, kVisspriteCapacity)
  * were measured from the 20 viewpoints tools/rsegs_check.c renders. A player
  * walking E1M1 reaches viewpoints nobody sampled, and a viewpoint that needs a
- * 41st visplane or a 16th clip block makes a pass refuse the whole frame.
+ * 41st visplane or one more clip-pool entry makes a pass refuse the whole
+ * frame.
  *
  * This harness answers "how big must each capacity be?" by rendering far more
  * viewpoints than the 20 and recording the peak each capacity consumes:
@@ -29,14 +30,18 @@
  * TWO RUNS PER SCOPE
  *
  *   ample   upstream's own maxima (256 drawsegs, 128 planes, 512 vis sprites,
- *           32 clip blocks, 8 opening blocks), so no pass refuses and the peak
- *           each capacity really needs is observed.
+ *           and upstream's MAXOPENINGS = SCREENWIDTH * 64 entries for the
+ *           unified clip/opening pool), so no pass refuses and the peak each
+ *           capacity really needs is observed.
  *   board   the capacities the caller passes with --capacities, so the harness
  *           reports exactly which viewpoints the shipped build refuses and with
  *           which stage and error code.
  *
  * The two runs are separate because a refusal truncates the walk: measuring the
  * peak with the board's capacities would report the capacity, not the need.
+ * D4.2h made a drawseg overflow the walk's own error (R_BSP_ERR_DRAWSEG_OVERFLOW
+ * = 17), so a view that would have silently dropped geometry now shows up as an
+ * ordinary CAP-REFUSE at stage=walk.
  *
  * Every pass runs in the same order and with the same buffers rsegs_check.c
  * uses: r_bsp_render(), r_wall_emit(), r_plane_draw(), buildSprites(),
@@ -45,13 +50,13 @@
  * OUTPUT (one line per record; the python driver is the reader)
  *
  *   CAP <map> scope=<scope> viewpoints=<n> drawsegs=<peak>@<label>(<x>,<y>)
- *       planes=<peak>@... clipranges=<peak>@... clipblocks=<peak>@...
- *       vissprites=<peak>@... openings=<peak>@...
+ *       planes=<peak>@... clipranges=<peak>@... clippool=<peak>@...
+ *       vissprites=<peak>@... clipblocks=<peak>@... openings=<peak>@...
+ *       (clippool is the unified pool in int16_t *entries* -- the number the
+ *        capacity must hold; clipblocks/openings are the old block-equivalent
+ *        counts, printed for comparison with the pre-D4.2h reports)
  *   CAP-REFUSE <map> scope=<scope> stage=<walk|walls|planes|sprites|masked>
  *       code=<n> viewpoints=<n> first=<label>(<x>,<y>) firsttic=<n|->
- *   CAP-OVERFLOW <map> scope=<scope> drawsegs=<n>
- *       (the board drawsegs capacity was reached and fragments were dropped,
- *        which r_bsp_render() reports as a flag rather than an error)
  *   CAP-SCRIPT <map> tics=<n> refusals=<n>
  *
  * <label> is ssN/aK for a subsector midpoint, secN/aK for a sector centre and
@@ -90,13 +95,13 @@
 
 /* The ample run uses pools far above any need so no capacity refuses and the
  * peak is the need, not the capacity: MAXDRAWSEGS 256, upstream's 128-plane
- * harness pool, MAXVISSPRITES 512, and 256 blocks for each of the two pools.
- * Saturation matters: a pool that fills reports its own size as the peak. */
+ * harness pool, MAXVISSPRITES 512, and upstream's MAXOPENINGS (SCREENWIDTH * 64)
+ * entries for the unified clip/opening pool. Saturation matters: a pool that
+ * fills reports its own size as the peak. */
 #define AMPLE_DRAWSEGS R_MAX_DRAWSEGS
 #define AMPLE_PLANES 128
 #define AMPLE_VISSPRITES 512
-#define AMPLE_CLIP_BLOCKS 256
-#define AMPLE_OPENING_BLOCKS 256
+#define AMPLE_CLIP_POOL (R_SCREEN_WIDTH * 64)
 #define HARNESS_SPRITES 512
 
 #define HARNESS_TEXTURES 128
@@ -109,8 +114,7 @@ static r_visplane_t g_planes[AMPLE_PLANES];
 static r_clip_range_t g_clips[R_MAX_CLIP_SEGS];
 static int16_t g_floorClip[R_SCREEN_WIDTH];
 static int16_t g_ceilingClip[R_SCREEN_WIDTH];
-static int16_t g_clipBlocks[AMPLE_CLIP_BLOCKS * R_SCREEN_WIDTH];
-static int16_t g_openingBlocks[AMPLE_OPENING_BLOCKS * R_SCREEN_WIDTH];
+static int16_t g_clipPool[AMPLE_CLIP_POOL];
 static r_vissprite_t g_visSprites[AMPLE_VISSPRITES];
 static r_sprite_t g_sprites[HARNESS_SPRITES];
 static uint8_t g_pixels[R_SCREEN_WIDTH * R_SCREEN_HEIGHT];
@@ -443,24 +447,26 @@ typedef struct capacity_set {
     uint16_t drawsegs;
     uint16_t planes;
     uint16_t clipRanges;
-    uint16_t clipBlocks;
+    uint16_t clipPool; /* int16_t entries, the unified pool */
     uint16_t visSprites;
-    uint16_t openingBlocks;
 } capacity_set_t;
 
-/* The six capacities a frame consumes, in the order the CAP line prints them. */
+/* The five capacities a frame consumes, in the order the CAP line prints them,
+ * then the two block-equivalent counts kept for comparison with older reports. */
 enum {
     METRIC_DRAWSEGS = 0,
     METRIC_PLANES,
     METRIC_CLIP_RANGES,
-    METRIC_CLIP_BLOCKS,
+    METRIC_CLIP_POOL,
     METRIC_VISSPRITES,
+    METRIC_CLIP_BLOCKS,
     METRIC_OPENINGS,
     METRIC_COUNT
 };
 
 static const char* const kMetricNames[METRIC_COUNT] = {
-    "drawsegs", "planes", "clipranges", "clipblocks", "vissprites", "openings"
+    "drawsegs", "planes", "clipranges", "clippool", "vissprites", "clipblocks",
+    "openings"
 };
 
 typedef struct metric_peak {
@@ -481,7 +487,6 @@ typedef struct sweep_result {
     metric_peak_t peaks[METRIC_COUNT];
     refusal_entry_t refusals[MAX_REFUSALS];
     int refusalCount;
-    int drawsegOverflow;
 } sweep_result_t;
 
 /**
@@ -524,9 +529,8 @@ static int renderViewpoint(r_view_state_t* driver, r_draw_surface_t* surface,
     driver->storage.drawsegCapacity = capacities->drawsegs;
     driver->storage.planes.capacity = capacities->planes;
     driver->storage.clipRangeCapacity = capacities->clipRanges;
-    driver->storage.clipBlockCapacity = capacities->clipBlocks;
+    driver->storage.clipPoolCapacity = capacities->clipPool;
     driver->storage.visSpriteCapacity = capacities->visSprites;
-    driver->storage.openingBlockCapacity = capacities->openingBlocks;
 
     memset(g_pixels, 0xFF, sizeof g_pixels);
     memset(g_covered, 0, sizeof g_covered);
@@ -555,6 +559,7 @@ static int renderViewpoint(r_view_state_t* driver, r_draw_surface_t* surface,
         *code = (int)walls;
         return 0;
     }
+    out[METRIC_CLIP_POOL] = driver->clipPoolUsed;
     out[METRIC_CLIP_BLOCKS] = driver->clipBlocksUsed;
     out[METRIC_OPENINGS] = driver->openingBlocksUsed;
 
@@ -846,12 +851,8 @@ static void runSweep(r_view_state_t* driver, r_draw_surface_t* surface,
         accepted = renderViewpoint(driver, surface, textures, light, spriteSource,
                                    &list[indices[position]], capacities, used, &stage,
                                    &code);
-        /* The walk's overflow flag belongs to this viewpoint whether or not a
-         * later pass also refused it: a caller that reads only the success path
-         * would hide dropped geometry behind a clip-pool refusal. */
-        if (driver->drawsegOverflowed != 0u) {
-            ++result->drawsegOverflow;
-        }
+        /* A drawseg overflow is a walk error now (R_BSP_ERR_DRAWSEG_OVERFLOW),
+         * so it arrives as an ordinary refusal and needs no second counter. */
         if (accepted) {
             for (metric = 0; metric < METRIC_COUNT; ++metric) {
                 notePeak(result->peaks, metric, used[metric], indices[position]);
@@ -898,10 +899,6 @@ static void printRefusals(const char* map, const char* scope, const viewpoint_t*
                map, scope, entry->stage, entry->code, entry->count, vp->label,
                (long)(vp->x >> FRACBITS), (long)(vp->y >> FRACBITS), tic);
     }
-    if (result->drawsegOverflow > 0) {
-        printf("CAP-OVERFLOW %s scope=%s drawsegs=%d\n", map, scope,
-               result->drawsegOverflow);
-    }
 }
 
 /* --- main ---------------------------------------------------------------- */
@@ -946,20 +943,18 @@ static int parseCapacities(const char* text, capacity_set_t* out) {
     unsigned drawsegs;
     unsigned planes;
     unsigned clipRanges;
-    unsigned clipBlocks;
+    unsigned clipPool;
     unsigned visSprites;
-    unsigned openings;
 
-    if (sscanf(text, "%u,%u,%u,%u,%u,%u", &drawsegs, &planes, &clipRanges,
-               &clipBlocks, &visSprites, &openings) != 6) {
+    if (sscanf(text, "%u,%u,%u,%u,%u", &drawsegs, &planes, &clipRanges,
+               &clipPool, &visSprites) != 5) {
         return 0;
     }
     out->drawsegs = (uint16_t)drawsegs;
     out->planes = (uint16_t)planes;
     out->clipRanges = (uint16_t)clipRanges;
-    out->clipBlocks = (uint16_t)clipBlocks;
+    out->clipPool = (uint16_t)clipPool;
     out->visSprites = (uint16_t)visSprites;
-    out->openingBlocks = (uint16_t)openings;
     return 1;
 }
 
@@ -1015,18 +1010,17 @@ int main(int argc, char** argv) {
     if (wadPath == NULL) {
         fprintf(stderr, "usage: capacity_check <path-to-WAD> [--map NAME] "
                         "[--scope whole|walkable] [--script FILE] "
-                        "[--capacities D,P,R,B,V,O]\n");
+                        "[--capacities D,P,R,POOL,V]\n");
         return 2;
     }
     ample.drawsegs = AMPLE_DRAWSEGS;
     ample.planes = AMPLE_PLANES;
     ample.clipRanges = R_MAX_CLIP_SEGS;
-    ample.clipBlocks = AMPLE_CLIP_BLOCKS;
+    ample.clipPool = AMPLE_CLIP_POOL;
     ample.visSprites = AMPLE_VISSPRITES;
-    ample.openingBlocks = AMPLE_OPENING_BLOCKS;
     board = ample;
     if (capacitiesText != NULL && !parseCapacities(capacitiesText, &board)) {
-        fprintf(stderr, "capacity_check: --capacities wants six comma-separated "
+        fprintf(stderr, "capacity_check: --capacities wants five comma-separated "
                         "unsigned values\n");
         return 2;
     }
@@ -1097,10 +1091,8 @@ int main(int argc, char** argv) {
     storage.ceilingClip = g_ceilingClip;
     storage.visSprites = g_visSprites;
     storage.visSpriteCapacity = AMPLE_VISSPRITES;
-    storage.clipBlocks = g_clipBlocks;
-    storage.clipBlockCapacity = AMPLE_CLIP_BLOCKS;
-    storage.openingBlocks = g_openingBlocks;
-    storage.openingBlockCapacity = AMPLE_OPENING_BLOCKS;
+    storage.clipPool = g_clipPool;
+    storage.clipPoolCapacity = AMPLE_CLIP_POOL;
     if (r_bsp_init(&view, &map, &storage) != R_BSP_OK) {
         fprintf(stderr, "capacity_check: view rejected\n");
         free(bytes);

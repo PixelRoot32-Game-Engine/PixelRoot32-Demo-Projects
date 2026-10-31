@@ -27,9 +27,10 @@
  * Every large buffer below is a reported size, not an estimate: `FRAMEPROF,mem`
  * prints each one from `sizeof` or from the bootstrap that allocated it.
  *
- *   walk state      53,248 B   drawsegs 3,328, visplanes 26,560, clip posts 256,
- *                              floorclip/ceilingclip 1,280, clip blocks 9,600,
- *                              opening blocks 640, vis sprites 11,264, covered 320
+ *   walk state      68,672 B   drawsegs 6,656, visplanes 42,496, clip posts 256,
+ *                              floorclip/ceilingclip 1,280, the unified clip pool
+ *                              6,400, vis sprites 11,264, covered 320 (D4.2h's
+ *                              walkable capacities; the sampled set is smaller)
  *   baked records   12,312 B   the 187-entry manifest adapter, static .bss
  *   level                0 B   in the flash build the map is a pointer into the
  *                              mapping; 47,888 B in the RAM build
@@ -503,73 +504,76 @@ namespace {
  * a later change is a decision with evidence.
  */
 
-/// DOOM's MAXDRAWSEGS is 256 (13,312 B). 256 does not fit: with the map working
-/// set, the two wall slots, the decode scratch and the walk state resident, the
-/// array is one of the last elastic costs and the driver is tens of kilobytes
-/// over the board's free DRAM at 256. D3.10 sized it from the whole episode
-/// instead of E1M1: E1M2 draws 52 drawsegs in its densest sampled view (E1M1's
-/// peak is 39), so the E1M1-only 40 would have refused a level this task
-/// requires. 64 costs 3,328 B and covers the measured peak with headroom; the
-/// walk reports an overflow instead of writing past the array, and the probe
-/// prints that flag per frame.
-///
-/// D4.2g's sweep (tools/capacity_check.py: every subsector midpoint and every
-/// sector centre of the level at 8 angles) says 64 is still short. E1M1 needs 99
-/// drawsegs at ss202/a4 (2,752,-2,980); E1M2 needs 98 at ss168/a3. With 64, 99
-/// walkable E1M1 viewpoints (45 in E1M2) reach the array and r_bsp_render()
-/// *drops* their later fragments -- `drawsegOverflowed`, not an error, so nothing
-/// was ever printed about it. 99 with the sweep's +25% margin is 128, which costs
-/// 3,328 B more; see the budget note below for why it is not raised here.
-constexpr int kDrawsegCapacity = 64;
+/*
+ * WHICH CAPACITY SET THIS BUILD COMPILES (D4.2h)
+ *
+ * The shipped set is sized for every *walkable* viewpoint of E1M1 and E1M2, the
+ * sweep tools/capacity_check.py takes over both levels. `_frameram` cannot carry
+ * it: that environment is D3.7's A/B control, has 256 B of `dram0_0_seg`
+ * headroom, and only ever renders the 20 sampled views the frame probe defines.
+ * So it selects the sampled set by operation, not by board: a build that renders
+ * the sampled views compiles the capacities those 20 views need, and every
+ * other build compiles the walkable set. The #if is written "not defined" first
+ * so capacity_check.py's reader (which takes the first declaration of each
+ * constant) always measures the shipped set.
+ */
+#if !defined(PIXELROOT32_DOOM_SAMPLED_VIEW_CAPACITIES)
+/// DOOM's MAXDRAWSEGS is 256 (13,312 B). D3.10 sized 64 from E1M2's 52-drawseg
+/// sampled view; D4.2g's sweep showed that is short for a player: E1M1 needs 99
+/// at ss202/a4 (2,752,-2,980) and E1M2 98 at ss168/a3. With 64 those views lost
+/// their later fragments -- `drawsegOverflowed` was a flag nobody failed on.
+/// D4.2h makes the overflow a walk error, so the number must be right: 99 with
+/// the +25% margin is 124, rounded to 128. 52 B each is 6,656 B, 3,328 B more
+/// than 64.
+constexpr int kDrawsegCapacity = 128;
+#else
+constexpr int kDrawsegCapacity = 64;  /* the 20 sampled views need 39 */
+#endif
 
 /// A plane is allocated by the walk and may stay unmarked for the whole view, so
-/// the allocation peak is above the drawn peak. D3.10's whole-episode rule:
-/// E1M2 draws 32 planes in its densest sampled view (E1M1's peak is 20 and its
-/// allocation peak 22), so the E1M1-only 22 reported a
-/// R_BSP_ERR_VISPLANE_OVERFLOW on E1M2 frame 01. 40 costs 26,560 B (664 B each)
-/// and covers the measured peak; an overflow is a reported walk error, not a
-/// write past the array.
-///
-/// D4.2g's sweep measures 51 allocated planes at E1M1 ss202/a4 (E1M2: 47 at
-/// ss220/a7), so 40 refuses 19 walkable E1M1 viewpoints and 6 E1M2 viewpoints
-/// with R_BSP_ERR_VISPLANE_OVERFLOW (16). 51 with the +25% margin is 64, which
-/// costs 15,936 B more; see the budget note below.
-constexpr int kPlaneCapacity = 40;
+/// the allocation peak is above the drawn peak. D3.10's whole-episode rule chose
+/// 40 from E1M2's sampled peak; D4.2g's sweep measures 51 allocated planes at
+/// E1M1 ss202/a4 (E1M2: 47 at ss220/a7), so 40 refused 19 walkable E1M1
+/// viewpoints with R_BSP_ERR_VISPLANE_OVERFLOW. 51 with the +25% margin is 64,
+/// 664 B each, 42,496 B -- 15,936 B more than 40.
+#if !defined(PIXELROOT32_DOOM_SAMPLED_VIEW_CAPACITIES)
+constexpr int kPlaneCapacity = 64;
+#else
+constexpr int kPlaneCapacity = 40;  /* the 20 sampled views allocate 22 */
+#endif
 
 /// R_MAX_CLIP_SEGS, the minimum r_bsp_init() accepts (upstream's MAXSEGS).
 /// D4.2g's sweep never needs more than 2 interior posts on any walkable
 /// viewpoint of either level, so this minimum stays.
 constexpr int kClipRangeCapacity = 32;
 
-/// The D3.4 clip-block pool: 15 blocks of 320 shorts, reserved two included, was
-/// the peak of the 20 sampled views, so 15 was the smallest correct capacity for
-/// those views. One short and the wall pass refuses the frame with
-/// R_SEGS_ERR_SMALL_CLIP_POOL instead of writing past the pool. It is still
-/// needed without the masked pass: the wall pass snapshots every drawseg's clip
-/// arrays before it knows what will be drawn.
-///
-/// D4.2g's sweep measures 71 blocks (reserved included) at E1M1 ss71/a0
-/// (-320,-3,232) and 60 at E1M2 ss168/a3, so 15 refuses 512 walkable E1M1
-/// viewpoints and 631 E1M2 viewpoints -- 20% of the walkable map. Those are the
-/// intermittent shells the panel showed. 71 blocks is 45,440 B and 89 (+25%) is
-/// 56,960 B, more than any free static block this image has; see the budget note
-/// below.
-constexpr int kClipBlockCapacity = 15;
+/// The D3.4 unified clip/opening pool (D4.2h), in int16_t *entries*: upstream's
+/// `openings[]`, where a clipped edge costs its own x2-x1+1 span instead of a
+/// whole 320-entry block. The old split layout cost 15 x 640 B + 1 x 640 B =
+/// 10,240 B; this pool's measured walkable peak is 2,459 entries for E1M1
+/// (ss95/a0, 128,-3,232) and 2,060 for E1M2 (ss35/a5), from
+/// tools/capacity_check.py's `clippool` row. +25% is 3,073.75, rounded up to a
+/// multiple of 128 is 3,200 entries = 6,400 B, so the pool frees 3,840 B of the
+/// old layout's 10,240 B. It still holds both the sprite clip arrays and the
+/// masked mid columns; the two "everything" answers are negative codes and cost
+/// nothing.
+#if !defined(PIXELROOT32_DOOM_SAMPLED_VIEW_CAPACITIES)
+constexpr int kClipPoolCapacity = 3200;
+#else
+/// The 20 sampled views need `clip_blocks_peak=15`, which includes the two
+/// reserved constants; the 13 real edges are at most 13 x 320 = 4,160 entries.
+/// 5,120 is the old two-array byte count (10,240 B), so the control's link
+/// budget does not move and the sampled frames keep drawing.
+constexpr int kClipPoolCapacity = 5120;
+#endif
 
-/// The masked pass's pools. D3.10 sized them for the whole episode: E1M2 submits
-/// 243 sprites and its densest view projects more than the E1M1-only 100 the
-/// capacity used to hold (frame 02 reports R_THINGS_ERR_VISSPRITE_OVERFLOW at
-/// 100), so 256 is the episode's peak with headroom, 44 B each. D4.2g's sweep
+/// The masked pass's sprite pool. D3.10 sized it for the whole episode: E1M2
+/// submits 243 sprites and its densest view projects more than the E1M1-only 100
+/// the capacity used to hold (frame 02 reports R_THINGS_ERR_VISSPRITE_OVERFLOW
+/// at 100), so 256 is the episode's peak with headroom, 44 B each. D4.2g's sweep
 /// measures 220 projected sprites at E1M2 ss151/a4 (E1M1: 125 at ss76/a0), so
-/// 256 still covers the peak.
-///
-/// D3.4's opening-block claim ("no E1M1 view records a masked mid, so one block
-/// is enough") was true only for the 20 sampled views: D4.2g measures 8 opening
-/// blocks at E1M1 ss197/a4 (3,632,-3,904) and no view of E1M2 needs one. With 1,
-/// 83 walkable E1M1 viewpoints refuse with R_SEGS_ERR_SMALL_OPENING_POOL (14).
-/// 8 with the +25% margin is 10, which costs 5,760 B more; see the budget note.
+/// 256 still covers the peak and needs no walkable-set change.
 constexpr int kVisspriteCapacity = 256;
-constexpr int kOpeningBlockCapacity = 1;
 
 /// One THINGS record per sprite the level can place. E1M1's fixture resolves
 /// 129 and the episode's busiest map (E1M6) 389, so 512 is the episode's peak
@@ -676,43 +680,41 @@ constexpr int kFirstSkippedMapLump = DOOM_MAP_REJECT;
  * build stores it in the container.
  */
 
-/// The static half: the walk state, the clip-block pool and the coverage record.
+/// The static half: the walk state, the unified clip/opening pool and the
+/// coverage record.
 ///
-/// THE D4.2g CAPACITY MEASUREMENT, AND WHY THE PEAKS ARE NOT RAISED HERE
+/// THE D4.2h CAPACITY MEASUREMENT
 ///
 /// tools/capacity_check.py renders every subsector midpoint and every sector
 /// centre of E1M1 and E1M2 at 8 angles (2,520 walkable E1M1 viewpoints; 4,768
 /// E1M2) through the same four passes this driver runs, then reports the peak
-/// each capacity consumes and every viewpoint a pass refused. Against this
-/// struct's capacities:
+/// each capacity consumes and every viewpoint a pass refused. The walkable
+/// peaks, the +25% margin this project rounds from, and what the shipped set
+/// costs:
 ///
-///   capacity      now   walkable peak   +25%   growth    refused viewpoints
-///   drawsegs       64   99 (E1M1)       128    +3,328 B   99 E1M1 / 45 E1M2 drop
-///   planes         40   51 (E1M1)        64   +15,936 B   19 E1M1 / 6 E1M2
-///   clip ranges    32    2                32        0 B   none
-///   clip blocks    15   71 (E1M1)        89   +47,360 B   512 E1M1 / 631 E1M2
-///   vis sprites   256  220 (E1M2)       256        0 B   none
-///   openings        1    8 (E1M1)        10    +5,760 B   83 E1M1
-///   ------------------------------------------------------------------------
-///   growth, no margin                                   +49,444 B
-///   growth, +25% on every short one                     +72,384 B
+///   capacity      peak (E1M1)   +25%   now    growth
+///   drawsegs      99            128    128    +3,328 B
+///   planes        51             64     64   +15,936 B
+///   clip ranges    2             32     32        0 B
+///   clip pool   2,459 entries  3,074  3,200  -3,840 B (10,240 B freed)
+///   vis sprites  125 (E1M2 220)  256    256        0 B
+///   --------------------------------------------------------
+///   growth, shipped set                       +15,424 B
 ///
-/// It does not fit. `dram0_0_seg` (0x3ffbdb5c + 0x1e6a4, end 0x3ffdc200) has
-/// 19,652 B free in env:esp32dev_ILI9341_show and 256 B in
-/// env:esp32dev_ILI9341_frameram, measured from the link map's `_bss_end`
-/// (0x3ffd7540 and 0x3ffdc100). And the pools cannot move to the heap instead:
-/// at frame time `SHOW,census` reports 60,496 B free with a 27,636 B largest
-/// block, while the 71-block clip pool alone is one 45,440 B block. `kStaticLumpBytes`
-/// is the RAM build's only elastic static block and it is 17,408 B, less than
-/// half of the smallest growth.
+/// `dram0_0_seg` (0x3ffbdb5c + 0x1e6a4, end 0x3ffdc200) had 19,596 B free in
+/// env:esp32dev_ILI9341_show (`static_used=104,984` in the old census), so the
+/// walkable set fits: the census now prints `static_used=120,408,seg_free=4172`
+/// and the link map's `_bss_end` (0x3ffdb1b8) leaves 4,168 B. env:esp32dev_ILI9341_frameram
+/// has 256 B and cannot: it is the A/B control, renders only the 20 sampled
+/// views, and selects the sampled capacity set with
+/// PIXELROOT32_DOOM_SAMPLED_VIEW_CAPACITIES (see the capacities block above).
 ///
-/// So the capacities stay at the values the 20-view measurement chose, and D4.2g
-/// makes the refusal honest instead of invisible or a lie: renderOnce() prefills
-/// only after the walk succeeds, and DoomScene::drawSceneFrame() keeps the last
-/// good picture and prints `SHOW,renderfail,stage=...,code=...` where it used to
-/// paint the Phase 0 shell. Fitting the walkable peak needs a lib/doom/ change
-/// (clip blocks sized to a fragment's x2-x1+1, or shared when two drawsegs leave
-/// identical arrays), which this task's edit surface excludes by design.
+/// The unified pool is what makes this fit. The old layout charged a 320-entry
+/// block per clipped edge and per masked mid: 15 blocks + 1 opening block =
+/// 10,240 B for the sampled views, 71 blocks = 45,440 B for E1M1's walkable
+/// peak -- more than the whole free static region. Upstream's openings[] charges
+/// the fragment's own span, and 3,200 entries is 6,400 B for the whole walkable
+/// set. `_show` is the only environment that grows.
 struct DriverState {
     /// The walk's state, all of it caller-owned as r_bsp.h requires.
     alignas(8) r_drawseg_t drawsegs[kDrawsegCapacity];
@@ -720,9 +722,10 @@ struct DriverState {
     alignas(8) r_clip_range_t clipRanges[kClipRangeCapacity];
     alignas(8) int16_t floorClip[R_SCREEN_WIDTH];
     alignas(8) int16_t ceilingClip[R_SCREEN_WIDTH];
-    /// The wall pass's clip-block pool (the D3.4 snapshot).
-    alignas(8) int16_t clipBlocks[kClipBlockCapacity * R_SCREEN_WIDTH];
-    alignas(8) int16_t openingBlocks[kOpeningBlockCapacity * R_SCREEN_WIDTH];
+    /// The wall pass's unified clip/opening pool, in int16_t entries: upstream's
+    /// openings[]. It holds both the per-drawseg sprite clip arrays and the
+    /// deferred masked mid columns; see r_bsp.h.
+    alignas(8) int16_t clipPool[kClipPoolCapacity];
     alignas(8) r_vissprite_t visSprites[kVisspriteCapacity];
     /// The per-column coverage record the frame hash needs: an uncovered column
     /// is 0, a real palette index writes 1, so the pixels alone cannot say
@@ -1772,21 +1775,19 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     const r_bsp_error_t walk = r_bsp_render(&driver->view, &params);
     sample->walkMicros = elapsedMicros(start);
     if (walk != R_BSP_OK) {
-        // The walk has its own vocabulary (clip list, plane capacity, depth); the
-        // error line names the stage and this code, so a level that outgrows a
-        // capacity says which one instead of reporting a bare `stage=walk`.
+        // The walk has its own vocabulary (clip list, plane capacity, depth,
+        // and D4.2h's drawseg capacity); the error line names the stage and this
+        // code, so a level that outgrows a capacity says which one instead of
+        // reporting a bare `stage=walk`.
         //
-        // The surface is NOT prefilled before the walk (D4.2g). A refused walk
-        // writes no pixel -- r_bsp_render() only fills the drawseg and visplane
-        // lists -- so leaving the previous frame in the surface is what lets the
-        // scene keep the last good picture instead of showing a blank or the
-        // Phase 0 shell it never fell back to. The prefill below is what every
-        // pass after the walk expects: a 0xFF background for the columns no wall
-        // and no flat wrote.
+        // The surface is not touched before the walk succeeds (D4.2g), and it is
+        // not prefilled until the wall preflight below passes either (D4.2h): a
+        // refusal writes no pixel, so the previous frame stays in the surface and
+        // the scene keeps the last good picture instead of the white or
+        // half-drawn frame the panel showed.
         gStageCode = static_cast<int>(walk);
         return false;
     }
-    std::memset(pixels, 0xFF, static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
     sample->drawsegs = driver->view.drawsegCount;
     sample->drawsegOverflowed = driver->view.drawsegOverflowed;
 
@@ -1810,10 +1811,30 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     lookupMark = gSample.lookupMicros;
     start = nowMicros();
     driver->stage = "walls";
-    const r_segs_error_t walls =
-        r_wall_emit(&driver->view, &driver->surface, &driver->textures, &driver->light);
+    // The wall pass is preflight then draw (D4.2h). The preflight proves every
+    // texture and counts the clip-pool demand before a pixel exists; this is the
+    // last gate before the prefill, so a refusal here still leaves the previous
+    // frame intact instead of a 0xFF background with nothing drawn over it.
+    r_wall_plan_t wallPlan{};
+    const r_segs_error_t wallGate =
+        r_wall_preflight(&driver->view, &driver->textures, &wallPlan);
+    if (wallGate != R_SEGS_OK) {
+        sample->wallsMicros = elapsedMicros(start);
+        gStageCode = static_cast<int>(wallGate);
+        return false;
+    }
+    // Every capacity and residency gate that runs before the first pixel has
+    // passed. From here the surface is the frame being built: 0xFF is what the
+    // wall and plane passes leave uncovered, which is what makes a hole visible
+    // in the oracle comparison.
+    std::memset(pixels, 0xFF, static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+    const r_segs_error_t walls = r_wall_draw(
+        &driver->view, &driver->surface, &driver->textures, &driver->light, &wallPlan);
     sample->wallsMicros = elapsedMicros(start);
     if (walls != R_SEGS_OK) {
+        // Unreachable by construction: the preflight proved the pool and the
+        // textures, and this returns only for a surface/argument the caller
+        // built wrong. Kept as the pass's own report rather than a crash.
         gStageCode = static_cast<int>(walls);
         return false;
     }
@@ -2490,8 +2511,8 @@ void formatMemoryLine(const char* tag, bool sceneFrame, char* line, std::size_t 
     const std::size_t planes = sizeof(gState.planes);
     const std::size_t clipRanges = sizeof(gState.clipRanges);
     const std::size_t clipArrays = sizeof(gState.floorClip) + sizeof(gState.ceilingClip);
-    const std::size_t clipBlocks = sizeof(gState.clipBlocks);
-    const std::size_t spritePools = sizeof(gState.visSprites) + sizeof(gState.openingBlocks);
+    const std::size_t clipPool = sizeof(gState.clipPool);
+    const std::size_t spritePools = sizeof(gState.visSprites);
     const std::size_t bakedRecords = sizeof(BakedGraphics);
     const std::size_t total = sizeof(DriverState) + gLevelRamUsed + bakedRecords;
 #if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
@@ -2506,8 +2527,8 @@ void formatMemoryLine(const char* tag, bool sceneFrame, char* line, std::size_t 
                   "%s,mem,surface=engine8bpp,index_writes=1,%s,"
                   "arena=%s,lump_blocks=%u,baked_records=%u,baked_entries=%d,baked_bytes=%u,"
                   "state_static=%u,drawsegs=%u,planes=%u,clip_ranges=%u,clip_arrays=%u,"
-                  "clip_blocks=%u,sprite_pools=%u,covered=%u,driver_total=%u,drawseg_cap=%d,"
-                  "plane_cap=%d,clip_block_cap=%d,vissprite_cap=%d,heap_before=%u,"
+                  "clip_pool=%u,sprite_pools=%u,covered=%u,driver_total=%u,drawseg_cap=%d,"
+                  "plane_cap=%d,clip_pool_cap=%d,vissprite_cap=%d,heap_before=%u,"
                   "heap_after_alloc=%u,map=%s,map_in_ram=%d,raw_views=%u,level_ram=%u,"
                   "level_released=%u,cache_static=%u,scratch=35080,cache_entries=1920,"
                   "cache_heap_max=%u,session_static=%u,driver_static=%u,playpal=%u,phases=4\n",
@@ -2520,10 +2541,10 @@ void formatMemoryLine(const char* tag, bool sceneFrame, char* line, std::size_t 
                   static_cast<unsigned>(gBaked.payloadBytes()),
                   static_cast<unsigned>(sizeof(DriverState)), static_cast<unsigned>(drawsegs),
                   static_cast<unsigned>(planes), static_cast<unsigned>(clipRanges),
-                  static_cast<unsigned>(clipArrays), static_cast<unsigned>(clipBlocks),
+                  static_cast<unsigned>(clipArrays), static_cast<unsigned>(clipPool),
                   static_cast<unsigned>(spritePools),
                   static_cast<unsigned>(sizeof(gState.covered)), static_cast<unsigned>(total),
-                  kDrawsegCapacity, kPlaneCapacity, kClipBlockCapacity, kVisspriteCapacity,
+                  kDrawsegCapacity, kPlaneCapacity, kClipPoolCapacity, kVisspriteCapacity,
                   static_cast<unsigned>(heapBefore), static_cast<unsigned>(heapAfterAlloc),
                   kMapPath,
 #if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
@@ -2765,15 +2786,14 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     driver->storage.clipRangeCapacity = kClipRangeCapacity;
     driver->storage.floorClip = gState.floorClip;
     driver->storage.ceilingClip = gState.ceilingClip;
-    driver->storage.clipBlocks = gState.clipBlocks;
-    driver->storage.clipBlockCapacity = kClipBlockCapacity;
-    // All four phases run, so the D3.4 pools are part of the frame: the masked
-    // pass projects into visSprites and records its deferred columns in
-    // openingBlocks.
+    // All four phases run, so the D3.4 pools are part of the frame: the wall
+    // pass snapshots each drawseg's clip spans and records its deferred masked
+    // mid columns in the same unified pool (upstream's openings[]), and the
+    // masked pass projects into visSprites.
+    driver->storage.clipPool = gState.clipPool;
+    driver->storage.clipPoolCapacity = kClipPoolCapacity;
     driver->storage.visSprites = gState.visSprites;
     driver->storage.visSpriteCapacity = kVisspriteCapacity;
-    driver->storage.openingBlocks = gState.openingBlocks;
-    driver->storage.openingBlockCapacity = kOpeningBlockCapacity;
     // D3.9: the baked patches cannot change under an unchanged record address,
     // so their proof belongs to the residency and not to the frame.
     gSpriteProofs.count = 0;

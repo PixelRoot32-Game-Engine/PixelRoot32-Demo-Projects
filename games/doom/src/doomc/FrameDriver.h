@@ -86,16 +86,17 @@
  *
  * WHAT ONE FRAME COSTS IN RAM NOW
  *
- *   walk state      53,248 B   drawsegs 64 x 52, visplanes 40 x 664, clip posts
- *                              32 x 8, floorclip/ceilingclip 2 x 320 x 2, clip
- *                              blocks 15 x 320 x 2, opening blocks 1 x 320 x 2,
- *                              vis sprites 256 x 44, covered 320
+ *   walk state      68,672 B   drawsegs 128 x 52, visplanes 64 x 664, clip posts
+ *                              32 x 8, floorclip/ceilingclip 2 x 320 x 2, the
+ *                              unified clip pool 3,200 entries x 2, vis sprites
+ *                              256 x 44, covered 320
  *   baked records   12,312 B   the 187-entry manifest adapter; the pixels are in
  *                              flash and no buffer copies them
  *   level                0 B   in the flash path: the map is a pointer into the
  *                              mapping. 47,888 B in the RAM path.
  *
- * 65,560 B of driver RAM in the flash path, against 105,128 B in D3.5: the
+ * 80,984 B of driver RAM in the flash path (the census prints it), against
+ * 105,128 B in D3.5: the
  * 53,248 B static arena, up to 24,576 B of heap arenas, 1,920 B of cache entries
  * and the 35,080 B decode scratch are gone. `FRAMEPROF,mem` prints
  * `map=flash` or `map=ram`, every block it still holds, and the constants the
@@ -103,14 +104,14 @@
  *
  * WHAT FITS, AND WHAT WAS NOT DONE TO MAKE IT FIT
  *
- * Every capacity is a measured peak from the whole shareware episode, not from
- * E1M1 alone (D3.10): 64 drawsegs (E1M2 peak 52, E1M1 39), 40 visplanes (E1M2
- * draws 32, E1M1 20; the E1M1-only 22 reported R_BSP_ERR_VISPLANE_OVERFLOW on
- * E1M2 frame 01), 15 clip blocks (peak 15), 256 vis sprites (E1M2 projects more
- * than E1M1's 97; 100 reported R_THINGS_ERR_VISSPRITE_OVERFLOW on E1M2 frame
- * 02), one opening block (peak 0). Allocating exactly what each view needs is
- * what keeps every pixel -- and therefore every hash -- identical to the
- * host's. The surface is not a 64,000 B private buffer: it is the engine's own
+ * Every capacity is a measured peak over every walkable viewpoint of E1M1 and
+ * E1M2 (D4.2h's tools/capacity_check.py), not from the 20 sampled views
+ * (D3.10): 128 drawsegs (walkable peak 99), 64 visplanes (peak 51), 3,200
+ * clip-pool entries (peak 2,459; the old layout's 71 blocks were 45,440 B), 256
+ * vis sprites (E1M2 220). A drawseg overflow and a pool overflow are both
+ * reported walk/pass errors, never silent drops. Allocating exactly what each
+ * view needs is what keeps every pixel -- and therefore every hash -- identical
+ * to the host's. The surface is not a 64,000 B private buffer: it is the engine's own
  * 8bpp framebuffer. REJECT, BLOCKMAP and THINGS are in the container's raw
  * section but only THINGS is read, once per view, to place the sprites.
  *

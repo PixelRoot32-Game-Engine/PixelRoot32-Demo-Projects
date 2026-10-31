@@ -132,18 +132,25 @@
  *   top clip     if the fragment is not single-sided and is not one of the two
  *                "closed" cases, and (the geometric silhouette has SIL_TOP or
  *                the line has a masked mid texture), the current ceilingclip[]
- *                over [x1, x2] is copied into a clip block.
- *                A single-sided line, and a closed two-sided one, answer with
- *                the shared constant block R_DRAWSEG_CLIP_TOP instead (upstream
- *                points at `screenheightarray`).
+ *                over [x1, x2] is copied into a run of `x2 - x1 + 1` entries in
+ *                the caller's single clip pool. A single-sided line, and a
+ *                closed two-sided one, answer with the shared constant
+ *                R_DRAWSEG_CLIP_TOP instead (upstream points at
+ *                `screenheightarray`).
  *   bottom clip  the same for floorclip[] and R_DRAWSEG_CLIP_BOTTOM
  *                (`negonearray`).
- *   masked mid   a two-sided line whose sidedef names a mid texture gets one
- *                opening block; the column loop writes each column's texture
- *                column into it, exactly `maskedtexturecol[rw_x] = texturecolumn`.
- *                A column is consumed (set to R_MASKED_COLUMN_USED) when the
- *                masked mid is drawn, which is how R_DrawMasked() avoids
- *                drawing it twice.
+ *   masked mid   a two-sided line whose sidedef names a mid texture gets a run
+ *                of `x2 - x1 + 1` entries; the column loop writes each column's
+ *                texture column into it, exactly
+ *                `maskedtexturecol[rw_x] = texturecolumn`. A column is consumed
+ *                (set to R_MASKED_COLUMN_USED) when the masked mid is drawn,
+ *                which is how R_DrawMasked() avoids drawing it twice.
+ *
+ * The pool is upstream's `openings[]`: one bump-allocated `short` array, so a
+ * clipped edge costs its own span rather than a 320-entry block. The two
+ * "everything" answers are not entries at all; they are the negative
+ * R_DRAWSEG_CLIP_TOP/BOTTOM codes, which keeps every pool entry variable-length
+ * wall data and keeps the reserved pair from costing DRAM.
  *   silhouette   a masked mid forces both edges: if the geometric silhouette
  *                did not have SIL_TOP it gains it and `tsilheight` becomes
  *                INT32_MIN; the same for SIL_BOTTOM and INT32_MAX. This happens
@@ -151,9 +158,19 @@
  *                its oracle stay byte-identical.
  *
  * The pool demand is computed in the preflight, before the first pixel, from the
- * same predicate the save uses. A pool that cannot hold the frame's blocks is
+ * same predicate the save uses. A pool that cannot hold the frame's entries is
  * therefore a reported error with the surface untouched, never an overrun, and
  * the column loop itself allocates nothing.
+ *
+ * THE PREFLIGHT AND THE DRAW ARE TWO CALLS (D4.2h)
+ *
+ * r_wall_preflight() is the last gate before the frame's first pixel, and the
+ * frame driver needs to run it *before* it prefills the surface: a refusal after
+ * the 0xFF prefill leaves the white or half-drawn frame the panel showed. So the
+ * pass is exposed as preflight + draw, and r_wall_emit() is the two calls in
+ * order for every caller that does not need the seam. The plan the preflight
+ * returns is the proof the draw consumes; it carries the frame's clip-pool
+ * demand and the block-equivalent counters SPRSTAT reports.
  *
  * ERROR CONTRACT
  *
@@ -328,17 +345,21 @@ typedef struct r_tex_source {
  *                                height - 1 (the stored column would not hold
  *                                the texture), or a widthMask that is not
  *                                r_texture_width_mask(width)
- *   R_SEGS_ERR_NULL_CLIP_POOL    storage.clipBlocks is NULL
- *   R_SEGS_ERR_SMALL_CLIP_POOL   clipBlockCapacity cannot hold the reserved
- *                                blocks plus the blocks this frame needs
- *   R_SEGS_ERR_NULL_OPENING_POOL openingBlocks is NULL while a two-sided line
- *                                has a masked mid texture
- *   R_SEGS_ERR_SMALL_OPENING_POOL openingBlockCapacity cannot hold the masked
- *                                columns this frame needs
+ *   R_SEGS_ERR_NULL_CLIP_POOL    storage.clipPool is NULL while the frame
+ *                                needs at least one clipped span
+ *   R_SEGS_ERR_SMALL_CLIP_POOL   clipPoolCapacity cannot hold the entries this
+ *                                frame needs (one run of x2-x1+1 per clipped
+ *                                edge and per masked mid)
+ *   R_SEGS_ERR_NULL_OPENING_POOL retired: the unified pool reports both pool
+ *                                failures through the two codes above. Kept so
+ *                                the printed stage codes do not renumber.
+ *   R_SEGS_ERR_SMALL_OPENING_POOL retired, for the same reason.
+ *   R_SEGS_ERR_NULL_PLAN         r_wall_draw() was given no plan
  *
  * Every code is returned before the first pixel write, so the surface, its
  * coverage record and its tier counters are untouched on any failure. The
- * clip-pool codes also leave every drawseg's clip fields untouched.
+ * preflight returns the two pool codes; the draw returns only a plan or surface
+ * error, because the preflight is what proves the pools.
  */
 typedef enum r_segs_error {
     R_SEGS_OK = 0,
@@ -355,10 +376,72 @@ typedef enum r_segs_error {
     R_SEGS_ERR_NULL_CLIP_POOL = 11,
     R_SEGS_ERR_SMALL_CLIP_POOL = 12,
     R_SEGS_ERR_NULL_OPENING_POOL = 13,
-    R_SEGS_ERR_SMALL_OPENING_POOL = 14
+    R_SEGS_ERR_SMALL_OPENING_POOL = 14,
+    R_SEGS_ERR_NULL_PLAN = 15
 } r_segs_error_t;
 
 /* --- Public API ---------------------------------------------------------- */
+
+/*
+ * What one frame's wall pass will need, produced by r_wall_preflight() and
+ * consumed by r_wall_draw(). It exists so the frame driver can run every gate
+ * that can refuse a frame before it prefills the surface (D4.2h): a refusal
+ * after the prefill leaves the previous frame destroyed.
+ *
+ *   clipPoolEntries  int16_t entries the unified pool must hold: one run of
+ *                    (x2 - x1 + 1) per copied clip edge and per masked mid.
+ *                    Zero when no drawseg needs a pool run.
+ *   clipBlocks       the block-equivalent count the pre-block layout reported,
+ *                    reserved constants included; SPRSTAT compares it with the
+ *                    oracle's own count, so its value is unchanged by the pool.
+ *   openingBlocks    the same for masked mids.
+ */
+typedef struct r_wall_plan {
+    uint32_t clipPoolEntries;
+    uint16_t clipBlocks;
+    uint16_t openingBlocks;
+} r_wall_plan_t;
+
+/**
+ * @brief Proves a frame's wall pass will not refuse, before any pixel.
+ *
+ * Validates the state, the map and the texture source, resolves and validates
+ * every texture the pass will draw (one resolve per distinct name), and counts
+ * the clip-pool entries from the *same* predicate the draw saves with. This is
+ * the call the frame driver makes between the walk and the surface prefill.
+ *
+ * On success @p plan receives the demand and the counters; nothing is written
+ * to the surface, the clip arrays, the pool or any drawseg. The pool's entries
+ * are not touched: a pool pointer is required only when the frame needs one.
+ *
+ * @param state    A state whose r_bsp_render() has run.
+ * @param textures How to resolve a tier's packed texture name.
+ * @param plan     Receives the plan; untouched on failure.
+ * @return R_SEGS_OK, or one of the argument/texture/pool codes above.
+ */
+r_segs_error_t r_wall_preflight(r_view_state_t* state, const r_tex_source_t* textures,
+                                r_wall_plan_t* plan);
+
+/**
+ * @brief Draws the walls a successful r_wall_preflight() proved.
+ *
+ * The draw half of r_wall_emit(): resets the clip arrays and the coverage
+ * record, then walks the stored drawsegs and reproduces R_RenderSegLoop(). It
+ * trusts @p plan for capacity -- that is the seam's contract -- and bumps the
+ * unified pool exactly as the preflight counted. It also completes each
+ * drawseg's clip fields and masked columns for the masked pass.
+ *
+ * @param state    The state the plan was made for.
+ * @param surface  The destination surface.
+ * @param textures How to resolve a tier's packed texture name.
+ * @param light    A COLORMAP initialised by r_light_init().
+ * @param plan     The plan r_wall_preflight() produced for this frame.
+ * @return R_SEGS_OK, or R_SEGS_ERR_NULL_PLAN or a surface/state code, all
+ *         before the first pixel.
+ */
+r_segs_error_t r_wall_draw(r_view_state_t* state, r_draw_surface_t* surface,
+                           const r_tex_source_t* textures, const r_light_t* light,
+                           const r_wall_plan_t* plan);
 
 /**
  * @brief Draws every stored wall fragment into @p surface.
@@ -385,9 +468,14 @@ typedef enum r_segs_error {
  *
  * It also completes the drawsegs for the masked pass: see "THE CLIP CAPTURE AND
  * THE MASKED RECORDING" in this file's header. On success it sets
- * `state->clipCaptured`, and reports `state->clipBlocksUsed` /
- * `state->openingBlocksUsed`. On any error those fields keep their previous
- * values and no drawseg is modified.
+ * `state->clipCaptured`, reports `state->clipBlocksUsed` /
+ * `state->openingBlocksUsed` (the block-equivalent protocol counts) and the
+ * unified pool's real figures, `state->clipPoolEntries` (needed) and
+ * `state->clipPoolUsed` (consumed). On any error those fields keep their
+ * previous values and no drawseg is modified.
+ *
+ * This is r_wall_preflight() followed by r_wall_draw(); a caller that must
+ * prefill the surface between the two gates calls those directly.
  *
  * @param state    A state whose r_bsp_render() has run.
  * @param surface  The destination surface and its coverage counters.

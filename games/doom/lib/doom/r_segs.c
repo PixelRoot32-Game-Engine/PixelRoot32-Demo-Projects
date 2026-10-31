@@ -141,41 +141,46 @@ static r_segs_error_t preflight_texture(const r_tex_source_t* textures, r_name_t
     return R_SEGS_OK;
 }
 
-/* --- Pool demand (D3.4) --------------------------------------------------- */
+/* --- Pool demand (D3.4 / D4.2h) ------------------------------------------ */
 
 /*
- * The blocks this frame needs, computed from the same predicate the save step
- * uses and *before* the first pixel. The merged preflight loop in r_wall_emit()
- * counts them while it opens each fragment for its texture proof, so the pass
- * pays one r_wall_fragment_open() per drawseg instead of two. The two reserved
- * constant blocks are always counted, so a storage that cannot hold them is
- * rejected even for a frame with no drawsegs.
+ * The entries this frame needs, computed from the same predicate the save step
+ * uses and *before* the first pixel. The preflight loop opens each fragment
+ * once, for both its texture proof and its span count, so the pass pays one
+ * r_wall_fragment_open() per drawseg instead of two.
+ *
+ * This is upstream's `openings[]` accounting: p_setup.c allocates one
+ * `MAXOPENINGS` (SCREENWIDTH * 64) short array per level, and R_StoreWallRange
+ * advances `lastopening` by `rw_stopx - start` for each clipped edge it saves.
+ * This port previously charged a whole 320-entry block per edge, which is why
+ * 71 edges needed 45,440 B; the run below is `x2 - x1 + 1` entries, exactly
+ * upstream's span.
  */
 
-/* Copies one fragment's clip array into a pool block, fragment-relative:
- * block[x - x1] is clip[x], which is what every consumer indexes. */
-static void save_clip_block(int16_t* pool, uint16_t block, const int16_t* clip,
-                            int x1, int x2) {
-    int16_t* destination = pool + (size_t)block * (size_t)R_SCREEN_WIDTH;
+/* Copies one fragment's clip array into the pool, fragment-relative:
+ * pool[offset + (x - x1)] is clip[x], which is what every consumer indexes. */
+static void save_clip_run(int16_t* pool, uint16_t offset, const int16_t* clip,
+                          int x1, int x2) {
     int x;
 
     for (x = x1; x <= x2; ++x) {
-        destination[x - x1] = clip[x];
+        pool[(size_t)offset + (size_t)(x - x1)] = clip[x];
     }
 }
 
-/* Fills the two shared constant blocks. Upstream's screenheightarray and
- * negonearray are global and initialised once; here the block content is a view
- * constant, so it is rewritten whenever a frame starts. */
-static void fill_constant_clip_blocks(int16_t* pool) {
-    int x;
-
-    for (x = 0; x < R_SCREEN_WIDTH; ++x) {
-        pool[(size_t)R_DRAWSEG_CLIP_TOP * (size_t)R_SCREEN_WIDTH + (size_t)x] =
-            (int16_t)R_VIEW_HEIGHT;
-        pool[(size_t)R_DRAWSEG_CLIP_BOTTOM * (size_t)R_SCREEN_WIDTH + (size_t)x] =
-            -1;
+/* Bumps the pool cursor by one span and answers its first entry. 0 means the
+ * capacity no longer holds the run: unreachable after a successful
+ * r_wall_preflight(), which counted the same demand with the same predicate, so
+ * it guards a hand-built plan rather than a frame. */
+static int reserve_clip_run(const r_view_state_t* state, uint16_t* next,
+                            uint16_t span, uint16_t* offset) {
+    if ((uint32_t)*next + (uint32_t)span
+        > (uint32_t)state->storage.clipPoolCapacity) {
+        return 0;
     }
+    *offset = *next;
+    *next = (uint16_t)(*next + span);
+    return 1;
 }
 
 /* --- One column of one tier (R_DrawColumn) ------------------------------- */
@@ -551,21 +556,13 @@ static void emit_fragment(const r_view_state_t* state, r_draw_surface_t* surface
 
 /* --- Public API ---------------------------------------------------------- */
 
-r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
+r_segs_error_t r_wall_draw(r_view_state_t* state, r_draw_surface_t* surface,
                            const r_tex_source_t* textures,
-                           const r_light_t* light) {
-    r_segs_error_t result;
+                           const r_light_t* light, const r_wall_plan_t* plan) {
     uint16_t index;
-    uint16_t clipBlocks = 0u;
-    uint16_t openingBlocks = 0u;
-    uint16_t nextClipBlock = R_DRAWSEG_RESERVED_BLOCKS;
-    uint16_t nextOpeningBlock = 0u;
+    uint16_t nextEntry = 0u;
     int16_t* clipPool;
-    int16_t* openingPool;
     int column;
-    r_name_t proven[R_SEGS_PREFLIGHT_MEMO];
-    int provenCount = 0;
-    uint32_t preflightStart = 0u;
     uint32_t clipSaveStart = 0u;
 
     if (state == NULL) {
@@ -573,6 +570,9 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
     }
     if (state->map == NULL || state->map->open == 0) {
         return R_SEGS_ERR_MAP_NOT_OPEN;
+    }
+    if (plan == NULL) {
+        return R_SEGS_ERR_NULL_PLAN;
     }
     if (surface == NULL) {
         return R_SEGS_ERR_NULL_SURFACE;
@@ -592,25 +592,182 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
     if (light == NULL || light->colormaps == NULL) {
         return R_SEGS_ERR_NULL_LIGHT;
     }
-    if (state->storage.clipBlocks == NULL) {
+    /* The preflight proved the pool and every texture; these two checks keep a
+     * caller that hand-built a plan from writing past the array. They are
+     * contract guards, not frame behaviour: r_wall_emit() cannot reach them. */
+    if (plan->clipPoolEntries > 0u && state->storage.clipPool == NULL) {
         return R_SEGS_ERR_NULL_CLIP_POOL;
     }
-    clipPool = state->storage.clipBlocks;
-    openingPool = state->storage.openingBlocks;
+    if (plan->clipPoolEntries > (uint32_t)state->storage.clipPoolCapacity) {
+        return R_SEGS_ERR_SMALL_CLIP_POOL;
+    }
+    clipPool = state->storage.clipPool;
+
+    /* R_ClearPlanes()' opening/closing determination, and this pass's records. */
+    {
+        const uint32_t poolStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
+
+        for (column = 0; column < R_SCREEN_WIDTH; ++column) {
+            state->storage.floorClip[column] = (int16_t)R_VIEW_HEIGHT;
+            state->storage.ceilingClip[column] = -1;
+            if (surface->covered != NULL) {
+                surface->covered[column] = 0u;
+            }
+        }
+        surface->tierPixels[R_DRAW_TIER_MID] = 0u;
+        surface->tierPixels[R_DRAW_TIER_TOP] = 0u;
+        surface->tierPixels[R_DRAW_TIER_BOTTOM] = 0u;
+        /* No constant blocks to fill: R_DRAWSEG_CLIP_TOP/BOTTOM are codes the
+         * consumers answer with R_VIEW_HEIGHT/-1, not pool contents. */
+        if (R_PROBE_HAS(state)) {
+            R_PROBE_OF(state)->wallPoolCycle += R_PROBE_NOW() - poolStart;
+        }
+    }
+
+    for (index = 0; index < state->drawsegCount; ++index) {
+        r_drawseg_t* drawseg = &state->storage.drawsegs[index];
+        r_wall_fragment_t fragment;
+        int16_t* maskedColumns = NULL;
+        int masked;
+        int silhouette;
+        int16_t topBlock = R_DRAWSEG_NO_BLOCK;
+        int16_t bottomBlock = R_DRAWSEG_NO_BLOCK;
+        int16_t maskedBlock = R_DRAWSEG_NO_BLOCK;
+        uint16_t span = (uint16_t)(drawseg->x2 - drawseg->x1 + 1);
+        uint16_t offset = 0u;
+        uint32_t openStart;
+
+        openStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
+        r_wall_fragment_open(state->map, &state->params, drawseg->seg, &fragment);
+        if (R_PROBE_HAS(state)) {
+            R_PROBE_OF(state)->wallOpenCycle += R_PROBE_NOW() - openStart;
+        }
+        masked = fragment.hasBack && r_has_name(fragment.midTexture) ? 1 : 0;
+        if (masked) {
+            if (!reserve_clip_run(state, &nextEntry, span, &offset)) {
+                return R_SEGS_ERR_SMALL_CLIP_POOL;
+            }
+            maskedBlock = (int16_t)offset;
+            maskedColumns = clipPool + (size_t)offset;
+            /* Every entry starts unused, so the masked pass can tell a column
+             * the loop wrote from one outside [x1, x2]. Only the fragment's own
+             * span is reserved; upstream's openings[] is fragment-relative too. */
+            for (column = 0; column < (int)span; ++column) {
+                maskedColumns[column] = R_MASKED_COLUMN_USED;
+            }
+        }
+
+        if (textures->beginFragment != NULL) {
+            textures->beginFragment(textures->context);
+        }
+        {
+            const uint32_t emitStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
+
+            emit_fragment(state, surface, textures, light, drawseg, &fragment,
+                          maskedColumns);
+            if (R_PROBE_HAS(state)) {
+                R_PROBE_OF(state)->wallEmitCycle += R_PROBE_NOW() - emitStart;
+            }
+        }
+
+        /* R_StoreWallRange's tail: the clip arrays as the column loop left
+         * them, then the edges a masked texture forces. */
+        silhouette = fragment.silhouette;
+        clipSaveStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
+        if (fragment.hasBack) {
+            if (fragment.clipTopSolid) {
+                topBlock = R_DRAWSEG_CLIP_TOP;
+            } else if (!masked && (silhouette & R_SIL_TOP) == 0) {
+                topBlock = R_DRAWSEG_NO_BLOCK;
+            } else {
+                if (!reserve_clip_run(state, &nextEntry, span, &offset)) {
+                    return R_SEGS_ERR_SMALL_CLIP_POOL;
+                }
+                topBlock = (int16_t)offset;
+                save_clip_run(clipPool, offset, state->storage.ceilingClip,
+                              drawseg->x1, drawseg->x2);
+            }
+            if (fragment.clipBottomSolid) {
+                bottomBlock = R_DRAWSEG_CLIP_BOTTOM;
+            } else if (!masked && (silhouette & R_SIL_BOTTOM) == 0) {
+                bottomBlock = R_DRAWSEG_NO_BLOCK;
+            } else {
+                if (!reserve_clip_run(state, &nextEntry, span, &offset)) {
+                    return R_SEGS_ERR_SMALL_CLIP_POOL;
+                }
+                bottomBlock = (int16_t)offset;
+                save_clip_run(clipPool, offset, state->storage.floorClip,
+                              drawseg->x1, drawseg->x2);
+            }
+        } else {
+            topBlock = R_DRAWSEG_CLIP_TOP;
+            bottomBlock = R_DRAWSEG_CLIP_BOTTOM;
+        }
+        if (R_PROBE_HAS(state)) {
+            R_PROBE_OF(state)->wallClipSaveCycle += R_PROBE_NOW() - clipSaveStart;
+        }
+
+        if (masked) {
+            if ((silhouette & R_SIL_TOP) == 0) {
+                silhouette |= R_SIL_TOP;
+                drawseg->topSilhouette = INT32_MIN;
+            }
+            if ((silhouette & R_SIL_BOTTOM) == 0) {
+                silhouette |= R_SIL_BOTTOM;
+                drawseg->bottomSilhouette = INT32_MAX;
+            }
+        }
+
+        drawseg->silhouette = (uint8_t)silhouette;
+        drawseg->sprTopClip = topBlock;
+        drawseg->sprBottomClip = bottomBlock;
+        drawseg->maskedTextureCol = maskedBlock;
+    }
+
+    state->clipBlocksUsed = plan->clipBlocks;
+    state->openingBlocksUsed = plan->openingBlocks;
+    state->clipPoolUsed = nextEntry;
+    state->clipCaptured = 1;
+    return R_SEGS_OK;
+}
+
+r_segs_error_t r_wall_preflight(r_view_state_t* state, const r_tex_source_t* textures,
+                                r_wall_plan_t* plan) {
+    uint32_t demand = 0u;
+    uint16_t clipBlocks = R_DRAWSEG_RESERVED_BLOCKS;
+    uint16_t openingBlocks = 0u;
+    uint16_t index;
+    r_name_t proven[R_SEGS_PREFLIGHT_MEMO];
+    int provenCount = 0;
+    uint32_t preflightStart = 0u;
+
+    if (state == NULL) {
+        return R_SEGS_ERR_NULL_STATE;
+    }
+    if (state->map == NULL || state->map->open == 0) {
+        return R_SEGS_ERR_MAP_NOT_OPEN;
+    }
+    if (textures == NULL) {
+        return R_SEGS_ERR_NULL_SOURCE;
+    }
+    if (textures->resolve == NULL) {
+        return R_SEGS_ERR_NULL_RESOLVE;
+    }
+    if (plan == NULL) {
+        return R_SEGS_ERR_NULL_PLAN;
+    }
 
     /* Nothing is written until every texture the pass will draw is resident and
-     * well formed, and every block the clip capture needs exists. One
-     * r_wall_fragment_open() per drawseg serves both proofs: the old pass opened
-     * the same fragment once to resolve its tiers and again to count its clip
-     * blocks, and a fragment open is a chain of mapped-flash record reads. */
-    clipBlocks = R_DRAWSEG_RESERVED_BLOCKS;
-    openingBlocks = 0u;
+     * well formed, and every pool entry the clip capture needs exists. One
+     * r_wall_fragment_open() per drawseg serves both proofs. */
     if (R_PROBE_HAS(state)) {
         preflightStart = R_PROBE_NOW();
     }
     for (index = 0; index < state->drawsegCount; ++index) {
-        r_drawseg_t* drawseg = &state->storage.drawsegs[index];
+        const r_drawseg_t* drawseg = &state->storage.drawsegs[index];
         r_wall_fragment_t fragment;
+        r_segs_error_t result;
+        uint32_t span = (uint32_t)(drawseg->x2 - drawseg->x1 + 1);
         int masked;
         int silhouette;
 
@@ -650,143 +807,43 @@ r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
             /* R_StoreWallRange's tail: a masked texture forces both edges. */
             silhouette |= R_SIL_BOTH;
             openingBlocks = (uint16_t)(openingBlocks + 1u);
+            demand += span;
         }
         if (fragment.hasBack) {
             if (!fragment.clipTopSolid && (silhouette & R_SIL_TOP) != 0) {
                 clipBlocks = (uint16_t)(clipBlocks + 1u);
+                demand += span;
             }
             if (!fragment.clipBottomSolid && (silhouette & R_SIL_BOTTOM) != 0) {
                 clipBlocks = (uint16_t)(clipBlocks + 1u);
+                demand += span;
             }
         }
     }
     if (R_PROBE_HAS(state)) {
         R_PROBE_OF(state)->wallPreflightCycle += R_PROBE_NOW() - preflightStart;
     }
-    if (state->storage.clipBlockCapacity < clipBlocks) {
+    if (demand > 0u && state->storage.clipPool == NULL) {
+        return R_SEGS_ERR_NULL_CLIP_POOL;
+    }
+    if (demand > (uint32_t)state->storage.clipPoolCapacity) {
         return R_SEGS_ERR_SMALL_CLIP_POOL;
     }
-    if (openingBlocks > 0u
-        && (openingPool == NULL
-            || state->storage.openingBlockCapacity < openingBlocks)) {
-        return openingPool == NULL ? R_SEGS_ERR_NULL_OPENING_POOL
-                                   : R_SEGS_ERR_SMALL_OPENING_POOL;
-    }
 
-    /* R_ClearPlanes()' opening/closing determination, and this pass's records. */
-    {
-        const uint32_t poolStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
-
-        for (column = 0; column < R_SCREEN_WIDTH; ++column) {
-            state->storage.floorClip[column] = (int16_t)R_VIEW_HEIGHT;
-            state->storage.ceilingClip[column] = -1;
-            if (surface->covered != NULL) {
-                surface->covered[column] = 0u;
-            }
-        }
-        surface->tierPixels[R_DRAW_TIER_MID] = 0u;
-        surface->tierPixels[R_DRAW_TIER_TOP] = 0u;
-        surface->tierPixels[R_DRAW_TIER_BOTTOM] = 0u;
-        fill_constant_clip_blocks(clipPool);
-        if (R_PROBE_HAS(state)) {
-            R_PROBE_OF(state)->wallPoolCycle += R_PROBE_NOW() - poolStart;
-        }
-    }
-
-    for (index = 0; index < state->drawsegCount; ++index) {
-        r_drawseg_t* drawseg = &state->storage.drawsegs[index];
-        r_wall_fragment_t fragment;
-        int16_t* maskedColumns = NULL;
-        int masked;
-        int silhouette;
-        int16_t topBlock = R_DRAWSEG_NO_BLOCK;
-        int16_t bottomBlock = R_DRAWSEG_NO_BLOCK;
-        int16_t maskedBlock = R_DRAWSEG_NO_BLOCK;
-        uint32_t openStart;
-
-        openStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
-        r_wall_fragment_open(state->map, &state->params, drawseg->seg, &fragment);
-        if (R_PROBE_HAS(state)) {
-            R_PROBE_OF(state)->wallOpenCycle += R_PROBE_NOW() - openStart;
-        }
-        masked = fragment.hasBack && r_has_name(fragment.midTexture) ? 1 : 0;
-        if (masked) {
-            maskedBlock = (int16_t)nextOpeningBlock;
-            maskedColumns = openingPool
-                            + (size_t)nextOpeningBlock * (size_t)R_SCREEN_WIDTH;
-            nextOpeningBlock = (uint16_t)(nextOpeningBlock + 1u);
-            /* Every entry starts unused, so the masked pass can tell a column
-             * the loop wrote from one outside [x1, x2]. */
-            for (column = 0; column < R_SCREEN_WIDTH; ++column) {
-                maskedColumns[column] = R_MASKED_COLUMN_USED;
-            }
-        }
-
-        if (textures->beginFragment != NULL) {
-            textures->beginFragment(textures->context);
-        }
-        {
-            const uint32_t emitStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
-
-            emit_fragment(state, surface, textures, light, drawseg, &fragment,
-                          maskedColumns);
-            if (R_PROBE_HAS(state)) {
-                R_PROBE_OF(state)->wallEmitCycle += R_PROBE_NOW() - emitStart;
-            }
-        }
-
-        /* R_StoreWallRange's tail: the clip arrays as the column loop left
-         * them, then the edges a masked texture forces. */
-        silhouette = fragment.silhouette;
-        clipSaveStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
-        if (fragment.hasBack) {
-            if (fragment.clipTopSolid) {
-                topBlock = R_DRAWSEG_CLIP_TOP;
-            } else if (!masked && (silhouette & R_SIL_TOP) == 0) {
-                topBlock = R_DRAWSEG_NO_BLOCK;
-            } else {
-                topBlock = (int16_t)nextClipBlock;
-                save_clip_block(clipPool, nextClipBlock, state->storage.ceilingClip,
-                                drawseg->x1, drawseg->x2);
-                nextClipBlock = (uint16_t)(nextClipBlock + 1u);
-            }
-            if (fragment.clipBottomSolid) {
-                bottomBlock = R_DRAWSEG_CLIP_BOTTOM;
-            } else if (!masked && (silhouette & R_SIL_BOTTOM) == 0) {
-                bottomBlock = R_DRAWSEG_NO_BLOCK;
-            } else {
-                bottomBlock = (int16_t)nextClipBlock;
-                save_clip_block(clipPool, nextClipBlock, state->storage.floorClip,
-                                drawseg->x1, drawseg->x2);
-                nextClipBlock = (uint16_t)(nextClipBlock + 1u);
-            }
-        } else {
-            topBlock = R_DRAWSEG_CLIP_TOP;
-            bottomBlock = R_DRAWSEG_CLIP_BOTTOM;
-        }
-        if (R_PROBE_HAS(state)) {
-            R_PROBE_OF(state)->wallClipSaveCycle += R_PROBE_NOW() - clipSaveStart;
-        }
-
-        if (masked) {
-            if ((silhouette & R_SIL_TOP) == 0) {
-                silhouette |= R_SIL_TOP;
-                drawseg->topSilhouette = INT32_MIN;
-            }
-            if ((silhouette & R_SIL_BOTTOM) == 0) {
-                silhouette |= R_SIL_BOTTOM;
-                drawseg->bottomSilhouette = INT32_MAX;
-            }
-        }
-
-        drawseg->silhouette = (uint8_t)silhouette;
-        drawseg->sprTopClip = topBlock;
-        drawseg->sprBottomClip = bottomBlock;
-        drawseg->maskedTextureCol = maskedBlock;
-    }
-
-    state->clipBlocksUsed = nextClipBlock;
-    state->openingBlocksUsed = nextOpeningBlock;
-    state->clipCaptured = 1;
+    plan->clipPoolEntries = demand;
+    plan->clipBlocks = clipBlocks;
+    plan->openingBlocks = openingBlocks;
+    state->clipPoolEntries = (uint16_t)demand;
     return R_SEGS_OK;
+}
+
+r_segs_error_t r_wall_emit(r_view_state_t* state, r_draw_surface_t* surface,
+                           const r_tex_source_t* textures, const r_light_t* light) {
+    r_wall_plan_t plan;
+    r_segs_error_t result = r_wall_preflight(state, textures, &plan);
+
+    if (result != R_SEGS_OK) {
+        return result;
+    }
+    return r_wall_draw(state, surface, textures, light, &plan);
 }

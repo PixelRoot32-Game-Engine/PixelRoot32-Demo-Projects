@@ -34,7 +34,8 @@
  *
  * R_RenderPlayerView() calls them in exactly that order. The pass refuses a
  * state whose wall pass has not run (`state->clipCaptured == 0`), because the
- * drawsegs would hold no clip blocks and every sprite would be drawn unclipped.
+ * drawsegs would hold no saved clip runs and every sprite would be drawn
+ * unclipped.
  *
  * PAINTER ORDER INSIDE R_DrawMasked(), WHICH IS NOT "MIDS THEN SPRITES"
  *
@@ -131,9 +132,10 @@
  * THE MASKED MID TEXTURES, R_RenderMaskedSegRange()
  *
  * For a two-sided line whose sidedef names a mid texture, the wall pass stored
- * one texture column per covered screen column in an opening block and set the
- * drawseg's silhouette to both edges (so sprites behind it are clipped to the
- * line's opening, not to the whole screen). This pass draws those columns:
+ * one texture column per covered screen column in a run of the unified clip
+ * pool (upstream's openings[]) and set the drawseg's silhouette to both edges
+ * (so sprites behind it are clipped to the line's opening, not to the whole
+ * screen). This pass draws those columns:
  *
  *   scale      `ds->scale1 + (x1 - ds->x1) * ds->scaleStep`, advanced per column.
  *   light      the *wall* rule: ds->lightNum (sector light, extralight and the
@@ -144,8 +146,9 @@
  *              already carries those four heights view relative (worldBottom /
  *              worldLow, worldTop / worldHigh), so this pass needs no map read
  *              for them.
- *   clip       the drawseg's own saved clip blocks, exactly R_RenderMaskedSegRange's
- *              `mfloorclip = ds->sprbottomclip; mceilingclip = ds->sprtopclip`.
+ *   clip       the drawseg's own saved clip runs (or the shared constants),
+ *              exactly R_RenderMaskedSegRange's `mfloorclip = ds->sprbottomclip;
+ *              mceilingclip = ds->sprtopclip`.
  *   column     the opening entry, masked by the texture's width mask; an entry
  *              equal to R_MASKED_COLUMN_USED is skipped and then marked, so a
  *              column is painted once.
@@ -159,11 +162,11 @@
  *
  * Arguments first, then -- before a single pixel -- every sprite's patch
  * (resolvable and a valid patch), every drawseg's masked mid texture, every
- * drawseg's clip block index, and the vis-sprite capacity. A failure therefore
- * leaves the surface, its coverage record, its sprite mask and its counters
- * byte for byte as the caller left them. The pass never writes past the sprite
- * array, the clip pool or an opening block; a frame that does not fit is
- * R_THINGS_ERR_VISSPRITE_OVERFLOW or the pool code r_wall_emit() already
+ * drawseg's clip/masked-entry offset and span, and the vis-sprite capacity. A
+ * failure therefore leaves the surface, its coverage record, its sprite mask
+ * and its counters byte for byte as the caller left them. The pass never writes
+ * past the sprite array or the clip pool; a frame that does not fit is
+ * R_THINGS_ERR_VISSPRITE_OVERFLOW or the pool code r_wall_preflight() already
  * returned.
  *
  * This is C99 only: <stddef.h> and <stdint.h>, no allocation, no globals, no
@@ -349,9 +352,11 @@ typedef struct r_vissprite {
  * disjoint: backface (`tz < MINZ`), frustum (the off-the-side test, or both
  * projected edges off screen) and zerospan (accepted, but the clamped columns
  * are empty). `clipBlocksUsed` and `openingBlocksUsed` are state->clipBlocksUsed
- * and state->openingBlocksUsed, the wall pass's peak, repeated here so one line
- * carries the whole frame's pool use. `spritePixels` counts the pixels this pass
- * wrote, masked mids included.
+ * and state->openingBlocksUsed, the wall pass's *block-equivalent* counts (the
+ * SPRSTAT protocol numbers, unchanged by the unified pool), repeated here so one
+ * line carries the whole frame's pool use; the pool's real entry figures are
+ * state->clipPoolEntries / state->clipPoolUsed. `spritePixels` counts the
+ * pixels this pass wrote, masked mids included.
  */
 typedef struct r_masked_stats {
     uint16_t submitted;
@@ -390,8 +395,8 @@ typedef struct r_masked_stats {
  *   R_THINGS_ERR_TEXTURE_SHAPE     a masked mid texture is malformed, by the
  *                                  same geometry rules as a wall texture
  *   R_THINGS_ERR_MASKED_RANGE      a drawseg's columns are outside the screen,
- *                                  or one of its clip/opening block indices is
- *                                  outside the caller's pool
+ *                                  or one of its clip/masked-entry offsets and
+ *                                  its span is outside the caller's pool
  *
  * Every one is returned before the first pixel write. The vis-sprite array may
  * have been reordered or trimmed by then, but the surface and its records are
