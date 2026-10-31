@@ -32,6 +32,8 @@
  */
 #include "p_action.h"
 
+#include "p_user.h"
+
 void p_action_init(p_action_stats_t* stats) {
     if (stats == NULL) {
         return;
@@ -112,4 +114,77 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
             }
             return P_ACTION_NOT_IMPLEMENTED;
     }
+}
+
+/*
+ * The weapon-sprite half. Upstream's `actionf_t` union has two signatures and this
+ * is `acp2 (player_t*, pspdef_t*)`.
+ *
+ * The three light-level actions are here rather than in p_pspr.c because they are
+ * the only weapon actions that need nothing from that file: each is one
+ * assignment to `player->extralight`, which is upstream's muzzle-flash light
+ * level. The renderer has no light state yet -- the weapon widget, the status bar
+ * and the lit view are D5.1 -- so the write is state nothing draws; the counter
+ * is what keeps that from being invisible, and a test can read `extralight`
+ * directly.
+ *
+ * Everything else falls through to the same "not implemented" counters the mobj
+ * half keeps. A_Saw (the chainsaw), A_FireShotgun2 (the super shotgun),
+ * A_BFGSpray and A_BFGsound are the four that can reach it, and none of them can
+ * be fired in DOOM 1 shareware; the counters are how that stays a stated gap
+ * instead of a missing case.
+ *
+ * A NULL player is P_ACTION_NULL_MOBJ: it is the same defect (an action with no
+ * subject) and it must not dereference.
+ */
+p_action_outcome_t p_action_run_psprite(p_mobj_context_t* world,
+                                        struct p_player* player,
+                                        p_pspdef_t* psp, action_t action) {
+    p_action_stats_t* stats = world != NULL ? world->actions : NULL;
+
+    (void)psp;
+
+    if (action == ACT_NULL) {
+        return P_ACTION_NONE;
+    }
+    if (player == NULL) {
+        if (stats != NULL) {
+            stats->calls += 1u;
+            stats->nullMobj += 1u;
+        }
+        return P_ACTION_NULL_MOBJ;
+    }
+    if ((uint32_t)action >= NUM_ACTIONS) {
+        if (stats != NULL) {
+            stats->calls += 1u;
+            stats->unknown += 1u;
+        }
+        return P_ACTION_UNKNOWN;
+    }
+
+    switch (action) {
+        case A_Light0:
+            player->extralight = 0;
+            break;
+        case A_Light1:
+            player->extralight = 1;
+            break;
+        case A_Light2:
+            player->extralight = 2;
+            break;
+
+        default:
+            if (stats != NULL) {
+                stats->calls += 1u;
+                stats->notImplemented += 1u;
+                stats->lastNotImplemented = (uint32_t)action;
+            }
+            return P_ACTION_NOT_IMPLEMENTED;
+    }
+
+    if (stats != NULL) {
+        stats->calls += 1u;
+        stats->done += 1u;
+    }
+    return P_ACTION_DONE;
 }

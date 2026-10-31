@@ -206,8 +206,11 @@ typedef struct p_mobj_context {
     /* Optional movement counters (p_map.h): NULL costs nothing and is what the
      * firmware passes. The procedural gate sets it to read checks/blocked/cross. */
     struct p_move_stats* moveStats;
+    /* Optional attack counters (p_map.h), the same arrangement: the harness sets
+     * one to read the intercept count and the sky refusals, and the firmware
+     * leaves it NULL. */
+    struct p_attack_stats* attackStats;
 } p_mobj_context_t;
-
 /*
  * One map object.
  *
@@ -479,18 +482,21 @@ p_thing_outcome_t p_spawn_map_thing(p_mobj_context_t* world,
  * order: the z jitter (`z + ((P_Random()-P_Random()) << 10)`), the spawn, then
  * `tics -= P_Random()&3` clamped to at least one. The state is S_PUFF1.
  *
- * Upstream's last statement, `if (attackrange == MELEERANGE) P_SetMobjState (th,
- * S_PUFF3)`, needs the attack trace's range; `attackrange` is T14's, so a puff
- * always starts at S_PUFF1 here. Once T14 lands, the fist's sparks need that
- * line and nothing else.
+ * Upstream's last statement is `if (attackrange == MELEERANGE) P_SetMobjState (th,
+ * S_PUFF3)`: a melee spark skips the first two frames so the flare appears on the
+ * tic the fist connects instead of a tenth of a second later. `attackrange` is a
+ * file-scope global in linuxdoom-1.10 and there are no globals here, so it is the
+ * caller's argument -- the *shot's* range, not the puff's.
  *
- * @param world The level's context: zone, thinker list, RNG.
- * @param x,y   Where the hit stopped, 16.16.
- * @param z     The hittable surface's height; the jitter is added to it.
+ * @param world       The level's context: zone, thinker list, RNG.
+ * @param x,y         Where the hit stopped, 16.16.
+ * @param z           The hittable surface's height; the jitter is added to it.
+ * @param attackRange The shot's reach. P_MELEERANGE (64 map units) starts the
+ *                    burst at S_PUFF3; anything else at S_PUFF1.
  * @return The puff mobj, or NULL when the world refused the spawn.
  */
-r_mobj_t* p_spawn_puff(p_mobj_context_t* world, fixed_t x, fixed_t y,
-                       fixed_t z);
+r_mobj_t* p_spawn_puff(p_mobj_context_t* world, fixed_t x, fixed_t y, fixed_t z,
+                       fixed_t attackRange);
 
 /**
  * @brief P_SpawnBlood(): the spray a bullet or a crush leaves on a thing.
@@ -508,6 +514,49 @@ r_mobj_t* p_spawn_puff(p_mobj_context_t* world, fixed_t x, fixed_t y,
  */
 r_mobj_t* p_spawn_blood(p_mobj_context_t* world, fixed_t x, fixed_t y, fixed_t z,
                         int damage);
+
+/**
+ * @brief P_SpawnPlayerMissile(): the rocket, plasma bolt or BFG a player fires.
+ *
+ * Upstream's body, in upstream's order:
+ *
+ *   - aim: `an = source->angle; slope = P_AimLineAttack (source, an,
+ *     16*64*FRACUNIT);` and, when nothing is found, the same at
+ *     `an += 1<<26` and then `an -= 2<<26` (a quarter turn either side), so a
+ *     rocket fired at a monster's feet still leaves at the right pitch;
+ *   - nothing found at all means `an = source->angle; slope = 0` -- dead level.
+ *     This port has no pitch (no `lookdir`), so that is its only answer and it is
+ *     vanilla's own fallback;
+ *   - `th = P_SpawnMobj (source->x, source->y, source->z + 8*FRACUNIT, type);`
+ *     then `th->target = source; th->angle = an;` and the three momentum words
+ *     from `th->info->speed` and the slope;
+ *   - `P_CheckMissileSpawn (th);`.
+ *
+ * The `seesound` is counted, not played (S2).
+ *
+ * @param world  The level's context.
+ * @param source The mobj firing; NULL is refused.
+ * @param type   MT_ROCKET, MT_PLASMA or MT_BFG.
+ */
+void p_spawn_player_missile(p_mobj_context_t* world, r_mobj_t* source,
+                            mobjtype_t type);
+
+/**
+ * @brief P_CheckMissileSpawn(): jitter the tics, nudge forward, and explode if
+ *        the spawn point is already solid.
+ *
+ * `th->tics -= P_Random()&3;` clamped to one, then
+ *
+ *   `th->x += th->momx>>1; th->y += th->momy>>1; th->z += th->momz>>1;`
+ *   `if (!P_TryMove (th, th->x, th->y)) P_ExplodeMissile (th);`
+ *
+ * The half-step forward is what gives a missile an angle to be computed from if it
+ * detonates on the tic it was created ("move a little forward so an angle can be
+ * computed if it immediately explodes").
+ *
+ * @return 1 when the missile is still flying, 0 when it left the death state.
+ */
+int p_check_missile_spawn(p_mobj_context_t* world, r_mobj_t* mobj);
 
 /**
  * @brief P_RemoveMobj(): marks the mobj for removal, frees nothing yet.

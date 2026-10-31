@@ -1354,3 +1354,777 @@ void p_use_lines(p_mobj_context_t* world, r_mobj_t* mobj) {
         }
     }
 }
+
+/* --- Shooting and aiming ------------------------------------------------- */
+
+/*
+ * P_PathTraverse, PIT_AddLineIntercepts, PIT_AddThingIntercepts, P_TraverseIntercepts,
+ * PTR_AimTraverse, PTR_ShootTraverse, P_AimLineAttack, P_LineAttack and
+ * P_ShootSpecialLine (p_map.c and p_maputl.c).
+ *
+ * THE INTERCEPT LIST IS THE ONE ARRAY THIS FILE PUTS ON THE STACK
+ *
+ * Upstream collects the ray's crossings into `intercepts[MAXINTERCEPTS]` and then
+ * walks them in ascending fraction. The port does the same, because the
+ * alternative -- re-scanning every line for each successive minimum, which is what
+ * p_use_lines does -- would decode the map 475 times per intercept of a 2,048-unit
+ * bullet, and a chaingun fires two bullets a tic. One array of P_MAXINTERCEPTS
+ * entries is 768 B on the 32-bit target and a shot is never re-entered.
+ *
+ * The candidate set is the same superset p_map.h documents for movement: every
+ * LINEDEF and every mobj is offered, filtered by upstream's own tests
+ * (P_PointOnDivlineSide at the line's endpoints or the trace's, P_InterceptVector
+ * for the fraction, the corner-to-corner cross-section for a thing). Two
+ * differences follow, and both are stated rather than hidden:
+ *
+ *   1. upstream only *offers* a thing when the ray steps through the block the
+ *      thing's origin is registered in, so a graze with a thing whose origin block
+ *      the ray never enters is invisible to it and visible here. A shot aimed at a
+ *      target whose origin is on the ray -- every shot that matters -- resolves
+ *      identically;
+ *   2. ties at exactly equal fractions are broken by collection order, which is
+ *      LINEDEF-then-thinker order here and block-walk order upstream. That is the
+ *      same measure-zero divergence P_SlideMove and P_UseLines already document.
+ *
+ * P_PathTraverse also nudges its start by one unit when the start sits exactly on
+ * a blockmap grid line (`((x1-bmaporgx)&(MAPBLOCKSIZE-1)) == 0`). There is no
+ * blockmap here and therefore no grid to sit on, and the nudge changed the answer
+ * only for a shooter exactly on that grid; it is not reproduced, and both sides of
+ * the gate agree on that.
+ */
+
+/* r_defs.h packs a texture or flat name as its eight name bytes, most significant
+ * first. DOOM's sky flat is "F_SKY1" in every episode of DOOM and DOOM II, which
+ * is what upstream's `skyflatnum` global holds (r_sky.c:
+ * `skyflatnum = R_FlatNumForName (SKYFLATNAME);`). The port has no such global --
+ * the renderer is handed the level's sky flat as a parameter (r_plane.h) -- so the
+ * one comparison PTR_ShootTraverse makes names the constant directly. */
+#define P_SKY_FLAT_NAME ((r_name_t)0x465F534B59310000ull)
+
+/* One crossing: a fraction along the trace and either a linedef or a thing. */
+typedef struct attack_intercept {
+    fixed_t frac;
+    const r_mobj_t* thing; /* NULL for a linedef */
+    uint16_t line;         /* the linedef index when `thing` is NULL */
+} attack_intercept_t;
+
+/* The state a trace runs with: upstream's shootthing, shootz, la_damage,
+ * attackrange, aimslope, linetarget, topslope, bottomslope, trace and the
+ * intercept array, in one struct on the stack. */
+typedef struct attack_trace {
+    p_mobj_context_t* world;
+    const r_mobj_t* shooter;
+    fixed_t shootz;
+    fixed_t range;
+    fixed_t aimSlope;
+    fixed_t topSlope;
+    fixed_t bottomSlope;
+    fixed_t x1;
+    fixed_t y1;
+    fixed_t dx;
+    fixed_t dy;
+    r_mobj_t* lineTarget;
+    int damage;
+    uint16_t count;
+    uint8_t overflow;
+    attack_intercept_t intercepts[P_MAXINTERCEPTS];
+} attack_trace_t;
+
+static void stat_attack(p_mobj_context_t* world,
+                        void (*bump)(p_attack_stats_t*)) {
+    if (world != NULL && world->attackStats != NULL) {
+        bump(world->attackStats);
+    }
+}
+
+/* Small named increments, so the call sites read as the rule they count. */
+static void count_trace(p_attack_stats_t* stats) {
+    stats->traces += 1u;
+}
+
+static void count_intercept(p_attack_stats_t* stats) {
+    stats->intercepts += 1u;
+}
+
+static void count_overflow(p_attack_stats_t* stats) {
+    stats->interceptOverflow += 1u;
+}
+
+static void count_sky(p_attack_stats_t* stats) {
+    stats->skyHits += 1u;
+}
+
+static void count_special(p_attack_stats_t* stats) {
+    stats->specialsShot += 1u;
+}
+
+static void count_zero_distance(p_attack_stats_t* stats) {
+    stats->zeroDistance += 1u;
+}
+
+static int add_intercept(attack_trace_t* trace) {
+    if (trace->count >= (uint16_t)P_MAXINTERCEPTS) {
+        trace->overflow = 1u;
+        stat_attack(trace->world, count_overflow);
+        return 0;
+    }
+    trace->count = (uint16_t)(trace->count + 1u);
+    stat_attack(trace->world, count_intercept);
+    return 1;
+}
+
+/*
+ * P_InterceptVector, for the shot's trace, and a note a reader needs.
+ *
+ * Upstream's signature is `P_InterceptVector (divline_t* v2, divline_t* v1)` and
+ * it is called as `P_InterceptVector (&trace, &dl)`, so `v1` is the *line* and
+ * `v2` the trace:
+ *
+ *   den = FixedMul (v1->dy>>8, v2->dx) - FixedMul (v1->dx>>8, v2->dy);
+ *   num = FixedMul ((v1->x - v2->x)>>8, v1->dy)
+ *       + FixedMul ((v2->y - v1->y)>>8, v1->dx);
+ *
+ * This file's shared intercept_vector() (above, D4.2b) takes the trace first and
+ * multiplies the *trace's* direction into the numerator, which transposes the two
+ * direction vectors; it agrees with upstream for an axis-aligned ray and not
+ * otherwise. Correcting it there changes P_SlideMove's and P_UseLines' answers --
+ * measured: the movement script's endpoint and its blocked count both move -- which
+ * is D4.2b's rule, not this task's, and would change the two gates that ship it.
+ * So the shot's fraction uses this function, which is upstream's expression
+ * verbatim, and the defect in the shared one is reported instead of copied.
+ */
+static fixed_t attack_intercept_vector(fixed_t tx, fixed_t ty, fixed_t tdx,
+                                       fixed_t tdy, fixed_t lx, fixed_t ly,
+                                       fixed_t ldx, fixed_t ldy) {
+    fixed_t den;
+    fixed_t num;
+
+    den = fixed_mul(ldy >> 8, tdx) - fixed_mul(ldx >> 8, tdy);
+    if (den == 0) {
+        return 0;
+    }
+    num = fixed_mul((lx - tx) >> 8, ldy) + fixed_mul((ty - ly) >> 8, ldx);
+    return fixed_div(num, den);
+}
+
+/* PIT_AddLineIntercepts' geometry, with the correct fraction. The short-trace
+ * branch is upstream's: under 16 units it compares P_PointOnLineSide at the
+ * trace's two endpoints, above it P_PointOnDivlineSide at the line's. */
+static int attack_line_frac(const p_mobj_context_t* world, fixed_t x1, fixed_t y1,
+                            fixed_t dx, fixed_t dy, uint16_t lineIndex,
+                            fixed_t* fracOut) {
+    doom_line_t line;
+    doom_vertex_t v1;
+    doom_vertex_t v2;
+    fixed_t ldx;
+    fixed_t ldy;
+    int s1;
+    int s2;
+    fixed_t frac;
+
+    if (!p_line_decode(world->map, lineIndex, &line)) {
+        return 0;
+    }
+    line_geometry(world->map, &line, &v1, &v2, &ldx, &ldy);
+
+    if (dx > 16 * FRACUNIT || dy > 16 * FRACUNIT || dx < -16 * FRACUNIT ||
+        dy < -16 * FRACUNIT) {
+        s1 = point_on_divline_side(v1.x, v1.y, x1, y1, dx, dy);
+        s2 = point_on_divline_side(v2.x, v2.y, x1, y1, dx, dy);
+    } else {
+        s1 = point_on_line_side(x1, y1, &v1, ldx, ldy);
+        s2 = point_on_line_side(x1 + dx, y1 + dy, &v1, ldx, ldy);
+    }
+    if (s1 == s2) {
+        return 0; /* line isn't crossed */
+    }
+
+    frac = attack_intercept_vector(x1, y1, dx, dy, v1.x, v1.y, ldx, ldy);
+    if (frac < 0) {
+        return 0; /* behind source */
+    }
+    if (frac > FRACUNIT) {
+        return 0; /* beyond the trace */
+    }
+    *fracOut = frac;
+    return 1;
+}
+
+/*
+ * PIT_AddLineIntercepts, over every LINEDEF.
+ */
+static void collect_lines(attack_trace_t* trace) {
+    const uint32_t lineCount = trace->world->map->lumps[DOOM_MAP_LINEDEFS].count;
+    uint32_t i;
+
+    for (i = 0; i < lineCount; ++i) {
+        fixed_t frac;
+
+        if (trace->overflow != 0u) {
+            return;
+        }
+        if (!attack_line_frac(trace->world, trace->x1, trace->y1, trace->dx,
+                              trace->dy, (uint16_t)i, &frac)) {
+            continue;
+        }
+        if (add_intercept(trace)) {
+            attack_intercept_t* entry = &trace->intercepts[trace->count - 1u];
+
+            entry->frac = frac;
+            entry->thing = NULL;
+            entry->line = (uint16_t)i;
+        }
+    }
+}
+
+/*
+ * PIT_AddThingIntercepts, over every mobj in thinker order.
+ *
+ * The cross-section is the thing's bounding box's diagonal, chosen by the sign of
+ * `trace.dx ^ trace.dy` exactly as upstream chooses it, and the intercept is where
+ * the ray crosses that diagonal. A thing already marked for removal is skipped for
+ * the same reason PIT_CheckThing skips it: upstream unlinked it from the blockmap.
+ */
+static void collect_things(attack_trace_t* trace) {
+    const r_mobj_t* mobj;
+    const int32_t xored = (int32_t)((uint32_t)trace->dx ^ (uint32_t)trace->dy);
+    const int tracePositive = xored > 0;
+
+    for (mobj = mobj_first(trace->world); mobj != NULL;
+         mobj = mobj_next(trace->world, mobj)) {
+        fixed_t x1;
+        fixed_t y1;
+        fixed_t x2;
+        fixed_t y2;
+        int s1;
+        int s2;
+        fixed_t frac;
+
+        if (trace->overflow != 0u) {
+            return;
+        }
+        if (mobj->thinker.removed != 0u) {
+            continue;
+        }
+
+        if (tracePositive) {
+            x1 = mobj->x - mobj->radius;
+            y1 = mobj->y + mobj->radius;
+            x2 = mobj->x + mobj->radius;
+            y2 = mobj->y - mobj->radius;
+        } else {
+            x1 = mobj->x - mobj->radius;
+            y1 = mobj->y - mobj->radius;
+            x2 = mobj->x + mobj->radius;
+            y2 = mobj->y + mobj->radius;
+        }
+
+        s1 = point_on_divline_side(x1, y1, trace->x1, trace->y1, trace->dx,
+                                   trace->dy);
+        s2 = point_on_divline_side(x2, y2, trace->x1, trace->y1, trace->dx,
+                                   trace->dy);
+        if (s1 == s2) {
+            continue; /* line isn't crossed */
+        }
+
+        frac = attack_intercept_vector(trace->x1, trace->y1, trace->dx, trace->dy,
+                                       x1, y1, x2 - x1, y2 - y1);
+        if (frac < 0) {
+            continue; /* behind source */
+        }
+        if (frac > FRACUNIT) {
+            continue; /* beyond the trace */
+        }
+        if (add_intercept(trace)) {
+            attack_intercept_t* entry = &trace->intercepts[trace->count - 1u];
+
+            entry->frac = frac;
+            entry->thing = mobj;
+            entry->line = P_NO_LINE;
+        }
+    }
+}
+
+/*
+ * The two sector-height comparisons PTR_AimTraverse and PTR_ShootTraverse both
+ * make: `frontsector->floorheight != backsector->floorheight` and the ceiling's
+ * pair. A side that does not exist (a one-sided line) reads as equal, which is
+ * what upstream's P_LineOpening would have left stale; neither traverser reaches a
+ * one-sided line's heights because both test ML_TWOSIDED first.
+ */
+static int two_sided_heights(const p_mobj_context_t* world, const doom_line_t* line,
+                             fixed_t* frontFloor, fixed_t* frontCeiling,
+                             fixed_t* backFloor, fixed_t* backCeiling) {
+    uint16_t front;
+    uint16_t back;
+
+    if (!p_line_front_sector(world->map, line, &front) ||
+        !p_line_back_sector(world->map, line, &back)) {
+        return 0;
+    }
+    if (!sector_heights(world, front, frontFloor, frontCeiling)) {
+        return 0;
+    }
+    if (!sector_heights(world, back, backFloor, backCeiling)) {
+        return 0;
+    }
+    return 1;
+}
+
+/* A sector's ceiling flat, packed, or R_NAME_NONE when the index is not one. The
+ * sky hack is the only reader: upstream compares `ceilingpic` with its
+ * `skyflatnum` global. */
+static r_name_t sector_ceiling_pic(const p_mobj_context_t* world,
+                                   uint16_t sector) {
+    doom_sector_t record;
+
+    if (world == NULL || world->map == NULL) {
+        return R_NAME_NONE;
+    }
+    if ((uint32_t)sector >= world->map->lumps[DOOM_MAP_SECTORS].count) {
+        return R_NAME_NONE;
+    }
+    doom_map_get_sector(world->map, sector, &record);
+    return record.ceilingPic;
+}
+
+/* `FixedDiv (a, dist)` with the one guard upstream does not have. A zero-length
+ * distance cannot be turned into a slope; upstream divides by zero there and this
+ * port skips the comparison and counts it. */
+static int divide_slope(attack_trace_t* trace, fixed_t numerator, fixed_t dist,
+                        fixed_t* out) {
+    if (dist == 0) {
+        stat_attack(trace->world, count_zero_distance);
+        return 0;
+    }
+    *out = fixed_div(numerator, dist);
+    return 1;
+}
+
+/*
+ * PTR_AimTraverse: a line constrains the aim band, a thing inside the band ends
+ * the trace and becomes `lineTarget`.
+ *
+ * The band starts at +-100/160 of a unit of slope and only narrows: a two-sided
+ * line whose floors differ raises `bottomSlope`, one whose ceilings differ lowers
+ * `topSlope`, and `topSlope <= bottomSlope` ends the trace. A thing is aimed at
+ * when its top is above the floor bound and its bottom below the ceiling bound;
+ * the answer is the band's midpoint, clamped into the band. That clamping is what
+ * makes a bullet aimed at the *middle* of whatever it can see.
+ */
+static int aim_traverse_line(attack_trace_t* trace, fixed_t frac,
+                             uint16_t lineIndex) {
+    doom_line_t line;
+    p_line_opening_t opening;
+    fixed_t frontFloor;
+    fixed_t frontCeiling;
+    fixed_t backFloor;
+    fixed_t backCeiling;
+    fixed_t dist;
+    fixed_t slope;
+
+    if (!p_line_decode(trace->world->map, lineIndex, &line)) {
+        return 1;
+    }
+    /* `if (!(li->flags & ML_TWOSIDED)) return false; // stop` */
+    if ((line.flags & DOOM_ML_TWOSIDED) == 0) {
+        return 0;
+    }
+
+    /* "Crosses a two sided line. A two sided line will restrict the possible
+     * target ranges." */
+    p_line_opening(trace->world, lineIndex, &opening);
+
+    /* `if (openbottom >= opentop) return false; // stop` */
+    if (opening.openBottom >= opening.openTop) {
+        return 0;
+    }
+    if (!two_sided_heights(trace->world, &line, &frontFloor, &frontCeiling,
+                           &backFloor, &backCeiling)) {
+        return 0;
+    }
+
+    dist = fixed_mul(trace->range, frac);
+
+    if (frontFloor != backFloor) {
+        if (divide_slope(trace, opening.openBottom - trace->shootz, dist,
+                         &slope) &&
+            slope > trace->bottomSlope) {
+            trace->bottomSlope = slope;
+        }
+    }
+    if (frontCeiling != backCeiling) {
+        if (divide_slope(trace, opening.openTop - trace->shootz, dist, &slope) &&
+            slope < trace->topSlope) {
+            trace->topSlope = slope;
+        }
+    }
+
+    if (trace->topSlope <= trace->bottomSlope) {
+        return 0; /* stop */
+    }
+    return 1; /* shot continues */
+}
+
+static int aim_traverse_thing(attack_trace_t* trace, fixed_t frac,
+                              const r_mobj_t* thing) {
+    fixed_t dist;
+    fixed_t thingTopSlope;
+    fixed_t thingBottomSlope;
+
+    /* `if (th == shootthing) return true; // can't shoot self` */
+    if (thing == trace->shooter) {
+        return 1;
+    }
+    /* `if (!(th->flags&MF_SHOOTABLE)) return true; // corpse or something` */
+    if ((thing->flags & MF_SHOOTABLE) == 0u) {
+        return 1;
+    }
+
+    dist = fixed_mul(trace->range, frac);
+
+    if (!divide_slope(trace, thing->z + thing->height - trace->shootz, dist,
+                      &thingTopSlope)) {
+        return 1;
+    }
+    if (thingTopSlope < trace->bottomSlope) {
+        return 1; /* shot over the thing */
+    }
+    if (!divide_slope(trace, thing->z - trace->shootz, dist,
+                      &thingBottomSlope)) {
+        return 1;
+    }
+    if (thingBottomSlope > trace->topSlope) {
+        return 1; /* shot under the thing */
+    }
+
+    /* "this thing can be hit!" */
+    if (thingTopSlope > trace->topSlope) {
+        thingTopSlope = trace->topSlope;
+    }
+    if (thingBottomSlope < trace->bottomSlope) {
+        thingBottomSlope = trace->bottomSlope;
+    }
+
+    /* `aimslope = (thingtopslope+thingbottomslope)/2;`. The sum is evaluated in
+     * 64 bits: two saturated slopes overflow a 32-bit int, which is undefined in
+     * upstream's expression and is not worth reproducing. */
+    trace->aimSlope =
+        (fixed_t)(((int64_t)thingTopSlope + (int64_t)thingBottomSlope) / 2);
+    trace->lineTarget = (r_mobj_t*)thing;
+
+    return 0; /* don't go any farther */
+}
+
+/*
+ * PTR_ShootTraverse: resolve what the shot hit and put the effect there.
+ *
+ * The "position a bit closer" step is upstream's, and the two constants in it
+ * matter: four units short of a wall, ten units short of a thing, so a puff is not
+ * buried in the surface and a blood spray is not inside the body.
+ */
+static int shoot_traverse_line(attack_trace_t* trace, fixed_t inFrac,
+                               uint16_t lineIndex) {
+    doom_line_t line;
+    p_line_opening_t opening;
+    fixed_t frontFloor;
+    fixed_t frontCeiling;
+    fixed_t backFloor;
+    fixed_t backCeiling;
+    fixed_t dist;
+    fixed_t slope;
+
+    if (!p_line_decode(trace->world->map, lineIndex, &line)) {
+        return 1;
+    }
+
+    /* `if (li->special) P_ShootSpecialLine (shootthing, li);` -- the *current*
+     * special, which an earlier one-shot trigger may already have cleared. */
+    if (current_line_special(trace->world, lineIndex, &line) != 0) {
+        p_shoot_special_line(trace->world, (r_mobj_t*)trace->shooter, lineIndex);
+    }
+
+    if ((line.flags & DOOM_ML_TWOSIDED) == 0) {
+        goto hitline;
+    }
+
+    /* "crosses a two sided line" */
+    p_line_opening(trace->world, lineIndex, &opening);
+    if (!two_sided_heights(trace->world, &line, &frontFloor, &frontCeiling,
+                           &backFloor, &backCeiling)) {
+        goto hitline;
+    }
+
+    dist = fixed_mul(trace->range, inFrac);
+
+    if (frontFloor != backFloor) {
+        if (divide_slope(trace, opening.openBottom - trace->shootz, dist,
+                         &slope) &&
+            slope > trace->aimSlope) {
+            goto hitline;
+        }
+    }
+    if (frontCeiling != backCeiling) {
+        if (divide_slope(trace, opening.openTop - trace->shootz, dist, &slope) &&
+            slope < trace->aimSlope) {
+            goto hitline;
+        }
+    }
+
+    /* "shot continues" */
+    return 1;
+
+hitline : {
+    const fixed_t frac = inFrac - fixed_div(4 * FRACUNIT, trace->range);
+    const fixed_t x = trace->x1 + fixed_mul(trace->dx, frac);
+    const fixed_t y = trace->y1 + fixed_mul(trace->dy, frac);
+    const fixed_t z =
+        trace->shootz + fixed_mul(trace->aimSlope, fixed_mul(frac, trace->range));
+    uint16_t front = 0;
+    uint16_t back = 0;
+    fixed_t frontFloor;
+    fixed_t frontCeiling;
+
+    /* `if (li->frontsector->ceilingpic == skyflatnum)`: "don't shoot the sky!",
+     * and a wall with sky on both sides is the sky hack, which a bullet passes
+     * through. The ceiling height compared is the *front* sector's, which is the
+     * one upstream reads through `li->frontsector`. */
+    if (p_line_front_sector(trace->world->map, &line, &front) &&
+        sector_ceiling_pic(trace->world, front) == P_SKY_FLAT_NAME) {
+        if (sector_heights(trace->world, front, &frontFloor, &frontCeiling) &&
+            z > frontCeiling) {
+            stat_attack(trace->world, count_sky);
+            return 0;
+        }
+        if (p_line_back_sector(trace->world->map, &line, &back) &&
+            sector_ceiling_pic(trace->world, back) == P_SKY_FLAT_NAME) {
+            stat_attack(trace->world, count_sky);
+            return 0;
+        }
+    }
+
+    /* "Spawn bullet puffs." */
+    (void)p_spawn_puff(trace->world, x, y, z, trace->range);
+
+    /* "don't go any farther" */
+    return 0;
+}
+}
+
+static int shoot_traverse_thing(attack_trace_t* trace, fixed_t inFrac,
+                                const r_mobj_t* thing) {
+    fixed_t dist;
+    fixed_t thingTopSlope;
+    fixed_t thingBottomSlope;
+    fixed_t frac;
+    fixed_t x;
+    fixed_t y;
+    fixed_t z;
+
+    if (thing == trace->shooter) {
+        return 1; /* can't shoot self */
+    }
+    if ((thing->flags & MF_SHOOTABLE) == 0u) {
+        return 1; /* corpse or something */
+    }
+
+    dist = fixed_mul(trace->range, inFrac);
+
+    if (!divide_slope(trace, thing->z + thing->height - trace->shootz, dist,
+                      &thingTopSlope)) {
+        return 1;
+    }
+    if (thingTopSlope < trace->aimSlope) {
+        return 1; /* shot over the thing */
+    }
+    if (!divide_slope(trace, thing->z - trace->shootz, dist,
+                      &thingBottomSlope)) {
+        return 1;
+    }
+    if (thingBottomSlope > trace->aimSlope) {
+        return 1; /* shot under the thing */
+    }
+
+    /* "hit thing -- position a bit closer" */
+    frac = inFrac - fixed_div(10 * FRACUNIT, trace->range);
+    x = trace->x1 + fixed_mul(trace->dx, frac);
+    y = trace->y1 + fixed_mul(trace->dy, frac);
+    z = trace->shootz + fixed_mul(trace->aimSlope, fixed_mul(frac, trace->range));
+
+    /* "Spawn bullet puffs or blood spots, depending on target type." */
+    if ((thing->flags & MF_NOBLOOD) != 0u) {
+        (void)p_spawn_puff(trace->world, x, y, z, trace->range);
+    } else {
+        (void)p_spawn_blood(trace->world, x, y, z, trace->damage);
+    }
+
+    if (trace->damage != 0) {
+        p_damage_mobj(trace->world, (r_mobj_t*)thing, (r_mobj_t*)trace->shooter,
+                      (r_mobj_t*)trace->shooter, trace->damage);
+    }
+
+    return 0; /* don't go any farther */
+}
+
+/*
+ * P_TraverseIntercepts: the nearest unvisited crossing, over and over.
+ *
+ * Upstream scans the whole array for a strictly smaller fraction on every pass and
+ * marks each entry it visits with MAXINT, so every tie is visited and the ties of
+ * one pass are visited in collection order. Both properties are kept.
+ */
+static void run_traverse(attack_trace_t* trace, int shooting) {
+    uint16_t pass;
+
+    for (pass = 0; pass < trace->count; ++pass) {
+        fixed_t dist = INT32_MAX;
+        attack_intercept_t* entry = NULL;
+        uint16_t i;
+
+        for (i = 0; i < trace->count; ++i) {
+            if (trace->intercepts[i].frac < dist) {
+                dist = trace->intercepts[i].frac;
+                entry = &trace->intercepts[i];
+            }
+        }
+        /* `if (dist > maxfrac) return true; // checked everything in range` */
+        if (entry == NULL || dist > FRACUNIT) {
+            return;
+        }
+
+        {
+            int keepGoing;
+
+            if (entry->thing != NULL) {
+                keepGoing = shooting
+                                ? shoot_traverse_thing(trace, entry->frac,
+                                                       entry->thing)
+                                : aim_traverse_thing(trace, entry->frac,
+                                                     entry->thing);
+            } else {
+                keepGoing = shooting
+                                ? shoot_traverse_line(trace, entry->frac,
+                                                      entry->line)
+                                : aim_traverse_line(trace, entry->frac,
+                                                    entry->line);
+            }
+
+            /* `in->frac = MAXINT;` marks the entry as visited, and
+             * `if (!func (in)) return false;` stops the walk. */
+            entry->frac = INT32_MAX;
+            if (!keepGoing) {
+                return;
+            }
+        }
+    }
+}
+
+static void collect_intercepts(attack_trace_t* trace) {
+    if (trace->world->attackStats != NULL) {
+        stat_attack(trace->world, count_trace);
+    }
+    collect_lines(trace);
+    collect_things(trace);
+}
+
+fixed_t p_aim_line_attack(p_mobj_context_t* world, r_mobj_t* shooter,
+                          angle_t angle, fixed_t distance, r_mobj_t** target) {
+    attack_trace_t trace;
+    const uint32_t fine = angle >> ANGLETOFINESHIFT;
+    fixed_t x2;
+    fixed_t y2;
+
+    if (target != NULL) {
+        *target = NULL;
+    }
+    if (world == NULL || shooter == NULL || world->map == NULL) {
+        return 0;
+    }
+
+    memset(&trace, 0, sizeof trace);
+    trace.world = world;
+    trace.shooter = shooter;
+    trace.range = distance;
+    trace.aimSlope = 0;
+    trace.damage = 0;
+    /* `shootz = t1->z + (t1->height>>1) + 8*FRACUNIT;` -- the shooter's own
+     * mid-height plus eight, which is the eye a monster aims with too. */
+    trace.shootz = shooter->z + (shooter->height >> 1) + 8 * FRACUNIT;
+
+    /* "can't shoot outside view angles" */
+    trace.topSlope = P_AIM_TOP_SLOPE;
+    trace.bottomSlope = -P_AIM_TOP_SLOPE;
+
+    trace.x1 = shooter->x;
+    trace.y1 = shooter->y;
+    /* `x2 = t1->x + (distance>>FRACBITS)*finecosine[angle];` -- map units times
+     * the fine cosine, not a FixedMul. */
+    x2 = trace.x1 + (int32_t)(distance >> FRACBITS) * fine_cos(fine);
+    y2 = trace.y1 + (int32_t)(distance >> FRACBITS) * fine_sin(fine);
+    trace.dx = x2 - trace.x1;
+    trace.dy = y2 - trace.y1;
+
+    collect_intercepts(&trace);
+    run_traverse(&trace, 0);
+
+    if (target != NULL) {
+        *target = trace.lineTarget;
+    }
+    if (trace.lineTarget != NULL) {
+        return trace.aimSlope;
+    }
+    /* This port has no pitch and no `lookdir`: a trace that found nothing aims
+     * dead level, which is vanilla's own answer. */
+    return 0;
+}
+
+void p_line_attack(p_mobj_context_t* world, r_mobj_t* shooter, angle_t angle,
+                   fixed_t distance, fixed_t slope, int damage) {
+    attack_trace_t trace;
+    const uint32_t fine = angle >> ANGLETOFINESHIFT;
+    fixed_t x2;
+    fixed_t y2;
+
+    if (world == NULL || shooter == NULL || world->map == NULL) {
+        return;
+    }
+
+    memset(&trace, 0, sizeof trace);
+    trace.world = world;
+    trace.shooter = shooter;
+    trace.range = distance;
+    trace.aimSlope = slope;
+    trace.damage = damage;
+    trace.shootz = shooter->z + (shooter->height >> 1) + 8 * FRACUNIT;
+
+    trace.x1 = shooter->x;
+    trace.y1 = shooter->y;
+    x2 = trace.x1 + (int32_t)(distance >> FRACBITS) * fine_cos(fine);
+    y2 = trace.y1 + (int32_t)(distance >> FRACBITS) * fine_sin(fine);
+    trace.dx = x2 - trace.x1;
+    trace.dy = y2 - trace.y1;
+
+    collect_intercepts(&trace);
+    run_traverse(&trace, 1);
+}
+
+void p_shoot_special_line(p_mobj_context_t* world, r_mobj_t* shooter,
+                          uint16_t lineIndex) {
+    int result;
+
+    if (world == NULL || shooter == NULL || world->level == NULL) {
+        return;
+    }
+
+    /* Upstream's `if (!thing->player) return;` and its switch both live in
+     * p_spec.c's trigger_shoot(), which is the one place a line special is
+     * dispatched. The player half is passed through, so a monster's shot is
+     * refused there exactly as upstream refuses it here. */
+    result = p_trigger_special_line(world->level, lineIndex, P_TRIGGER_SHOOT,
+                                    shooter->player ? 1 : 0);
+    if (result) {
+        stat_attack(world, count_special);
+    }
+}
+
+

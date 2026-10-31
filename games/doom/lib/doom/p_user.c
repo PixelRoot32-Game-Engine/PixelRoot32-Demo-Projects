@@ -25,6 +25,7 @@
 #include <string.h>
 
 #include "p_map.h"
+#include "p_pspr.h"
 #include "p_setup.h"
 #include "r_tables.h"
 
@@ -187,6 +188,44 @@ static void p_player_use_lines(p_level_t* level, p_player_t* player) {
     }
 }
 
+/*
+ * "Check for weapon change."
+ *
+ * `newweapon = (cmd->buttons&BT_WEAPONMASK)>>BT_WEAPONSHIFT;` -- three bits, so
+ * 0..7, which is inside p_weapon_t without a test (upstream has none either).
+ *
+ * The change is only *asked for*: `player->pendingweapon = newweapon`, and the
+ * switch happens when the weapon psprite can lower itself (A_WeaponReady's change
+ * branch, then A_Lower at the bottom, then A_Raise). That is why the doc for this
+ * block says "The actual changing of the weapon is done when the weapon psprite
+ * can do it (read: not in the middle of an attack)."
+ *
+ * Two upstream arms cannot fire in this port and are named rather than written:
+ * the chainsaw's key-share needs `weaponowned[wp_chainsaw]`, which Shareware E1M1
+ * never grants, and the super shotgun's swap is `gamemode == commercial`.
+ */
+static void p_player_weapon_change(p_player_t* player, const p_ticcmd_t* cmd) {
+    int32_t newweapon =
+        (int32_t)((cmd->buttons & (uint32_t)BT_WEAPONMASK) >> BT_WEAPONSHIFT);
+
+    /* `if (newweapon == wp_fist && weaponowned[wp_chainsaw] &&
+     *  !(readyweapon == wp_chainsaw && powers[pw_strength])) newweapon =
+     *  wp_chainsaw;` */
+    if (newweapon == (int32_t)P_WP_FIST && player->weaponowned[P_WP_CHAINSAW] &&
+        !(player->readyweapon == (int32_t)P_WP_CHAINSAW &&
+          player->powers[P_PW_STRENGTH] != 0)) {
+        newweapon = (int32_t)P_WP_CHAINSAW;
+    }
+
+    if (player->weaponowned[newweapon] && newweapon != player->readyweapon) {
+        /* "Do not go to plasma or BFG in shareware, even if cheated." */
+        if (newweapon != (int32_t)P_WP_PLASMA &&
+            newweapon != (int32_t)P_WP_BFG) {
+            player->pendingweapon = newweapon;
+        }
+    }
+}
+
 void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
     p_player_t* player;
     p_ticcmd_t* command;
@@ -211,9 +250,22 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
     command = &player->cmd;
     player->useTriggered = 0u;
 
+    /* G_PlayerReborn's `P_SetupPsprites (p)`, once. The reborn step itself is the
+     * header-only p_player_wire() and the weapon table is p_pspr.c's, so the call
+     * lands here; P_SetupPsprites runs A_Raise once, so the timeline is upstream's
+     * whether it happens at load or immediately before the first think. */
+    if (player->pspritesStarted == 0u) {
+        p_setup_psprites(&level->context, player);
+    }
+
+    /* `if (cmd->buttons & BT_ATTACK)` is *not* here: the fire button is read by
+     * A_WeaponReady inside P_MovePsprites, because a shot has to wait for the
+     * weapon to be up and idle. */
+
     /* `if (player->playerstate == PST_DEAD) { P_DeathThink (player); return; }`
-     * P_DeathThink is T14's. A record that is not live is counted rather
-     * than pretended to live: the tic changes nothing except this counter. */
+     * P_DeathThink is not implemented. A record that is not live is counted
+     * rather than pretended to live: the tic changes nothing except this counter,
+     * and the psprite machine does not advance. */
     if (player->playerstate != P_PST_LIVE) {
         player->unsupportedDeath += 1u;
         return;
@@ -232,7 +284,7 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
     p_calc_height(level, player);
 
     /* `if (player->mo->subsector->sector->special) P_PlayerInSpecialSector`
-     * is sector damage and belongs to T14/T15. */
+     * is sector damage and belongs to T15. */
 
     /* `if (cmd->buttons & BT_SPECIAL) cmd->buttons = 0;` -- "A special event
      * has no other buttons." The pause/save side of the word is G_Ticker's,
@@ -241,11 +293,8 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
         command->buttons = 0u;
     }
 
-    /* Weapon change: `newweapon = (cmd->buttons&BT_WEAPONMASK)>>BT_WEAPONSHIFT`
-     * and the weaponowned[] tests are T14's. Counted so a pressed key is not
-     * silent. */
     if ((command->buttons & BT_CHANGE) != 0u) {
-        player->unsupportedWeaponChange += 1u;
+        p_player_weapon_change(player, command);
     }
 
     /* `if (cmd->buttons & BT_USE) { if (!player->usedown) { P_UseLines (player);
@@ -259,14 +308,31 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
         player->usedown = 0;
     }
 
-    /* The fire button is consumed by A_WeaponReady inside P_MovePsprites, which
-     * needs the weapon sprite state machine (T14). Count it here so a press
-     * is a number instead of a no-op. */
-    if ((command->buttons & BT_ATTACK) != 0u) {
-        player->unsupportedAttack += 1u;
-    }
+    /* `P_MovePsprites (player);` -- the weapon and its flash advance one tic and
+     * A_WeaponReady is where BT_ATTACK becomes a shot. */
+    p_move_psprites(&level->context, player);
 
-    /* `P_MovePsprites (player);` -- T14. */
+    /* "Counters, time dependend power ups." The strength power counts *up* (its
+     * fade is P_DamageMobj's `damage *= 10` threshold), invisibility clears
+     * MF_SHADOW on its last tic, and the other three count down. */
+    if (player->powers[P_PW_STRENGTH] != 0) {
+        player->powers[P_PW_STRENGTH] += 1;
+    }
+    if (player->powers[P_PW_INVULNERABILITY] != 0) {
+        player->powers[P_PW_INVULNERABILITY] -= 1;
+    }
+    if (player->powers[P_PW_INVISIBILITY] != 0) {
+        player->powers[P_PW_INVISIBILITY] -= 1;
+        if (player->powers[P_PW_INVISIBILITY] == 0 && player->mo != NULL) {
+            player->mo->flags &= ~MF_SHADOW;
+        }
+    }
+    if (player->powers[P_PW_INFRARED] != 0) {
+        player->powers[P_PW_INFRARED] -= 1;
+    }
+    if (player->powers[P_PW_IRONFEET] != 0) {
+        player->powers[P_PW_IRONFEET] -= 1;
+    }
 
     /* `if (player->damagecount) player->damagecount--;
      *  if (player->bonuscount) player->bonuscount--;` */
@@ -277,9 +343,12 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
         player->bonuscount--;
     }
 
-    /* The power-up timers and the fixedcolormap they select are T14's;
-     * fixedcolormap stays 0 because no power-up can be active. */
+    /* "Handling colormaps." Upstream writes `fixedcolormap` here from the
+     * invulnerability and infrared counters; the colormap is the renderer's and
+     * the HUD's (D5), so the field stays 0 and the alternative is named. */
+    player->fixedcolormap = 0;
 }
+
 
 /* --- P_Ticker ------------------------------------------------------------ */
 

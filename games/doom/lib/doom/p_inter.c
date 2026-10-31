@@ -17,8 +17,9 @@
  *   3. sound, the HUD message text and haptics are absent (D5), and the
  *      branches that would name them are kept as comments so the rule stays
  *      readable;
- *   4. `readyweapon` (T14) is the one player field this unit cannot read, and
- *      the three places that need it are named rather than guessed.
+ *   4. `readyweapon` is read by two rules -- P_GiveAmmo's auto-select tail and
+ *      P_TouchSpecialThing's berserk branch -- and D4.2d2 added the field they
+ *      needed, so neither is omitted any more.
  *
  * The random draws are upstream's, in upstream's order, because the sequence is
  * part of demo fidelity: the fall-forwards coin, the pain chance, the death-tic
@@ -30,6 +31,7 @@
 #include "p_inter.h"
 
 #include "p_map.h"
+#include "p_pspr.h"
 #include "p_setup.h"
 #include "r_tables.h"
 
@@ -75,23 +77,15 @@ static int16_t sector_special(const p_mobj_context_t* world, uint16_t sector) {
  * which is the unit P_GiveAmmo's `num` parameter counts. */
 static const int32_t ammo_clip_size[P_NUMAMMO] = {10, 4, 20, 1};
 
-/* d_items.c's weaponinfo[NUMWEAPONS], reduced to the one column this unit
- * reads: which pool a weapon's ammo comes from. The five psprite state numbers
- * each upstream record also carries are T14's (p_pspr.c). */
-static const uint8_t weapon_ammo[P_NUMWEAPONS] = {
-    (uint8_t)P_AM_NOAMMO, /* wp_fist */
-    (uint8_t)P_AM_CLIP,   /* wp_pistol */
-    (uint8_t)P_AM_SHELL,  /* wp_shotgun */
-    (uint8_t)P_AM_CLIP,   /* wp_chaingun */
-    (uint8_t)P_AM_MISL,   /* wp_missile */
-    (uint8_t)P_AM_CELL,   /* wp_plasma */
-    (uint8_t)P_AM_CELL,   /* wp_bfg */
-    (uint8_t)P_AM_NOAMMO, /* wp_chainsaw */
-    (uint8_t)P_AM_SHELL   /* wp_supershotgun */
-};
+/* The ammo column of d_items.c's weaponinfo[] is p_pspr.c's table now, not a copy
+ * here: one row per weapon, with the five psprite state numbers upstream's records
+ * also carry, lives in p_weapon_info(). Until D4.2d2 this file could only keep the
+ * one column it read, and said so. */
 
 int p_give_ammo(const p_mobj_context_t* world, p_player_t* player, p_ammo_t ammo,
                 int num) {
+    int oldammo;
+
     /* `if (ammo == am_noammo) return false;` then upstream's I_Error for a bad
      * type; the port refuses both, because a wrong type is a caller bug and this
      * layer has nothing to abort. */
@@ -120,14 +114,71 @@ int p_give_ammo(const p_mobj_context_t* world, p_player_t* player, p_ammo_t ammo
         num <<= 1;
     }
 
+    /* `oldammo = player->ammo[ammo];` -- captured before the add, because the
+     * auto-select tail below only runs when the player was empty. */
+    oldammo = player->ammo[ammo];
     player->ammo[ammo] += num;
     if (player->ammo[ammo] > player->maxammo[ammo]) {
         player->ammo[ammo] = player->maxammo[ammo];
     }
 
-    /* The `if (oldammo) return true;` auto-select tail (`if (readyweapon ==
-     * wp_fist) pendingweapon = ...`) is T14's: it compares `readyweapon`, which
-     * this unit cannot read. See p_inter.h. */
+    /* "If non zero ammo, don't change up weapons, player was lower on purpose." */
+    if (oldammo != 0) {
+        return 1;
+    }
+
+    /*
+     * "We were down to zero, so select a new weapon. Preferences are not user
+     * selectable." Upstream switches on the *pool*, and only when the weapon in
+     * hand is the one the new ammo would replace: a clip re-arms a bare-fisted
+     * player, shells re-arm a fist or a pistol, and so on.
+     *
+     * This tail is why `readyweapon` had to exist before it could be written:
+     * until D4.2d2 there was no field to compare, and both this file and
+     * tools/doom_ref.py omitted it. The chainsaw arm upstream also has (a
+     * cell/misl case falling through to `default`) is not reachable here.
+     */
+    switch (ammo) {
+        case P_AM_CLIP:
+            if (player->readyweapon == (int32_t)P_WP_FIST) {
+                if (player->weaponowned[P_WP_CHAINGUN]) {
+                    player->pendingweapon = (int32_t)P_WP_CHAINGUN;
+                } else {
+                    player->pendingweapon = (int32_t)P_WP_PISTOL;
+                }
+            }
+            break;
+
+        case P_AM_SHELL:
+            if (player->readyweapon == (int32_t)P_WP_FIST ||
+                player->readyweapon == (int32_t)P_WP_PISTOL) {
+                if (player->weaponowned[P_WP_SHOTGUN]) {
+                    player->pendingweapon = (int32_t)P_WP_SHOTGUN;
+                }
+            }
+            break;
+
+        case P_AM_CELL:
+            if (player->readyweapon == (int32_t)P_WP_FIST ||
+                player->readyweapon == (int32_t)P_WP_PISTOL) {
+                if (player->weaponowned[P_WP_PLASMA]) {
+                    player->pendingweapon = (int32_t)P_WP_PLASMA;
+                }
+            }
+            break;
+
+        case P_AM_MISL:
+            if (player->readyweapon == (int32_t)P_WP_FIST) {
+                if (player->weaponowned[P_WP_MISSILE]) {
+                    player->pendingweapon = (int32_t)P_WP_MISSILE;
+                }
+            }
+            break;
+
+        default:
+            break;
+    }
+
     return 1;
 }
 
@@ -148,7 +199,7 @@ int p_give_weapon(const p_mobj_context_t* world, p_player_t* player,
      * the world forever. Net play is D5 and the flag is 0 here, so the branch
      * has no observable form in this port. */
 
-    ammo = (p_ammo_t)weapon_ammo[weapon];
+    ammo = (p_ammo_t)p_weapon_info((int32_t)weapon)->ammo;
     if (ammo != P_AM_NOAMMO) {
         /* "give one clip with a dropped weapon, two clips with a found one" */
         gaveammo = p_give_ammo(world, player, ammo, dropped ? 1 : 2);
@@ -408,10 +459,11 @@ void p_touch_special_thing(p_mobj_context_t* world, r_mobj_t* special,
                 return;
             }
             /* `if (player->readyweapon != wp_fist) player->pendingweapon =
-             * wp_fist;` -- readyweapon is T14's, so the port asks for the fist
-             * unconditionally; with no weapon state machine that request is the
-             * only observable half. */
-            player->pendingweapon = P_WP_FIST;
+             * wp_fist;` -- berserk switches to the fist unless the fist is
+             * already out, which is the whole point of the power-up. */
+            if (player->readyweapon != (int32_t)P_WP_FIST) {
+                player->pendingweapon = (int32_t)P_WP_FIST;
+            }
             break;
 
         case SPR_PINS:
@@ -607,8 +659,12 @@ void p_kill_mobj(p_mobj_context_t* world, r_mobj_t* source, r_mobj_t* target) {
         target->flags &= ~MF_SOLID;
         if (victimPlayer != NULL) {
             victimPlayer->playerstate = P_PST_DEAD;
+            /* `P_DropWeapon (target->player);` -- the weapon psprite goes down
+             * its lower chain, which stops at WEAPONBOTTOM because A_Lower sees
+             * PST_DEAD. No item is dropped: the clip a dying monster leaves is the
+             * `switch (target->type)` below, not the player's gun. */
+            p_drop_weapon(world, victimPlayer);
         }
-        /* P_DropWeapon (player->readyweapon as an item) is T14's. */
     }
 
     if (target->health < -info->spawnhealth && info->xdeathstate != 0) {

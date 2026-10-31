@@ -364,7 +364,7 @@ static int run_damage(p_level_t* level, const char* mapName) {
         emit(level, &step, "spawn-blood-10");
         (void)p_spawn_blood(&level->context, x, player->y, z, 5);
         emit(level, &step, "spawn-blood-5");
-        (void)p_spawn_puff(&level->context, x, player->y, z);
+        (void)p_spawn_puff(&level->context, x, player->y, z, P_MISSILERANGE);
         emit(level, &step, "spawn-puff");
     }
     for (i = 0; i < 3; ++i) {

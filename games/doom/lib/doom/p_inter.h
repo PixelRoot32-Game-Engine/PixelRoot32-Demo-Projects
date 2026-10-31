@@ -77,9 +77,10 @@ extern "C" {
 #define P_CRUSH_DAMAGE 10
 #endif
 
-/* One record per weapon, d_items.c's weaponinfo[] reduced to the one column this
- * unit reads: the ammo pool P_GiveWeapon fills. The five psprite state numbers
- * are T14's and are named in p_inter.c's table comment rather than copied. */
+/* One record per weapon, d_items.c's weaponinfo[], lives in p_pspr.c: the ammo
+ * pool P_GiveWeapon fills plus the five psprite state numbers (p_weapon_info()).
+ * Until D4.2d2 this header could only promise the ammo column, because the rest
+ * belonged to the weapon state machine. */
 struct p_level;
 
 /* --- Giving things -------------------------------------------------------- */
@@ -96,11 +97,11 @@ struct p_level;
  * check: a player one round short still gets the whole load and is clamped at
  * the ceiling.
  *
- * NOT PORTED HERE: the auto-select tail (`if (player->readyweapon == wp_fist)`
- * choosing `pendingweapon`). It compares `readyweapon`, which is T14's field;
- * with no weapon state machine a pickup's pending weapon is P_GiveWeapon's
- * alone. The omission is behavioural only once T14 lands, and tools/doom_ref.py
- * omits the same tail so the two stay comparable.
+ * The auto-select tail is here: when the player was *empty* of this pool
+ * (`oldammo == 0`), the weapon in hand decides whether a new one is asked for --
+ * a clip re-arms a bare-fisted player with the chaingun when it is owned and the
+ * pistol otherwise; shells re-arm a fist or a pistol with the shotgun; cells and
+ * rockets likewise. It compares `readyweapon`, which D4.2d2 added.
  *
  * @param world  The level context, for the skill's double-ammo rule.
  * @param player The player record; NULL is refused.
@@ -226,9 +227,9 @@ void p_touch_special_thing(p_mobj_context_t* world, r_mobj_t* special,
  *   - the drop: MT_WOLFSS/MT_POSSESSED leave a clip, MT_SHOTGUY a shotgun,
  *     MT_CHAINGUY a chaingun, spawned at the corpse's feet with MF_DROPPED.
  *
- * NOT PORTED HERE, and named rather than dropped: `P_DropWeapon` (needs T14's
- * readyweapon/psprite machinery), the deathmatch `frags[]` bookkeeping (D5) and
- * the automap stop (D5).
+ * NOT PORTED HERE, and named rather than dropped: the deathmatch `frags[]`
+ * bookkeeping (D5) and the automap stop (D5). `P_DropWeapon` *is* here: a dying
+ * player's weapon psprite lowers and stops at the bottom of the screen.
  *
  * @param world  The level context: zone, RNG, player record.
  * @param source Who caused it (may be NULL for the environment).

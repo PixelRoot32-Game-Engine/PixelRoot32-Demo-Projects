@@ -6,14 +6,16 @@
 
 /*
  * Movement and collision: the thing-versus-world tests, the move that follows
- * them, the slide along a wall, the height clip and the use trace.
+ * them, the slide along a wall, the height clip, the use trace, and the shot.
  *
  * THE REFERENCE
  *
  * linuxdoom-1.10 p_map.c (P_CheckPosition, P_TryMove, P_SlideMove,
- * P_HitSlideLine, P_ThingHeightClip, P_UseLines, P_ChangeSector) and
- * p_maputl.c (P_PointOnLineSide, P_BoxOnLineSide, P_LineOpening,
- * P_InterceptVector). Every non-obvious rule cites the upstream statement it
+ * P_HitSlideLine, P_ThingHeightClip, P_UseLines, P_ChangeSector, P_AimLineAttack,
+ * P_LineAttack, P_ShootSpecialLine and the two traversers) and p_maputl.c
+ * (P_PointOnLineSide, P_BoxOnLineSide, P_LineOpening, P_InterceptVector,
+ * P_PathTraverse, PIT_AddLineIntercepts, PIT_AddThingIntercepts,
+ * P_TraverseIntercepts). Every non-obvious rule cites the upstream statement it
  * reproduces. This is C99 only: no allocation, no globals, no stdio, no
  * floating point.
  *
@@ -31,8 +33,9 @@
  * coordinates can put a line in no block, but never in the wrong one -- and the
  * *result* is identical because the tests that decide it are unchanged. Only
  * the iteration order differs, and neither PIT_CheckLine nor PIT_CheckThing
- * depends on order: heights are max/min and blocking is a boolean. P_UseLines is
- * the one place order could matter, and it is documented at its definition.
+ * depends on order: heights are max/min and blocking is a boolean. P_UseLines and
+ * the attack path are the two places order could matter, and each is documented at
+ * its definition.
  *
  * WHAT LIVES ON THE STACK
  *
@@ -40,6 +43,13 @@
  * port has no globals, so one p_position_result_t (about 32 bytes) carries them
  * and p_try_move puts the special-line list in it. P_ChangeSector's sector box
  * is four fixed_t on the stack. No file-scope array is added.
+ *
+ * The attack path adds the one larger frame in this file: P_AimLineAttack and
+ * P_LineAttack each hold one attack_trace_t, which is upstream's intercepts[]
+ * array (P_MAXINTERCEPTS entries of 12 bytes) plus the eight numbers upstream
+ * keeps in globals -- 768 B and change on the 32-bit target. A shot is never
+ * re-entered, so one frame is all there is; p_map.c states the arithmetic and
+ * why an array beats the repeated-minimum walk P_UseLines uses.
  *
  * ONE NAME THAT CANNOT BE REUSED
  *
@@ -66,8 +76,30 @@ extern "C" {
  * why a thing cannot tunnel through a wall one linedef thick. */
 #define P_MAXMOVE (30 * FRACUNIT)
 
-/* p_local.h's USERANGE and MELEERANGE: the reach of a use press. */
+/* p_local.h's USERANGE and MELEERANGE: the reach of a use press and of a melee
+ * swing. Upstream defines both as 64 map units -- two names for one number,
+ * because a punch and a use press happen to reach the same -- and this port keeps
+ * both names so a call site still says which rule it is following. */
 #define P_USERANGE (64 * FRACUNIT)
+#define P_MELEERANGE (64 * FRACUNIT)
+
+/* p_local.h's MISSILERANGE: `32*64*FRACUNIT`, so a bullet's or a rocket's trace
+ * is 2,048 map units. Overridable so tools/attack_check.py can perturb it and
+ * prove its comparison fails; no shipped build defines it. */
+#ifndef P_MISSILERANGE
+#define P_MISSILERANGE (32 * 64 * FRACUNIT)
+#endif
+
+/* p_map.c's `topslope = 100*FRACUNIT/160` and its negative: "can't shoot outside
+ * view angles". The two bounds a trace may not aim past, in 16.16. */
+#define P_AIM_TOP_SLOPE (100 * FRACUNIT / 160)
+
+/* Upstream's MAXINTERCEPTS. The port's trace keeps its intercepts in one fixed
+ * array on the stack (see p_map.c); 64 entries are 768 B on the 32-bit target and
+ * a 2,048-unit trace across E1M1 crosses far fewer than that. An overflow stops
+ * collection and raises a counter, where upstream writes past its array. */
+#define P_MAXINTERCEPTS 64
+
 
 /* p_mobj.c's local STOPSPEED and FRICTION (p_local.h's ORIG_FRICTION). Below
  * STOPSPEED in both axes a walking thing is stopped outright; above it the
@@ -168,6 +200,29 @@ typedef struct p_move_stats {
     uint32_t crossed;
     uint32_t slides;
 } p_move_stats_t;
+
+/*
+ * The same idea for the attack path: what a shot's trace did, for a gate or a
+ * log. Optional, and a NULL pointer costs nothing -- the firmware passes NULL,
+ * tools/attack_check.c sets one.
+ *
+ *   traces            p_aim_line_attack() and p_line_attack() calls
+ *   intercepts        line and thing intercepts collected, over all traces
+ *   interceptOverflow traces that stopped collecting because P_MAXINTERCEPTS was
+ *                     reached (upstream writes past its array; this counts)
+ *   skyHits           shot ends the sky hack refused to put a puff on
+ *   specialsShot      special lines a shot triggered
+ *   zeroDistance      a plane or thing slope skipped because the intercept's
+ *                     distance was 0 (upstream divides by zero there)
+ */
+typedef struct p_attack_stats {
+    uint32_t traces;
+    uint32_t intercepts;
+    uint32_t interceptOverflow;
+    uint32_t skyHits;
+    uint32_t specialsShot;
+    uint32_t zeroDistance;
+} p_attack_stats_t;
 
 /* --- Public API ---------------------------------------------------------- */
 
@@ -341,6 +396,91 @@ int p_change_sector(p_mobj_context_t* world, uint16_t sector, int crushChange);
  * so the line is triggered for every crossing the trace reaches.
  */
 void p_use_lines(p_mobj_context_t* world, r_mobj_t* mobj);
+
+/* --- Shooting and aiming ------------------------------------------------- */
+
+/**
+ * @brief P_AimLineAttack(): the slope a shot at @p angle would hit at.
+ *
+ * Upstream's body:
+ *
+ *   `shootz = t1->z + (t1->height>>1) + 8*FRACUNIT;` -- the eye is the thing's
+ *   mid-height plus eight units, *not* the player's viewz, so a monster aims the
+ *   same way a player does;
+ *   `topslope = 100*FRACUNIT/160; bottomslope = -100*FRACUNIT/160;`
+ *   `attackrange = distance; linetarget = NULL;`
+ *   `P_PathTraverse (t1->x, t1->y, x2, y2, PT_ADDLINES|PT_ADDTHINGS,
+ *    PTR_AimTraverse);`
+ *   `if (linetarget) return aimslope; return 0;`
+ *
+ * The port has no pitch: when nothing is found the slope is 0, which is vanilla's
+ * own answer and the only one this port can produce (there is no `lookdir`).
+ *
+ * `x2 = t1->x + (distance>>FRACBITS)*finecosine[angle]` is upstream's integer
+ * product, not a FixedMul, and it is kept: at 2,048 map units the product is
+ * 134,217,728, which still fits a 32-bit int.
+ *
+ * @param world    The level's context.
+ * @param shooter  The mobj aiming.
+ * @param angle    The direction of the trace.
+ * @param distance How far the trace reaches.
+ * @param target   Optional out: what the trace found, or NULL.
+ * @return The slope, or 0 when nothing was hit.
+ */
+fixed_t p_aim_line_attack(p_mobj_context_t* world, r_mobj_t* shooter,
+                          angle_t angle, fixed_t distance, r_mobj_t** target);
+
+/**
+ * @brief P_LineAttack(): trace a shot and resolve what it hits.
+ *
+ * `shootthing = t1; la_damage = damage; ...; shootz = t1->z + (t1->height>>1) +
+ * 8*FRACUNIT; attackrange = distance; aimslope = slope;` then the traverser.
+ *
+ * The traverser's three rules, in upstream's order:
+ *
+ *   - a line with a special runs P_ShootSpecialLine first, and a shot triggers
+ *     only for a player (p_spec.c owns the trigger rules);
+ *   - a one-sided line is hit; a two-sided line is hit when its opening puts a
+ *     floor or a ceiling in the shot's way (`slope > aimslope` for the floor,
+ *     `slope < aimslope` for the ceiling), otherwise the shot continues;
+ *   - a hit line puts a puff four units short of it, unless the sky hack refuses
+ *     (`frontsector->ceilingpic == skyflatnum` above the ceiling, or a sky on both
+ *     sides) -- "don't shoot the sky!";
+ *   - a thing that is MF_SHOOTABLE and inside the aim band takes a puff when it
+ *     is MF_NOBLOOD and a spray of blood otherwise, ten units short of it, and
+ *     then `P_DamageMobj (th, shootthing, shootthing, la_damage)` when the damage
+ *     is not zero ("If damage == 0, it is just a test trace").
+ *
+ * The puff and the blood are p_mobj.c's; the damage is p_inter.c's. Both are
+ * handed the *shot's* range so P_SpawnPuff can tell a melee spark from a bullet
+ * one (upstream reads the `attackrange` global; p_mobj.h says why that is a
+ * parameter here).
+ *
+ * @param world    The level's context: zone, RNG, sectors, player record.
+ * @param shooter  The mobj firing.
+ * @param angle    The direction of the shot.
+ * @param distance How far the shot reaches.
+ * @param slope    The aim slope, from p_aim_line_attack() or 0.
+ * @param damage   Points on a hit; 0 makes the call a pure trace.
+ */
+void p_line_attack(p_mobj_context_t* world, r_mobj_t* shooter, angle_t angle,
+                   fixed_t distance, fixed_t slope, int damage);
+
+/**
+ * @brief P_ShootSpecialLine(): a hitscan hit a special line.
+ *
+ * Upstream `if (!thing->player) return;` then a switch on the line's special that
+ * runs the EV function and `P_ChangeSwitchTexture` for the arms that flip one.
+ * This port's dispatch is p_spec.c's `p_trigger_special_line (..., P_TRIGGER_SHOOT,
+ * ...)`, which owns both the trigger rules and the switch-texture bookkeeping it
+ * counts as `deferredLineSpecial`; the player test is passed through as `byPlayer`.
+ *
+ * @param world     The level's context.
+ * @param shooter   The mobj whose shot hit the line.
+ * @param lineIndex The linedef index.
+ */
+void p_shoot_special_line(p_mobj_context_t* world, r_mobj_t* shooter,
+                          uint16_t lineIndex);
 
 #ifdef __cplusplus
 } /* extern "C" */

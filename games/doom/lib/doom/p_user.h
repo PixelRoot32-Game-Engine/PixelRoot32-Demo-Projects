@@ -17,12 +17,13 @@
  *
  * WHAT D4.2c OWNS AND WHAT IT DOES NOT
  *
- * D4.2c owns the walking avatar and nothing else: turning, forward and side
- * momentum, friction through the real collision core (p_mobj.c/p_map.c), the
- * view height that follows the floor and the bob, and the use trace that opens
- * a door. Damage, weapons, monsters and P_DeathThink are later units, and every
- * deferred field and button below names its owner instead of being dropped
- * silently.
+ * D4.2c owns the walking avatar: turning, forward and side momentum, friction
+ * through the real collision core (p_mobj.c/p_map.c), the view height that follows
+ * the floor and the bob, and the use trace that opens a door. D4.2d1 added damage,
+ * death and pickups; D4.2d2 adds the weapon state machine, the weapon change and
+ * the fire button, each at its own site below. P_DeathThink, monster AI and the
+ * HUD are still later units, and every deferred field and button below names its
+ * owner instead of being dropped silently.
  *
  * THE COMMAND IS NOT THE STATE
  *
@@ -44,9 +45,11 @@
 #define DOOM_P_USER_H
 
 #include <stdint.h>
+#include <string.h>
 
 #include "m_fixed.h"
 #include "p_mobj.h"
+#include "p_pspr.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -188,11 +191,11 @@ typedef struct p_ticcmd {
  * is `BT_SPECIAL | BTS_*`, and G_Ticker tests the low two bits after masking.
  */
 typedef enum p_button {
-    BT_ATTACK = 1,              /* fire; T14 (P_FireWeapon) */
+    BT_ATTACK = 1,              /* fire; honoured by A_WeaponReady -> P_FireWeapon */
     BT_USE = 2,                 /* honoured: P_UseLines through the latch */
-    BT_CHANGE = 4,              /* weapon change; T14 */
-    BT_WEAPONMASK = (8 + 16 + 32), /* the weapon number inside BT_CHANGE; T14 */
-    BT_WEAPONSHIFT = 3,         /* BT_WEAPONMASK >> BT_WEAPONSHIFT; T14 */
+    BT_CHANGE = 4,              /* weapon change; honoured by P_PlayerThink */
+    BT_WEAPONMASK = (8 + 16 + 32), /* the weapon number inside BT_CHANGE */
+    BT_WEAPONSHIFT = 3,         /* BT_WEAPONMASK >> BT_WEAPONSHIFT */
     BT_SPECIAL = 128,           /* pause/save event, not a player action */
     BT_SPECIALMASK = 3,         /* BTS_* selector inside BT_SPECIAL */
     BTS_PAUSE = 1,              /* G_Ticker's pause toggle; the game loop's */
@@ -251,16 +254,29 @@ struct p_level;
  *                    T14's P_BringUpWeapon consumes it.
  *   cards[], backpack  the six keys and the doubled-ammo flag: P_GiveCard and
  *                    the backpack arm of P_TouchSpecialThing (D4.2d1).
- *   attackdown       "button down last tic"; P_FireWeapon's latch (T14).
+ *   attackdown       "button down last tic"; A_WeaponReady's fire latch (here).
  *   usedown          "button down last tic"; P_PlayerThink's use latch (here).
- *   refire           P_FireWeapon's less-accurate-refire counter (T14).
+ *   refire           A_ReFire's refire counter (here): nonzero makes P_GunShot's
+ *                    bullets drift.
+ *   readyweapon      the weapon actually in hand. It is what A_WeaponReady, every
+ *                    A_Fire*, P_CheckAmmo, P_BringUpWeapon and P_DropWeapon read,
+ *                    and what P_GiveAmmo's auto-select tail compares. G_PlayerReborn
+ *                    sets it to the pistol.
+ *   psprites[]       p_pspr.h's two overlay layers: the gun and its flash. The
+ *                    machine that advances them is p_pspr.c's (D4.2d2).
+ *   pspritesStarted  G_PlayerReborn calls P_SetupPsprites. This port's reborn step
+ *                    is the header-only p_player_wire() (so p_setup.c keeps
+ *                    linking without p_user.c) and the weapon table lives in
+ *                    p_pspr.c, so the one call is deferred to the first live
+ *                    P_PlayerThink; this bit makes it happen exactly once.
  *   killcount        intermission totals; P_KillMobj raises them (D4.2d1).
  *   itemcount        intermission totals; P_TouchSpecialThing raises them.
- *   secretcount      intermission totals; P_PlayerInSpecialSector (T14/T15).
+ *   secretcount      intermission totals; P_PlayerInSpecialSector (T15).
  *   damagecount      the red screen-flash counter; P_DamageMobj raises it and
  *                    P_PlayerThink decrements it.
  *   bonuscount       the gold screen-flash counter; a pickup adds BONUSADD.
- *   extralight       muzzle-flash light; P_FireWeapon (T14), read by the HUD.
+ *   extralight       muzzle-flash light; A_Light0/1/2 (p_action.c) write it, read
+ *                    by the HUD (D5).
  *   fixedcolormap    the power-up colormap; powers are D4.2d1's, the colormap
  *                    selection is the HUD's (D5), so it stays 0.
  *   attacker         who last dealt damage; P_DamageMobj (D4.2d1).
@@ -269,17 +285,9 @@ struct p_level;
  *
  * DELIBERATELY ABSENT, with the owner:
  *
- *   readyweapon                                  the weapon state machine; T14.
- *                                                P_GiveAmmo's auto-select tail
- *                                                compares it, so that tail is
- *                                                T14's as well.
  *   frags[MAXPLAYERS]                            deathmatch; D5.
  *   cheats                                       no cheats exist; D5.
  *   colormap                                     the translation map; D5.
- *   psprites[NUMPSPRITES]                        the weapon sprite state
- *                                                machine; T14 (p_pspr.c), and
- *                                                declaring it would drag in that
- *                                                state type.
  *
  * Upstream has no momx/momy on player_t: the momentum lives on `mo`, and
  * P_CalcHeight reads `mo->momx` directly. The port follows that, so no copy
@@ -292,10 +300,18 @@ struct p_level;
  *
  *   useTriggers            use presses that triggered a special line.
  *   useTriggered           this tic's answer, cleared at the top of the think.
- *   unsupportedAttack      tics a fire button was pressed (T14 owns firing).
- *   unsupportedWeaponChange tics a weapon-change button was pressed (T14).
- *   unsupportedDeath       tics the think ran with playerstate != LIVE (T14
- *                          owns P_DeathThink).
+ *   silentSounds           every S_* call the weapon actions and P_FireWeapon make.
+ *                          S2 puts audio entirely outside this port, so there is no
+ *                          sound to make; the count is how "the shot was loud" and
+ *                          "the shot's sound was never written" stay distinguishable.
+ *                          D4.2d1 counted its death sounds as A_* stubs; the weapons
+ *                          have no stub action to hang a counter on, so it lives
+ *                          here.
+ *   noiseAlerts            P_FireWeapon's `P_NoiseAlert (mo, mo)`. Waking monsters
+ *                          needs P_CheckSight, which is T15's, so a shot counts the
+ *                          call instead of making it.
+ *   unsupportedDeath       tics the think ran with playerstate != LIVE --
+ *                          P_DeathThink is still open and counted at its site.
  *   onground               P_MovePlayer's file-scope `onground`; 1 when the
  *                          avatar's z is on its floor.
  */
@@ -317,6 +333,8 @@ typedef struct p_player {
     int32_t maxammo[P_NUMAMMO];
     int32_t powers[P_NUMPOWERS];
     int32_t pendingweapon;
+    int32_t readyweapon;
+    p_pspdef_t psprites[P_NUMPSPRITES];
     uint8_t weaponowned[P_NUMWEAPONS];
     uint8_t cards[P_NUMCARDS];
     uint8_t backpack;
@@ -340,10 +358,11 @@ typedef struct p_player {
     uint8_t didsecret;
     uint8_t onground;
     uint8_t useTriggered;
+    uint8_t pspritesStarted;
 
     uint32_t useTriggers;
-    uint32_t unsupportedAttack;
-    uint32_t unsupportedWeaponChange;
+    uint32_t silentSounds;
+    uint32_t noiseAlerts;
     uint32_t unsupportedDeath;
 } p_player_t;
 
@@ -358,16 +377,21 @@ typedef struct p_player {
  *   p->usedown = p->attackdown = true;   "don't do anything immediately"
  *   p->playerstate = PST_LIVE;
  *   p->health = MAXHEALTH;
- *   p->pendingweapon = wp_pistol;
+ *   p->readyweapon = p->pendingweapon = wp_pistol;
  *   p->weaponowned[wp_fist] = p->weaponowned[wp_pistol] = true;
  *   p->ammo[am_clip] = 50;
  *   for (i = 0; i < NUMAMMO; ++i) p->maxammo[i] = maxammo[i];
  *
  * The ammo and weapon lines are G_PlayerReborn's too, and they matter here
  * because a pickup adds to what the player already carries: a clip on a reborn
- * player is 50 -> 60 rounds, not 0 -> 10. `readyweapon` is the one reborn field
- * this port cannot set yet -- it belongs to T14's weapon state machine, and only
- * `pendingweapon` (what a pickup *asks* for) is meaningful today.
+ * player is 50 -> 60 rounds, not 0 -> 10.
+ *
+ * NOT HERE: `P_SetupPsprites(p)`, which G_PlayerReborn also calls. The psprite
+ * record needs the weapon table, which is p_pspr.c's, and this function is
+ * `static inline` so p_setup.c keeps linking without p_user.c; the call is
+ * therefore deferred to the first live P_PlayerThink and made once (see
+ * `pspritesStarted`). The psprite timeline is upstream's either way, because
+ * P_SetupPsprites runs A_Raise once and P_MovePsprites then continues from there.
  *
  * It is `static inline` because p_setup.c must wire the record during the
  * THINGS scan without hard-linking p_user.c: the two pre-existing gates
@@ -376,11 +400,16 @@ typedef struct p_player {
  * wrapper below is the same rule with the record already located.
  */
 static inline void p_player_wire(p_player_t* player, r_mobj_t* mobj) {
-    const p_player_t zero = {0};
+    p_player_t zero;
 
     if (player == NULL) {
         return;
     }
+    /* G_PlayerReborn's `memset (p, 0, sizeof(*p))`. Written as memset rather than
+     * a `{0}` initialiser because the record carries arrays of records now
+     * (psprites[NUMPSPRITES]) and `{0}` makes -Wmissing-field-initializers fire,
+     * which this project's builds reject. */
+    memset(&zero, 0, sizeof zero);
     *player = zero;
     player->mo = mobj;
     if (mobj == NULL) {
@@ -392,8 +421,9 @@ static inline void p_player_wire(p_player_t* player, r_mobj_t* mobj) {
     player->playerstate = P_PST_LIVE;
     player->health = P_MAXHEALTH;
 
-    /* G_PlayerReborn's item state: the pistol is what a pickup asks for until
-     * T14 owns `readyweapon`. */
+    /* G_PlayerReborn's item state: the pistol is what is in hand and what a
+     * pickup asks for (`p->readyweapon = p->pendingweapon = wp_pistol;`). */
+    player->readyweapon = P_WP_PISTOL;
     player->pendingweapon = P_WP_PISTOL;
     player->weaponowned[P_WP_FIST] = 1u;
     player->weaponowned[P_WP_PISTOL] = 1u;
@@ -407,8 +437,9 @@ static inline void p_player_wire(p_player_t* player, r_mobj_t* mobj) {
 /**
  * @brief G_PlayerReborn() for a level: wire `level->playerState` to @p mobj.
  *
- * The opening ammo, weapons and pending weapon are G_PlayerReborn's and are
- * set by p_player_wire(); `readyweapon` is T14's and is not in the record yet.
+ * The opening ammo, weapons and both weapon slots are G_PlayerReborn's and are
+ * set by p_player_wire(); the psprite setup it also calls (P_SetupPsprites) is
+ * deferred to the first live P_PlayerThink, and p_pspr.h says why.
  *
  * @param level The level whose player record is written.
  * @param mobj  The avatar; NULL leaves the record empty.
@@ -422,18 +453,24 @@ void p_player_init(struct p_level* level, r_mobj_t* mobj);
  *
  *   1. copy the command into `player->cmd` (G_Ticker's memcpy);
  *   2. a live player runs the reactiontime gate and P_MovePlayer;
- *   3. P_CalcHeight() (P_DeathThink calls it too, in T14);
+ *   3. P_CalcHeight() (P_DeathThink calls it too, when it lands);
  *   4. BT_SPECIAL is cleared: "a special event has no other buttons";
- *   5. BT_CHANGE and BT_ATTACK are counted, because their handlers belong to
- *      T14; BT_USE runs P_UseLines() once per press through `usedown`;
- *   6. the two screen-flash counters tick down.
+ *   5. BT_CHANGE selects a weapon when it is owned and not already in hand, and
+ *      the change is *asked for* through `pendingweapon` -- the actual switch
+ *      happens when the weapon psprite can lower itself;
+ *   6. BT_USE runs P_UseLines() once per press through `usedown`;
+ *   7. P_MovePsprites(): the weapon and its flash advance one tic, which is where
+ *      A_WeaponReady sees BT_ATTACK and fires;
+ *   8. the power-up counters tick down (strength counts *up*, which is upstream's
+ *      fade) and the two screen-flash counters tick down.
  *
  * A player that is not PST_LIVE increments `unsupportedDeath` and returns:
- * P_DeathThink() is T14's and is not faked here.
+ * P_DeathThink() is not implemented, and the psprite machine therefore freezes
+ * for a dead player exactly as it would if the death tic did nothing.
  *
- * P_PlayerInSpecialSector() (sector damage), P_MovePsprites() and the power-up
- * colormaps are T14's; fixedcolormap therefore stays 0. The power-up counters
- * themselves are stored by D4.2d1's P_GivePower.
+ * P_PlayerInSpecialSector() (sector damage) is T15's, and the power-up colormaps
+ * are the HUD's (D5), so `fixedcolormap` stays 0 while the tic counters themselves
+ * are real.
  *
  * @param level The level; its playerState record is the subject.
  * @param cmd   This tic's command. NULL is one tic of no input: the caller may

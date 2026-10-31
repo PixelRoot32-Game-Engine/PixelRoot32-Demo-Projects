@@ -40,6 +40,16 @@
  * at all, or the "not implemented" counter would be dominated by the 519 of
  * 967 states that never had an action.
  *
+ * THE TWO SIGNATURES
+ *
+ * Upstream's `actionf_t` is a union of `void (*acp1)(mobj_t*)` and
+ * `void (*acp2)(player_t*, pspdef_t*)`. p_mobj.c calls acp1 for a thing's state
+ * and p_pspr.c calls acp2 for a weapon sprite's state. This file dispatches
+ * both: p_action_run() is the mobj half, p_action_run_psprite() the weapon half.
+ * The split is not cosmetic -- A_Light0/1/2 are the weapon actions that touch
+ * nothing but the player record, and they live here so that p_pspr.c does not
+ * have to know about light levels.
+ *
  * This is C99 only: <stdint.h>, no allocation, no globals, no stdio, no
  * floating point. The counters are caller-owned.
  */
@@ -49,6 +59,7 @@
 #include <stdint.h>
 
 #include "p_mobj.h"
+#include "p_pspr.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -113,6 +124,38 @@ void p_action_init(p_action_stats_t* stats);
  */
 p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
                                 action_t action);
+
+/**
+ * @brief Runs the weapon-sprite half of the dispatch: `acp2 (player, psp)`.
+ *
+ * Only the three light-level actions are implemented here, because they are the
+ * only weapon actions that need nothing from p_pspr.c:
+ *
+ *   A_Light0, A_Light1, A_Light2   `player->extralight = 0 | 1 | 2;`
+ *
+ * Upstream's muzzle flash is a brighter *view* for as long as the flash psprite
+ * shows one of these states. The renderer has no light state yet (the weapon
+ * widget and the status bar are D5.1), so the write is real state that nothing
+ * draws: counted as P_ACTION_DONE, because the statement runs, and comparable in
+ * a test through `extralight` so "the flash happened" and "the flash was a no-op"
+ * cannot look the same.
+ *
+ * Everything else -- A_Saw, A_FireShotgun2, A_BFGSpray, A_BFGsound, and anything
+ * a corrupt table produces -- is counted as P_ACTION_NOT_IMPLEMENTED through the
+ * same counters p_action_run() keeps, so a weapon state the psprite machine
+ * reaches without an implementation is a number and not a silence.
+ *
+ * @param world  The mobj context, for the counter sink.
+ * @param player The player record the light levels are written to.
+ * @param psp    The layer the state belongs to (unused by the three lights today;
+ *               carried so the signature is upstream's).
+ * @param action The state's action value.
+ * @return P_ACTION_DONE, P_ACTION_NOT_IMPLEMENTED, P_ACTION_UNKNOWN,
+ *         P_ACTION_NULL_MOBJ or P_ACTION_NONE.
+ */
+p_action_outcome_t p_action_run_psprite(p_mobj_context_t* world,
+                                        struct p_player* player,
+                                        p_pspdef_t* psp, action_t action);
 
 #ifdef __cplusplus
 } /* extern "C" */

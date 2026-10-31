@@ -99,6 +99,9 @@ SOURCES = (
     # pickup rules (D4.2d1), so the interaction layer is part of the movement
     # core's link closure now.
     "p_inter.c",
+    # D4.2d2: p_user.c runs the weapon psprite machine and p_inter.c drops a dying
+    # player's weapon, so p_pspr.c is in the closure too.
+    "p_pspr.c",
     "m_random.c", "z_zone.c", "doom_map.c", "r_bsp.c", "r_plane.c", "r_tables.c",
     "w_wad.c", "p_spec.c", "p_floor.c", "p_doors.c", "p_plats.c", "p_ceilng.c",
     "p_lights.c",

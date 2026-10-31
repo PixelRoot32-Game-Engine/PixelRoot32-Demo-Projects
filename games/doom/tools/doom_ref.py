@@ -4195,6 +4195,13 @@ MT_MISC0 = 43
 MT_MISC2 = 45
 MT_MISC3 = 46
 MT_CLIP = 63
+# D4.2d2's additions: the thing the weapon script shoots, and the three player
+# missiles p_pspr.c's A_FireMissile/A_FirePlasma/A_FireBFG name.
+MT_PLAYER = 0
+MT_POSSESSED = 1
+MT_ROCKET = 33
+MT_PLASMA = 34
+MT_BFG = 35
 
 S_GIBS = 895
 
@@ -4219,6 +4226,15 @@ DAMAGE_MOBJINFO = {
          822, 0, 0, 0, 0),                 # MT_MISC3, the armor bonus
     63: (0x00000001, 20 * FRACUNIT, 16 * FRACUNIT, 100, 1000, 0,
          870, 0, 0, 0, 0),                 # MT_CLIP
+    # D4.2d2 adds the three player missiles, which P_SpawnPlayerMissile names.
+    # The weapon script cannot fire any of them (shareware has no launcher), so
+    # these rows exist for the code path and not for a compared line.
+    33: (0x00010610, 11 * FRACUNIT, 8 * FRACUNIT, 100, 1000, 0,
+         114, 0, 127, 0, 0),               # MT_ROCKET
+    34: (0x00010610, 13 * FRACUNIT, 8 * FRACUNIT, 100, 1000, 0,
+         107, 0, 109, 0, 0),               # MT_PLASMA
+    35: (0x00010610, 13 * FRACUNIT, 8 * FRACUNIT, 100, 1000, 0,
+         115, 0, 117, 0, 0),               # MT_BFG
 }
 
 # statenum: (tics, nextstate, action, sprite name). Only the states this script
@@ -4365,7 +4381,8 @@ def damage_spawn(level: "SpecLevel", type_: int, x: int, y: int, z) -> dict:
         z = floor
     elif z == "ceiling":
         z = ceiling - info["height"]
-    tics, _next, _action, sprite = DAMAGE_STATES[info["spawnstate"]]
+    tics, _next, _action, sprite = level_mobj_states(level)[info["spawnstate"]]
+
     mo = {
         "type": type_, "x": x, "y": y, "z": i32(z),
         "momx": 0, "momy": 0, "momz": 0, "angle": 0,
@@ -4386,21 +4403,33 @@ def damage_remove(level: "SpecLevel", mo: dict) -> None:
     mo["removed"] = True
 
 
+def level_mobj_states(level: "SpecLevel") -> dict:
+    """The mobj state table this protocol compares against.
+
+    ``DAMAGE_STATES`` is the table ``--damage`` transcribes; ``--attack`` installs a
+    superset because the weapon script also drives the avatar's attack states. A
+    protocol that installs nothing gets the damage table, exactly as before.
+    """
+    table = getattr(level, "mobj_states", None)
+    return table if table is not None else DAMAGE_STATES
+
+
 def damage_set_state(level: "SpecLevel", mo: dict, state: int) -> bool:
     """P_SetMobjState(): follow zero-tic states, run A_Fall, stop at S_NULL."""
+    table = level_mobj_states(level)
     while True:
         if state == 0:
             mo["state"] = 0
             damage_remove(level, mo)
             return False
-        tics, nxt, action, sprite = DAMAGE_STATES[state]
+        tics, nxt, action, sprite = table[state]
         mo["state"] = state
         mo["tics"] = tics
         mo["sprite"] = sprite
         # A_Fall is the only action here that changes the mobj. A_Scream,
         # A_XScream, A_PlayerScream and A_Pain are sound only, A_Look and A_Chase
-        # are not implemented in the C (T15), and A_Explode is T14's, so none of
-        # them has an observable effect on either side.
+        # are not implemented in the C (T15), and A_Explode is not implemented, so
+        # none of them has an observable effect on either side.
         if action == "A_Fall":
             mo["flags"] &= ~MF_SOLID
         state = nxt
@@ -4424,8 +4453,28 @@ def damage_give_ammo(level: "SpecLevel", player: dict, ammo: int, num: int) -> b
         num = DAMAGE_CLIPAMMO[ammo] // 2
     if level.damage_skill in (0, 4):          # sk_baby / sk_nightmare
         num <<= 1
+    old = player["ammo"][ammo]
     player["ammo"][ammo] = min(player["ammo"][ammo] + num,
                                player["maxammo"][ammo])
+    if old:
+        return True
+    # D4.2d2's auto-select tail: "We were down to zero, so select a new weapon.
+    # Preferences are not user selectable." It reads `readyweapon`, which D4.2d1
+    # could not.
+    ready = player["readyweapon"]
+    owned = player["weaponowned"]
+    if ammo == 0:
+        if ready == 0:
+            player["pendingweapon"] = 3 if owned[3] else 1
+    elif ammo == 1:
+        if ready in (0, 1) and owned[2]:
+            player["pendingweapon"] = 2
+    elif ammo == 2:
+        if ready in (0, 1) and owned[5]:
+            player["pendingweapon"] = 5
+    elif ammo == 3:
+        if ready == 0 and owned[4]:
+            player["pendingweapon"] = 4
     return True
 
 
@@ -4534,6 +4583,10 @@ def damage_touch_special(level: "SpecLevel", special: dict, toucher: dict) -> No
     elif kind == "power":
         if not damage_give_power(player, toucher, arm[1]):
             return
+        # `if (player->readyweapon != wp_fist) player->pendingweapon = wp_fist;`
+        # -- D4.2d2 could finally compare the weapon in hand.
+        if arm[1] == 1 and player["readyweapon"] != 0:
+            player["pendingweapon"] = 0
     elif kind == "ammo":
         pool, loads = arm[1], arm[2]
         if not damage_give_ammo(level, player, pool, 0 if dropped else loads):
@@ -4666,14 +4719,20 @@ def damage_spray_z(level: "SpecLevel", z: int) -> int:
     return i32(z + jitter)
 
 
-def damage_spawn_puff(level: "SpecLevel", x: int, y: int, z: int) -> dict:
-    """P_SpawnPuff(): two draws for z, one for the tic jitter, then S_PUFF1."""
+def damage_spawn_puff(level: "SpecLevel", x: int, y: int, z: int,
+                      attackrange: int) -> dict:
+    """P_SpawnPuff(): two draws for z, one for the tic jitter, then the state.
+
+    ``attackrange`` is the *shot's* reach: a melee spark starts at S_PUFF3 so the
+    flare reads on the tic the fist lands.
+    """
     th = damage_spawn(level, MT_PUFF, x, y, damage_spray_z(level, z))
     th["momz"] = FRACUNIT
     th["tics"] -= level.rng.next() & 3
     if th["tics"] < 1:
         th["tics"] = 1
-    # `if (attackrange == MELEERANGE) P_SetMobjState (th, S_PUFF3)`: T14's.
+    if attackrange == ATTACK_MELEERANGE:
+        damage_set_state(level, th, 95)          # S_PUFF3
     return th
 
 
@@ -4780,7 +4839,7 @@ def damage_think(level: "SpecLevel", mo: dict) -> None:
     if mo["tics"] != -1:
         mo["tics"] -= 1
         if mo["tics"] == 0:
-            damage_set_state(level, mo, DAMAGE_STATES[mo["state"]][1])
+            damage_set_state(level, mo, level_mobj_states(level)[mo["state"]][1])
 
 
 def damage_run_thinkers(level: "SpecLevel") -> None:
@@ -4953,7 +5012,7 @@ def report_damage(lumps: list[Lump], map_name: str) -> None:
     damage_emit(level, step, "spawn-blood-10")
     damage_spawn_blood(level, x, mo["y"], z, 5)
     damage_emit(level, step, "spawn-blood-5")
-    damage_spawn_puff(level, x, mo["y"], z)
+    damage_spawn_puff(level, x, mo["y"], z, ATTACK_MISSILERANGE)
     damage_emit(level, step, "spawn-puff")
     for _ in range(3):
         damage_run_thinkers(level)
@@ -4975,6 +5034,1117 @@ def report_damage(lumps: list[Lump], map_name: str) -> None:
           f"crushed={level.crushed} kill={player['killcount']} "
           f"item={player['itemcount']} health={player['health']} "
           f"spawns={len(level.mobjs)}")
+
+
+# --- Weapons and the attack path (D4.2d2) -----------------------------------
+#
+# A second implementation of linuxdoom-1.10 p_pspr.c (P_SetPsprite,
+# P_SetupPsprites, P_MovePsprites, P_CalcSwing, P_BringUpWeapon, P_CheckAmmo,
+# P_FireWeapon, P_DropWeapon, P_BulletSlope, P_GunShot and every A_ function in
+# that file), of d_items.c's weaponinfo[], and of p_map.c's attack half
+# (P_AimLineAttack, P_LineAttack, P_ShootSpecialLine and the two traversers). It
+# reuses this file's movement core for the geometry and its damage core for the
+# consequences, and never calls the C.
+#
+# WHAT IS TRANSCRIBED, AND FROM WHERE
+#
+# ATTACK_WEAPONINFO is a second reading of d_items.c: one row per weapon with its
+# ammo pool and the five psprite states. ATTACK_STATES is a second reading of
+# info.c's rows for the weapon states, keyed by the statenum_t value the info.h
+# enum gives them (S_NULL is 0 and S_LIGHTDONE is 1, then the weapons in
+# PUNCH/PISTOL/SGUN/CHAIN/MISSILE/SAW/PLASMA/BFG order); DAMAGE_STATES covers the
+# mobj states the script reaches and is extended with the avatar's two attack
+# states. Nothing above is read out of lib/doom/info_tables.h, so a disagreement
+# between the two is a real defect in one of them.
+#
+# WHERE THE PLAYER RECORD COMES FROM
+#
+# Upstream reads `mobj->player`. This port's `player` flag marks the avatar and
+# the record is the level's, so the oracle keeps one `level.damage_player`, as the
+# damage protocol does, and the psprite layers live on it.
+
+ATTACK_SCRIPT = "weapons-wall-and-target"
+
+# p_local.h's MELEERANGE and MISSILERANGE, and p_map.c's slope band.
+ATTACK_MELEERANGE = 64 * FRACUNIT
+ATTACK_MISSILERANGE = 32 * 64 * FRACUNIT
+ATTACK_AIM_TOP_SLOPE = 100 * FRACUNIT // 160
+
+# p_pspr.c's LOWERSPEED, RAISESPEED, WEAPONBOTTOM, WEAPONTOP and BFGCELLS.
+ATTACK_LOWERSPEED = FRACUNIT * 6
+ATTACK_RAISESPEED = FRACUNIT * 6
+ATTACK_WEAPONBOTTOM = 128 * FRACUNIT
+ATTACK_WEAPONTOP = 32 * FRACUNIT
+ATTACK_BFGCELLS = 40
+
+# The shipped values of the constants tools/attack_check.py can perturb. The oracle
+# always holds these, so a build that changes one and still agrees would mean the
+# gate is not comparing what it claims to.
+ATTACK_GUNSHOT_DAMAGE = 5
+ATTACK_SPREAD_SHIFT = 18
+
+ATTACK_NUMPSPRITES = 2
+PS_WEAPON = 0
+PS_FLASH = 1
+
+ATTACK_AM_NOAMMO = -1
+ATTACK_NOCHANGE = 9
+
+# d_items.c weaponinfo[], by weapon slot: (ammo, upstate, downstate, readystate,
+# attackstate, flashstate).
+ATTACK_WEAPONINFO = (
+    (ATTACK_AM_NOAMMO, 4, 3, 2, 5, 0),        # fist:      PUNCHUP/DOWN/PUNCH/PUNCH1
+    (0, 12, 11, 10, 13, 17),                  # pistol
+    (1, 20, 19, 18, 21, 30),                  # shotgun
+    (0, 51, 50, 49, 52, 55),                  # chaingun
+    (3, 59, 58, 57, 60, 63),                  # missile launcher
+    (2, 76, 75, 74, 77, 79),                  # plasma rifle
+    (2, 83, 82, 81, 84, 88),                  # BFG 9000
+    (ATTACK_AM_NOAMMO, 70, 69, 67, 71, 0),    # chainsaw
+    (1, 32, 33, 34, 35, 46),                  # super shotgun
+)
+
+# statenum: (tics, nextstate, action, sprite name). A second reading of info.c's
+# weapon rows; DAMAGE_STATES supplies the mobj rows and this only adds the avatar's
+# two attack states.
+ATTACK_WEAPON_STATES = {
+    1: (0, 0, "A_Light0", "SHTG"),             # S_LIGHTDONE
+    2: (1, 2, "A_WeaponReady", "PUNG"),        # S_PUNCH
+    3: (1, 3, "A_Lower", "PUNG"),              # S_PUNCHDOWN
+    4: (1, 4, "A_Raise", "PUNG"),              # S_PUNCHUP
+    5: (4, 6, "NULL", "PUNG"),                 # S_PUNCH1
+    6: (4, 7, "A_Punch", "PUNG"),              # S_PUNCH2
+    7: (5, 8, "NULL", "PUNG"),                 # S_PUNCH3
+    8: (4, 9, "NULL", "PUNG"),                 # S_PUNCH4
+    9: (5, 2, "A_ReFire", "PUNG"),             # S_PUNCH5
+    10: (1, 10, "A_WeaponReady", "PISG"),      # S_PISTOL
+    11: (1, 11, "A_Lower", "PISG"),            # S_PISTOLDOWN
+    12: (1, 12, "A_Raise", "PISG"),            # S_PISTOLUP
+    13: (4, 14, "NULL", "PISG"),               # S_PISTOL1
+    14: (6, 15, "A_FirePistol", "PISG"),       # S_PISTOL2
+    15: (4, 16, "NULL", "PISG"),               # S_PISTOL3
+    16: (5, 10, "A_ReFire", "PISG"),           # S_PISTOL4
+    17: (7, 1, "A_Light1", "PISF"),            # S_PISTOLFLASH
+    18: (1, 18, "A_WeaponReady", "SHTG"),      # S_SGUN
+    19: (1, 19, "A_Lower", "SHTG"),            # S_SGUNDOWN
+    20: (1, 20, "A_Raise", "SHTG"),            # S_SGUNUP
+    21: (3, 22, "NULL", "SHTG"),               # S_SGUN1
+    22: (7, 23, "A_FireShotgun", "SHTG"),      # S_SGUN2
+    23: (5, 24, "NULL", "SHTG"),               # S_SGUN3
+    24: (5, 25, "NULL", "SHTG"),               # S_SGUN4
+    25: (4, 26, "NULL", "SHTG"),               # S_SGUN5
+    26: (5, 27, "NULL", "SHTG"),               # S_SGUN6
+    27: (5, 28, "NULL", "SHTG"),               # S_SGUN7
+    28: (3, 29, "NULL", "SHTG"),               # S_SGUN8
+    29: (7, 18, "A_ReFire", "SHTG"),           # S_SGUN9
+    30: (4, 31, "A_Light1", "SHTF"),           # S_SGUNFLASH1
+    31: (3, 1, "A_Light2", "SHTF"),            # S_SGUNFLASH2
+    49: (1, 49, "A_WeaponReady", "CHGG"),      # S_CHAIN
+    50: (1, 50, "A_Lower", "CHGG"),            # S_CHAINDOWN
+    51: (1, 51, "A_Raise", "CHGG"),            # S_CHAINUP
+    52: (4, 53, "A_FireCGun", "CHGG"),         # S_CHAIN1
+    53: (4, 54, "A_FireCGun", "CHGG"),         # S_CHAIN2
+    54: (0, 49, "A_ReFire", "CHGG"),           # S_CHAIN3
+    55: (5, 1, "A_Light1", "CHGF"),            # S_CHAINFLASH1
+    56: (5, 1, "A_Light2", "CHGF"),            # S_CHAINFLASH2
+    57: (1, 57, "A_WeaponReady", "MISG"),      # S_MISSILE
+    58: (1, 58, "A_Lower", "MISG"),            # S_MISSILEDOWN
+    59: (1, 59, "A_Raise", "MISG"),            # S_MISSILEUP
+    60: (8, 61, "A_GunFlash", "MISG"),         # S_MISSILE1
+    61: (12, 62, "A_FireMissile", "MISG"),     # S_MISSILE2
+    62: (0, 57, "A_ReFire", "MISG"),           # S_MISSILE3
+    63: (3, 64, "A_Light1", "MISF"),           # S_MISSILEFLASH1
+    64: (4, 65, "NULL", "MISF"),               # S_MISSILEFLASH2
+    65: (4, 66, "A_Light2", "MISF"),           # S_MISSILEFLASH3
+    66: (4, 1, "A_Light2", "MISF"),            # S_MISSILEFLASH4
+    67: (4, 68, "A_WeaponReady", "SAWG"),      # S_SAW
+    68: (4, 67, "A_WeaponReady", "SAWG"),      # S_SAWB
+    69: (1, 69, "A_Lower", "SAWG"),            # S_SAWDOWN
+    70: (1, 70, "A_Raise", "SAWG"),            # S_SAWUP
+    71: (4, 72, "A_Saw", "SAWG"),              # S_SAW1
+    72: (4, 73, "A_Saw", "SAWG"),              # S_SAW2
+    73: (0, 67, "A_ReFire", "SAWG"),           # S_SAW3
+    74: (1, 74, "A_WeaponReady", "PLSG"),      # S_PLASMA
+    75: (1, 75, "A_Lower", "PLSG"),            # S_PLASMADOWN
+    76: (1, 76, "A_Raise", "PLSG"),            # S_PLASMAUP
+    77: (3, 78, "A_FirePlasma", "PLSG"),       # S_PLASMA1
+    78: (20, 74, "A_ReFire", "PLSG"),          # S_PLASMA2
+    79: (4, 1, "A_Light1", "PLSF"),            # S_PLASMAFLASH1
+    80: (4, 1, "A_Light1", "PLSF"),            # S_PLASMAFLASH2
+    81: (1, 81, "A_WeaponReady", "BFGG"),      # S_BFG
+    82: (1, 82, "A_Lower", "BFGG"),            # S_BFGDOWN
+    83: (1, 83, "A_Raise", "BFGG"),            # S_BFGUP
+    84: (20, 85, "A_BFGsound", "BFGG"),        # S_BFG1
+    85: (10, 86, "A_GunFlash", "BFGG"),        # S_BFG2
+    86: (10, 87, "A_FireBFG", "BFGG"),         # S_BFG3
+    87: (20, 81, "A_ReFire", "BFGG"),          # S_BFG4
+    88: (11, 89, "A_Light1", "BFGF"),          # S_BFGFLASH1
+    89: (6, 1, "A_Light2", "BFGF"),            # S_BFGFLASH2
+    154: (12, 149, "NULL", "PLAY"),            # S_PLAY_ATK1
+    155: (6, 154, "NULL", "PLAY"),             # S_PLAY_ATK2
+}
+
+ATTACK_STATES = {**DAMAGE_STATES, **ATTACK_WEAPON_STATES}
+
+# The weapon actions this port implements; anything else on a psprite state is
+# counted as not implemented by the C and has no observable effect, so the oracle
+# only needs to know that it changes nothing.
+ATTACK_PHYS_ACTIONS = frozenset({
+    "A_WeaponReady", "A_ReFire", "A_CheckReload", "A_Lower", "A_Raise",
+    "A_GunFlash", "A_FirePistol", "A_FireShotgun", "A_FireCGun", "A_FireMissile",
+    "A_FirePlasma", "A_FireBFG", "A_Punch", "A_Light0", "A_Light1", "A_Light2",
+})
+
+# P_CheckAmmo's `gamemode` arms: DOOM 1 shareware is the only game this port loads
+# (L2 Q3), so the plasma, super-shotgun and BFG preferences can never be chosen.
+ATTACK_SHAREWARE = True
+
+# The sky flat's packed name, "F_SKY1": r_defs.h packs a name's eight bytes
+# most-significant first, and the p_map.c sky hack compares the same constant.
+ATTACK_SKY_FLAT = int.from_bytes(b"F_SKY1\0\0", "big")
+
+# p_mobj.c's P_SpawnPlayerMissile needs the missile's speed; these are the three
+# types its callers name. The script cannot reach them (shareware has no rocket
+# launcher, plasma rifle or BFG), so nothing below is compared.
+ATTACK_MISSILE_SPEED = {
+    33: 20 * FRACUNIT,                                  # MT_ROCKET
+    34: 25 * FRACUNIT,                                  # MT_PLASMA
+    35: 25 * FRACUNIT,                                  # MT_BFG
+}
+
+
+
+def attack_weapon(weapon: int) -> tuple:
+    """d_items.c's weaponinfo[weapon] row; a bad slot answers the fist's."""
+    if 0 <= weapon < len(ATTACK_WEAPONINFO):
+        return ATTACK_WEAPONINFO[weapon]
+    return ATTACK_WEAPONINFO[0]
+
+
+def attack_new_psprite() -> dict:
+    """One pspdef_t at its G_PlayerReborn value: inactive."""
+    return {"state": 0, "tics": 0, "sx": 0, "sy": 0}
+
+
+def attack_level_time(level: "SpecLevel") -> int:
+    return level.leveltime
+
+
+def attack_psprite_action(level: "SpecLevel", player: dict, psp: dict,
+                          action: str) -> None:
+    """The psprite dispatch: the twelve weapon actions, plus the three lights."""
+    if action == "A_WeaponReady":
+        attack_weapon_ready(level, player, psp)
+    elif action == "A_ReFire":
+        attack_refire(level, player)
+    elif action == "A_CheckReload":
+        attack_check_ammo(level, player)
+    elif action == "A_Lower":
+        attack_lower(level, player, psp)
+    elif action == "A_Raise":
+        attack_raise(level, player, psp)
+    elif action == "A_GunFlash":
+        attack_gun_flash(level, player)
+    elif action == "A_FirePistol":
+        attack_fire_pistol(level, player)
+    elif action == "A_FireShotgun":
+        attack_fire_shotgun(level, player)
+    elif action == "A_FireCGun":
+        attack_fire_cgun(level, player, psp)
+    elif action == "A_FireMissile":
+        level.player["ammo"][attack_weapon(player["readyweapon"])[0]] -= 1
+        if player["mo"] is not None:
+            attack_spawn_player_missile(level, player["mo"], MT_ROCKET)
+    elif action == "A_FirePlasma":
+        attack_fire_plasma(level, player)
+    elif action == "A_FireBFG":
+        level.player["ammo"][attack_weapon(player["readyweapon"])[0]] -= \
+            ATTACK_BFGCELLS
+        if player["mo"] is not None:
+            attack_spawn_player_missile(level, player["mo"], MT_BFG)
+    elif action == "A_Punch":
+        attack_punch(level, player)
+    elif action == "A_Light0":
+        player["extralight"] = 0
+    elif action == "A_Light1":
+        player["extralight"] = 1
+    elif action == "A_Light2":
+        player["extralight"] = 2
+    # A_Saw, A_FireShotgun2, A_BFGSpray and A_BFGsound are not implemented in the
+    # C: it counts them and changes nothing, which is what this branch does.
+
+
+def attack_set_psprite(level: "SpecLevel", player: dict, position: int,
+                       stnum: int) -> None:
+    """P_SetPsprite(): enter a state, run its action, follow the zero-tic chain."""
+    psp = player["psprites"][position]
+    guard = 0
+    while True:
+        if stnum == 0:
+            psp["state"] = 0
+            return
+        tics, nxt, action, _sprite = ATTACK_STATES[stnum]
+        psp["state"] = stnum
+        psp["tics"] = tics
+        # `if (state->misc1) { ... }`: no shipped row has a non-zero misc1.
+        if action != "NULL":
+            attack_psprite_action(level, player, psp, action)
+            if psp["state"] == 0:
+                return
+        # `stnum = psp->state->nextstate;` -- the state after the action.
+        stnum = ATTACK_STATES[psp["state"]][1]
+        if psp["tics"] != 0:
+            return
+        guard += 1
+        if guard > 256:
+            return
+
+
+def attack_setup_psprites(level: "SpecLevel", player: dict) -> None:
+    """P_SetupPsprites(): clear both layers, then raise the ready weapon."""
+    for position in range(ATTACK_NUMPSPRITES):
+        player["psprites"][position] = attack_new_psprite()
+    player["pendingweapon"] = player["readyweapon"]
+    attack_bring_up_weapon(level, player)
+    player["pspritesStarted"] = 1
+
+
+def attack_move_psprites(level: "SpecLevel", player: dict) -> None:
+    """P_MovePsprites(): one tic per layer, then the flash follows the gun."""
+    for position in range(ATTACK_NUMPSPRITES):
+        psp = player["psprites"][position]
+        if psp["state"] == 0:
+            continue
+        if psp["tics"] != -1:
+            psp["tics"] -= 1
+            if psp["tics"] == 0:
+                attack_set_psprite(level, player, position,
+                                   ATTACK_STATES[psp["state"]][1])
+    player["psprites"][PS_FLASH]["sx"] = player["psprites"][PS_WEAPON]["sx"]
+    player["psprites"][PS_FLASH]["sy"] = player["psprites"][PS_WEAPON]["sy"]
+
+
+def attack_bring_up_weapon(level: "SpecLevel", player: dict) -> None:
+    """P_BringUpWeapon(): start raising the pending weapon from the bottom."""
+    if player["pendingweapon"] == ATTACK_NOCHANGE:
+        player["pendingweapon"] = player["readyweapon"]
+    if player["pendingweapon"] == 7:                       # wp_chainsaw
+        player["silentSounds"] += 1                        # sfx_sawup
+    newstate = attack_weapon(player["pendingweapon"])[1]
+    player["pendingweapon"] = ATTACK_NOCHANGE
+    player["psprites"][PS_WEAPON]["sy"] = ATTACK_WEAPONBOTTOM
+    attack_set_psprite(level, player, PS_WEAPON, newstate)
+
+
+def attack_check_ammo(level: "SpecLevel", player: dict) -> bool:
+    """P_CheckAmmo(): enough ammo to fire, or pick another weapon."""
+    ammo = attack_weapon(player["readyweapon"])[0]
+    if player["readyweapon"] == 6:                          # wp_bfg
+        count = ATTACK_BFGCELLS
+    elif player["readyweapon"] == 8:                        # wp_supershotgun
+        count = 2
+    else:
+        count = 1
+
+    if ammo == ATTACK_AM_NOAMMO or player["ammo"][ammo] >= count:
+        return True
+
+    # Upstream's preference order. The plasma, super-shotgun and BFG arms are its
+    # `gamemode` tests and are false in shareware, so they are absent here too.
+    if player["weaponowned"][3] and player["ammo"][0]:
+        player["pendingweapon"] = 3
+    elif player["weaponowned"][2] and player["ammo"][1]:
+        player["pendingweapon"] = 2
+    elif player["ammo"][0]:
+        player["pendingweapon"] = 1
+    elif player["weaponowned"][7]:
+        player["pendingweapon"] = 7
+    elif player["weaponowned"][4] and player["ammo"][3]:
+        player["pendingweapon"] = 4
+    else:
+        player["pendingweapon"] = 0
+
+    attack_set_psprite(level, player, PS_WEAPON,
+                       attack_weapon(player["readyweapon"])[2])
+    return False
+
+
+def attack_fire_weapon(level: "SpecLevel", player: dict) -> None:
+    """P_FireWeapon(): the ammo check, the avatar's attack state, the gun's."""
+    if not attack_check_ammo(level, player):
+        return
+    if player["mo"] is not None:
+        damage_set_state(level, player["mo"], 154)          # S_PLAY_ATK1
+    attack_set_psprite(level, player, PS_WEAPON,
+                       attack_weapon(player["readyweapon"])[4])
+    player["noiseAlerts"] += 1
+
+
+def attack_drop_weapon(level: "SpecLevel", player: dict) -> None:
+    attack_set_psprite(level, player, PS_WEAPON,
+                       attack_weapon(player["readyweapon"])[2])
+
+
+def attack_weapon_ready(level: "SpecLevel", player: dict, psp: dict) -> None:
+    """A_WeaponReady(): leave the attack state, honour a change, fire, or bob."""
+    mo = player["mo"]
+
+    if mo is not None and mo["state"] in (154, 155):
+        damage_set_state(level, mo, 149)                    # S_PLAY
+
+    if player["readyweapon"] == 7 and psp["state"] == 67:
+        player["silentSounds"] += 1                         # sfx_sawidl
+
+    if player["pendingweapon"] != ATTACK_NOCHANGE or not player["health"]:
+        attack_set_psprite(level, player, PS_WEAPON,
+                           attack_weapon(player["readyweapon"])[2])
+        return
+
+    if player["cmd"]["buttons"] & BT_ATTACK:
+        if not player["attackdown"] or player["readyweapon"] not in (4, 6):
+            player["attackdown"] = 1
+            attack_fire_weapon(level, player)
+            return
+    else:
+        player["attackdown"] = 0
+
+    angle = (128 * attack_level_time(level)) & FINEMASK
+    psp["sx"] = i32(FRACUNIT + fixed_mul(
+        player["bob"], FINE_SINE[angle + FINEANGLES // 4]))
+    angle &= FINEANGLES // 2 - 1
+    psp["sy"] = i32(ATTACK_WEAPONTOP + fixed_mul(player["bob"], FINE_SINE[angle]))
+
+
+def attack_refire(level: "SpecLevel", player: dict) -> None:
+    """A_ReFire(): fire again without lowering, or stop and re-check."""
+    if (player["cmd"]["buttons"] & BT_ATTACK and
+            player["pendingweapon"] == ATTACK_NOCHANGE and player["health"]):
+        player["refire"] += 1
+        attack_fire_weapon(level, player)
+    else:
+        player["refire"] = 0
+        attack_check_ammo(level, player)
+
+
+def attack_lower(level: "SpecLevel", player: dict, psp: dict) -> None:
+    """A_Lower(): walk the gun off the bottom, then swap and raise."""
+    psp["sy"] = i32(psp["sy"] + ATTACK_LOWERSPEED)
+    if psp["sy"] < ATTACK_WEAPONBOTTOM:
+        return
+    if player["playerstate"] == PST_DEAD:
+        psp["sy"] = ATTACK_WEAPONBOTTOM
+        return
+    if not player["health"]:
+        attack_set_psprite(level, player, PS_WEAPON, 0)
+        return
+    player["readyweapon"] = player["pendingweapon"]
+    attack_bring_up_weapon(level, player)
+
+
+def attack_raise(level: "SpecLevel", player: dict, psp: dict) -> None:
+    """A_Raise(): walk the gun up, then enter its ready state."""
+    psp["sy"] = i32(psp["sy"] - ATTACK_RAISESPEED)
+    if psp["sy"] > ATTACK_WEAPONTOP:
+        return
+    psp["sy"] = ATTACK_WEAPONTOP
+    attack_set_psprite(level, player, PS_WEAPON,
+                       attack_weapon(player["readyweapon"])[3])
+
+
+def attack_gun_flash(level: "SpecLevel", player: dict) -> None:
+    """A_GunFlash(): the flash on its own state row."""
+    if player["mo"] is not None:
+        damage_set_state(level, player["mo"], 155)          # S_PLAY_ATK2
+    attack_set_psprite(level, player, PS_FLASH,
+                       attack_weapon(player["readyweapon"])[5])
+
+
+def attack_fire_pistol(level: "SpecLevel", player: dict) -> None:
+    """A_FirePistol(): one bullet, accurate only on the first shot."""
+    row = attack_weapon(player["readyweapon"])
+    player["silentSounds"] += 1                             # sfx_pistol
+    if player["mo"] is not None:
+        damage_set_state(level, player["mo"], 155)          # S_PLAY_ATK2
+    player["ammo"][row[0]] -= 1
+    attack_set_psprite(level, player, PS_FLASH, row[5])
+    if player["mo"] is None:
+        return
+    slope = attack_bullet_slope(level, player["mo"])
+    attack_gun_shot(level, player["mo"], slope, not player["refire"])
+
+
+def attack_fire_shotgun(level: "SpecLevel", player: dict) -> None:
+    """A_FireShotgun(): seven inaccurate pellets."""
+    row = attack_weapon(player["readyweapon"])
+    player["silentSounds"] += 1                             # sfx_shotgn
+    if player["mo"] is not None:
+        damage_set_state(level, player["mo"], 155)
+    player["ammo"][row[0]] -= 1
+    attack_set_psprite(level, player, PS_FLASH, row[5])
+    if player["mo"] is None:
+        return
+    slope = attack_bullet_slope(level, player["mo"])
+    for _ in range(7):
+        attack_gun_shot(level, player["mo"], slope, False)
+
+
+def attack_fire_cgun(level: "SpecLevel", player: dict, psp: dict) -> None:
+    """A_FireCGun(): the sound always, the bullet only with ammo left."""
+    row = attack_weapon(player["readyweapon"])
+    player["silentSounds"] += 1                             # sfx_pistol
+    if not player["ammo"][row[0]]:
+        return
+    if player["mo"] is not None:
+        damage_set_state(level, player["mo"], 155)
+    player["ammo"][row[0]] -= 1
+    attack_set_psprite(level, player, PS_FLASH,
+                       row[5] + psp["state"] - 52)          # flashstate + ps - S_CHAIN1
+    if player["mo"] is None:
+        return
+    slope = attack_bullet_slope(level, player["mo"])
+    attack_gun_shot(level, player["mo"], slope, not player["refire"])
+
+
+def attack_fire_plasma(level: "SpecLevel", player: dict) -> None:
+    """A_FirePlasma(): the flash choice is a draw, taken before the missile."""
+    row = attack_weapon(player["readyweapon"])
+    player["ammo"][row[0]] -= 1
+    attack_set_psprite(level, player, PS_FLASH,
+                       row[5] + (level.rng.next() & 1))
+    if player["mo"] is not None:
+        attack_spawn_player_missile(level, player["mo"], MT_PLASMA)
+
+
+def attack_bullet_slope(level: "SpecLevel", mo: dict) -> int:
+    """P_BulletSlope(): the player's angle, then a quarter turn either side."""
+    an = mo["angle"]
+    slope, found = attack_aim_line_attack(level, mo, an, 16 * 64 * FRACUNIT)
+    if found is None:
+        an = u32(an + (1 << 26))
+        slope, found = attack_aim_line_attack(level, mo, an, 16 * 64 * FRACUNIT)
+        if found is None:
+            an = u32(an - (2 << 26))
+            slope, found = attack_aim_line_attack(level, mo, an,
+                                                  16 * 64 * FRACUNIT)
+    return slope
+
+
+def attack_gun_shot(level: "SpecLevel", mo: dict, slope: int,
+                    accurate: bool) -> None:
+    """P_GunShot(): one bullet. The damage draw is first, the drift's two next."""
+    damage = ATTACK_GUNSHOT_DAMAGE * (level.rng.next() % 3 + 1)
+    angle = mo["angle"]
+    if not accurate:
+        angle = u32(angle + (((level.rng.next() - level.rng.next())
+                              << ATTACK_SPREAD_SHIFT) & 0xFFFFFFFF))
+    attack_line_attack(level, mo, angle, ATTACK_MISSILERANGE, slope, damage)
+
+
+def attack_punch(level: "SpecLevel", player: dict) -> None:
+    """A_Punch(): the fist's damage, its drift, and the turn to face the hit."""
+    mo = player["mo"]
+    if mo is None:
+        return
+    damage = (level.rng.next() % 10 + 1) << 1
+    if player["powers"][1]:                                 # pw_strength
+        damage *= 10
+    angle = mo["angle"]
+    angle = u32(angle + (((level.rng.next() - level.rng.next()) << 18)
+                         & 0xFFFFFFFF))
+    slope, target = attack_aim_line_attack(level, mo, angle, ATTACK_MELEERANGE)
+    attack_line_attack(level, mo, angle, ATTACK_MELEERANGE, slope, i32(damage))
+    if target is not None:
+        player["silentSounds"] += 1                         # sfx_punch
+        mo["angle"] = point_to_angle(mo["x"], mo["y"], target["x"], target["y"])
+
+
+def attack_spawn_player_missile(level: "SpecLevel", source: dict,
+                                type_: int) -> dict:
+    """P_SpawnPlayerMissile(): three aim probes, then the missile."""
+    an = source["angle"]
+    slope, found = attack_aim_line_attack(level, source, an, 16 * 64 * FRACUNIT)
+    if found is None:
+        an = u32(an + (1 << 26))
+        slope, found = attack_aim_line_attack(level, source, an,
+                                              16 * 64 * FRACUNIT)
+        if found is None:
+            an = u32(an - (2 << 26))
+            slope, found = attack_aim_line_attack(level, source, an,
+                                                  16 * 64 * FRACUNIT)
+    if found is None:
+        an = source["angle"]
+        slope = 0
+
+    th = damage_spawn(level, type_, source["x"], source["y"],
+                      i32(source["z"] + 8 * FRACUNIT))
+    row = DAMAGE_MOBJINFO.get(type_)
+    if row is not None:
+        level.player["silentSounds"] += 1                   # seesound
+
+    th["target"] = source
+    th["angle"] = an
+    speed = ATTACK_MISSILE_SPEED[type_]
+    th["momx"] = i32(fixed_mul(speed,
+                               FINE_SINE[(an >> ANGLETOFINESHIFT) + FINEANGLES // 4]))
+    th["momy"] = i32(fixed_mul(speed, FINE_SINE[an >> ANGLETOFINESHIFT]))
+    th["momz"] = i32(fixed_mul(speed, slope))
+    attack_check_missile_spawn(level, th)
+    return th
+
+
+def attack_check_missile_spawn(level: "SpecLevel", th: dict) -> bool:
+    """P_CheckMissileSpawn(): jitter, half-step forward, explode if solid."""
+    th["tics"] -= level.rng.next() & 3
+    if th["tics"] < 1:
+        th["tics"] = 1
+    th["x"] = i32(th["x"] + (th["momx"] >> 1))
+    th["y"] = i32(th["y"] + (th["momy"] >> 1))
+    th["z"] = i32(th["z"] + (th["momz"] >> 1))
+    if not movement_try_move(level, th, th["x"], th["y"]):
+        movement_explode_missile(level, th)
+        return False
+    return True
+
+
+def attack_intercept_vector(tx: int, ty: int, tdx: int, tdy: int,
+                            lx: int, ly: int, ldx: int, ldy: int) -> int:
+    """P_InterceptVector, from upstream's expression -- not movement's.
+
+    ``movement_intercept_vector`` passes the two direction vectors the other way
+    round and multiplies the trace's into the numerator, which agrees with
+    upstream for an axis-aligned ray and not otherwise. p_map.c says the same in
+    its own comment; the shot's fraction is the correct one.
+    """
+    den = fixed_mul(ldy >> 8, tdx) - fixed_mul(ldx >> 8, tdy)
+    if den == 0:
+        return 0
+    num = fixed_mul((lx - tx) >> 8, ldy) + fixed_mul((ty - ly) >> 8, ldx)
+    return fixed_div(num, den)
+
+
+def attack_trace_line(level: "SpecLevel", x1: int, y1: int, dx: int, dy: int,
+                      index: int) -> int | None:
+    """PIT_AddLineIntercepts, over one linedef."""
+    line = level.bsp.linedefs[index]
+    v1, v2, ldx, ldy = movement_line_geometry(level.bsp, line)
+
+    if dx > 16 * FRACUNIT or dy > 16 * FRACUNIT or \
+            dx < -16 * FRACUNIT or dy < -16 * FRACUNIT:
+        s1 = movement_point_on_divline_side(v1["x"], v1["y"], x1, y1, dx, dy)
+        s2 = movement_point_on_divline_side(v2["x"], v2["y"], x1, y1, dx, dy)
+    else:
+        s1 = movement_point_on_line_side(x1, y1, v1, ldx, ldy)
+        s2 = movement_point_on_line_side(x1 + dx, y1 + dy, v1, ldx, ldy)
+    if s1 == s2:
+        return None
+
+    frac = attack_intercept_vector(x1, y1, dx, dy, v1["x"], v1["y"], ldx, ldy)
+    if frac < 0 or frac > FRACUNIT:
+        return None
+    return frac
+
+
+def attack_collect(level: "SpecLevel", x1: int, y1: int, dx: int, dy: int):
+    """PIT_AddLineIntercepts and PIT_AddThingIntercepts, over the whole map."""
+    entries: list[tuple[int, object, object]] = []          # (frac, thing, line)
+    for index in range(len(level.bsp.linedefs)):
+        frac = attack_trace_line(level, x1, y1, dx, dy, index)
+        if frac is None:
+            continue
+        entries.append((frac, None, index))
+
+    trace_positive = i32(dx ^ dy) > 0
+    for mo in level.mobjs:
+        if mo.get("removed"):
+            continue
+        if trace_positive:
+            cx1 = mo["x"] - mo["radius"]
+            cy1 = mo["y"] + mo["radius"]
+            cx2 = mo["x"] + mo["radius"]
+            cy2 = mo["y"] - mo["radius"]
+        else:
+            cx1 = mo["x"] - mo["radius"]
+            cy1 = mo["y"] - mo["radius"]
+            cx2 = mo["x"] + mo["radius"]
+            cy2 = mo["y"] + mo["radius"]
+        s1 = movement_point_on_divline_side(cx1, cy1, x1, y1, dx, dy)
+        s2 = movement_point_on_divline_side(cx2, cy2, x1, y1, dx, dy)
+        if s1 == s2:
+            continue
+        frac = attack_intercept_vector(x1, y1, dx, dy, cx1, cy1,
+                                      cx2 - cx1, cy2 - cy1)
+        if frac < 0 or frac > FRACUNIT:
+            continue
+        entries.append((frac, mo, None))
+    return entries
+
+
+def attack_run_traverse(level: "SpecLevel", ctx: dict, entries: list,
+                        shooting: bool) -> None:
+    """P_TraverseIntercepts: the nearest unvisited crossing, over and over."""
+    work = [list(entry) for entry in entries]
+    for _ in range(len(work)):
+        best = INT32_MAX
+        chosen = None
+        for entry in work:
+            if entry[0] < best:
+                best = entry[0]
+                chosen = entry
+        if chosen is None or best > FRACUNIT:
+            return
+        if chosen[1] is not None:
+            keep = (attack_shoot_thing(level, ctx, chosen[0], chosen[1])
+                    if shooting else
+                    attack_aim_thing(level, ctx, chosen[0], chosen[1]))
+        else:
+            keep = (attack_shoot_line(level, ctx, chosen[0], chosen[2])
+                    if shooting else
+                    attack_aim_line(level, ctx, chosen[0], chosen[2]))
+        chosen[0] = INT32_MAX
+        if not keep:
+            return
+
+
+def attack_side_heights(level: "SpecLevel", line: dict):
+    """(front floor, front ceiling, back floor, back ceiling) or None."""
+    front = _front_sector(level, line)
+    back = _back_sector(level, line)
+    if front is None or back is None:
+        return None
+    return (level.sectors[front]["floor"], level.sectors[front]["ceiling"],
+            level.sectors[back]["floor"], level.sectors[back]["ceiling"])
+
+
+def attack_divide(ctx: dict, numerator: int, dist: int):
+    """FixedDiv, with the zero-distance case skipped instead of dividing by 0."""
+    if dist == 0:
+        return None
+    return fixed_div(numerator, dist)
+
+
+def attack_aim_line(level: "SpecLevel", ctx: dict, frac: int, index: int) -> bool:
+    """PTR_AimTraverse's line arm: narrow the aim band."""
+    line = level.bsp.linedefs[index]
+    if not (line["flags"] & 4):
+        return False                                        # stop
+    opening = movement_line_opening(level, index)
+    if opening["bottom"] >= opening["top"]:
+        return False
+    heights = attack_side_heights(level, line)
+    if heights is None:
+        return False
+    front_floor, front_ceiling, back_floor, back_ceiling = heights
+    dist = fixed_mul(ctx["range"], frac)
+    if front_floor != back_floor:
+        slope = attack_divide(ctx, opening["bottom"] - ctx["shootz"], dist)
+        if slope is not None and slope > ctx["bottomSlope"]:
+            ctx["bottomSlope"] = slope
+    if front_ceiling != back_ceiling:
+        slope = attack_divide(ctx, opening["top"] - ctx["shootz"], dist)
+        if slope is not None and slope < ctx["topSlope"]:
+            ctx["topSlope"] = slope
+    if ctx["topSlope"] <= ctx["bottomSlope"]:
+        return False
+    return True
+
+
+def attack_aim_thing(level: "SpecLevel", ctx: dict, frac: int,
+                     th: dict) -> bool:
+    """PTR_AimTraverse's thing arm: the midpoint of the visible band."""
+    if th is ctx["shooter"]:
+        return True
+    if not (th["flags"] & MF_SHOOTABLE):
+        return True
+    dist = fixed_mul(ctx["range"], frac)
+    top = attack_divide(ctx, th["z"] + th["height"] - ctx["shootz"], dist)
+    if top is None or top < ctx["bottomSlope"]:
+        return True
+    bottom = attack_divide(ctx, th["z"] - ctx["shootz"], dist)
+    if bottom is None or bottom > ctx["topSlope"]:
+        return True
+    if top > ctx["topSlope"]:
+        top = ctx["topSlope"]
+    if bottom < ctx["bottomSlope"]:
+        bottom = ctx["bottomSlope"]
+    ctx["aimSlope"] = trunc_div(top + bottom, 2)
+    ctx["lineTarget"] = th
+    return False
+
+
+def attack_shoot_line(level: "SpecLevel", ctx: dict, frac_in: int,
+                      index: int) -> bool:
+    """PTR_ShootTraverse's line arm: trigger a special, then hit or pass."""
+    line = level.bsp.linedefs[index]
+    if level.line_special[index]:
+        attack_shoot_special_line(level, ctx["shooter"], index)
+
+    if not (line["flags"] & 4):
+        return attack_hit_line(level, ctx, frac_in, index)
+
+    opening = movement_line_opening(level, index)
+    heights = attack_side_heights(level, line)
+    if heights is None:
+        return attack_hit_line(level, ctx, frac_in, index)
+    front_floor, front_ceiling, back_floor, back_ceiling = heights
+    dist = fixed_mul(ctx["range"], frac_in)
+    if front_floor != back_floor:
+        slope = attack_divide(ctx, opening["bottom"] - ctx["shootz"], dist)
+        if slope is not None and slope > ctx["aimSlope"]:
+            return attack_hit_line(level, ctx, frac_in, index)
+    if front_ceiling != back_ceiling:
+        slope = attack_divide(ctx, opening["top"] - ctx["shootz"], dist)
+        if slope is not None and slope < ctx["aimSlope"]:
+            return attack_hit_line(level, ctx, frac_in, index)
+    return True
+
+
+def attack_hit_line(level: "SpecLevel", ctx: dict, frac_in: int,
+                    index: int) -> bool:
+    """PTR_ShootTraverse's `hitline`: the sky hack, then a puff."""
+    frac = frac_in - fixed_div(4 * FRACUNIT, ctx["range"])
+    x = i32(ctx["x1"] + fixed_mul(ctx["dx"], frac))
+    y = i32(ctx["y1"] + fixed_mul(ctx["dy"], frac))
+    z = i32(ctx["shootz"] + fixed_mul(ctx["aimSlope"],
+                                      fixed_mul(frac, ctx["range"])))
+    line = level.bsp.linedefs[index]
+    front = _front_sector(level, line)
+    if front is not None and \
+            level.sectors[front]["ceilingpic"] == ATTACK_SKY_FLAT:
+        if z > level.sectors[front]["ceiling"]:
+            return False
+        back = _back_sector(level, line)
+        if back is not None and \
+                level.sectors[back]["ceilingpic"] == ATTACK_SKY_FLAT:
+            return False
+    damage_spawn_puff(level, x, y, z, ctx["range"])
+    return False
+
+
+def attack_shoot_thing(level: "SpecLevel", ctx: dict, frac_in: int,
+                       th: dict) -> bool:
+    """PTR_ShootTraverse's thing arm: a puff or blood, then the damage."""
+    if th is ctx["shooter"]:
+        return True
+    if not (th["flags"] & MF_SHOOTABLE):
+        return True
+    dist = fixed_mul(ctx["range"], frac_in)
+    top = attack_divide(ctx, th["z"] + th["height"] - ctx["shootz"], dist)
+    if top is None or top < ctx["aimSlope"]:
+        return True
+    bottom = attack_divide(ctx, th["z"] - ctx["shootz"], dist)
+    if bottom is None or bottom > ctx["aimSlope"]:
+        return True
+
+    frac = frac_in - fixed_div(10 * FRACUNIT, ctx["range"])
+    x = i32(ctx["x1"] + fixed_mul(ctx["dx"], frac))
+    y = i32(ctx["y1"] + fixed_mul(ctx["dy"], frac))
+    z = i32(ctx["shootz"] + fixed_mul(ctx["aimSlope"],
+                                      fixed_mul(frac, ctx["range"])))
+    if th["flags"] & MF_NOBLOOD:
+        damage_spawn_puff(level, x, y, z, ctx["range"])
+    else:
+        damage_spawn_blood(level, x, y, z, ctx["damage"])
+    if ctx["damage"]:
+        damage_damage(level, th, ctx["shooter"], ctx["shooter"], ctx["damage"])
+    return False
+
+
+def attack_aim_line_attack(level: "SpecLevel", shooter: dict, angle: int,
+                           distance: int):
+    """P_AimLineAttack(): (slope, linetarget)."""
+    ctx = {
+        "shooter": shooter,
+        "shootz": i32(shooter["z"] + (shooter["height"] >> 1) + 8 * FRACUNIT),
+        "range": distance,
+        "aimSlope": 0,
+        "topSlope": ATTACK_AIM_TOP_SLOPE,
+        "bottomSlope": -ATTACK_AIM_TOP_SLOPE,
+        "lineTarget": None,
+        "damage": 0,
+    }
+    angle >>= ANGLETOFINESHIFT
+    x1 = shooter["x"]
+    y1 = shooter["y"]
+    x2 = i32(x1 + (distance >> FRACBITS) * FINE_SINE[angle + FINEANGLES // 4])
+    y2 = i32(y1 + (distance >> FRACBITS) * FINE_SINE[angle])
+    ctx["x1"], ctx["y1"] = x1, y1
+    ctx["dx"], ctx["dy"] = i32(x2 - x1), i32(y2 - y1)
+    entries = attack_collect(level, x1, y1, ctx["dx"], ctx["dy"])
+    attack_run_traverse(level, ctx, entries, False)
+    if ctx["lineTarget"] is not None:
+        return ctx["aimSlope"], ctx["lineTarget"]
+    # This port has no pitch: a trace that found nothing aims dead level.
+    return 0, None
+
+
+def attack_line_attack(level: "SpecLevel", shooter: dict, angle: int,
+                       distance: int, slope: int, damage: int) -> None:
+    """P_LineAttack(): trace a shot and resolve what it hits."""
+    ctx = {
+        "shooter": shooter,
+        "shootz": i32(shooter["z"] + (shooter["height"] >> 1) + 8 * FRACUNIT),
+        "range": distance,
+        "aimSlope": slope,
+        "topSlope": 0,
+        "bottomSlope": 0,
+        "lineTarget": None,
+        "damage": damage,
+    }
+    angle >>= ANGLETOFINESHIFT
+    x1 = shooter["x"]
+    y1 = shooter["y"]
+    x2 = i32(x1 + (distance >> FRACBITS) * FINE_SINE[angle + FINEANGLES // 4])
+    y2 = i32(y1 + (distance >> FRACBITS) * FINE_SINE[angle])
+    ctx["x1"], ctx["y1"] = x1, y1
+    ctx["dx"], ctx["dy"] = i32(x2 - x1), i32(y2 - y1)
+    entries = attack_collect(level, x1, y1, ctx["dx"], ctx["dy"])
+    attack_run_traverse(level, ctx, entries, True)
+
+
+def attack_shoot_special_line(level: "SpecLevel", shooter: dict,
+                              index: int) -> None:
+    """P_ShootSpecialLine(): p_spec.c owns the trigger rules."""
+    if not shooter.get("player"):
+        return
+    trigger_special_line(level, index, "shoot", True)
+
+
+def attack_player_think(level: "SpecLevel", player: dict, cmd: dict) -> None:
+    """P_PlayerThink(), with D4.2d2's weapon half."""
+    player["cmd"] = dict(cmd)
+    command = player["cmd"]
+    player["useTriggered"] = 0
+
+    if not player.get("pspritesStarted"):
+        attack_setup_psprites(level, player)
+
+    if player["playerstate"] != PST_LIVE:
+        player["unsupportedDeath"] += 1
+        return
+
+    mo = player["mo"]
+    if mo["reactiontime"]:
+        mo["reactiontime"] -= 1
+    else:
+        player_move_player(level, player)
+
+    player_calc_height(level, player)
+
+    if command["buttons"] & BT_SPECIAL:
+        command["buttons"] = 0
+
+    if command["buttons"] & BT_CHANGE:
+        attack_weapon_change(player, command)
+
+    if command["buttons"] & BT_USE:
+        if not player["usedown"]:
+            before = level.stats["triggers"]
+            movement_use_lines(level, mo)
+            if level.stats["triggers"] != before:
+                player["useTriggered"] = 1
+                player["useTriggers"] += 1
+            player["usedown"] = 1
+    else:
+        player["usedown"] = 0
+
+    attack_move_psprites(level, player)
+
+    if player["powers"][1]:                                 # pw_strength
+        player["powers"][1] += 1
+    if player["powers"][0]:                                 # pw_invulnerability
+        player["powers"][0] -= 1
+    if player["powers"][2]:                                 # pw_invisibility
+        player["powers"][2] -= 1
+        if player["powers"][2] == 0:
+            mo["flags"] &= ~MF_SHADOW
+    if player["powers"][5]:                                 # pw_infrared
+        player["powers"][5] -= 1
+    if player["powers"][3]:                                 # pw_ironfeet
+        player["powers"][3] -= 1
+
+    if player["damagecount"]:
+        player["damagecount"] -= 1
+    if player["bonuscount"]:
+        player["bonuscount"] -= 1
+
+    player["fixedcolormap"] = 0
+
+
+def attack_weapon_change(player: dict, cmd: dict) -> None:
+    """P_PlayerThink's BT_CHANGE block."""
+    new = (cmd["buttons"] & BT_WEAPONMASK) >> BT_WEAPONSHIFT
+    if new == 0 and player["weaponowned"][7] and \
+            not (player["readyweapon"] == 7 and player["powers"][1]):
+        new = 7
+    # The super-shotgun swap is `gamemode == commercial`: absent in shareware.
+    if 0 <= new < len(player["weaponowned"]) and player["weaponowned"][new] and \
+            new != player["readyweapon"]:
+        if new not in (5, 6):                               # plasma, BFG
+            player["pendingweapon"] = new
+
+
+
+def attack_print_player(level: "SpecLevel") -> None:
+    """The player line: ammo, both weapon slots, the fire latch and the counters."""
+    player = level.damage_player
+    weapons = 0
+    for index, owned in enumerate(player["weaponowned"]):
+        if owned:
+            weapons |= 1 << index
+    print(f"PLAYER hp={player['health']} "
+          f"ammo={','.join(str(a) for a in player['ammo'])} w={weapons} "
+          f"pend={player['pendingweapon']} ready={player['readyweapon']} "
+          f"refire={player['refire']} atk={player['attackdown']} "
+          f"lite={player['extralight']} snd={player['silentSounds']} "
+          f"noise={player['noiseAlerts']}")
+
+
+def attack_print_psprites(player: dict) -> None:
+    for position, psp in enumerate(player["psprites"]):
+        print(f"PSP {position} state={psp['state']} tics={psp['tics']} "
+              f"sx={psp['sx']} sy={psp['sy']}")
+
+
+def attack_emit(level: "SpecLevel", step: list[int], op: str) -> None:
+    print(f"STEP {step[0]} op={op} rng={level.rng.index}")
+    attack_print_psprites(level.damage_player)
+    for slot, mo in enumerate(level.mobjs):
+        damage_print_mobj(level, slot, mo)
+    attack_print_player(level)
+    step[0] += 1
+
+
+def report_attack(lumps: list[Lump], map_name: str) -> None:
+    """The `--attack` protocol: the four shareware weapons against a real map."""
+    bsp = read_bsp_map(lumps, map_name)
+    things = run_things(bsp, 2)                 # the RNG position the load leaves
+    level = SpecLevel(bsp, RandomState(things.rng))
+    level.leveltime = 0
+    level.move_stats = {"checks": 0, "blocked": 0, "crossed": 0, "slides": 0}
+    level.pickups = True
+    level.damage_skill = 2                      # sk_medium, p_spawn_rules_default
+    level.damage_netgame = False
+    level.crushed = 0
+    level.mobj_states = ATTACK_STATES
+    level.stats["triggers"] = 0
+
+    mo = movement_player(level, use_start_angle=True)
+    level.mobjs = [mo]
+    mo["threshold"] = 0
+    mo["sprite"] = "PLAY"
+    player = player_record(mo)
+    # G_PlayerReborn's item state (p_player_wire): 50 bullets, the fists and the
+    # pistol, the ammo ceilings, and the pistol in both weapon slots.
+    player["ammo"] = [50, 0, 0, 0]
+    player["maxammo"] = list(DAMAGE_MAXAMMO)
+    player["weaponowned"] = [1, 1, 0, 0, 0, 0, 0, 0, 0]
+    player["cards"] = [0] * 6
+    player["powers"] = [0] * 6
+    player["readyweapon"] = 1                   # wp_pistol, as G_PlayerReborn leaves
+    player["pendingweapon"] = 1
+    player["backpack"] = 0
+    player["psprites"] = [attack_new_psprite(), attack_new_psprite()]
+    player["pspritesStarted"] = 0
+    player["silentSounds"] = 0
+    player["noiseAlerts"] = 0
+    level.damage_player = player
+
+    # The two weapons P_GiveWeapon hands over, in the C's order: each newly owned
+    # one also sets `pendingweapon`, which is why the last one given wins until
+    # P_SetupPsprites replaces it with the weapon in hand.
+    damage_give_weapon(level, player, 2, False)             # shotgun
+    damage_give_weapon(level, player, 3, False)             # chaingun
+    player["ammo"] = [50, 20, 0, 0]
+
+    sector = mo["sector"]
+    print(f"ATTACK {map_name} script={ATTACK_SCRIPT}")
+    print(f"SETUP rng={level.rng.index} mobjs={len(level.mobjs)} "
+          f"sector={sector} floor={level.sectors[sector]['floor']} "
+          f"ceiling={level.sectors[sector]['ceiling']} "
+          f"player={damage_slot_of(level, mo)}")
+
+    # The target's spot: 40 map units along the avatar's spawn facing, computed
+    # once so the second target lands where the first stood.
+    fine = mo["angle"] >> ANGLETOFINESHIFT
+    target_x = i32(mo["x"] + 40 * FINE_SINE[fine + FINEANGLES // 4])
+    target_y = i32(mo["y"] + 40 * FINE_SINE[fine])
+    target = damage_spawn(level, MT_POSSESSED, target_x, target_y, "floor")
+    # Aim at it exactly, so the shot's direction does not depend on the THING
+    # record's angle.
+    mo["angle"] = point_to_angle(mo["x"], mo["y"], target["x"], target["y"])
+
+    step = [0]
+
+    def tic(op: str, buttons: int = 0) -> None:
+        cmd = {"forwardmove": 0, "sidemove": 0, "angleturn": 0,
+               "buttons": buttons}
+        attack_player_think(level, player, cmd)
+        damage_run_thinkers(level)
+        run_tic(level)
+        level.leveltime += 1
+        attack_emit(level, step, op)
+
+    attack_emit(level, step, "setup-weapons")
+    attack_setup_psprites(level, player)
+    attack_emit(level, step, "setup-psprites")
+
+    for _ in range(15):
+        tic("raise-pistol")
+    tic("fire-pistol", BT_ATTACK)
+    for _ in range(14):
+        tic("pistol-hold", BT_ATTACK)
+    tic("pistol-release")
+
+    tic("change-shotgun", BT_CHANGE | (2 << BT_WEAPONSHIFT))
+    for _ in range(15):
+        tic("lower-for-shotgun")
+    for _ in range(16):
+        tic("raise-shotgun")
+    tic("fire-shotgun", BT_ATTACK)
+    for _ in range(20):
+        tic("shotgun-hold", BT_ATTACK)
+    tic("shotgun-release")
+
+    tic("change-chaingun", BT_CHANGE | (3 << BT_WEAPONSHIFT))
+    for _ in range(15):
+        tic("lower-for-chaingun")
+    for _ in range(16):
+        tic("raise-chaingun")
+    tic("fire-chaingun", BT_ATTACK)
+    for _ in range(10):
+        tic("chaingun-hold", BT_ATTACK)
+
+    # One clip left, then the trigger keeps going: the gun clicks empty, A_ReFire
+    # asks P_CheckAmmo, and the preference order picks the shotgun.
+    player["ammo"][0] = 1
+    attack_emit(level, step, "clips-one")
+    for _ in range(40):
+        tic("chaingun-dry", BT_ATTACK)
+    tic("dry-release")
+
+    tic("change-fist", BT_CHANGE | (0 << BT_WEAPONSHIFT))
+    for _ in range(15):
+        tic("lower-for-fist")
+    for _ in range(16):
+        tic("raise-fist")
+
+    # A fresh target where the first stood: the fist's trace passes the corpse
+    # without a blood spray, so the punch needs something that is still alive.
+    target2 = damage_spawn(level, MT_POSSESSED, target_x, target_y, "floor")
+    mo["angle"] = point_to_angle(mo["x"], mo["y"], target2["x"], target2["y"])
+    attack_emit(level, step, "target-two")
+    tic("fire-fist", BT_ATTACK)
+    for _ in range(6):
+        tic("fist-hold", BT_ATTACK)
+    tic("fist-release")
+
+    puffs = sum(1 for each in level.mobjs if each["type"] == MT_PUFF)
+    bloods = sum(1 for each in level.mobjs if each["type"] == MT_BLOOD)
+    print(f"SUMMARY steps={step[0]} rng={level.rng.index} puffs={puffs} "
+          f"bloods={bloods} targetHp={target['health']} "
+          f"target2Hp={target2['health']} mobjs={len(level.mobjs)} "
+          f"ready={player['readyweapon']} snd={player['silentSounds']} "
+          f"noise={player['noiseAlerts']} shots={level.stats['triggers']}")
 
 
 # --- BSP reporting ----------------------------------------------------------
@@ -6359,6 +7529,12 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
                         help="run the damage/death/pickup/crush script against the "
                              "damage rules and print every mobj and the player "
                              "record each step (D4.2d1)")
+    parser.add_argument("--attack", metavar="NAME",
+                        help="run the weapon script (fists, pistol, shotgun, "
+                             "chaingun; raise, fire, refire, change, dry and "
+                             "switch) against the psprite and attack rules and "
+                             "print both psprite layers, every mobj and the player "
+                             "record each step (D4.2d2)")
     parser.add_argument("--tics", type=int, default=420, metavar="N",
                         help="with --specials, --movement or --player: tics to run "
                              "(default: 420 for --specials; the movement gate "
@@ -6400,10 +7576,10 @@ def main(argv: list[str] | None = None) -> int:
     if not (patches_wanted or textures_wanted or flats_wanted or arguments.map
             or arguments.stats or arguments.bsp or arguments.segs
             or arguments.things or arguments.specials or arguments.movement
-            or arguments.player or arguments.damage):
+            or arguments.player or arguments.damage or arguments.attack):
         parser.error("nothing to do: pass --patches, --textures, --flats, --all, "
                      "--map, --stats, --bsp, --segs, --things, --specials, "
-                     "--movement, --player or --damage")
+                     "--movement, --player, --damage or --attack")
     if arguments.limit is not None and arguments.limit < 0:
         parser.error("--limit cannot be negative")
     if arguments.tics < 0:
@@ -6474,6 +7650,8 @@ def main(argv: list[str] | None = None) -> int:
             report_player(lumps, arguments.player.upper(), arguments.tics)
         if arguments.damage:
             report_damage(lumps, arguments.damage.upper())
+        if arguments.attack:
+            report_attack(lumps, arguments.attack.upper())
     except FormatError as error:
         print(f"doom_ref: {error}", file=sys.stderr)
         return EXIT_INPUT

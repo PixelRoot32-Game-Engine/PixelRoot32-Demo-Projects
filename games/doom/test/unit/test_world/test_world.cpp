@@ -39,8 +39,10 @@
 #include "p_doors.h"
 #include "p_floor.h"
 #include "p_lights.h"
+#include "p_inter.h"
 #include "p_map.h"
 #include "p_plats.h"
+#include "p_pspr.h"
 #include "p_setup.h"
 #include "p_spec.h"
 #include "p_user.h"
@@ -2173,16 +2175,37 @@ void test_player_think_counts_the_deferred_buttons_and_death(void) {
     PlayerFixture fixture;
     TEST_ASSERT_TRUE(fixture.open());
 
+    // The fire button is no longer counted: A_WeaponReady reads it inside
+    // P_MovePsprites. The weapon must be up first -- P_SetupPsprites runs on the
+    // first live think and the raise takes fifteen A_Raise steps -- so sixteen
+    // idle tics reach the ready state and the press after them fires.
+    p_ticcmd_t idle{};
+    for (int i = 0; i < 16; ++i) {
+        p_player_think(&fixture.level, &idle);
+    }
+    TEST_ASSERT_EQUAL_INT(S_PISTOL, fixture.player().psprites[PS_WEAPON].state);
+
     p_ticcmd_t attack{};
     attack.buttons = BT_ATTACK;
     p_player_think(&fixture.level, &attack);
-    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().unsupportedAttack);
-    TEST_ASSERT_EQUAL_INT32(0, fixture.player().refire);   // D4.2d's counter
+    TEST_ASSERT_EQUAL_INT32(0, fixture.player().refire);   // no refire yet
+    TEST_ASSERT_EQUAL_INT32(P_WP_PISTOL, fixture.player().readyweapon);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().noiseAlerts);
+    // The fire latched: A_WeaponReady set attackdown before firing.
+    TEST_ASSERT_EQUAL_INT32(1, fixture.player().attackdown);
 
+    // BT_CHANGE asks for a weapon the player owns; the shotgun is not owned, so
+    // nothing is pending.
     p_ticcmd_t change{};
-    change.buttons = BT_CHANGE;
+    change.buttons = static_cast<u8>(BT_CHANGE | (2u << BT_WEAPONSHIFT));
     p_player_think(&fixture.level, &change);
-    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().unsupportedWeaponChange);
+    TEST_ASSERT_EQUAL_INT32(P_WP_NOCHANGE, fixture.player().pendingweapon);
+
+    // The fist is owned, so the same request for weapon 0 is accepted -- and
+    // because the shot is in flight the change waits for the psprite.
+    change.buttons = static_cast<u8>(BT_CHANGE | (0u << BT_WEAPONSHIFT));
+    p_player_think(&fixture.level, &change);
+    TEST_ASSERT_EQUAL_INT32(P_WP_FIST, fixture.player().pendingweapon);
 
     // `if (cmd->buttons & BT_SPECIAL) cmd->buttons = 0;` clears every bit,
     // including a fire bit sharing the word.
@@ -2190,9 +2213,8 @@ void test_player_think_counts_the_deferred_buttons_and_death(void) {
     special.buttons = static_cast<u8>(BT_SPECIAL | BT_ATTACK);
     p_player_think(&fixture.level, &special);
     TEST_ASSERT_EQUAL_UINT8(0u, fixture.player().cmd.buttons);
-    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().unsupportedAttack);
 
-    // PST_DEAD is P_DeathThink's (D4.2d): counted, not faked.
+    // PST_DEAD is P_DeathThink's, which is still open: counted, not faked.
     fixture.player().playerstate = P_PST_DEAD;
     const fixed_t viewz = fixture.player().viewz;
     p_ticcmd_t walk{};
@@ -2260,6 +2282,300 @@ void test_level_tic_runs_the_player_then_the_thinkers(void) {
     TEST_ASSERT_EQUAL_INT32(viewz, fixture.player().viewz);
 }
 
+// --- Weapons and the attack path (D4.2d2) ----------------------------------
+
+// A 256 x 256 room with one extra one-sided line 48 units north of the centre:
+// the nearest wall a melee swing can reach, because MELEERANGE is 64 units. The
+// bullet's reach is 2,048, so a shot also stops on it -- which is what makes the
+// two P_SpawnPuff branches comparable on the same map.
+struct AttackFixture {
+    MoveMapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[65536]{};
+    p_level_t level{};
+
+    AttackFixture() : builder({{0, 128, 160, 0, 0}}) {
+        builder.addRoom(0);
+        const u16 v0 = builder.addVertex(-128, 48);
+        const u16 v1 = builder.addVertex(128, 48);
+        builder.addLine(v0, v1, 0, 0, 0, 0, -1);
+        builder.addThing(0, 0, 90, 1, 7);   // player 1, facing +y
+    }
+
+    bool open() {
+        if (builder.open(&map) != DOOM_MAP_OK) {
+            return false;
+        }
+        return p_level_init(&level, &map, arena, sizeof arena, nullptr) ==
+               P_SETUP_OK;
+    }
+
+    p_player_t& player() { return level.playerState; }
+    r_mobj_t* mo() { return level.player; }
+
+    // The first mobj of a type, or nullptr.
+    r_mobj_t* first(mobjtype_t type) const {
+        for (const r_mobj_t* each = p_level_first_mobj(&level); each != nullptr;
+             each = p_level_next_mobj(each)) {
+            if (each->type == static_cast<i16>(type)) {
+                return const_cast<r_mobj_t*>(each);
+            }
+        }
+        return nullptr;
+    }
+};
+
+void test_weapon_set_psprite_runs_the_entry_action_and_follows_the_chain(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    // S_PUNCHDOWN's action is A_Lower and its tics are 1, so entering it steps sy
+    // by LOWERSPEED once. The chain then follows the state *after* the action.
+    p_set_psprite(&fixture.level.context, &player, PS_WEAPON, S_PUNCHDOWN);
+    TEST_ASSERT_EQUAL_INT(S_PUNCHDOWN, player.psprites[PS_WEAPON].state);
+    TEST_ASSERT_EQUAL_INT32(1, player.psprites[PS_WEAPON].tics);
+    TEST_ASSERT_EQUAL_INT32(0, player.psprites[PS_WEAPON].sx);
+    TEST_ASSERT_EQUAL_INT32(P_LOWERSPEED, player.psprites[PS_WEAPON].sy);
+
+    // S_NULL deactivates the layer: upstream's `if (!stnum) psp->state = NULL`.
+    p_set_psprite(&fixture.level.context, &player, PS_WEAPON, S_NULL);
+    TEST_ASSERT_EQUAL_INT(S_NULL, player.psprites[PS_WEAPON].state);
+
+    // A flash state that ends in S_LIGHTDONE, whose tics are 0 and whose action is
+    // A_Light0: the layer runs the action, follows the zero-tic nextstate to
+    // S_NULL and deactivates -- one call, no visible state in between.
+    p_set_psprite(&fixture.level.context, &player, PS_FLASH, S_PISTOLFLASH);
+    TEST_ASSERT_EQUAL_INT(S_PISTOLFLASH, player.psprites[PS_FLASH].state);
+    TEST_ASSERT_EQUAL_INT32(1, player.extralight);
+    p_set_psprite(&fixture.level.context, &player, PS_FLASH, S_LIGHTDONE);
+    TEST_ASSERT_EQUAL_INT(S_NULL, player.psprites[PS_FLASH].state);
+    TEST_ASSERT_EQUAL_INT32(0, player.extralight);
+}
+
+void test_weapon_setup_raises_the_pistol_to_the_ready_state(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    p_setup_psprites(&fixture.level.context, &player);
+    // P_SetPsprite runs A_Raise on entry, so the very first step is already taken.
+    TEST_ASSERT_EQUAL_INT(S_PISTOLUP, player.psprites[PS_WEAPON].state);
+    TEST_ASSERT_EQUAL_INT32(P_WEAPONBOTTOM - P_RAISESPEED,
+                            player.psprites[PS_WEAPON].sy);
+    TEST_ASSERT_EQUAL_INT32(P_WP_NOCHANGE, player.pendingweapon);
+    TEST_ASSERT_EQUAL_UINT8(1u, player.pspritesStarted);
+
+    // Fifteen more steps reach WEAPONTOP and the ready state, because
+    // 128 - 6*16 = 32 exactly.
+    for (int i = 0; i < 15; ++i) {
+        p_move_psprites(&fixture.level.context, &player);
+    }
+    TEST_ASSERT_EQUAL_INT(S_PISTOL, player.psprites[PS_WEAPON].state);
+    TEST_ASSERT_EQUAL_INT32(P_WEAPONTOP, player.psprites[PS_WEAPON].sy);
+    // The flash follows the gun every tic, in both axes.
+    TEST_ASSERT_EQUAL_INT32(player.psprites[PS_WEAPON].sy,
+                            player.psprites[PS_FLASH].sy);
+    TEST_ASSERT_EQUAL_INT32(player.psprites[PS_WEAPON].sx,
+                            player.psprites[PS_FLASH].sx);
+}
+
+void test_weapon_fire_spends_one_round_and_refire_chains(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+    mobjtype_t unused = MT_PUFF;
+    (void)unused;
+
+    p_setup_psprites(&fixture.level.context, &player);
+    for (int i = 0; i < 15; ++i) {
+        p_move_psprites(&fixture.level.context, &player);
+    }
+    TEST_ASSERT_EQUAL_INT(S_PISTOL, player.psprites[PS_WEAPON].state);
+
+    const int32_t clips = player.ammo[P_AM_CLIP];
+    player.cmd.buttons = BT_ATTACK;
+    p_move_psprites(&fixture.level.context, &player);
+
+    // A_WeaponReady fired: the avatar is in S_PLAY_ATK1, the weapon psprite is on
+    // the attack state and the button is latched. The round is not spent yet.
+    TEST_ASSERT_EQUAL_INT(S_PLAY_ATK1, fixture.mo()->state);
+    TEST_ASSERT_EQUAL_INT(S_PISTOL1, player.psprites[PS_WEAPON].state);
+    TEST_ASSERT_EQUAL_INT32(1, player.attackdown);
+    TEST_ASSERT_EQUAL_INT32(clips, player.ammo[P_AM_CLIP]);
+    TEST_ASSERT_EQUAL_UINT32(1u, player.noiseAlerts);
+
+    // Four tics later S_PISTOL2's A_FirePistol runs: one round, one sound.
+    for (int i = 0; i < 4; ++i) {
+        p_move_psprites(&fixture.level.context, &player);
+    }
+    TEST_ASSERT_EQUAL_INT(S_PISTOL2, player.psprites[PS_WEAPON].state);
+    TEST_ASSERT_EQUAL_INT32(clips - 1, player.ammo[P_AM_CLIP]);
+    TEST_ASSERT_EQUAL_UINT32(1u, player.silentSounds);
+    TEST_ASSERT_EQUAL_INT32(0, player.refire);
+
+    // Holding the trigger through S_PISTOL4's A_ReFire re-fires and grows
+    // `refire`, which is what makes the second bullet drift.
+    for (int i = 0; i < 12; ++i) {
+        p_move_psprites(&fixture.level.context, &player);
+    }
+    TEST_ASSERT_EQUAL_INT32(1, player.refire);
+    TEST_ASSERT_TRUE(player.ammo[P_AM_CLIP] < clips);
+
+    // Releasing the button stops the chain and clears the latch. The remaining
+    // attack chain is S_PISTOL1(4) + S_PISTOL2(6) + S_PISTOL3(4) + S_PISTOL4(5),
+    // so the ready state -- and A_WeaponReady's `else player->attackdown = 0` --
+    // is twenty tics away.
+    player.cmd.buttons = 0;
+    for (int i = 0; i < 30; ++i) {
+        p_move_psprites(&fixture.level.context, &player);
+    }
+    TEST_ASSERT_EQUAL_INT32(0, player.refire);
+    TEST_ASSERT_EQUAL_INT32(0, player.attackdown);
+    TEST_ASSERT_EQUAL_INT(S_PISTOL, player.psprites[PS_WEAPON].state);
+}
+
+void test_weapon_check_ammo_prefers_the_chaingun_then_the_pistol(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    player.weaponowned[P_WP_CHAINGUN] = 1u;
+    player.weaponowned[P_WP_SHOTGUN] = 1u;
+    player.readyweapon = P_WP_SHOTGUN;
+    player.ammo[P_AM_SHELL] = 0;
+    player.ammo[P_AM_CLIP] = 3;
+    TEST_ASSERT_EQUAL_INT(0, p_check_ammo(&fixture.level.context, &player));
+    TEST_ASSERT_EQUAL_INT32(P_WP_CHAINGUN, player.pendingweapon);
+    TEST_ASSERT_EQUAL_INT(S_SGUNDOWN, player.psprites[PS_WEAPON].state);
+
+    // No clips either, and no chainsaw, so it is the pistol on clips -- which
+    // there are none of, so the fist.
+    player.pendingweapon = P_WP_NOCHANGE;
+    player.ammo[P_AM_CLIP] = 0;
+    TEST_ASSERT_EQUAL_INT(0, p_check_ammo(&fixture.level.context, &player));
+    TEST_ASSERT_EQUAL_INT32(P_WP_FIST, player.pendingweapon);
+
+    // The fist needs no ammo, so it always answers yes and nothing changes.
+    player.readyweapon = P_WP_FIST;
+    player.pendingweapon = P_WP_NOCHANGE;
+    TEST_ASSERT_EQUAL_INT(1, p_check_ammo(&fixture.level.context, &player));
+    TEST_ASSERT_EQUAL_INT32(P_WP_NOCHANGE, player.pendingweapon);
+}
+
+void test_weapon_light_actions_write_the_extra_light(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    p_set_psprite(&fixture.level.context, &player, PS_FLASH, S_PISTOLFLASH);
+    TEST_ASSERT_EQUAL_INT32(1, player.extralight);
+    p_set_psprite(&fixture.level.context, &player, PS_FLASH, S_SGUNFLASH2);
+    TEST_ASSERT_EQUAL_INT32(2, player.extralight);
+    p_set_psprite(&fixture.level.context, &player, PS_FLASH, S_LIGHTDONE);
+    TEST_ASSERT_EQUAL_INT32(0, player.extralight);
+    TEST_ASSERT_EQUAL_INT(S_NULL, player.psprites[PS_FLASH].state);
+}
+
+void test_weapon_calc_swing_is_the_bob_projected_on_two_axes(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    player.bob = 16 * kFrac;
+    fixture.level.leveltime = 7;
+
+    fixed_t swingx = 0;
+    fixed_t swingy = 0;
+    p_calc_swing(&fixture.level, &player, &swingx, &swingy);
+
+    // `angle = (FINEANGLES/70*leveltime)&FINEMASK; swingx = FixedMul (swing,
+    // finesine[angle]);` then the same angle advanced half a turn for swingy,
+    // which is scaled by *swingx* and negated -- upstream's two statements.
+    const uint32_t base = (FINEANGLES / 70u) * 7u;
+    const fixed_t x = fixed_mul(player.bob, r_fine_sine[base & FINEMASK]);
+    const fixed_t y = -fixed_mul(x, r_fine_sine[(base + FINEANGLES / 2) & FINEMASK]);
+    TEST_ASSERT_EQUAL_INT32(x, swingx);
+    TEST_ASSERT_EQUAL_INT32(y, swingy);
+
+    // A still player does not swing.
+    player.bob = 0;
+    p_calc_swing(&fixture.level, &player, &swingx, &swingy);
+    TEST_ASSERT_EQUAL_INT32(0, swingx);
+    TEST_ASSERT_EQUAL_INT32(0, swingy);
+}
+
+void test_attack_bullet_sprays_blood_and_spends_the_damage(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // A tower of nothing but a possessed, 32 units north: inside the room's extra
+    // wall at 48, and inside the shot's reach from the avatar at the centre.
+    r_mobj_t* target = p_spawn_mobj(&fixture.level.context, 0, 32 * kFrac,
+                                    ONFLOORZ, MT_POSSESSED, nullptr);
+    TEST_ASSERT_NOT_NULL(target);
+    fixture.mo()->angle = ANG90;
+
+    p_line_attack(&fixture.level.context, fixture.mo(), ANG90, P_MISSILERANGE,
+                  0, 7);
+
+    // "damage < hit points" so it survives, takes the seven, and the trace put a
+    // blood spray on it rather than a puff (a possessed is not MF_NOBLOOD).
+    TEST_ASSERT_EQUAL_INT(20 - 7, target->health);
+    r_mobj_t* blood = fixture.first(MT_BLOOD);
+    TEST_ASSERT_NOT_NULL(blood);
+    TEST_ASSERT_EQUAL_INT(S_BLOOD3, blood->state);      // damage < 9
+    TEST_ASSERT_NULL(fixture.first(MT_PUFF));
+    TEST_ASSERT_EQUAL_INT32(2 * kFrac, blood->momz);    // the drops fall
+
+    // The target's own health is what P_DamageMobj wrote, and the shot's source
+    // made it the avatar's enemy.
+    TEST_ASSERT_EQUAL_PTR(fixture.mo(), target->target);
+}
+
+void test_attack_melee_puff_starts_at_the_third_frame(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    p_setup_psprites(&fixture.level.context, &player);
+    player.readyweapon = P_WP_FIST;
+    player.powers[P_PW_STRENGTH] = 0;
+    fixture.mo()->angle = ANG90;
+
+    a_punch(&fixture.level.context, &player);
+
+    // The fist's trace is MELEERANGE (64) and the wall is at 48, so the spark
+    // lands four units short of it and skips the burst's first two frames:
+    // `if (attackrange == MELEERANGE) P_SetMobjState (th, S_PUFF3)`.
+    r_mobj_t* puff = fixture.first(MT_PUFF);
+    TEST_ASSERT_NOT_NULL(puff);
+    TEST_ASSERT_EQUAL_INT(S_PUFF3, puff->state);
+    // Positioned a bit closer than the wall: `frac = in->frac - FixedDiv
+    // (4*FRACUNIT, attackrange)`, so four of the trace's 64 units back from 48.
+    // The intercept's own fixed-point fraction makes this an approximation, so the
+    // assertion is a two-unit band around 44 -- wide enough for the rounding and
+    // narrow enough that a wrong trace cannot pass it.
+    TEST_ASSERT_TRUE(puff->y >= 42 * kFrac);
+    TEST_ASSERT_TRUE(puff->y <= 46 * kFrac);
+    TEST_ASSERT_EQUAL_INT32(4, puff->tics);
+
+    // The bullet's identical shot at the same wall starts at the first frame, so
+    // the two branches really are different.
+    fixture.first(MT_PUFF)->thinker.removed = 1u;
+    p_line_attack(&fixture.level.context, fixture.mo(), ANG90, P_MISSILERANGE,
+                  0, 5);
+    for (const r_mobj_t* each = p_level_first_mobj(&fixture.level);
+         each != nullptr; each = p_level_next_mobj(each)) {
+        if (each->type == static_cast<i16>(MT_PUFF) &&
+            each->thinker.removed == 0u) {
+            TEST_ASSERT_EQUAL_INT(S_PUFF1, each->state);
+            return;
+        }
+    }
+    TEST_FAIL_MESSAGE("the bullet's shot left no puff");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2323,6 +2639,14 @@ int main(int argc, char** argv) {
     RUN_TEST(test_player_think_counts_the_deferred_buttons_and_death);
     RUN_TEST(test_player_calc_height_clamps_bob_and_ceiling);
     RUN_TEST(test_level_tic_runs_the_player_then_the_thinkers);
+    RUN_TEST(test_weapon_set_psprite_runs_the_entry_action_and_follows_the_chain);
+    RUN_TEST(test_weapon_setup_raises_the_pistol_to_the_ready_state);
+    RUN_TEST(test_weapon_fire_spends_one_round_and_refire_chains);
+    RUN_TEST(test_weapon_check_ammo_prefers_the_chaingun_then_the_pistol);
+    RUN_TEST(test_weapon_light_actions_write_the_extra_light);
+    RUN_TEST(test_weapon_calc_swing_is_the_bob_projected_on_two_axes);
+    RUN_TEST(test_attack_bullet_sprays_blood_and_spends_the_damage);
+    RUN_TEST(test_attack_melee_puff_starts_at_the_third_frame);
 
     const int result = UNITY_END();
     test_teardown();

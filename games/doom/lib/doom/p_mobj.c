@@ -31,6 +31,7 @@
 
 #include "p_action.h"
 #include "p_map.h"
+#include "p_setup.h"
 #include "r_bsp.h"
 #include "r_tables.h"
 
@@ -421,8 +422,8 @@ static fixed_t spray_z(p_mobj_context_t* world, fixed_t z) {
     return z + (fixed_t)(jitter << P_BLOOD_Z_SHIFT);
 }
 
-r_mobj_t* p_spawn_puff(p_mobj_context_t* world, fixed_t x, fixed_t y,
-                       fixed_t z) {
+r_mobj_t* p_spawn_puff(p_mobj_context_t* world, fixed_t x, fixed_t y, fixed_t z,
+                       fixed_t attackRange) {
     r_mobj_t* th;
 
     if (world == NULL) {
@@ -440,9 +441,12 @@ r_mobj_t* p_spawn_puff(p_mobj_context_t* world, fixed_t x, fixed_t y,
         th->tics = 1;
     }
 
-    /* `if (attackrange == MELEERANGE) P_SetMobjState (th, S_PUFF3);` -- the
-     * attack trace's range is T14's (the fist and the chainsaw), so a puff
-     * always starts at S_PUFF1 here. */
+    /* `if (attackrange == MELEERANGE) P_SetMobjState (th, S_PUFF3);` -- a melee
+     * spark starts two frames into the burst, so it reads as a flare on the tic
+     * the fist lands. */
+    if (attackRange == P_MELEERANGE) {
+        (void)p_set_mobj_state(world, th, S_PUFF3, NULL);
+    }
     return th;
 }
 
@@ -800,6 +804,103 @@ void p_z_movement(p_mobj_context_t* world, r_mobj_t* mobj) {
             return;
         }
     }
+}
+
+/* --- P_SpawnPlayerMissile / P_CheckMissileSpawn -------------------------- */
+
+/*
+ * P_CheckMissileSpawn (p_mobj.c): the tic jitter, the half-step forward, and the
+ * explosion when the spawn point is already solid.
+ *
+ * `th->tics -= P_Random()&3;` clamped to one is the fourth draw of a rocket's
+ * launch (the aim took none, the spawn took one for `lastlook`, and this is the
+ * next), so its position in the sequence is observable.
+ */
+int p_check_missile_spawn(p_mobj_context_t* world, r_mobj_t* mobj) {
+    if (world == NULL || mobj == NULL) {
+        return 0;
+    }
+
+    mobj->tics = (int16_t)(mobj->tics - (int16_t)(p_random(world->random) & 3));
+    if (mobj->tics < 1) {
+        mobj->tics = 1;
+    }
+
+    /* "move a little forward so an angle can be computed if it immediately
+     * explodes" */
+    mobj->x += mobj->momx >> 1;
+    mobj->y += mobj->momy >> 1;
+    mobj->z += mobj->momz >> 1;
+
+    if (!p_try_move(world, mobj, mobj->x, mobj->y)) {
+        explode_missile(world, mobj);
+        return 0;
+    }
+    return 1;
+}
+
+/*
+ * P_SpawnPlayerMissile (p_mobj.c): the rocket, the plasma bolt and the BFG ball.
+ *
+ * The three aim probes are upstream's, and their order is the sequence's: the
+ * player's own angle first, then a quarter turn clockwise, then a quarter turn
+ * counter-clockwise from that (`an += 1<<26; ... an -= 2<<26;`). The first probe
+ * that finds something wins and its slope becomes `momz`.
+ *
+ * The missile's `seesound` is the audio layer's (S2); it is counted in the level's
+ * player record rather than played, at the site upstream plays it.
+ */
+void p_spawn_player_missile(p_mobj_context_t* world, r_mobj_t* source,
+                            mobjtype_t type) {
+    r_mobj_t* th;
+    r_mobj_t* found = NULL;
+    angle_t an;
+    fixed_t slope;
+
+    if (world == NULL || source == NULL) {
+        return;
+    }
+
+    /* "see which target is to be aimed at" */
+    an = source->angle;
+    slope = p_aim_line_attack(world, source, an, 16 * 64 * FRACUNIT, &found);
+    if (found == NULL) {
+        an += 1u << 26;
+        slope = p_aim_line_attack(world, source, an, 16 * 64 * FRACUNIT, &found);
+        if (found == NULL) {
+            an -= 2u << 26;
+            slope =
+                p_aim_line_attack(world, source, an, 16 * 64 * FRACUNIT, &found);
+        }
+    }
+
+    if (found == NULL) {
+        /* "if (!linetarget) { an = source->angle; slope = 0; }" -- and this port
+         * has no pitch, so a level shot is its only other answer. */
+        an = source->angle;
+        slope = 0;
+    }
+
+    th = p_spawn_mobj(world, source->x, source->y, source->z + 8 * FRACUNIT, type,
+                      NULL);
+    if (th == NULL) {
+        return;
+    }
+
+    if (mobjinfo[type].seesound != 0 && world->level != NULL) {
+        world->level->playerState.silentSounds += 1u;
+    }
+
+    th->target = source; /* where it came from */
+    th->angle = an;
+    th->momx = fixed_mul(mobjinfo[type].speed,
+                         r_fine_sine[(an >> ANGLETOFINESHIFT) +
+                                     (FINEANGLES / 4)]);
+    th->momy =
+        fixed_mul(mobjinfo[type].speed, r_fine_sine[an >> ANGLETOFINESHIFT]);
+    th->momz = fixed_mul(mobjinfo[type].speed, slope);
+
+    (void)p_check_missile_spawn(world, th);
 }
 
 /* --- P_MobjThinker ------------------------------------------------------ */
