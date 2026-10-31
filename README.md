@@ -151,7 +151,12 @@ modifiable, including commercially.
 
 ## License
 
-The demo source code is distributed under the [MIT license](LICENSE).
+The demo source code is distributed under the [MIT license](LICENSE), with one
+exception: [`games/doom`](games/doom) links id Software's DOOM source and is
+distributed under the [GNU GPL v2](games/doom/LICENSE). The exception is
+directory-scoped and does not reach any other demo, none of which contains or
+links that code. [`games/doom/lib/doom/NOTICE`](games/doom/lib/doom/NOTICE)
+records the provenance and the terms.
 
 Assets are licensed individually. Each demo's README documents the license
 and source of every asset it ships; where a demo's art is original work

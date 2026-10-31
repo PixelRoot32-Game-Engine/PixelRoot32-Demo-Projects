@@ -1,4 +1,10 @@
 /*
+ * Derived from id Software's DOOM (linuxdoom-1.10), Copyright (C) 1993-1996
+ * id Software, Inc.  Rewritten for the PixelRoot32 port, 2026.  See NOTICE and
+ * LICENSE in this directory for the provenance and the terms.
+ */
+
+/*
  * Visplane bookkeeping: the set of floor and ceiling spans one view will fill.
  *
  * DOOM does not draw floors and ceilings as spans while it walks the BSP. It

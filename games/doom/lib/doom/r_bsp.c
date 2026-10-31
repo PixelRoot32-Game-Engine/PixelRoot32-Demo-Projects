@@ -1,4 +1,10 @@
 /*
+ * Derived from id Software's DOOM (linuxdoom-1.10), Copyright (C) 1993-1996
+ * id Software, Inc.  Rewritten for the PixelRoot32 port, 2026.  See NOTICE and
+ * LICENSE in this directory for the provenance and the terms.
+ */
+
+/*
  * The BSP walk of the DOOM port (r_bsp.h), from upstream's r_bsp.c and the
  * marking half of r_segs.c.
  *

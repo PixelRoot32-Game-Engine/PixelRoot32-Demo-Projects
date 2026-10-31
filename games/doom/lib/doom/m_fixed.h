@@ -1,4 +1,10 @@
 /*
+ * Derived from id Software's DOOM (linuxdoom-1.10), Copyright (C) 1993-1996
+ * id Software, Inc.  Rewritten for the PixelRoot32 port, 2026.  See NOTICE and
+ * LICENSE in this directory for the provenance and the terms.
+ */
+
+/*
  * DOOM's fixed-point arithmetic (16.16) for the renderer.
  *
  * The renderer works in 16.16 fixed point exactly as the 1993 code does: one

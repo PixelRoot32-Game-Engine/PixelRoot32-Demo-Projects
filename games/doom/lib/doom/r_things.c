@@ -1,4 +1,10 @@
 /*
+ * Derived from id Software's DOOM (linuxdoom-1.10), Copyright (C) 1993-1996
+ * id Software, Inc.  Rewritten for the PixelRoot32 port, 2026.  See NOTICE and
+ * LICENSE in this directory for the provenance and the terms.
+ */
+
+/*
  * Sprites and the deferred masked mid textures (r_things.h), from upstream's
  * R_ProjectSprite(), R_SortVisSprites(), R_DrawSprite(), R_DrawVisSprite() and
  * R_DrawMaskedColumn() (r_things.c), R_RenderMaskedSegRange() (r_segs.c) and

@@ -1,4 +1,10 @@
 /*
+ * Derived from id Software's DOOM (linuxdoom-1.10), Copyright (C) 1993-1996
+ * id Software, Inc.  Rewritten for the PixelRoot32 port, 2026.  See NOTICE and
+ * LICENSE in this directory for the provenance and the terms.
+ */
+
+/*
  * The COLORMAP lump, and the one lookup a wall column needs from it.
  *
  * DOOM does not light a wall pixel by pixel. It keeps COLORMAP -- 34 tables of

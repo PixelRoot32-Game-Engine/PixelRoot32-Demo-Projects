@@ -2,6 +2,14 @@ MIT License
 
 Copyright (c) 2026 PixelRoot32
 
+SCOPE: this license covers every directory in this repository except
+`games/doom`. The DOOM demo links id Software's DOOM source, which is copyleft,
+and is distributed under the GNU General Public License version 2 -- see
+`games/doom/LICENSE` and `games/doom/lib/doom/NOTICE`. Nothing here grants MIT
+terms for `games/doom`, and nothing there changes the terms of the engine, which
+is MIT in its own repository. Every other demo is unaffected: none of them
+contains or links the DOOM code.
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights

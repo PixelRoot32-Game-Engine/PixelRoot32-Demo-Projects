@@ -1,0 +1,91 @@
+DOOM core for the PixelRoot32 port -- provenance and terms
+===========================================================
+
+This directory contains two kinds of file, and the difference matters for the
+licence of the demo that links them.
+
+1. Derived from id Software's DOOM
+----------------------------------
+
+Most of it is a port of DOOM's simulation and rasteriser, rewritten for a
+32-bit ESP32 with 4 MB of flash and no PSRAM. The reference text is
+linuxdoom-1.10 as published at
+
+    https://github.com/id-Software/DOOM
+    commit 4eb368a960647c8cc82d721d0183629ae10759d1
+
+That distribution carries the 1997 DOOM Source Code License, and its headers
+read "Copyright (C) 1993-1996 by id Software, Inc." The same source was released
+under the GNU General Public License version 2 in 1999, which is the release the
+Chocolate Doom and rp2040-doom lineages build on, and it is the basis this port
+relies on: the code here is distributed under the GNU GPL v2. See LICENSE in
+this directory for the full text.
+
+Files in this group implement an upstream subsystem one-to-one, whatever their
+size:
+
+    m_fixed.h          fixed-point arithmetic          m_fixed.c
+    m_random.*         the P_Random table              m_random.c
+    p_action.*         state actions                   p_enemy.c/p_inter.c
+    p_ceilng.*         ceiling movers                  p_ceilng.c
+    p_doors.*          door movers                     p_doors.c
+    p_floor.*          floor movers                    p_floor.c
+    p_lights.*         light thinkers                  p_lights.c
+    p_map.*            collision and movement          p_map.c
+    p_mobj.*           map objects, P_MobjThinker      p_mobj.c
+    p_plats.*          platforms                       p_plats.c
+    p_setup.*          level loading                   p_setup.c
+    p_spec.*           sector and line specials        p_spec.c
+    p_tick.*           the thinker list                p_tick.c
+    p_user.*           player movement and view        p_user.c
+    r_bsp.*            BSP traversal and clipping      r_bsp.c (r_bspupd)
+    r_data.*           texture, flat and sprite data   r_data.c
+    r_defs.h           the renderer's shared types     r_defs.h
+    r_light.*          light tables                    r_light.c
+    r_plane.*          visplanes, flats and sky        r_plane.c
+    r_segs.*           wall segments and clipping      r_segs.c
+    r_tables.*         sine, tangent and angle tables  r_tables.c/tables.c
+    r_things.*         sprite projection and drawing   r_things.c
+    info_tables.h      mobjinfo[] and states[]         info.c
+    z_zone.*           the zone allocator              z_zone.c
+    w_wad.*            WAD lump access                 w_wad.c
+
+info_tables.h and r_tables.c carry data generated from the upstream tables by
+tools/gen_info.py and tools/gen_r_tables.py; the generators are committed, so
+the tables can be regenerated from the pinned commit.
+
+Each derived file carries a header saying so. They are rewrites, not copies:
+the fixed-point behaviour, the random sequence and the pixel rules are
+preserved deliberately (they are what the demo-playback gate compares), while
+structures, capacities and the memory model are this port's. The rewrite began
+in October 2026.
+
+2. Original work for this port
+------------------------------
+
+These do not exist upstream and are original work for this repository:
+
+    doom_map.*         the 1993 lump-format reader and its validation. It reads
+                       id's published on-disk formats; the code and the
+                       validation rules are original.
+    whd.*              the PWHD container: a compressed, memory-mappable
+                       replacement for the WAD on a board that cannot hold it.
+                       The format is documented in whd.h and written by
+                       tools/whd_encode.py.
+    doom_link_probe.*  the C <-> C++ link probe.
+
+They are distributed under the GPL v2 as part of the same combined work, so the
+demo has one licence rather than a boundary a reader has to police.
+
+3. What is NOT here
+-------------------
+
+No id Software artwork or sound is in this repository. DOOM1.WAD is shareware
+data under id's own terms, not the GPL, and neither it nor any container built
+from it (tools/DOOM1.whd) is committed -- tools/.gitignore refuses both. To run
+the demo you download the shareware WAD yourself; games/doom/README.md says
+where and how to turn it into the container the firmware flashes.
+
+The engine this demo links (PixelRoot32-Game-Engine) is MIT and lives in its own
+repository. It contains no DOOM code and no reference to this port; the GPL
+applies to the firmware built here, not to the engine.

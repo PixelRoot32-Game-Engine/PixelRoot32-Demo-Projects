@@ -1,4 +1,10 @@
 /*
+ * Derived from id Software's DOOM (linuxdoom-1.10), Copyright (C) 1993-1996
+ * id Software, Inc.  Rewritten for the PixelRoot32 port, 2026.  See NOTICE and
+ * LICENSE in this directory for the provenance and the terms.
+ */
+
+/*
  * The BSP walk: one viewpoint in, the drawsegs and visplanes one frame needs.
  *
  * This is D3.1 of the DOOM port. It turns the level graph (doom_map.h) plus a

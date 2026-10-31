@@ -1,4 +1,10 @@
 /*
+ * Derived from id Software's DOOM (linuxdoom-1.10), Copyright (C) 1993-1996
+ * id Software, Inc.  Rewritten for the PixelRoot32 port, 2026.  See NOTICE and
+ * LICENSE in this directory for the provenance and the terms.
+ */
+
+/*
  * Visplane bookkeeping of the DOOM port (r_plane.h).
  *
  * This is upstream's R_FindPlane()/R_CheckPlane(), with the arrays moved into

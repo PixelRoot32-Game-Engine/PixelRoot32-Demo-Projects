@@ -1,4 +1,10 @@
 /*
+ * Derived from id Software's DOOM (linuxdoom-1.10), Copyright (C) 1993-1996
+ * id Software, Inc.  Rewritten for the PixelRoot32 port, 2026.  See NOTICE and
+ * LICENSE in this directory for the provenance and the terms.
+ */
+
+/*
  * Ceilings: EV_DoCeiling, T_MoveCeiling, EV_CeilingCrushStop.
  *
  * The reference is linuxdoom-1.10 p_ceilng.c. A ceiling is a T_MovePlane move on

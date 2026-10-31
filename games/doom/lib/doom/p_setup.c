@@ -1,4 +1,10 @@
 /*
+ * Derived from id Software's DOOM (linuxdoom-1.10), Copyright (C) 1993-1996
+ * id Software, Inc.  Rewritten for the PixelRoot32 port, 2026.  See NOTICE and
+ * LICENSE in this directory for the provenance and the terms.
+ */
+
+/*
  * Level initialisation: the THINGS run and the level's world.
  *
  * The reference is linuxdoom-1.10 P_SetupLevel()'s THINGS step: P_LoadThings()

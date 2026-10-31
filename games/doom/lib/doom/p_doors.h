@@ -1,4 +1,10 @@
 /*
+ * Derived from id Software's DOOM (linuxdoom-1.10), Copyright (C) 1993-1996
+ * id Software, Inc.  Rewritten for the PixelRoot32 port, 2026.  See NOTICE and
+ * LICENSE in this directory for the provenance and the terms.
+ */
+
+/*
  * Doors: EV_DoDoor, EV_VerticalDoor and T_VerticalDoor.
  *
  * The reference is linuxdoom-1.10 p_doors.c. A door is a ceiling-height move

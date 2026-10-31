@@ -1,4 +1,10 @@
 /*
+ * Derived from id Software's DOOM (linuxdoom-1.10), Copyright (C) 1993-1996
+ * id Software, Inc.  Rewritten for the PixelRoot32 port, 2026.  See NOTICE and
+ * LICENSE in this directory for the provenance and the terms.
+ */
+
+/*
  * The wall column emitter of the DOOM port (r_segs.h), from upstream's
  * R_RenderSegLoop() in r_segs.c and R_DrawColumn() in r_draw.c.
  *

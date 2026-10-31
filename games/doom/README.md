@@ -70,6 +70,48 @@ pio run -e esp32dev_ILI9341 --target upload
 pio device monitor
 ```
 
+## Get the WAD and build the container
+
+The firmware does not ship DOOM's data. `DOOM1.WAD` is id Software's shareware
+artwork under its own terms, not the GPL, and it is 4,196,020 B -- larger than
+the board's entire flash. Download the shareware WAD from the Doom Archive's
+Shareware page:
+
+<https://www.doomarchive.com/ListFiles.php?FolderId=216&ContentsFolderId=216>
+
+Take **v1.9** -- `doom19s.zip`, or `doom1.wad.zip` for the WAD on its own. The
+v1.0 release listed on the same page is a different WAD: the port's container,
+partition sizes and graphics bake are all measured against v1.9, so a v1.0 file
+will not match them.
+
+Then turn it into the container the firmware reads, from **`games/doom`**:
+
+```powershell
+.\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD
+```
+
+It writes `tools/DOOM1.whd` -- 3,211,696 B of the `wad` partition's 3,342,336 --
+and proves the result four ways: the WAD rebuilds byte for byte, the container
+parses, all nine levels open through `lib/doom/doom_map.c`, and every baked
+texture recomposes from the source WAD's patches. `-Flash` writes it to the
+board at 0x0D0000 after building it:
+
+```powershell
+.\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD -Flash -Port COM4
+```
+
+The encoder underneath is committed and usable on its own
+(`python tools/whd_encode.py --help`; `--check` re-decodes a container and
+compares it with the WAD it came from).
+
+The board needs both halves: the container in the `wad` partition, and the app
+image built by an environment that selects `partitions_wad.csv` (the `_show` and
+`_frame` families do; the plain `esp32dev_ILI9341` does not). Flashing a new
+partition table erases NVS, which this demo does not use.
+
+Neither `DOOM1.WAD` nor any `.whd` is committed: `tools/.gitignore` refuses both,
+because a container is a repacked copy of shareware data.
+
 ## Hardware
 
 The CYD is an `esp32dev` module: 240 MHz, dual core, 4 MB flash, no PSRAM. The
@@ -129,8 +171,27 @@ results.
 
 ## License
 
-Source code: [MIT](../../LICENSE), **until the DOOM core lands**. DOOM's source
-is distributed under the Doom Source Code License, and the Chocolate Doom and
-rp2040-doom work this port reads is GPLv2; once `lib/doom/` contains any of it,
-this firmware becomes a GPLv2 combined work and this section has to say so
-before the first public build.
+The DOOM demo is distributed under the **GNU General Public License, version 2**
+([`LICENSE`](LICENSE)). It links id Software's DOOM source, which is copyleft,
+so the firmware built here is a GPLv2 combined work.
+
+The port relies on the 1999 GPLv2 release of that source; the tree it ports
+from (`linuxdoom-1.10`, pinned commit `4eb368a9`) still carries the 1997 Doom
+Source Code License headers. [`lib/doom/NOTICE`](lib/doom/NOTICE) records both,
+lists which files are derived from upstream and which are original to this port,
+and is the document to read before redistributing anything here.
+
+**This does not reach the rest of the repository.** The engine
+(PixelRoot32-Game-Engine) is MIT, lives in its own repository and contains no
+DOOM code; MIT is compatible with the GPL, so the combined firmware is GPLv2
+while the engine stays MIT for every other game. The root [`LICENSE`](../../LICENSE)
+carries the same scope note, and every other demo is unaffected because none of
+them contains or links this code. The boundary is the binary, not the directory:
+if DOOM's source ever entered the engine or a shared library, every game would
+be reached, which is why the engine-side invariant is that it mentions DOOM
+nowhere.
+
+**Assets are not GPL.** `DOOM1.WAD` is id Software's shareware data under its own
+terms; neither it nor the container built from it is committed. See
+"Get the WAD and build the container" above.
+
