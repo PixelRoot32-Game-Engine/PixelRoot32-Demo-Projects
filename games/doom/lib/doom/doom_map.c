@@ -270,6 +270,10 @@ void doom_map_get_line(const doom_map_t* map, uint16_t index, doom_line_t* out) 
     out->v1 = read_u16(at);
     out->v2 = read_u16(at + 2);
     out->flags = read_i16(at + 4);
+    /* special at +6 and tag at +8 are read as they are stored: DOOM validates
+     * neither, and an unknown special is a no-op at run time. */
+    out->special = read_i16(at + 6);
+    out->tag = read_i16(at + 8);
     out->sideNum[0] = side0 < 0 ? DOOM_NO_SIDE_INDEX : (uint16_t)side0;
     out->sideNum[1] = side1 < 0 ? DOOM_NO_SIDE_INDEX : (uint16_t)side1;
 }

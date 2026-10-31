@@ -1464,6 +1464,54 @@ void test_specs_p_change_sector_stub_counts_and_answers_clear(void) {
                              fixture.level.specStats.changeSectorClear);
 }
 
+// --- D4.2a: the line record carries its special and tag ---------------------
+
+/*
+ * doom_line_t is the one description of a LINEDEF, so it carries the two fields
+ * every trigger reads instead of each of them re-reading the record's bytes.
+ * The map below stores distinctive values in both, and the assertions go
+ * through the public accessors only: the decoded record, the two accessors, and
+ * the size the on-disk layout requires.
+ */
+void test_line_record_exposes_special_and_tag(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 0}, {0, 128, 160, 0, 0}});
+    doom_line_t line{};
+
+    fixture.builder.addLine(4, 88, 3, 0, 1, true);
+    fixture.builder.addLine(4, 0, 0, 0, 1, true);
+
+    TEST_ASSERT_EQUAL_INT(DOOM_MAP_OK, fixture.builder.open(&fixture.map));
+
+    doom_map_get_line(&fixture.map, 0, &line);
+    TEST_ASSERT_EQUAL_INT16(88, line.special);
+    TEST_ASSERT_EQUAL_INT16(3, line.tag);
+    TEST_ASSERT_EQUAL_UINT16(0u, line.v1);
+    TEST_ASSERT_EQUAL_UINT16(1u, line.v2);
+    TEST_ASSERT_EQUAL_INT16(4, line.flags);
+    TEST_ASSERT_EQUAL_UINT16(0u, line.sideNum[0]);
+    TEST_ASSERT_EQUAL_UINT16(1u, line.sideNum[1]);
+
+    doom_map_get_line(&fixture.map, 1, &line);
+    TEST_ASSERT_EQUAL_INT16(0, line.special);
+    TEST_ASSERT_EQUAL_INT16(0, line.tag);
+
+    // The accessors answer the same two fields, decoded once per call.
+    TEST_ASSERT_EQUAL_INT16(88, p_line_special(&fixture.map, 0));
+    TEST_ASSERT_EQUAL_INT16(3, p_line_tag(&fixture.map, 0));
+    TEST_ASSERT_EQUAL_INT16(0, p_line_special(&fixture.map, 1));
+    TEST_ASSERT_EQUAL_INT16(0, p_line_tag(&fixture.map, 1));
+
+    // A line index outside the lump, and no map at all, still read 0.
+    TEST_ASSERT_EQUAL_INT16(0, p_line_special(&fixture.map, 2));
+    TEST_ASSERT_EQUAL_INT16(0, p_line_tag(&fixture.map, 2));
+    TEST_ASSERT_EQUAL_INT16(0, p_line_special(nullptr, 0));
+    TEST_ASSERT_EQUAL_INT16(0, p_line_tag(nullptr, 0));
+
+    // 14 bytes: the two new shorts fill what used to be padding, so the struct
+    // is exactly the on-disk record's size and no caller pays for a wider one.
+    TEST_ASSERT_EQUAL_UINT32(DOOM_LINEDEF_SIZE, sizeof(doom_line_t));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1510,6 +1558,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_specs_secret_sectors_and_unsupported_specials_are_counted);
     RUN_TEST(test_specs_spawn_order_is_sector_index_order);
     RUN_TEST(test_specs_p_change_sector_stub_counts_and_answers_clear);
+    RUN_TEST(test_line_record_exposes_special_and_tag);
 
     const int result = UNITY_END();
     test_teardown();

@@ -366,51 +366,57 @@ int p_line_front_sector(const doom_map_t* map, const doom_line_t* line,
 int p_line_back_sector(const doom_map_t* map, const doom_line_t* line,
                        uint16_t* out);
 
-/**
- * @brief The raw `special` (or `tag`) field of a linedef.
- *
- * doom_map_get_line() exposes the renderer's fields and not these two, and
- * doom_map.* is not this task's surface. The 1993 LINEDEFS record is public and
- * documented in doom_map.h (14 bytes, special at +6, tag at +8, little-endian),
- * so these read exactly those two fields from the same validated lump view.
- * A line index outside the lump reads 0.
- *
- * They are `static inline` so p_setup.c can build the mutable `lineSpecial[]`
- * copy without linking this layer: the THINGS harness (tools/things_check.py)
- * compiles p_setup.c and not p_spec.c, and that harness's file list is not this
- * task's surface.
- *
- * D4.2 should add the two fields to doom_line_t and delete both.
- */
-static inline int16_t p_line_raw_i16(const uint8_t* at) {
-    return (int16_t)((uint16_t)at[0] | ((uint16_t)at[1] << 8));
+/* The decoded record behind the two accessors below: `0` when the map has no
+ * LINEDEFS or the index is outside the lump, which is what keeps their "reads
+ * 0" contract without a second bounds check in each. */
+static inline int p_line_decode(const doom_map_t* map, uint16_t index,
+                                doom_line_t* out) {
+    if (map == NULL || map->lumps[DOOM_MAP_LINEDEFS].data == NULL ||
+        (uint32_t)index >= map->lumps[DOOM_MAP_LINEDEFS].count) {
+        return 0;
+    }
+    doom_map_get_line(map, index, out);
+    return 1;
 }
 
+/**
+ * @brief The `special` (or `tag`) field of a linedef, as doom_map_get_line()
+ *        decodes it.
+ *
+ * `special` is the line's action number (0 = none) and `tag` the sector tag it
+ * addresses; doom_map_get_line() reads both verbatim from the record and
+ * validates neither, because DOOM does not either -- an unknown special is a
+ * no-op at run time.
+ *
+ * Each call now costs one record decode: an unaligned 14-byte read from mapped
+ * flash, plus the index and flag reconstruction the decoder does for fields the
+ * caller does not use. Keeping a copy of the pair was rejected: p_setup.c
+ * already copies the mutable `special` into `lineSpecial[]` (a one-shot trigger
+ * writes 0 over it), and `tag` is immutable, so a second copy would duplicate
+ * what the level already holds for no benefit.
+ *
+ * They stay `static inline` so p_setup.c can build `lineSpecial[]` without
+ * linking this layer: the THINGS harness (tools/things_check.py) compiles
+ * p_setup.c and doom_map.c but not p_spec.c.
+ *
+ * A map with no LINEDEFS, or a line index outside the lump, reads 0.
+ */
 static inline int16_t p_line_special(const doom_map_t* map, uint16_t index) {
-    const doom_map_lump_view_t* lines;
+    doom_line_t line;
 
-    if (map == NULL || map->lumps[DOOM_MAP_LINEDEFS].data == NULL) {
+    if (!p_line_decode(map, index, &line)) {
         return 0;
     }
-    lines = &map->lumps[DOOM_MAP_LINEDEFS];
-    if ((uint32_t)index >= lines->count) {
-        return 0;
-    }
-    /* maplinedef_t: v1, v2, flags, special, tag, sidenum[2] (doomdata.h). */
-    return p_line_raw_i16(lines->data + (size_t)index * DOOM_LINEDEF_SIZE + 6);
+    return line.special;
 }
 
 static inline int16_t p_line_tag(const doom_map_t* map, uint16_t index) {
-    const doom_map_lump_view_t* lines;
+    doom_line_t line;
 
-    if (map == NULL || map->lumps[DOOM_MAP_LINEDEFS].data == NULL) {
+    if (!p_line_decode(map, index, &line)) {
         return 0;
     }
-    lines = &map->lumps[DOOM_MAP_LINEDEFS];
-    if ((uint32_t)index >= lines->count) {
-        return 0;
-    }
-    return p_line_raw_i16(lines->data + (size_t)index * DOOM_LINEDEF_SIZE + 8);
+    return line.tag;
 }
 
 /* --- Line triggering ------------------------------------------------------ */

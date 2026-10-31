@@ -8,14 +8,6 @@
  * non-obvious rule cites the upstream statement; p_spec.h carries the
  * implemented/deferred checklist.
  *
- * WHY THE LINE FIELDS ARE READ RAW
- *
- * doom_map_get_line() exposes the fields the renderer reads and not `special`
- * or `tag`; doom_map.* is not this task's surface. The 1993 record layout is
- * public in doom_map.h, so p_line_special()/p_line_tag() read the same two
- * little-endian shorts from the same validated lump view. D4.2 should add them
- * to doom_line_t and delete these two functions.
- *
  * This is C99 only: <string.h> for memset, no stdio, no floating point, no
  * globals. The level owns the zone, the thinkers and the sector array.
  */
@@ -31,10 +23,7 @@
 #include "p_plats.h"
 #include "p_setup.h"
 
-/* --- Raw map fields ------------------------------------------------------ */
-
-/* p_line_special() / p_line_tag() are static inline in p_spec.h so p_setup.c
- * can copy the mutable line-special array without linking this layer. */
+/* --- Line geometry ------------------------------------------------------- */
 
 int p_line_front_sector(const doom_map_t* map, const doom_line_t* line,
                         uint16_t* out) {

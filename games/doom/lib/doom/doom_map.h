@@ -162,10 +162,20 @@ typedef struct doom_thing {
     int16_t options;
 } doom_thing_t;
 
+/*
+ * `special` is the line's action number (0 = none) and `tag` is the sector tag
+ * it addresses. Both are read verbatim from the record and neither is
+ * validated: DOOM does not validate them either, and an unknown special is a
+ * no-op at run time, so a bogus value is the map's problem and not a reason to
+ * reject the level. The field order is the on-disk order (v1, v2, flags,
+ * special, tag, side[2]).
+ */
 typedef struct doom_line {
     uint16_t v1;
     uint16_t v2;
     int16_t flags;
+    int16_t special;
+    int16_t tag;
     uint16_t sideNum[2]; /* DOOM_NO_SIDE_INDEX when absent */
 } doom_line_t;
 
