@@ -55,6 +55,8 @@ static void clear_lump_views(doom_map_t* map) {
     }
     map->open = 0;
     map->error = DOOM_MAP_OK;
+    map->readSector = NULL;
+    map->readSectorContext = NULL;
 }
 
 static uint32_t stride_for_lump(int lump) {
@@ -331,16 +333,22 @@ void doom_map_get_node(const doom_map_t* map, uint16_t index, doom_node_t* out) 
 
 void doom_map_get_sector(const doom_map_t* map, uint16_t index,
                          doom_sector_t* out) {
-    const uint8_t* at = record_at(&map->lumps[DOOM_MAP_SECTORS], index,
-                                  DOOM_SECTOR_SIZE);
+    if (map->readSector != NULL) {
+        map->readSector(map->readSectorContext, index, out);
+        return;
+    }
+    {
+        const uint8_t* at = record_at(&map->lumps[DOOM_MAP_SECTORS], index,
+                                      DOOM_SECTOR_SIZE);
 
-    out->floorHeight = read_fixed16(at);
-    out->ceilingHeight = read_fixed16(at + 2);
-    out->floorPic = r_pack_name(at + 4);
-    out->ceilingPic = r_pack_name(at + 12);
-    out->lightLevel = read_i16(at + 20);
-    out->special = read_i16(at + 22);
-    out->tag = read_i16(at + 24);
+        out->floorHeight = read_fixed16(at);
+        out->ceilingHeight = read_fixed16(at + 2);
+        out->floorPic = r_pack_name(at + 4);
+        out->ceilingPic = r_pack_name(at + 12);
+        out->lightLevel = read_i16(at + 20);
+        out->special = read_i16(at + 22);
+        out->tag = read_i16(at + 24);
+    }
 }
 
 uint16_t doom_map_subsector_sector(const doom_map_t* map,

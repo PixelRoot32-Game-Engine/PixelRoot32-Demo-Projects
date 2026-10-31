@@ -241,13 +241,34 @@ typedef struct doom_map_source {
 } doom_map_source_t;
 
 /**
+ * One live sector record, as the level keeps it. A reader fills @p out from
+ * whatever mutable sector state the caller owns.
+ *
+ * This is the optional bridge between the simulation and the renderer: every
+ * mover and light writer changes @c p_level_t::sectors, while the map's SECTORS
+ * lump is immutable (a flash build maps it straight out of the container). A
+ * caller that has a level binds @c readSector on the map it hands the walk, and
+ * @c doom_map_get_sector() answers from the live array instead of the lump.
+ */
+typedef void (*doom_sector_read_fn)(void* context, uint16_t index,
+                                    doom_sector_t* out);
+
+/**
  * The validated map view. Treat the lump views as read-only after a successful
  * open; the accessors below are the interface. `open` is 1 and `error` is
  * DOOM_MAP_OK only for an accepted graph, and a rejected open zeroes all
  * fields.
+ *
+ * `readSector` is the one mutable seam: when set, every
+ * doom_map_get_sector() answers through it, so a renderer bound to this map
+ * sees the level's live sector heights, flats and light instead of the
+ * immutable SECTORS lump. A host harness or probe that renders the static map
+ * leaves it NULL, which is also what doom_map_open() leaves behind.
  */
 typedef struct doom_map {
     doom_map_lump_view_t lumps[DOOM_MAP_LUMP_COUNT];
+    doom_sector_read_fn readSector;
+    void* readSectorContext;
     int open;
     doom_map_error_t error;
 } doom_map_t;

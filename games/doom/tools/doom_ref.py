@@ -4130,6 +4130,156 @@ def report_player(lumps: list[Lump], map_name: str, tics: int) -> None:
           f"finalviewz={player['viewz']} used={player['useTriggers']}")
 
 
+# --- The door (T26) ---------------------------------------------------------
+#
+# The same scripted scenario tools/door_check.c runs, from the same frozen
+# viewpoint: the nearest closed manual door to the player start, the player one
+# radius in front of it, then the block/use/open/walk sequence. This side has no
+# renderer aimed at an arbitrary viewpoint, so the C harness's FRAME lines are
+# not part of the protocol; they carry an invariant (the doorway is not the
+# 0xFF prefill) rather than an equality.
+
+DOOR_SCRIPT = "closed-block-use-open-walk-through"
+DOOR_DEFAULT_TICS = 120
+DOOR_THRESHOLD_GAP = 16 * FRAC
+
+
+def door_command(tic: int) -> dict:
+    """The door script's command for one tic (documented in door_check.c)."""
+    cmd = {"forwardmove": 0, "sidemove": 0, "angleturn": 0, "buttons": 0}
+    if tic in (1, 2):
+        cmd["forwardmove"] = 0x19
+    elif 6 <= tic <= 12:
+        cmd["buttons"] = BT_USE
+    elif tic >= 45:
+        cmd["forwardmove"] = 0x19
+    return cmd
+
+
+def _c_div2(value: int) -> int:
+    """C's `value / 2`: truncation toward zero, not Python's floor."""
+    return value // 2 if value >= 0 else -((-value) // 2)
+
+
+def door_fixture(level: "SpecLevel", start: dict) -> dict:
+    """The nearest closed manual door: special 1, closed back, flat threshold."""
+    best = None
+    best_distance = 0
+    for index, line in enumerate(level.bsp.linedefs):
+        if level.line_special[index] != 1:
+            continue
+        front = _front_sector(level, line)
+        back = _back_sector(level, line)
+        if front is None or back is None:
+            continue
+        if level.sectors[back]["ceiling"] > level.sectors[back]["floor"]:
+            continue
+        if level.sectors[front]["floor"] != level.sectors[back]["floor"]:
+            continue
+        v1 = level.bsp.vertexes[line["v1"]]
+        v2 = level.bsp.vertexes[line["v2"]]
+        dx = i32(v2["x"] - v1["x"])
+        dy = i32(v2["y"] - v1["y"])
+        mx = i32(v1["x"] + _c_div2(dx))
+        my = i32(v1["y"] + _c_div2(dy))
+        distance = (mx - start["x"]) ** 2 + (my - start["y"]) ** 2
+        if best is not None and distance >= best_distance:
+            continue
+
+        nx = -dy
+        ny = dx
+        length = math.hypot(nx, ny)
+        if length <= 0.0:
+            continue
+        step_x = int(nx / length * DOOR_THRESHOLD_GAP)
+        step_y = int(ny / length * DOOR_THRESHOLD_GAP)
+        for sign in (1, -1):
+            px = i32(mx + sign * step_x)
+            py = i32(my + sign * step_y)
+            sector = sector_of_subsector(level.bsp,
+                                         point_in_subsector(level.bsp, px, py))
+            if sector == front:
+                best = {"line": index, "front": front, "back": back,
+                        "x": px, "y": py,
+                        "angle": point_to_angle(px, py, mx, my)}
+                best_distance = distance
+                break
+    if best is None:
+        raise FormatError(f"{level.bsp.name}: no closed manual door in front of the start")
+    return best
+
+
+def report_door(lumps: list[Lump], map_name: str,
+                tics: int = DOOR_DEFAULT_TICS) -> None:
+    """The `--door` protocol: block, use, open and walk through one door."""
+    if tics < 0:
+        raise FormatError("--tics cannot be negative")
+
+    bsp = read_bsp_map(lumps, map_name)
+    things = run_things(bsp, 2)         # the RNG position the level load leaves
+    level = SpecLevel(bsp, RandomState(things.rng))
+    level.mobjs = [movement_player(level)]
+    level.move_stats = {"checks": 0, "blocked": 0, "crossed": 0, "slides": 0}
+
+    mo = level.mobjs[0]
+    door = door_fixture(level, mo)
+    mo["x"] = door["x"]
+    mo["y"] = door["y"]
+    mo["angle"] = door["angle"]
+    mo["momx"] = mo["momy"] = 0
+    ok, position = movement_check_position(level, mo, door["x"], door["y"])
+    if not ok:
+        raise FormatError(f"{level.bsp.name}: the threshold is not standable")
+    mo["z"] = position["floorz"]
+    mo["floorz"] = position["floorz"]
+    mo["ceilingz"] = position["ceilingz"]
+    mo["subsector"] = position["subsector"]
+    mo["sector"] = position["sector"]
+
+    player = player_record(mo)
+
+    print(f"DOOR {map_name} line={door['line']} sector={door['back']} "
+          f"front={door['front']} threshold={door['x'] // FRAC},{door['y'] // FRAC} "
+          f"angle={door['angle']} tics={tics} script={DOOR_SCRIPT}")
+
+    opens_at = -1
+    crossed = False
+    for tic in range(tics):
+        blocked_before = level.move_stats["blocked"]
+        player_think(level, player, door_command(tic))
+
+        if mo["momx"] or mo["momy"] or (mo["flags"] & MF_SKULLFLY):
+            movement_xy_movement(level, mo)
+        if mo["z"] != mo["floorz"] or mo["momz"]:
+            movement_z_movement(level, mo)
+        run_tic(level)
+        level.leveltime += 1
+
+        opening = movement_line_opening(level, door["line"])
+        passable = (opening["range"] >= mo["height"] and
+                    opening["top"] - mo["z"] >= mo["height"])
+        if opens_at < 0 and passable:
+            opens_at = tic
+
+        specialdata = level.sectors[door["back"]]["specialdata"]
+        active = specialdata is not None and specialdata["kind"] == "door"
+
+        if not crossed and mo["sector"] not in (door["back"], door["front"]):
+            crossed = True
+
+        print(f"TIC {tic} x={mo['x']} y={mo['y']} z={mo['z']} "
+              f"viewz={player['viewz']} sector={mo['sector']} "
+              f"door={1 if active else 0} use={player['useTriggered']} "
+              f"blocked={1 if level.move_stats['blocked'] != blocked_before else 0} "
+              f"ceiling={level.sectors[door['back']]['ceiling']} "
+              f"passable={1 if passable else 0}")
+
+    print(f"SUMMARY used={player['useTriggers']} triggered={level.stats['triggers']} "
+          f"opens={opens_at} finalceiling={level.sectors[door['back']]['ceiling']} "
+          f"finalx={mo['x']} finaly={mo['y']} sector={mo['sector']} "
+          f"crossed={1 if crossed else 0}")
+
+
 # --- Damage, death and pickups (D4.2d1) -------------------------------------
 #
 # A second implementation of linuxdoom-1.10 p_inter.c (P_GiveAmmo, P_GiveWeapon,
@@ -7518,6 +7668,10 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
                         help="run the 200-tic player script through P_PlayerThink "
                              "(walk, run, turn, strafe, backpedal, use, friction) "
                              "and print the avatar and view every tic (D4.2c)")
+    parser.add_argument("--door", metavar="NAME",
+                        help="run the door script (block, BT_USE, open, walk "
+                             "through) and print the avatar and the door every tic "
+                             "(T26)")
     parser.add_argument("--damage", metavar="NAME",
                         help="run the damage/death/pickup/crush script against the "
                              "damage rules and print every mobj and the player "
@@ -7569,10 +7723,11 @@ def main(argv: list[str] | None = None) -> int:
     if not (patches_wanted or textures_wanted or flats_wanted or arguments.map
             or arguments.stats or arguments.bsp or arguments.segs
             or arguments.things or arguments.specials or arguments.movement
-            or arguments.player or arguments.damage or arguments.attack):
+            or arguments.player or arguments.door or arguments.damage
+            or arguments.attack):
         parser.error("nothing to do: pass --patches, --textures, --flats, --all, "
                      "--map, --stats, --bsp, --segs, --things, --specials, "
-                     "--movement, --player, --damage or --attack")
+                     "--movement, --player, --door, --damage or --attack")
     if arguments.limit is not None and arguments.limit < 0:
         parser.error("--limit cannot be negative")
     if arguments.tics < 0:
@@ -7641,6 +7796,8 @@ def main(argv: list[str] | None = None) -> int:
             report_movement(lumps, arguments.movement.upper(), arguments.tics)
         if arguments.player:
             report_player(lumps, arguments.player.upper(), arguments.tics)
+        if arguments.door:
+            report_door(lumps, arguments.door.upper(), arguments.tics)
         if arguments.damage:
             report_damage(lumps, arguments.damage.upper())
         if arguments.attack:

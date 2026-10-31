@@ -2418,6 +2418,33 @@ struct LevelWorld {
 
 LevelWorld gWorld;
 
+/**
+ * The live-sector reader bound to the map the renderer walks (T26).
+ *
+ * `p_sector_t` is the level's mutable sector state: p_level_init() copies
+ * E1M1's SECTORS into it and every door, floor, lift, ceiling and light writer
+ * updates it. The map's own SECTORS lump is immutable (the flash build maps it
+ * straight out of the container), so without this seam `doom_map_get_sector()`
+ * answered every renderer question with the level's spawn geometry -- a door
+ * that opened in the simulation still drew closed, and standing inside its
+ * 16-unit sector left the whole 320x200 surface at the 0xFF prefill.
+ *
+ * The callback copies the seven map-facing fields; `specialdata` is the
+ * simulation's pointer and is not part of `doom_sector_t`.
+ */
+void liveSectorReader(void* context, std::uint16_t index, doom_sector_t* out) {
+    const p_sector_t* sector =
+        &static_cast<const p_level_t*>(context)->sectors[index];
+
+    out->floorHeight = sector->floorHeight;
+    out->ceilingHeight = sector->ceilingHeight;
+    out->floorPic = sector->floorPic;
+    out->ceilingPic = sector->ceilingPic;
+    out->lightLevel = sector->lightLevel;
+    out->special = sector->special;
+    out->tag = sector->tag;
+}
+
 /// Rounds an arena size up to the sizing rule's 1 KB.
 std::uint32_t roundArenaUp(std::uint32_t bytes) {
     return (bytes + kArenaRoundBytes - 1u) / kArenaRoundBytes * kArenaRoundBytes;
@@ -2631,6 +2658,13 @@ bool openWorldSession() {
 
     gWorld.open = true;
     gFrameWorld = &gWorld.level;
+    // T26: the renderer walks gSession.driver->map. Answer its sector reads
+    // from the level's mutable sectors, so a mover or a light change that the
+    // simulation already applied is what the frame draws. The probe paths call
+    // openLevelSession() without loadPlaypal, so they never take this branch
+    // and keep rendering the immutable map.
+    gSession.driver->map.readSector = liveSectorReader;
+    gSession.driver->map.readSectorContext = &gWorld.level;
     std::snprintf(line, sizeof line,
                   "SHOW,arena,fit,status=ok,chosen=%u,peak=%u,used=%u,headroom=25,round=1024,"
                   "arena=%u,world_static=%u,heap_free=%u,heap_largest=%u\n",
@@ -2645,6 +2679,10 @@ bool openWorldSession() {
 
 void closeWorldSession() {
     gFrameWorld = nullptr;
+    if (gSession.driver != nullptr) {
+        gSession.driver->map.readSector = nullptr;
+        gSession.driver->map.readSectorContext = nullptr;
+    }
     if (gWorld.open) {
         p_level_shutdown(&gWorld.level);
     }
