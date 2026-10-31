@@ -24,9 +24,10 @@
  *     a problem, because the revert has already happened. That is upstream's
  *     comment `//return crushed;`.
  *
- * P_ChangeSector() ITSELF IS D4.2's. Here it is p_spec_p_change_sector(), a
- * counted "the sector is clear"; see p_spec.h. The call sites are upstream's,
- * so the counter is the proof the hook is on every write path.
+ * P_ChangeSector() is p_map.c's p_change_sector(); p_spec_p_change_sector() is
+ * the entry point the movers call. It walks the things the sector can touch,
+ * clips their heights and reports whether any no longer fits, which is what
+ * T_MovePlane's revert/crush branches read. The call sites are upstream's.
  *
  * THE CACHED HEIGHT RULE
  *

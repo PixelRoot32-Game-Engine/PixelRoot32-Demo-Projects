@@ -24,7 +24,9 @@
 #include <string.h>
 
 #include "p_action.h"
+#include "p_map.h"
 #include "r_bsp.h"
+#include "r_tables.h"
 
 /* --- Helpers ------------------------------------------------------------ */
 
@@ -484,6 +486,244 @@ int p_set_mobj_state(p_mobj_context_t* world, r_mobj_t* mobj, statenum_t state,
     return 1;
 }
 
+/* --- P_Thrust / P_XYMovement / P_ZMovement ------------------------------- */
+
+void p_thrust(p_mobj_context_t* world, r_mobj_t* mobj, angle_t angle,
+              fixed_t move) {
+    const uint32_t index = angle >> ANGLETOFINESHIFT;
+
+    (void)world;
+    if (mobj == NULL) {
+        return;
+    }
+    /* `mo->momx += FixedMul (move, finecosine[angle>>ANGLETOFINESHIFT]);
+     *  mo->momy += FixedMul (move, finesine[angle>>ANGLETOFINESHIFT]);`
+     * r_fine_sine is 5/4 of a turn long, so the cosine is the pointer offset. */
+    mobj->momx += fixed_mul(move, r_fine_sine[index + (FINEANGLES / 4)]);
+    mobj->momy += fixed_mul(move, r_fine_sine[index]);
+}
+
+/* The sector floor a thing stands on, from the mutable array when the level has
+ * one. */
+static fixed_t sector_floor(const p_mobj_context_t* world, uint16_t sector) {
+    doom_sector_t record;
+
+    if (world->sectors != NULL && sector < world->sectorCount) {
+        return world->sectors[sector].floorHeight;
+    }
+    if (world->map == NULL ||
+        (uint32_t)sector >= world->map->lumps[DOOM_MAP_SECTORS].count) {
+        return 0;
+    }
+    doom_map_get_sector(world->map, sector, &record);
+    return record.floorHeight;
+}
+
+/*
+ * P_ExplodeMissile(): stop, enter the death state and lose MF_MISSILE.
+ *
+ * The deathsound is D4.2e's (no sound layer yet) and the sky-wall hack that
+ * decides whether a missile explodes at all lives with the rest of the missile
+ * work in D4.2d; everything that changes the thing is here.
+ */
+static void explode_missile(p_mobj_context_t* world, r_mobj_t* mobj) {
+    mobj->momx = 0;
+    mobj->momy = 0;
+    mobj->momz = 0;
+
+    (void)p_set_mobj_state(world, mobj,
+                           (statenum_t)mobjinfo[mobj->type].deathstate, NULL);
+    mobj->tics = (int16_t)(mobj->tics - (p_random(world->random) & 3));
+    if (mobj->tics < 1) {
+        mobj->tics = 1;
+    }
+    mobj->flags &= ~MF_MISSILE;
+}
+
+void p_xy_movement(p_mobj_context_t* world, r_mobj_t* mobj) {
+    fixed_t xmove;
+    fixed_t ymove;
+    fixed_t ptryx;
+    fixed_t ptryy;
+
+    if (world == NULL || mobj == NULL) {
+        return;
+    }
+
+    /* `if (!mo->momx && !momy) { if (MF_SKULLFLY) ... return; }` */
+    if (mobj->momx == 0 && mobj->momy == 0) {
+        if ((mobj->flags & MF_SKULLFLY) != 0u) {
+            /* the skull slammed into something */
+            mobj->flags &= ~MF_SKULLFLY;
+            mobj->momx = 0;
+            mobj->momy = 0;
+            mobj->momz = 0;
+            (void)p_set_mobj_state(world, mobj,
+                                   (statenum_t)mobjinfo[mobj->type].spawnstate,
+                                   NULL);
+        }
+        return;
+    }
+
+    /* Momentum is clamped to one tic's MAXMOVE. The halving test below is
+     * upstream's `xmove > MAXMOVE/2` and only looks at the positive side; the
+     * negative side is left to P_CheckPosition, which is what upstream does. */
+    if (mobj->momx > P_MAXMOVE) {
+        mobj->momx = P_MAXMOVE;
+    } else if (mobj->momx < -P_MAXMOVE) {
+        mobj->momx = -P_MAXMOVE;
+    }
+    if (mobj->momy > P_MAXMOVE) {
+        mobj->momy = P_MAXMOVE;
+    } else if (mobj->momy < -P_MAXMOVE) {
+        mobj->momy = -P_MAXMOVE;
+    }
+
+    xmove = mobj->momx;
+    ymove = mobj->momy;
+
+    do {
+        if (xmove > P_MAXMOVE / 2 || ymove > P_MAXMOVE / 2) {
+            ptryx = mobj->x + xmove / 2;
+            ptryy = mobj->y + ymove / 2;
+            xmove >>= 1;
+            ymove >>= 1;
+        } else {
+            ptryx = mobj->x + xmove;
+            ptryy = mobj->y + ymove;
+            xmove = 0;
+            ymove = 0;
+        }
+
+        if (!p_try_move(world, mobj, ptryx, ptryy)) {
+            /* blocked move */
+            if (mobj->player) {
+                /* try to slide along it */
+                p_slide_move(world, mobj);
+            } else if ((mobj->flags & MF_MISSILE) != 0u) {
+                /* Upstream's sky-wall check reads the ceilingline P_CheckPosition
+                 * kept; the port keeps no such global, and the check is part of
+                 * the missile work D4.2d owns. The explosion itself is below. */
+                explode_missile(world, mobj);
+            } else {
+                mobj->momx = 0;
+                mobj->momy = 0;
+            }
+        }
+    } while (xmove != 0 || ymove != 0);
+
+    /* `if (player && player->cheats & CF_NOMOMENTUM)`: there are no cheats in
+     * this port (D5), so the branch is absent. */
+
+    if ((mobj->flags & (MF_MISSILE | MF_SKULLFLY)) != 0u) {
+        return; /* no friction for missiles ever */
+    }
+    if (mobj->z > mobj->floorz) {
+        return; /* no friction when airborne */
+    }
+
+    if ((mobj->flags & MF_CORPSE) != 0u) {
+        /* do not stop sliding if halfway off a step with some momentum */
+        if (mobj->momx > FRACUNIT / 4 || mobj->momx < -FRACUNIT / 4 ||
+            mobj->momy > FRACUNIT / 4 || mobj->momy < -FRACUNIT / 4) {
+            if (mobj->floorz != sector_floor(world, mobj->sector)) {
+                return;
+            }
+        }
+    }
+
+    if (mobj->momx > -P_STOPSPEED && mobj->momx < P_STOPSPEED &&
+        mobj->momy > -P_STOPSPEED && mobj->momy < P_STOPSPEED) {
+        /* if in a walking frame, stop moving */
+        if (mobj->player &&
+            (uint32_t)(mobj->state - S_PLAY_RUN1) < 4u) {
+            (void)p_set_mobj_state(world, mobj, S_PLAY, NULL);
+        }
+        mobj->momx = 0;
+        mobj->momy = 0;
+    } else {
+        mobj->momx = fixed_mul(mobj->momx, P_ORIG_FRICTION);
+        mobj->momy = fixed_mul(mobj->momy, P_ORIG_FRICTION);
+    }
+}
+
+void p_z_movement(p_mobj_context_t* world, r_mobj_t* mobj) {
+    fixed_t dist;
+    fixed_t delta;
+
+    if (world == NULL || mobj == NULL) {
+        return;
+    }
+
+    /* `if (mo->player && mo->z < mo->floorz)` squashes the player's viewheight.
+     * This port has no player_t view state yet (D5), so nothing happens here. */
+
+    /* adjust height */
+    mobj->z += mobj->momz;
+
+    if ((mobj->flags & MF_FLOAT) != 0u && mobj->target != NULL) {
+        /* float down towards target if too close */
+        if ((mobj->flags & (MF_SKULLFLY | MF_INFLOAT)) == 0u) {
+            dist = p_aprox_distance(mobj->x - mobj->target->x,
+                                    mobj->y - mobj->target->y);
+            delta = (mobj->target->z + (mobj->height >> 1)) - mobj->z;
+
+            if (delta < 0 && dist < -(delta * 3)) {
+                mobj->z -= P_FLOATSPEED;
+            } else if (delta > 0 && dist < (delta * 3)) {
+                mobj->z += P_FLOATSPEED;
+            }
+        }
+    }
+
+    /* clip movement */
+    if (mobj->z <= mobj->floorz) {
+        /* hit the floor */
+        if ((mobj->flags & MF_SKULLFLY) != 0u) {
+            /* the skull slammed into something */
+            mobj->momz = -mobj->momz;
+        }
+        if (mobj->momz < 0) {
+            /* Upstream's player branch here squashes the viewheight and plays
+             * sfx_oof when the landing is hard; no player view (D5) and no
+             * sound layer (D4.2e) exist yet. */
+            mobj->momz = 0;
+        }
+        mobj->z = mobj->floorz;
+
+        if ((mobj->flags & MF_MISSILE) != 0u &&
+            (mobj->flags & MF_NOCLIP) == 0u) {
+            explode_missile(world, mobj);
+            return;
+        }
+    } else if ((mobj->flags & MF_NOGRAVITY) == 0u) {
+        if (mobj->momz == 0) {
+            mobj->momz = -P_GRAVITY * 2;
+        } else {
+            mobj->momz -= P_GRAVITY;
+        }
+    }
+
+    if (mobj->z + mobj->height > mobj->ceilingz) {
+        /* hit the ceiling */
+        if (mobj->momz > 0) {
+            mobj->momz = 0;
+        }
+        mobj->z = mobj->ceilingz - mobj->height;
+
+        if ((mobj->flags & MF_SKULLFLY) != 0u) {
+            /* the skull slammed into something */
+            mobj->momz = -mobj->momz;
+        }
+
+        if ((mobj->flags & MF_MISSILE) != 0u &&
+            (mobj->flags & MF_NOCLIP) == 0u) {
+            explode_missile(world, mobj);
+            return;
+        }
+    }
+}
+
 /* --- P_MobjThinker ------------------------------------------------------ */
 
 void p_mobj_thinker(p_thinker_t* thinker, void* context) {
@@ -494,9 +734,22 @@ void p_mobj_thinker(p_thinker_t* thinker, void* context) {
         return;
     }
 
-    /* D4.2 inserts P_XYMovement() and P_ZMovement() here, each followed by the
-     * `if (mobj->thinker.function.acv == -1) return;` test that keeps a removed
-     * mobj from being touched again. Neither moves anything in D4.1a. */
+    /* Upstream's two momenta tests and the `acv == -1` ("was I removed?")
+     * return after each. P_CheckSight/P_NoiseAlert are D4.2e's and are not
+     * called here. */
+    if (mobj->momx != 0 || mobj->momy != 0 ||
+        (mobj->flags & MF_SKULLFLY) != 0u) {
+        p_xy_movement(world, mobj);
+        if (mobj->thinker.removed != 0u) {
+            return; /* mobj was removed */
+        }
+    }
+    if (mobj->z != mobj->floorz || mobj->momz != 0) {
+        p_z_movement(world, mobj);
+        if (mobj->thinker.removed != 0u) {
+            return; /* mobj was removed */
+        }
+    }
 
     if (mobj->tics != -1) {
         mobj->tics -= 1;

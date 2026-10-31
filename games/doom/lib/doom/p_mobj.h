@@ -144,6 +144,12 @@ p_spawn_rules_t p_spawn_rules_default(void);
  * this header does not have to include that one (which includes this one). */
 struct p_action_stats;
 
+/* The owner of the context, for the mobj walks P_ChangeSector performs, and the
+ * optional movement counters (p_map.h). Both are named as structs here so this
+ * header stays below p_map.h and p_setup.h in the include graph. */
+struct p_level;
+struct p_move_stats;
+
 /*
  * Everything a spawn needs that is not the spawn's own arguments.
  *
@@ -178,6 +184,14 @@ typedef struct p_mobj_context {
     int16_t* lineSpecial;
     uint16_t lineCount;
     p_spec_stats_t* specStats;
+    /* The p_level_t this context is embedded in, or NULL for a hand-built
+     * context (a unit test). P_ChangeSector walks the level's mobjs through
+     * p_level_first_mobj()/p_level_next_mobj() when it is set and falls back to
+     * the thinker list when it is not; the two walks are the same list. */
+    struct p_level* level;
+    /* Optional movement counters (p_map.h): NULL costs nothing and is what the
+     * firmware passes. The procedural gate sets it to read checks/blocked/cross. */
+    struct p_move_stats* moveStats;
 } p_mobj_context_t;
 
 /*
@@ -497,15 +511,64 @@ int p_set_mobj_state(p_mobj_context_t* world, r_mobj_t* mobj, statenum_t state,
                      p_mobj_error_t* error);
 
 /**
+ * @brief P_Thrust(): add momentum along an angle.
+ *
+ * `mo->momx += FixedMul (move, finecosine[angle>>ANGLETOFINESHIFT])` and the
+ * sine for y, exactly as p_mobj.c does. The caller (P_MovePlayer upstream, the
+ * movement gate here) decides how much and how often.
+ *
+ * @param world The level's context (unused today, kept so the signature does
+ *              not change when D4.2e's noise/attack work needs it).
+ * @param mobj  The thing.
+ * @param angle Binary angle.
+ * @param move  Momentum to add, 16.16.
+ */
+void p_thrust(p_mobj_context_t* world, r_mobj_t* mobj, angle_t angle,
+              fixed_t move);
+
+/**
+ * @brief P_XYMovement(): horizontal momentum, collision and friction.
+ *
+ * Upstream's loop, in order:
+ *
+ *   - with no momentum, a MF_SKULLFLY thing stops flying and returns to its
+ *     spawn state; anything else returns immediately;
+ *   - momentum is clamped to +/-MAXMOVE, then applied in <=MAXMOVE/2 steps;
+ *   - a refused move slides (a player) or explodes (a missile) or stops
+ *     (anything else);
+ *   - friction is skipped for missiles, for flying skulls and for an airborne
+ *     thing, and applied as P_ORIG_FRICTION per tic; below P_STOPSPEED in both
+ *     axes the momentum is zeroed instead.
+ *
+ * The port has no player_t, so the two player-only branches upstream guards on
+ * `mo->player` use the mobj's own `player` flag: the S_PLAY_RUN* to S_PLAY
+ * state change is kept, and the CF_NOMOMENTUM cheat is absent because there
+ * are no cheats (D5). `P_CheckSight`/`P_NoiseAlert` are not called; D4.2e owns
+ * them.
+ */
+void p_xy_movement(p_mobj_context_t* world, r_mobj_t* mobj);
+
+/**
+ * @brief P_ZMovement(): vertical momentum, gravity, floor and ceiling.
+ *
+ * Upstream's order: apply momz, float toward a target when MF_FLOAT, land on
+ * the floor (reflecting a flying skull, exploding a missile), apply gravity
+ * when airborne and not MF_NOGRAVITY, then clip the ceiling (reflecting a
+ * flying skull, exploding a missile).
+ *
+ * The player view-height squash and its sound are not here: this port has no
+ * player_t view state yet (D5) and no sound layer (D4.2e).
+ */
+void p_z_movement(p_mobj_context_t* world, r_mobj_t* mobj);
+
+/**
  * @brief The thinker function every mobj is created with.
  *
- * This is P_MobjThinker() minus movement: it decrements `tics`, and when it
- * reaches zero it enters the state's `nextstate` through p_set_mobj_state(),
- * which may remove the mobj (and does when the chain ends at S_NULL). A state
- * with `tics == -1` is permanent and is not advanced.
- *
- * D4.2 replaces the two commented-out calls with P_XYMovement/P_ZMovement, in
- * that order and with the same "was I removed?" test between them.
+ * This is P_MobjThinker(): P_XYMovement when there is horizontal momentum or a
+ * flying skull, then P_ZMovement when the thing is off the floor or has vertical
+ * momentum, each followed by the "was I removed?" test, then the state tic.
+ * A state with `tics == -1` is permanent; the nightmare respawn is D4.2's and
+ * is not here.
  */
 void p_mobj_thinker(p_thinker_t* thinker, void* context);
 

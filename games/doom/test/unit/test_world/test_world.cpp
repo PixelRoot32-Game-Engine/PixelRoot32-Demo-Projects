@@ -39,9 +39,11 @@
 #include "p_doors.h"
 #include "p_floor.h"
 #include "p_lights.h"
+#include "p_map.h"
 #include "p_plats.h"
 #include "p_setup.h"
 #include "p_spec.h"
+#include "r_tables.h"
 
 #include "../../test_config.h"
 
@@ -1147,10 +1149,13 @@ void test_specs_door_waits_then_closes_and_removes_itself(void) {
     TEST_ASSERT_NULL(fixture.level.sectors[0].specialdata);
 }
 
-void test_specs_door_closing_over_a_thing_reports_the_stub(void) {
-    // A player stands in the door sector. Upstream would crush or block; this
-    // layer's P_ChangeSector is the counted stub and answers "clear", so the
-    // door reaches the floor and the cached ceilingz follows it.
+void test_specs_door_closing_over_a_thing_stops_at_its_height(void) {
+    // A player stands in the door sector. P_ChangeSector now runs the real
+    // P_ThingHeightClip, so the closing door stops at the player's height and
+    // reports "does not fit" every tic instead of reaching the floor. Special 3
+    // is this port's P_DOOR_CLOSE, whose crushed branch does not go back up
+    // (p_doors.c), so the door hovers; the player is not damaged (D4.2d owns
+    // P_DamageMobj) and the counter says so.
     SpecFixture fixture({{0, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
     fixture.builder.addLine(4, 3, 1, 0, 1, true);
 
@@ -1164,17 +1169,29 @@ void test_specs_door_closing_over_a_thing_reports_the_stub(void) {
 
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
                                                     P_TRIGGER_CROSS, 1));
+    p_thinker_t* door = fixture.first(P_THINKER_DOOR);
+    TEST_ASSERT_NOT_NULL(door);
+
+    // Open, wait 150, close: the first downward direction is -1.
     TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
-        return fixture.count(P_THINKER_DOOR) == 0;
+        return doorOf(door)->direction == -1;
     }) >= 0);
 
-    TEST_ASSERT_EQUAL_INT32(0, fixture.level.sectors[0].ceilingHeight);
-    TEST_ASSERT_EQUAL_INT32(0, mobj->ceilingz);
-    TEST_ASSERT_EQUAL_INT32(0, mobj->floorz);
-    TEST_ASSERT_EQUAL_INT(1, p_spec_p_change_sector_is_stubbed());
-    TEST_ASSERT_TRUE(fixture.level.specStats.changeSectorCalls > 0u);
-    TEST_ASSERT_EQUAL_UINT32(fixture.level.specStats.changeSectorCalls,
-                             fixture.level.specStats.changeSectorClear);
+    // The close is refused when the next step would leave less than the
+    // player's height; the plane is reverted to the last height that fits.
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.level.sectors[0].ceilingHeight == mobj->height;
+    }) >= 0);
+    fixture.tick(50);
+    TEST_ASSERT_EQUAL_INT32(mobj->height,
+                            fixture.level.sectors[0].ceilingHeight);
+    TEST_ASSERT_EQUAL_INT(-1, doorOf(door)->direction);
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+    TEST_ASSERT_EQUAL_INT32(mobj->height, mobj->ceilingz);
+    TEST_ASSERT_TRUE(fixture.level.specStats.unsupportedCrush > 0u);
+    TEST_ASSERT_TRUE(fixture.level.specStats.changeSectorClear <
+                     fixture.level.specStats.changeSectorCalls);
+    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector_is_stubbed());
     TEST_ASSERT_TRUE(fixture.level.specStats.thingRefreshes > 0u);
 }
 
@@ -1449,13 +1466,15 @@ void test_specs_spawn_order_is_sector_index_order(void) {
                           lightOf(fixture.first(P_THINKER_LIGHTFLASH))->type);
 }
 
-void test_specs_p_change_sector_stub_counts_and_answers_clear(void) {
+void test_specs_p_change_sector_counts_and_answers_clear(void) {
     SpecFixture fixture({{0, 128, 160, 0, 0}});
     fixture.builder.addLine(1, 0, 0, 0, 0, false);
 
     TEST_ASSERT_TRUE(fixture.open());
     const u32 before = fixture.level.specStats.changeSectorCalls;
-    TEST_ASSERT_EQUAL_INT(1, p_spec_p_change_sector_is_stubbed());
+    // With nothing in the sector the real rule answers "clear" like the stub
+    // did, but the function is no longer a stub.
+    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector_is_stubbed());
     TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector(&fixture.level.context, 0));
     TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector(&fixture.level.context, 0));
     TEST_ASSERT_EQUAL_UINT32(before + 2u,
@@ -1512,6 +1531,380 @@ void test_line_record_exposes_special_and_tag(void) {
     TEST_ASSERT_EQUAL_UINT32(DOOM_LINEDEF_SIZE, sizeof(doom_line_t));
 }
 
+// --- D4.2b: movement and collision ------------------------------------------
+
+/*
+ * A room with real geometry: four one-sided walls and, when a case needs one, a
+ * two-sided line whose back sector decides the floor under it. Every point is
+ * still in subsector 0 (the map has no NODES), so p_spawn_mobj places every
+ * thing in the first line's front sector -- which is exactly what the height
+ * rules then operate on.
+ */
+struct MoveMapBuilder {
+    std::vector<u8> things;
+    std::vector<u8> linedefs;
+    std::vector<u8> sidedefs;
+    std::vector<u8> vertexes;
+    std::vector<u8> segs;
+    std::vector<u8> ssectors;
+    std::vector<u8> sectors;
+    u16 vertexCount = 0;
+    i16 lineCount = 0;
+    i16 sideCount = 0;
+    i16 segCount = 0;
+
+    explicit MoveMapBuilder(const std::vector<SpecSectorSpec>& specs) {
+        for (const SpecSectorSpec& sector : specs) {
+            put16(sectors, sector.floor);
+            put16(sectors, sector.ceiling);
+            putName(sectors, "FLOOR4_8");
+            putName(sectors, "CEIL3_5");
+            put16(sectors, sector.light);
+            put16(sectors, sector.special);
+            put16(sectors, sector.tag);
+        }
+    }
+
+    u16 addVertex(i16 x, i16 y) {
+        put16(vertexes, x);
+        put16(vertexes, y);
+        return vertexCount++;
+    }
+
+    void addSide(i16 sector) {
+        put16(sidedefs, 0);
+        put16(sidedefs, 0);
+        putName(sidedefs, "-");
+        putName(sidedefs, "-");
+        putName(sidedefs, "STARTAN3");
+        put16(sidedefs, sector);
+        sideCount = static_cast<i16>(sideCount + 1);
+    }
+
+    /// One line and one seg. `back` of -1 is a one-sided line.
+    void addLine(u16 v1, u16 v2, i16 flags, i16 special, i16 tag, i16 front,
+                 i16 back) {
+        const i16 index = lineCount;
+
+        put16(linedefs, static_cast<i16>(v1));
+        put16(linedefs, static_cast<i16>(v2));
+        put16(linedefs, flags);
+        put16(linedefs, special);
+        put16(linedefs, tag);
+        put16(linedefs, sideCount);
+        if (back >= 0) {
+            put16(linedefs, static_cast<i16>(sideCount + 1));
+        } else {
+            put16(linedefs, kNoSide);
+        }
+        addSide(front);
+        if (back >= 0) {
+            addSide(back);
+        }
+
+        put16(segs, static_cast<i16>(v1));
+        put16(segs, static_cast<i16>(v2));
+        put16(segs, 0);
+        put16(segs, index);
+        put16(segs, 0);
+        put16(segs, 0);
+        lineCount = static_cast<i16>(lineCount + 1);
+        segCount = static_cast<i16>(segCount + 1);
+    }
+
+    /// The four walls of a 256 x 256 room from (-128,-128) to (128,128).
+    void addRoom(i16 front) {
+        const u16 v0 = addVertex(-128, -128);
+        const u16 v1 = addVertex(128, -128);
+        const u16 v2 = addVertex(128, 128);
+        const u16 v3 = addVertex(-128, 128);
+
+        addLine(v0, v1, DOOM_ML_BLOCKING, 0, 0, front, -1);
+        addLine(v1, v2, DOOM_ML_BLOCKING, 0, 0, front, -1);
+        addLine(v2, v3, DOOM_ML_BLOCKING, 0, 0, front, -1);
+        addLine(v3, v0, DOOM_ML_BLOCKING, 0, 0, front, -1);
+    }
+
+    doom_map_error_t open(doom_map_t* map) {
+        doom_map_source_t source{};
+
+        ssectors.clear();
+        put16(ssectors, segCount);
+        put16(ssectors, 0);
+
+        source.data[DOOM_MAP_THINGS] = things.empty() ? nullptr : things.data();
+        source.size[DOOM_MAP_THINGS] = things.size();
+        source.data[DOOM_MAP_LINEDEFS] = linedefs.data();
+        source.size[DOOM_MAP_LINEDEFS] = linedefs.size();
+        source.data[DOOM_MAP_SIDEDEFS] = sidedefs.data();
+        source.size[DOOM_MAP_SIDEDEFS] = sidedefs.size();
+        source.data[DOOM_MAP_VERTEXES] = vertexes.data();
+        source.size[DOOM_MAP_VERTEXES] = vertexes.size();
+        source.data[DOOM_MAP_SEGS] = segs.data();
+        source.size[DOOM_MAP_SEGS] = segs.size();
+        source.data[DOOM_MAP_SSECTORS] = ssectors.data();
+        source.size[DOOM_MAP_SSECTORS] = ssectors.size();
+        source.data[DOOM_MAP_SECTORS] = sectors.data();
+        source.size[DOOM_MAP_SECTORS] = sectors.size();
+        return doom_map_open(map, &source);
+    }
+};
+
+struct MoveFixture {
+    MoveMapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[16384]{};
+    zone_state_t zone{};
+    p_thinker_list_t thinkers{};
+    m_random_t random{};
+    p_action_stats_t actions{};
+    p_mobj_context_t context{};
+
+    explicit MoveFixture(const std::vector<SpecSectorSpec>& sectors)
+        : builder(sectors) {}
+
+    bool open() {
+        if (builder.open(&map) != DOOM_MAP_OK) {
+            return false;
+        }
+        if (z_init(&zone, arena, sizeof arena) != ZONE_ERR_OK) {
+            return false;
+        }
+        if (p_thinker_list_init(&thinkers) != P_TICK_OK) {
+            return false;
+        }
+        m_random_init(&random);
+        p_action_init(&actions);
+        context.zone = &zone;
+        context.thinkers = &thinkers;
+        context.map = &map;
+        context.random = &random;
+        context.actions = &actions;
+        context.rules = p_spawn_rules_default();
+        return true;
+    }
+
+    r_mobj_t* player(fixed_t x, fixed_t y, fixed_t z = ONFLOORZ) {
+        return p_spawn_mobj(&context, x, y, z, MT_PLAYER, nullptr);
+    }
+};
+
+constexpr fixed_t kThrustWalk = 0x19 * 2048;
+
+void test_move_check_position_refuses_a_one_sided_wall(void) {
+    // The room's bottom wall is at y = -128. A 32-unit box centred at y = -128
+    // straddles it, which is PIT_CheckLine's crossing test; a box that stays
+    // above it is a legal position and only the fit rules can refuse it.
+    MoveFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addRoom(0);
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* mobj = fixture.player(0, 0);
+    TEST_ASSERT_NOT_NULL(mobj);
+
+    p_position_result_t result{};
+    TEST_ASSERT_EQUAL_INT(0, p_check_position(&fixture.context, mobj, 0,
+                                              -128 * kFrac, &result));
+    TEST_ASSERT_EQUAL_INT32(0, result.floorz);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac, result.ceilingz);
+    // A point that leaves the box clear of the wall is free.
+    TEST_ASSERT_EQUAL_INT(1, p_check_position(&fixture.context, mobj, 0,
+                                              -64 * kFrac, &result));
+}
+
+void test_move_try_move_keeps_a_blocked_thing_in_place(void) {
+    MoveFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addRoom(0);
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* mobj = fixture.player(10 * kFrac, 20 * kFrac);
+    TEST_ASSERT_NOT_NULL(mobj);
+    p_move_stats_t stats{};
+    fixture.context.moveStats = &stats;
+
+    TEST_ASSERT_EQUAL_INT(0, p_try_move(&fixture.context, mobj, 10 * kFrac,
+                                        -128 * kFrac));
+    TEST_ASSERT_EQUAL_INT32(10 * kFrac, mobj->x);
+    TEST_ASSERT_EQUAL_INT32(20 * kFrac, mobj->y);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->floorz);
+    TEST_ASSERT_EQUAL_UINT32(1u, stats.blocked);
+    TEST_ASSERT_EQUAL_UINT32(1u, stats.checks);
+
+    // A move inside the room succeeds and copies the opening's heights.
+    TEST_ASSERT_EQUAL_INT(1, p_try_move(&fixture.context, mobj, 10 * kFrac,
+                                        20 * kFrac + 16 * kFrac));
+    TEST_ASSERT_EQUAL_INT32(20 * kFrac + 16 * kFrac, mobj->y);
+    TEST_ASSERT_EQUAL_UINT32(1u, stats.blocked);
+    TEST_ASSERT_EQUAL_UINT32(2u, stats.checks);
+}
+
+void test_move_step_up_is_the_twenty_four_unit_rule(void) {
+    // A two-sided line at y = 64: the back sector's floor is the step. 8 units
+    // is walkable; 32 is not (p_map.c's `tmfloorz - thing->z > 24*FRACUNIT`).
+    for (const i16 step : {static_cast<i16>(8), static_cast<i16>(32)}) {
+        MoveFixture fixture({{0, 128, 160, 0, 0}, {step, 128, 160, 0, 0}});
+        const u16 a = fixture.builder.addVertex(-128, 64);
+        const u16 b = fixture.builder.addVertex(128, 64);
+        fixture.builder.addLine(a, b, DOOM_ML_TWOSIDED, 0, 0, 0, 1);
+        TEST_ASSERT_TRUE(fixture.open());
+        r_mobj_t* mobj = fixture.player(0, 0);
+        TEST_ASSERT_NOT_NULL(mobj);
+
+        const int moved = p_try_move(&fixture.context, mobj, 0, 79 * kFrac);
+
+        if (step == 8) {
+            TEST_ASSERT_EQUAL_INT(1, moved);
+            TEST_ASSERT_EQUAL_INT32(8 * kFrac, mobj->floorz);
+        } else {
+            TEST_ASSERT_EQUAL_INT(0, moved);
+            TEST_ASSERT_EQUAL_INT32(0, mobj->floorz);
+            TEST_ASSERT_EQUAL_INT32(0, mobj->y);
+        }
+    }
+}
+
+void test_move_drop_off_needs_mf_dropoff(void) {
+    // A 64-unit drop over a two-sided line: refused for a thing without
+    // MF_DROPOFF, accepted with it. The floor itself stays the front sector's.
+    for (const bool dropoff : {false, true}) {
+        MoveFixture fixture({{0, 128, 160, 0, 0}, {-64, 128, 160, 0, 0}});
+        const u16 a = fixture.builder.addVertex(-128, 64);
+        const u16 b = fixture.builder.addVertex(128, 64);
+        fixture.builder.addLine(a, b, DOOM_ML_TWOSIDED, 0, 0, 0, 1);
+        TEST_ASSERT_TRUE(fixture.open());
+        r_mobj_t* mobj = fixture.player(0, 0);
+        TEST_ASSERT_NOT_NULL(mobj);
+        if (dropoff) {
+            mobj->flags |= MF_DROPOFF;
+        } else {
+            mobj->flags &= ~MF_DROPOFF;
+        }
+
+        TEST_ASSERT_EQUAL_INT(dropoff ? 1 : 0,
+                              p_try_move(&fixture.context, mobj, 0, 79 * kFrac));
+        TEST_ASSERT_EQUAL_INT32(0, mobj->floorz);
+    }
+}
+
+void test_move_thrust_and_friction_reach_the_stop_speed(void) {
+    MoveFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addRoom(0);
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* mobj = fixture.player(0, 0);
+    TEST_ASSERT_NOT_NULL(mobj);
+
+    p_thrust(&fixture.context, mobj, 0, kThrustWalk);
+    // The generated cosine at zero is 65535, not FRACUNIT: the table's
+    // half-angle offset leaves a one-unit rounding error the rule carries
+    // (documented in r_tables.h). The oracle's table has the same value.
+    TEST_ASSERT_EQUAL_INT32(static_cast<i32>(fixed_mul(kThrustWalk,
+                                                       r_fine_sine[FINEANGLES / 4])),
+                            mobj->momx);
+    // finesine[0] is 25, not 0: the table's half-angle offset gives a thrust
+    // along +x a 19-unit +y component, exactly as upstream's table does.
+    TEST_ASSERT_EQUAL_INT32(static_cast<i32>(fixed_mul(kThrustWalk,
+                                                       r_fine_sine[0])),
+                            mobj->momy);
+
+    {
+        const fixed_t before = mobj->momx;
+        p_xy_movement(&fixture.context, mobj);
+        TEST_ASSERT_EQUAL_INT32(static_cast<i32>(fixed_mul(before,
+                                                           P_ORIG_FRICTION)),
+                                mobj->momx);
+    }
+
+    // Below STOPSPEED in both axes the momentum is dropped, not scaled.
+    mobj->momx = P_STOPSPEED - 1;
+    mobj->momy = 0;
+    p_xy_movement(&fixture.context, mobj);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->momx);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->momy);
+
+    mobj->momx = P_STOPSPEED + 0x1000;
+    p_xy_movement(&fixture.context, mobj);
+    TEST_ASSERT_EQUAL_INT32(static_cast<i32>(fixed_mul(P_STOPSPEED + 0x1000,
+                                                       P_ORIG_FRICTION)),
+                            mobj->momx);
+}
+
+void test_move_z_movement_gravity_floor_and_ceiling(void) {
+    MoveFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addRoom(0);
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* mobj = fixture.player(0, 0, 64 * kFrac);
+    TEST_ASSERT_NOT_NULL(mobj);
+
+    // Airborne with no vertical momentum: one tic sets -2*GRAVITY, the next
+    // subtracts another GRAVITY (p_mobj.c P_ZMovement).
+    p_z_movement(&fixture.context, mobj);
+    TEST_ASSERT_EQUAL_INT32(-2 * kFrac, mobj->momz);
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac, mobj->z);
+    p_z_movement(&fixture.context, mobj);
+    TEST_ASSERT_EQUAL_INT32(62 * kFrac, mobj->z);
+    TEST_ASSERT_EQUAL_INT32(-3 * kFrac, mobj->momz);
+
+    // Landing clamps z to the floor and stops the descent.
+    mobj->z = kFrac / 2;
+    mobj->momz = -2 * kFrac;
+    p_z_movement(&fixture.context, mobj);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->z);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->momz);
+
+    // The ceiling clips the top of the thing, not its origin.
+    mobj->z = 100 * kFrac;
+    mobj->momz = 10 * kFrac;
+    p_z_movement(&fixture.context, mobj);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac - mobj->height, mobj->z);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->momz);
+}
+
+void test_move_change_sector_steps_up_and_counts_an_unsupported_crush(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addLine(1, 0, 0, 0, 0, false);
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* mobj = p_spawn_mobj(&fixture.level.context, 0, 0, ONFLOORZ,
+                                  MT_PLAYER, nullptr);
+    TEST_ASSERT_NOT_NULL(mobj);
+    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector_is_stubbed());
+
+    // A floor rising under a standing thing lifts it.
+    fixture.level.sectors[0].floorHeight = 10 * kFrac;
+    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector(&fixture.level.context, 0));
+    TEST_ASSERT_EQUAL_INT32(10 * kFrac, mobj->z);
+    TEST_ASSERT_EQUAL_INT32(10 * kFrac, mobj->floorz);
+
+    // A ceiling that leaves less room than the thing's height does not fit.
+    const u32 calls = fixture.level.specStats.changeSectorCalls;
+    const u32 clear = fixture.level.specStats.changeSectorClear;
+    fixture.level.sectors[0].ceilingHeight = 40 * kFrac;
+    TEST_ASSERT_EQUAL_INT(1, p_spec_p_change_sector(&fixture.level.context, 0));
+    TEST_ASSERT_EQUAL_UINT32(calls + 1u, fixture.level.specStats.changeSectorCalls);
+    TEST_ASSERT_EQUAL_UINT32(clear, fixture.level.specStats.changeSectorClear);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.unsupportedCrush);
+
+    // The plane itself is never written by the change: only things move.
+    TEST_ASSERT_EQUAL_INT32(40 * kFrac, fixture.level.sectors[0].ceilingHeight);
+}
+
+void test_move_use_lines_triggers_the_special_line_in_front(void) {
+    // The player stands 16 units behind a two-sided special line and looks
+    // along +y. P_UseLines traces USERANGE and uses the line it reaches.
+    SpecFixture fixture({{0, 128, 160, 0, 0}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(DOOM_ML_TWOSIDED, 1, 0, 0, 1, true);
+    TEST_ASSERT_TRUE(fixture.open());
+    // x is the middle of the line, not its endpoint: the generated cosine at
+    // a right angle is -25/65536, so a ray from the endpoint drifts outside the
+    // line and upstream's divline test correctly reports no crossing.
+    r_mobj_t* mobj = p_spawn_mobj(&fixture.level.context, 16 * kFrac,
+                                  -16 * kFrac, ONFLOORZ, MT_PLAYER, nullptr);
+    TEST_ASSERT_NOT_NULL(mobj);
+    mobj->angle = ANG90;
+
+    p_use_lines(&fixture.level.context, mobj);
+
+    // Special 1 is a manual door on the line's back sector.
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1545,7 +1938,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ticking_a_mobj_advances_its_state);
     RUN_TEST(test_specs_door_opens_to_its_top_and_stops);
     RUN_TEST(test_specs_door_waits_then_closes_and_removes_itself);
-    RUN_TEST(test_specs_door_closing_over_a_thing_reports_the_stub);
+    RUN_TEST(test_specs_door_closing_over_a_thing_stops_at_its_height);
     RUN_TEST(test_specs_plat_goes_down_waits_and_returns);
     RUN_TEST(test_specs_raise_floor_stops_at_the_lowest_surrounding_ceiling);
     RUN_TEST(test_specs_lower_floor_stops_at_the_highest_surrounding_floor);
@@ -1557,8 +1950,16 @@ int main(int argc, char** argv) {
     RUN_TEST(test_specs_manual_door_twice_reverses_instead_of_duplicating);
     RUN_TEST(test_specs_secret_sectors_and_unsupported_specials_are_counted);
     RUN_TEST(test_specs_spawn_order_is_sector_index_order);
-    RUN_TEST(test_specs_p_change_sector_stub_counts_and_answers_clear);
+    RUN_TEST(test_specs_p_change_sector_counts_and_answers_clear);
     RUN_TEST(test_line_record_exposes_special_and_tag);
+    RUN_TEST(test_move_check_position_refuses_a_one_sided_wall);
+    RUN_TEST(test_move_try_move_keeps_a_blocked_thing_in_place);
+    RUN_TEST(test_move_step_up_is_the_twenty_four_unit_rule);
+    RUN_TEST(test_move_drop_off_needs_mf_dropoff);
+    RUN_TEST(test_move_thrust_and_friction_reach_the_stop_speed);
+    RUN_TEST(test_move_z_movement_gravity_floor_and_ceiling);
+    RUN_TEST(test_move_change_sector_steps_up_and_counts_an_unsupported_crush);
+    RUN_TEST(test_move_use_lines_triggers_the_special_line_in_front);
 
     const int result = UNITY_END();
     test_teardown();

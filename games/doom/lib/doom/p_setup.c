@@ -228,6 +228,12 @@ p_setup_error_t p_level_init(p_level_t* level, const doom_map_t* map, void* aren
     level->context.actions = &level->actions;
     level->context.rules = level->rules;
     level->context.specStats = &level->specStats;
+    /* The context does not own the level, but P_ChangeSector needs the level's
+     * mobj walk (p_level_first_mobj/p_level_next_mobj) and p_try_move needs the
+     * level's lineSpecial[] to trigger a crossed line. A hand-built context
+     * leaves this NULL; both call sites then fall back to the thinker list and
+     * skip the trigger, which is what a unit test wants. */
+    level->context.level = level;
 
     /* P_LoadSectors and P_LoadLineDefs' mutable half. A level without them
      * cannot be simulated, so this is a load failure, not a counter. */

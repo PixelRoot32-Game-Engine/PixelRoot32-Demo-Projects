@@ -3,8 +3,8 @@
  *
  * The reference is linuxdoom-1.10 p_floor.c. Each rule cites the upstream
  * statement it reproduces; the differences are the port's conventions (a sector
- * is an index, the context is an argument, P_ChangeSector is a counted stub)
- * and they are stated at the site.
+ * is an index, the context is an argument, P_ChangeSector walks a derived
+ * sector box instead of a blockmap) and they are stated at the site.
  *
  * This is C99 only: no stdio, no floating point, no globals. The context owns
  * the zone, the thinker list and the sector array.
@@ -13,27 +13,20 @@
 
 #include <string.h>
 
+#include "p_map.h"
 #include "p_mobj.h"
 
 /* --- P_ChangeSector ------------------------------------------------------ */
 
+/* The rule itself lives in p_map.c with the tests it needs (P_ThingHeightClip
+ * and PIT_ChangeSector); this is T_MovePlane's entry point, kept where the
+ * movers have always called it. */
 int p_spec_p_change_sector(struct p_mobj_context* world, uint16_t sector) {
-    (void)sector;
-
-    if (world != NULL && world->specStats != NULL) {
-        world->specStats->changeSectorCalls += 1u;
-        world->specStats->changeSectorClear += 1u;
-    }
-    /* D4.2 owns P_ChangeSector: it must walk the things touching the sector,
-     * clip their heights and report whether any no longer fits. There is no
-     * thing list in this layer, and this task's gate has nothing in the way, so
-     * "clear" is the honest answer and the counters above are the proof the
-     * call happened. */
-    return 0;
+    return p_change_sector(world, sector);
 }
 
 int p_spec_p_change_sector_is_stubbed(void) {
-    return 1;
+    return 0;
 }
 
 /* --- T_MovePlane --------------------------------------------------------- */

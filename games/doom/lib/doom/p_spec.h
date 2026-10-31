@@ -76,12 +76,11 @@
  *
  * NOT IMPLEMENTED AT ALL, DELIBERATELY
  *
- *   - P_ChangeSector (crush detection). Every mover calls the hook, the hook
- *     counts the call in `p_spec_stats_t::changeSectorCalls`, and it answers
- *     "the sector is clear" without touching any thing. Nothing in this task's
- *     gate has a thing in the way; D4.2 owns the real answer. The counter is
- *     the proof that the hook is on the path, and `p_spec_p_change_sector_is_
- *     stubbed()` says so at compile time.
+ *   - P_ChangeSector's crush *damage*. The height clip, the step and the
+ *     "does not fit" answer are p_map.c's p_change_sector(); P_DamageMobj is
+ *     p_inter.c's, which D4.2d owns. Every thing upstream would have damaged
+ *     raises `p_spec_stats_t::unsupportedCrush` instead of being dropped
+ *     silently.
  *   - EV_BuildStairs, EV_Teleport, G_ExitLevel/G_SecretExitLevel, the level
  *     timer (-avg/-timer), texture animation and P_UpdateSpecials' scrolling.
  *   - EV_SlidingDoor (compiled out upstream too).
@@ -196,7 +195,10 @@ typedef struct p_sector {
  *   lineScrolls             line special 48, P_UpdateSpecials' job
  *   deathmatchSpecials      P_SpawnDeathmatchSpecials' counter (see p_spec.c)
  *   changeSectorCalls       every P_ChangeSector() call, from every mover
- *   changeSectorClear       the calls that answered "clear" (all of them)
+ *   changeSectorClear       the calls that answered "clear"
+ *   unsupportedCrush        a thing that did not fit and that upstream's
+ *                           PIT_ChangeSector would have damaged; P_DamageMobj
+ *                           is p_inter.c's and D4.2d has not written it
  *   thingRefreshes          cached mobj floorz/ceilingz updates
  *   allocationFailures      the zone refused a thinker record
  *   adjacentOverflow        a sector with more than 20 neighbours
@@ -220,6 +222,7 @@ typedef struct p_spec_stats {
     uint32_t deathmatchSpecials;
     uint32_t changeSectorCalls;
     uint32_t changeSectorClear;
+    uint32_t unsupportedCrush;
     uint32_t thingRefreshes;
     uint32_t allocationFailures;
     uint32_t adjacentOverflow;
@@ -290,23 +293,26 @@ void* p_spec_alloc_thinker(struct p_mobj_context* world, size_t size,
                            p_thinker_fn fn, p_thinker_kind_t kind);
 
 /**
- * @brief P_ChangeSector(), honestly stubbed. Always reports "clear".
+ * @brief P_ChangeSector(): the entry point every T_MovePlane() write calls.
  *
- * Every T_MovePlane() write calls this, exactly where upstream calls
- * P_ChangeSector(). The port has no sector/thing links and no P_ThingHeightClip,
- * and nothing in this task's gate stands in a moving sector, so the answer is
- * "the sector is clear" (0) and the call is counted in
- * `specStats->changeSectorCalls`. D4.2 replaces the body.
+ * The rule is p_map.c's p_change_sector(): it walks the things the changed
+ * sector can touch, runs P_ThingHeightClip on each, steps a standing thing onto
+ * the new floor, and answers whether any living thing no longer fits. The call
+ * is counted in `specStats->changeSectorCalls`, and a clear answer additionally
+ * in `specStats->changeSectorClear`.
  *
- * @return 0 always.
+ * PIT_ChangeSector's crush damage is P_DamageMobj's (D4.2d); each thing that
+ * would have been damaged raises `specStats->unsupportedCrush`.
+ *
+ * @return 1 when something does not fit, 0 when the sector is clear.
  */
 int p_spec_p_change_sector(struct p_mobj_context* world, uint16_t sector);
 
 /**
- * @brief True: the P_ChangeSector() above is the counted stub, not the rule.
+ * @brief False: P_ChangeSector() is the rule, not a stub.
  *
- * A test asserts this and the counter, so the stub cannot be mistaken for a
- * working crush rule. D4.2 deletes both.
+ * Kept so the regression test that used to prove the stub can now prove its
+ * replacement, and so no caller mistakes the hook for a no-op.
  */
 int p_spec_p_change_sector_is_stubbed(void);
 

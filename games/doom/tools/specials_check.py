@@ -68,7 +68,7 @@ EXIT_MISMATCH = 1
 EXIT_USAGE = 2
 
 SOURCES = (
-    "p_setup.c", "p_mobj.c", "p_tick.c", "p_action.c", "m_random.c",
+    "p_setup.c", "p_mobj.c", "p_map.c", "p_tick.c", "p_action.c", "m_random.c",
     "z_zone.c", "doom_map.c", "r_bsp.c", "r_plane.c", "r_tables.c", "w_wad.c",
     "p_spec.c", "p_floor.c", "p_doors.c", "p_plats.c", "p_ceilng.c",
     "p_lights.c",

@@ -85,6 +85,17 @@ def compile_harness(workdir: Path, compiler: str) -> Path:
         str(root / "tools" / "things_check.c"),
         str(root / "lib" / "doom" / "p_setup.c"),
         str(root / "lib" / "doom" / "p_mobj.c"),
+        # p_map.c is p_mobj.c's movement dependency (D4.2b); it needs the line
+        # geometry and the trigger dispatch, so p_spec.c and the five mover
+        # files come with it. None of them is called by this harness; they are
+        # linked because the movement functions are real symbols now.
+        str(root / "lib" / "doom" / "p_map.c"),
+        str(root / "lib" / "doom" / "p_spec.c"),
+        str(root / "lib" / "doom" / "p_floor.c"),
+        str(root / "lib" / "doom" / "p_doors.c"),
+        str(root / "lib" / "doom" / "p_plats.c"),
+        str(root / "lib" / "doom" / "p_ceilng.c"),
+        str(root / "lib" / "doom" / "p_lights.c"),
         str(root / "lib" / "doom" / "p_tick.c"),
         str(root / "lib" / "doom" / "p_action.c"),
         str(root / "lib" / "doom" / "m_random.c"),

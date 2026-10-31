@@ -3151,6 +3151,694 @@ def report_specials(lumps: list[Lump], map_name: str, tics: int) -> None:
           f"refused={stats['refused']}")
 
 
+# --- Movement and collision (D4.2b) -----------------------------------------
+#
+# A second implementation of linuxdoom-1.10 p_map.c / p_maputl.c / p_mobj.c's
+# movement half: P_CheckPosition, P_TryMove, P_SlideMove, P_HitSlideLine,
+# P_LineOpening, P_ThingHeightClip, P_XYMovement and P_ZMovement. It shares this
+# file's fixed-point helpers and its map parse and nothing else; it never calls
+# the C.
+#
+# There is no blockmap here either: every linedef and every thing is examined,
+# which is what the C harness does and why the two can be compared at all.
+
+MOVEMENT_MAXMOVE = 30 * FRACUNIT
+MOVEMENT_STOPSPEED = 0x1000
+MOVEMENT_FRICTION = 0xe800
+MOVEMENT_GRAVITY = FRACUNIT
+MOVEMENT_FLOATSPEED = 4 * FRACUNIT
+MOVEMENT_STEPUP = 24 * FRACUNIT
+MOVEMENT_MAXSPECIALCROSS = 8
+MOVEMENT_MAXRADIUS = 128 * FRACUNIT
+MOVEMENT_USERANGE = 64 * FRACUNIT
+
+MOVEMENT_ML_BLOCKING = 1
+MOVEMENT_ML_TWOSIDED = 4
+MOVEMENT_ML_BLOCKMONSTERS = 16
+
+MOVEMENT_BOXTOP = 0
+MOVEMENT_BOXBOTTOM = 1
+MOVEMENT_BOXLEFT = 2
+MOVEMENT_BOXRIGHT = 3
+
+MOVEMENT_SCRIPT = "walk-slide-corner-friction-return"
+MOVEMENT_PLAYER_RADIUS = 16 << FRACBITS
+MOVEMENT_PLAYER_HEIGHT = 56 << FRACBITS
+
+# The mobj flag word (doomdef.h) and the three mobjtype indices the missile
+# species test names. The values are the 1993 ones; the C side reads them from
+# info_tables.h, this side from a second reading of info.c (see MOBJINFO).
+MF_SPECIAL = 0x00000001
+MF_SOLID = 0x00000002
+MF_SHOOTABLE = 0x00000004
+MF_NOGRAVITY = 0x00000200
+MF_DROPOFF = 0x00000400
+MF_NOCLIP = 0x00001000
+MF_FLOAT = 0x00004000
+MF_TELEPORT = 0x00008000
+MF_MISSILE = 0x00010000
+MF_CORPSE = 0x00100000
+MF_INFLOAT = 0x00200000
+MF_SKULLFLY = 0x01000000
+
+MT_PLAYER = 0
+MT_BRUISER = 15
+MT_KNIGHT = 17
+
+
+def movement_abs(value: int) -> int:
+    return -value if value < 0 else value
+
+
+def movement_aprox_distance(dx: int, dy: int) -> int:
+    dx = movement_abs(dx)
+    dy = movement_abs(dy)
+    if dx < dy:
+        return dx + dy - (dx >> 1)
+    return dx + dy - (dy >> 1)
+
+
+def movement_line_geometry(bsp: BspMap, line: dict) -> tuple[dict, dict, int, int]:
+    v1 = bsp.vertexes[line["v1"]]
+    v2 = bsp.vertexes[line["v2"]]
+    return v1, v2, v2["x"] - v1["x"], v2["y"] - v1["y"]
+
+
+def movement_slope_type(dx: int, dy: int) -> str:
+    if dx == 0:
+        return "vertical"
+    if dy == 0:
+        return "horizontal"
+    return "negative" if (dx < 0) != (dy < 0) else "positive"
+
+
+def movement_point_on_line_side(x: int, y: int, v1: dict, dx: int, dy: int) -> int:
+    if dx == 0:
+        if x <= v1["x"]:
+            return 1 if dy > 0 else 0
+        return 1 if dy < 0 else 0
+    if dy == 0:
+        if y <= v1["y"]:
+            return 1 if dx < 0 else 0
+        return 1 if dx > 0 else 0
+
+    px = x - v1["x"]
+    py = y - v1["y"]
+    left = fixed_mul(dy >> FRACBITS, px)
+    right = fixed_mul(py, dx >> FRACBITS)
+    return 0 if right < left else 1
+
+
+def movement_point_on_divline_side(x: int, y: int, lx: int, ly: int,
+                                   ldx: int, ldy: int) -> int:
+    if ldx == 0:
+        if x <= lx:
+            return 1 if ldy > 0 else 0
+        return 1 if ldy < 0 else 0
+    if ldy == 0:
+        if y <= ly:
+            return 1 if ldx < 0 else 0
+        return 1 if ldx > 0 else 0
+
+    dx = i32(x - lx)
+    dy = i32(y - ly)
+    if (ldy ^ ldx ^ dx ^ dy) & 0x80000000:
+        return 1 if (ldy ^ dx) & 0x80000000 else 0
+
+    left = fixed_mul(ldy >> 8, dx >> 8)
+    right = fixed_mul(dy >> 8, ldx >> 8)
+    return 0 if right < left else 1
+
+
+def movement_box_on_line_side(box: list[int], v1: dict, dx: int, dy: int) -> int:
+    slope = movement_slope_type(dx, dy)
+    if slope == "horizontal":
+        p1 = 1 if box[MOVEMENT_BOXTOP] > v1["y"] else 0
+        p2 = 1 if box[MOVEMENT_BOXBOTTOM] > v1["y"] else 0
+        if dx < 0:
+            p1 ^= 1
+            p2 ^= 1
+    elif slope == "vertical":
+        p1 = 1 if box[MOVEMENT_BOXRIGHT] < v1["x"] else 0
+        p2 = 1 if box[MOVEMENT_BOXLEFT] < v1["x"] else 0
+        if dy < 0:
+            p1 ^= 1
+            p2 ^= 1
+    elif slope == "positive":
+        p1 = movement_point_on_line_side(box[MOVEMENT_BOXLEFT],
+                                         box[MOVEMENT_BOXTOP], v1, dx, dy)
+        p2 = movement_point_on_line_side(box[MOVEMENT_BOXRIGHT],
+                                         box[MOVEMENT_BOXBOTTOM], v1, dx, dy)
+    else:
+        p1 = movement_point_on_line_side(box[MOVEMENT_BOXRIGHT],
+                                         box[MOVEMENT_BOXTOP], v1, dx, dy)
+        p2 = movement_point_on_line_side(box[MOVEMENT_BOXLEFT],
+                                         box[MOVEMENT_BOXBOTTOM], v1, dx, dy)
+    return p1 if p1 == p2 else -1
+
+
+def movement_intercept_vector(tx: int, ty: int, tdx: int, tdy: int,
+                              lx: int, ly: int, ldx: int, ldy: int) -> int:
+    den = fixed_mul(tdy >> 8, ldx) - fixed_mul(tdx >> 8, ldy)
+    if den == 0:
+        return 0
+    num = fixed_mul((tx - lx) >> 8, tdy) + fixed_mul((ly - ty) >> 8, tdx)
+    return fixed_div(num, den)
+
+
+def movement_line_opening(level: "SpecLevel", index: int) -> dict:
+    line = level.bsp.linedefs[index]
+    if line["side1"] < 0:
+        return {"top": 0, "bottom": 0, "range": 0, "lowfloor": 0}
+    front = _front_sector(level, line)
+    back = _back_sector(level, line)
+    if front is None or back is None:
+        return {"top": 0, "bottom": 0, "range": 0, "lowfloor": 0}
+    front_floor = level.sectors[front]["floor"]
+    front_ceiling = level.sectors[front]["ceiling"]
+    back_floor = level.sectors[back]["floor"]
+    back_ceiling = level.sectors[back]["ceiling"]
+    top = min(front_ceiling, back_ceiling)
+    if front_floor > back_floor:
+        bottom, lowfloor = front_floor, back_floor
+    else:
+        bottom, lowfloor = back_floor, front_floor
+    return {"top": top, "bottom": bottom, "range": top - bottom,
+            "lowfloor": lowfloor}
+
+
+def movement_check_line(level: "SpecLevel", mo: dict, box: list[int],
+                        out: dict, index: int) -> bool:
+    line = level.bsp.linedefs[index]
+    v1, v2, dx, dy = movement_line_geometry(level.bsp, line)
+    lbox = [max(v1["y"], v2["y"]), min(v1["y"], v2["y"]),
+            min(v1["x"], v2["x"]), max(v1["x"], v2["x"])]
+    if (box[MOVEMENT_BOXRIGHT] <= lbox[MOVEMENT_BOXLEFT] or
+            box[MOVEMENT_BOXLEFT] >= lbox[MOVEMENT_BOXRIGHT] or
+            box[MOVEMENT_BOXTOP] <= lbox[MOVEMENT_BOXBOTTOM] or
+            box[MOVEMENT_BOXBOTTOM] >= lbox[MOVEMENT_BOXTOP]):
+        return True
+    if movement_box_on_line_side(box, v1, dx, dy) != -1:
+        return True
+
+    # `if (!ld->backsector) return false;`: the port's back sector exists only
+    # for a line that carries ML_TWOSIDED and has side 1.
+    if not (line["flags"] & MOVEMENT_ML_TWOSIDED) or line["side1"] < 0:
+        return False
+
+    if not (mo["flags"] & MF_MISSILE):
+        if line["flags"] & MOVEMENT_ML_BLOCKING:
+            return False
+        if not mo["player"] and line["flags"] & MOVEMENT_ML_BLOCKMONSTERS:
+            return False
+
+    opening = movement_line_opening(level, index)
+    if opening["top"] < out["ceilingz"]:
+        out["ceilingz"] = opening["top"]
+        out["ceilingLine"] = index
+    if opening["bottom"] > out["floorz"]:
+        out["floorz"] = opening["bottom"]
+    if opening["lowfloor"] < out["dropoffz"]:
+        out["dropoffz"] = opening["lowfloor"]
+
+    if level.line_special[index] != 0:
+        if len(out["lines"]) < MOVEMENT_MAXSPECIALCROSS:
+            out["lines"].append(index)
+        else:
+            out["overflow"] = True
+    return True
+
+
+def movement_check_thing(level: "SpecLevel", mo: dict, other: dict,
+                         x: int, y: int) -> bool:
+    if not (other["flags"] & (MF_SOLID | MF_SPECIAL | MF_SHOOTABLE)):
+        return True
+    blockdist = other["radius"] + mo["radius"]
+    if abs(other["x"] - x) >= blockdist or abs(other["y"] - y) >= blockdist:
+        return True
+    if other is mo:
+        return True
+
+    if mo["flags"] & MF_SKULLFLY:
+        # The damage half is P_DamageMobj's (D4.2d); the stop is this layer's.
+        mo["flags"] &= ~MF_SKULLFLY
+        mo["momx"] = mo["momy"] = mo["momz"] = 0
+        return False
+
+    if mo["flags"] & MF_MISSILE:
+        if mo["z"] > other["z"] + other["height"]:
+            return True
+        if mo["z"] + mo["height"] < other["z"]:
+            return True
+        target = mo.get("target")
+        if target is not None and (
+                target["type"] == other["type"] or
+                (target["type"] == MT_KNIGHT and other["type"] == MT_BRUISER) or
+                (target["type"] == MT_BRUISER and other["type"] == MT_KNIGHT)):
+            if other is mo.get("target"):
+                return True
+            if other["type"] != MT_PLAYER:
+                return False
+        if not (other["flags"] & MF_SHOOTABLE):
+            return not (other["flags"] & MF_SOLID)
+        return False
+
+    if other["flags"] & MF_SPECIAL:
+        return not (other["flags"] & MF_SOLID)
+
+    return not (other["flags"] & MF_SOLID)
+
+
+def movement_check_position(level: "SpecLevel", mo: dict, x: int,
+                            y: int) -> tuple[bool, dict]:
+    level.move_stats["checks"] += 1
+    out = {"floorz": 0, "ceilingz": 0, "dropoffz": 0, "subsector": 0,
+           "sector": 0, "lines": [], "ceilingLine": None, "overflow": False}
+
+    box = [y + mo["radius"], y - mo["radius"],
+           x - mo["radius"], x + mo["radius"]]
+
+    subsector = point_in_subsector(level.bsp, x, y)
+    sector = sector_of_subsector(level.bsp, subsector)
+    floor = level.sectors[sector]["floor"]
+    ceiling = level.sectors[sector]["ceiling"]
+    out["subsector"] = subsector
+    out["sector"] = sector
+    out["floorz"] = floor
+    out["dropoffz"] = floor
+    out["ceilingz"] = ceiling
+
+    if mo["flags"] & MF_NOCLIP:
+        return True, out
+
+    for other in level.mobjs:
+        if not movement_check_thing(level, mo, other, x, y):
+            return False, out
+
+    for index in range(len(level.bsp.linedefs)):
+        if not movement_check_line(level, mo, box, out, index):
+            return False, out
+    return True, out
+
+
+def movement_try_move(level: "SpecLevel", mo: dict, x: int, y: int) -> bool:
+    ok, result = movement_check_position(level, mo, x, y)
+    if not ok:
+        level.move_stats["blocked"] += 1
+        return False
+
+    if not (mo["flags"] & MF_NOCLIP):
+        if result["ceilingz"] - result["floorz"] < mo["height"]:
+            level.move_stats["blocked"] += 1
+            return False
+        if not (mo["flags"] & MF_TELEPORT) and \
+                result["ceilingz"] - mo["z"] < mo["height"]:
+            level.move_stats["blocked"] += 1
+            return False
+        if not (mo["flags"] & MF_TELEPORT) and \
+                result["floorz"] - mo["z"] > MOVEMENT_STEPUP:
+            level.move_stats["blocked"] += 1
+            return False
+        if not (mo["flags"] & (MF_DROPOFF | MF_FLOAT)) and \
+                result["floorz"] - result["dropoffz"] > MOVEMENT_STEPUP:
+            level.move_stats["blocked"] += 1
+            return False
+
+    oldx = mo["x"]
+    oldy = mo["y"]
+    mo["floorz"] = result["floorz"]
+    mo["ceilingz"] = result["ceilingz"]
+    mo["subsector"] = result["subsector"]
+    mo["sector"] = result["sector"]
+    mo["x"] = x
+    mo["y"] = y
+
+    if not (mo["flags"] & (MF_TELEPORT | MF_NOCLIP)):
+        for index in reversed(result["lines"]):
+            if level.line_special[index] == 0:
+                continue
+            line = level.bsp.linedefs[index]
+            v1, _v2, dx, dy = movement_line_geometry(level.bsp, line)
+            side = movement_point_on_line_side(mo["x"], mo["y"], v1, dx, dy)
+            oldside = movement_point_on_line_side(oldx, oldy, v1, dx, dy)
+            if side != oldside:
+                trigger_special_line(level, index, "cross", bool(mo["player"]))
+                level.move_stats["crossed"] += 1
+    return True
+
+
+def movement_trace_line(level: "SpecLevel", x1: int, y1: int, dx: int, dy: int,
+                        index: int) -> int | None:
+    line = level.bsp.linedefs[index]
+    v1, v2, ldx, ldy = movement_line_geometry(level.bsp, line)
+
+    if dx > 16 * FRACUNIT or dy > 16 * FRACUNIT or \
+            dx < -16 * FRACUNIT or dy < -16 * FRACUNIT:
+        s1 = movement_point_on_divline_side(v1["x"], v1["y"], x1, y1, dx, dy)
+        s2 = movement_point_on_divline_side(v2["x"], v2["y"], x1, y1, dx, dy)
+    else:
+        s1 = movement_point_on_line_side(x1, y1, v1, ldx, ldy)
+        s2 = movement_point_on_line_side(x1 + dx, y1 + dy, v1, ldx, ldy)
+    if s1 == s2:
+        return None
+
+    frac = movement_intercept_vector(x1, y1, dx, dy, v1["x"], v1["y"], ldx, ldy)
+    if frac < 0 or frac > FRACUNIT:
+        return None
+    return frac
+
+
+def movement_slide_line_blocks(level: "SpecLevel", mo: dict, index: int) -> bool:
+    line = level.bsp.linedefs[index]
+    v1, _v2, dx, dy = movement_line_geometry(level.bsp, line)
+
+    if not (line["flags"] & MOVEMENT_ML_TWOSIDED):
+        if movement_point_on_line_side(mo["x"], mo["y"], v1, dx, dy):
+            return False  # don't hit the back side
+        return True
+
+    opening = movement_line_opening(level, index)
+    if opening["range"] < mo["height"]:
+        return True
+    if opening["top"] - mo["z"] < mo["height"]:
+        return True
+    if opening["bottom"] - mo["z"] > MOVEMENT_STEPUP:
+        return True
+    return False
+
+
+def movement_slide_trace_ray(level: "SpecLevel", mo: dict, best: list[int | None],
+                             x1: int, y1: int, dx: int, dy: int) -> None:
+    for index in range(len(level.bsp.linedefs)):
+        frac = movement_trace_line(level, x1, y1, dx, dy, index)
+        if frac is None:
+            continue
+        if movement_slide_line_blocks(level, mo, index):
+            if best[0] is None or frac < best[0]:
+                best[0] = frac
+                best[1] = index
+
+
+def movement_hit_slide_line(level: "SpecLevel", mo: dict, index: int,
+                            tmxmove: int, tmymove: int) -> tuple[int, int]:
+    line = level.bsp.linedefs[index]
+    v1, _v2, dx, dy = movement_line_geometry(level.bsp, line)
+    slope = movement_slope_type(dx, dy)
+
+    if slope == "horizontal":
+        return tmxmove, 0
+    if slope == "vertical":
+        return 0, tmymove
+
+    side = movement_point_on_line_side(mo["x"], mo["y"], v1, dx, dy)
+    lineangle = point_to_angle(0, 0, dx, dy)
+    if side == 1:
+        lineangle = u32(lineangle + ANG180)
+
+    moveangle = point_to_angle(0, 0, tmxmove, tmymove)
+    deltaangle = u32(moveangle - lineangle)
+    if deltaangle > ANG180:
+        deltaangle = u32(deltaangle + ANG180)
+
+    lineindex = lineangle >> ANGLETOFINESHIFT
+    deltaindex = deltaangle >> ANGLETOFINESHIFT
+    movelen = movement_aprox_distance(tmxmove, tmymove)
+    newlen = fixed_mul(movelen, FINE_SINE[deltaindex + FINEANGLES // 4])
+
+    return (fixed_mul(newlen, FINE_SINE[lineindex + FINEANGLES // 4]),
+            fixed_mul(newlen, FINE_SINE[lineindex]))
+
+
+def movement_stairstep(level: "SpecLevel", mo: dict) -> None:
+    if not movement_try_move(level, mo, mo["x"], mo["y"] + mo["momy"]):
+        movement_try_move(level, mo, mo["x"] + mo["momx"], mo["y"])
+
+
+def movement_slide_move(level: "SpecLevel", mo: dict) -> None:
+    level.move_stats["slides"] += 1
+    hitcount = 0
+
+    while True:
+        hitcount += 1
+        if hitcount == 3:
+            movement_stairstep(level, mo)
+            return
+
+        if mo["momx"] > 0:
+            leadx, trailx = mo["x"] + mo["radius"], mo["x"] - mo["radius"]
+        else:
+            leadx, trailx = mo["x"] - mo["radius"], mo["x"] + mo["radius"]
+        if mo["momy"] > 0:
+            leady, traily = mo["y"] + mo["radius"], mo["y"] - mo["radius"]
+        else:
+            leady, traily = mo["y"] - mo["radius"], mo["y"] + mo["radius"]
+
+        best: list[int | None] = [None, None]
+        movement_slide_trace_ray(level, mo, best, leadx, leady,
+                                 mo["momx"], mo["momy"])
+        movement_slide_trace_ray(level, mo, best, trailx, leady,
+                                 mo["momx"], mo["momy"])
+        movement_slide_trace_ray(level, mo, best, leadx, traily,
+                                 mo["momx"], mo["momy"])
+
+        if best[0] is None:
+            movement_stairstep(level, mo)
+            return
+
+        frac = best[0] - 0x800
+        if frac > 0:
+            newx = fixed_mul(mo["momx"], frac)
+            newy = fixed_mul(mo["momy"], frac)
+            if not movement_try_move(level, mo, mo["x"] + newx, mo["y"] + newy):
+                movement_stairstep(level, mo)
+                return
+
+        frac = FRACUNIT - (frac + 0x800)
+        if frac > FRACUNIT:
+            frac = FRACUNIT
+        if frac <= 0:
+            return
+
+        tmxmove = fixed_mul(mo["momx"], frac)
+        tmymove = fixed_mul(mo["momy"], frac)
+        tmxmove, tmymove = movement_hit_slide_line(level, mo, best[1],
+                                                   tmxmove, tmymove)
+        mo["momx"] = tmxmove
+        mo["momy"] = tmymove
+
+        if movement_try_move(level, mo, mo["x"] + tmxmove, mo["y"] + tmymove):
+            return
+
+
+def movement_explode_missile(level: "SpecLevel", mo: dict) -> None:
+    mo["momx"] = mo["momy"] = mo["momz"] = 0
+    # The state change, tics draw and MF_MISSILE clear are p_mobj.c's; the
+    # movement gate never spawns a missile, so only the momentum matters here.
+
+
+def movement_xy_movement(level: "SpecLevel", mo: dict) -> None:
+    if mo["momx"] == 0 and mo["momy"] == 0:
+        if mo["flags"] & MF_SKULLFLY:
+            mo["flags"] &= ~MF_SKULLFLY
+            mo["momx"] = mo["momy"] = mo["momz"] = 0
+        return
+
+    if mo["momx"] > MOVEMENT_MAXMOVE:
+        mo["momx"] = MOVEMENT_MAXMOVE
+    elif mo["momx"] < -MOVEMENT_MAXMOVE:
+        mo["momx"] = -MOVEMENT_MAXMOVE
+    if mo["momy"] > MOVEMENT_MAXMOVE:
+        mo["momy"] = MOVEMENT_MAXMOVE
+    elif mo["momy"] < -MOVEMENT_MAXMOVE:
+        mo["momy"] = -MOVEMENT_MAXMOVE
+
+    xmove = mo["momx"]
+    ymove = mo["momy"]
+    while True:
+        if xmove > MOVEMENT_MAXMOVE // 2 or ymove > MOVEMENT_MAXMOVE // 2:
+            ptryx = mo["x"] + xmove // 2
+            ptryy = mo["y"] + ymove // 2
+            xmove >>= 1
+            ymove >>= 1
+        else:
+            ptryx = mo["x"] + xmove
+            ptryy = mo["y"] + ymove
+            xmove = 0
+            ymove = 0
+
+        if not movement_try_move(level, mo, ptryx, ptryy):
+            if mo["player"]:
+                movement_slide_move(level, mo)
+            elif mo["flags"] & MF_MISSILE:
+                movement_explode_missile(level, mo)
+            else:
+                mo["momx"] = 0
+                mo["momy"] = 0
+        if xmove == 0 and ymove == 0:
+            break
+
+    if mo["flags"] & (MF_MISSILE | MF_SKULLFLY):
+        return
+    if mo["z"] > mo["floorz"]:
+        return
+
+    if mo["flags"] & MF_CORPSE:
+        if (abs(mo["momx"]) > FRACUNIT // 4 or
+                abs(mo["momy"]) > FRACUNIT // 4):
+            if mo["floorz"] != level.sectors[mo["sector"]]["floor"]:
+                return
+
+    if (-MOVEMENT_STOPSPEED < mo["momx"] < MOVEMENT_STOPSPEED and
+            -MOVEMENT_STOPSPEED < mo["momy"] < MOVEMENT_STOPSPEED):
+        mo["momx"] = 0
+        mo["momy"] = 0
+    else:
+        mo["momx"] = fixed_mul(mo["momx"], MOVEMENT_FRICTION)
+        mo["momy"] = fixed_mul(mo["momy"], MOVEMENT_FRICTION)
+
+
+def movement_z_movement(level: "SpecLevel", mo: dict) -> None:
+    mo["z"] = i32(mo["z"] + mo["momz"])
+
+    if mo["flags"] & MF_FLOAT and mo.get("target") is not None:
+        if not (mo["flags"] & (MF_SKULLFLY | MF_INFLOAT)):
+            target = mo["target"]
+            dist = movement_aprox_distance(mo["x"] - target["x"],
+                                           mo["y"] - target["y"])
+            delta = (target["z"] + (mo["height"] >> 1)) - mo["z"]
+            if delta < 0 and dist < -(delta * 3):
+                mo["z"] -= MOVEMENT_FLOATSPEED
+            elif delta > 0 and dist < delta * 3:
+                mo["z"] += MOVEMENT_FLOATSPEED
+
+    if mo["z"] <= mo["floorz"]:
+        if mo["flags"] & MF_SKULLFLY:
+            mo["momz"] = -mo["momz"]
+        if mo["momz"] < 0:
+            mo["momz"] = 0
+        mo["z"] = mo["floorz"]
+        if mo["flags"] & MF_MISSILE and not (mo["flags"] & MF_NOCLIP):
+            movement_explode_missile(level, mo)
+            return
+    elif not (mo["flags"] & MF_NOGRAVITY):
+        if mo["momz"] == 0:
+            mo["momz"] = -MOVEMENT_GRAVITY * 2
+        else:
+            mo["momz"] -= MOVEMENT_GRAVITY
+
+    if mo["z"] + mo["height"] > mo["ceilingz"]:
+        if mo["momz"] > 0:
+            mo["momz"] = 0
+        mo["z"] = mo["ceilingz"] - mo["height"]
+        if mo["flags"] & MF_SKULLFLY:
+            mo["momz"] = -mo["momz"]
+        if mo["flags"] & MF_MISSILE and not (mo["flags"] & MF_NOCLIP):
+            movement_explode_missile(level, mo)
+            return
+
+
+def movement_thrust(level: "SpecLevel", mo: dict, angle: int, move: int) -> None:
+    index = angle >> ANGLETOFINESHIFT
+    mo["momx"] = i32(mo["momx"] + fixed_mul(move, FINE_SINE[index + FINEANGLES // 4]))
+    mo["momy"] = i32(mo["momy"] + fixed_mul(move, FINE_SINE[index]))
+
+
+def movement_phase(tic: int) -> tuple[int | None, int]:
+    """(angle, thrust) for one scripted tic; angle is None when it is unchanged."""
+    if tic < 32:
+        return 0, 0x19 * 2048
+    if tic < 64:
+        return ANG90, 0x19 * 2048
+    if tic < 96:
+        return ANG45, 0x32 * 2048
+    if tic < 128:
+        return None, 0
+    if tic < 160:
+        return ANG180, 0x19 * 2048
+    return None, 0
+
+
+def movement_player(level: "SpecLevel") -> dict:
+    """P_SpawnPlayer()'s mobj for the first type-1 THING, as p_level_init leaves it.
+
+    The level load already consumed the RNG for the whole THINGS pass, which is
+    why the caller seeds RandomState from run_things(). Only the collision fields
+    the movement rules read are carried.
+    """
+    record = None
+    for candidate in level.bsp.things:
+        if candidate["type"] == 1:
+            record = candidate
+            break
+    if record is None:
+        raise InputError(f"{level.bsp.name}: no single-player start")
+    x = _fixed16(record["x"])
+    y = _fixed16(record["y"])
+    subsector = point_in_subsector(level.bsp, x, y)
+    sector = sector_of_subsector(level.bsp, subsector)
+    floor = level.sectors[sector]["floor"]
+    ceiling = level.sectors[sector]["ceiling"]
+    return {
+        "x": x, "y": y, "z": floor,
+        "momx": 0, "momy": 0, "momz": 0,
+        "angle": 0,
+        "radius": MOVEMENT_PLAYER_RADIUS,
+        "height": MOVEMENT_PLAYER_HEIGHT,
+        "floorz": floor, "ceilingz": ceiling,
+        "subsector": subsector, "sector": sector,
+        "flags": PLAYER_INFO[0],
+        "health": PLAYER_INFO[2],
+        "state": PLAYER_INFO[3],
+        "tics": -1,
+        "player": True,
+        "type": 0,
+        "target": None,
+    }
+
+
+def report_movement(lumps: list[Lump], map_name: str, tics: int) -> None:
+    """The `--movement` protocol: the 160-tic walk over p_map.c's rules."""
+    if tics < 0:
+        raise FormatError("--tics cannot be negative")
+
+    bsp = read_bsp_map(lumps, map_name)
+    things = run_things(bsp, 2)          # the RNG position the level load leaves
+    level = SpecLevel(bsp, RandomState(things.rng))
+    level.mobjs = [movement_player(level)]
+    level.move_stats = {"checks": 0, "blocked": 0, "crossed": 0, "slides": 0}
+
+    mo = level.mobjs[0]
+
+    print(f"MOVEMENT {map_name} tics={tics} script={MOVEMENT_SCRIPT}")
+
+    for tic in range(tics):
+        angle, move = movement_phase(tic)
+        if angle is not None:
+            mo["angle"] = angle
+        if move:
+            movement_thrust(level, mo, mo["angle"], move)
+
+        blocked_before = level.move_stats["blocked"]
+        crossed_before = level.move_stats["crossed"]
+
+        if mo["momx"] or mo["momy"] or (mo["flags"] & MF_SKULLFLY):
+            movement_xy_movement(level, mo)
+        if mo["z"] != mo["floorz"] or mo["momz"]:
+            movement_z_movement(level, mo)
+
+        print(f"TIC {tic} x={mo['x']} y={mo['y']} z={mo['z']} "
+              f"momx={mo['momx']} momy={mo['momy']} floorz={mo['floorz']} "
+              f"ceilingz={mo['ceilingz']} sector={mo['sector']} "
+              f"subsector={mo['subsector']} "
+              f"blocked={1 if level.move_stats['blocked'] != blocked_before else 0} "
+              f"cross={level.move_stats['crossed'] - crossed_before}")
+
+    print(f"SUMMARY tics={tics} finalx={mo['x']} finaly={mo['y']} "
+          f"finalz={mo['z']} blocked={level.move_stats['blocked']} "
+          f"cross={level.move_stats['crossed']} "
+          f"checks={level.move_stats['checks']}")
+
+
 # --- BSP reporting ----------------------------------------------------------
 
 def drawseg_digest(drawsegs: list[dict]) -> str:
@@ -4521,9 +5209,14 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
                         help="run P_SpawnSpecials, trigger every special line at "
                              "tic 0 and dump the sectors and thinkers every tic "
                              "(D4.1b)")
+    parser.add_argument("--movement", metavar="NAME",
+                        help="run the 160-tic movement script (thrust, wall, "
+                             "slide, corner, friction, return) and print the mobj "
+                             "every tic (D4.2b)")
     parser.add_argument("--tics", type=int, default=420, metavar="N",
-                        help="with --specials: tics to step after the tic-0 dump "
-                             "(default: 420)")
+                        help="with --specials or --movement: tics to run "
+                             "(default: 420 for --specials; the movement gate "
+                             "passes 160)")
     parser.add_argument("--skill", default="medium", metavar="NAME",
                         help="with --things: baby, easy, medium, hard or nightmare "
                              "(default: medium)")
@@ -4560,9 +5253,10 @@ def main(argv: list[str] | None = None) -> int:
     flats_wanted = arguments.flats or arguments.all
     if not (patches_wanted or textures_wanted or flats_wanted or arguments.map
             or arguments.stats or arguments.bsp or arguments.segs
-            or arguments.things or arguments.specials):
+            or arguments.things or arguments.specials or arguments.movement):
         parser.error("nothing to do: pass --patches, --textures, --flats, --all, "
-                     "--map, --stats, --bsp, --segs, --things or --specials")
+                     "--map, --stats, --bsp, --segs, --things, --specials or "
+                     "--movement")
     if arguments.limit is not None and arguments.limit < 0:
         parser.error("--limit cannot be negative")
     if arguments.tics < 0:
@@ -4627,6 +5321,8 @@ def main(argv: list[str] | None = None) -> int:
             report_things(lumps, arguments.things.upper(), arguments.skill)
         if arguments.specials:
             report_specials(lumps, arguments.specials.upper(), arguments.tics)
+        if arguments.movement:
+            report_movement(lumps, arguments.movement.upper(), arguments.tics)
     except FormatError as error:
         print(f"doom_ref: {error}", file=sys.stderr)
         return EXIT_INPUT
