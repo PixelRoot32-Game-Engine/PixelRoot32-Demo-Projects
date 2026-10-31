@@ -23,6 +23,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 
 #if defined(PLATFORM_NATIVE)
 #include <chrono>
@@ -839,6 +840,19 @@ void DoomScene::init() {
         // no-op on a surface without an 8-bit buffer (DrawSurface's default), so
         // the desktop mirror keeps its own conversion below.
         engine.getRenderer().getDrawSurface().setPalette8(palette::playpal565Table());
+
+        // D4.2f's byte-identity proof: render the host harness's frame 00 through
+        // the same `frameLevelRenderView()` the game frame uses, hash it, and
+        // print the number. `50fb3d9c...` is the host's frame-00 hash, so a boot
+        // log that prints anything else says the shared view path diverged.
+        //
+        // The panel surface is the buffer this writes into; the first game frame
+        // overwrites it a moment later, so nothing is presented from here.
+        std::uint8_t* pixels = engine.getRenderer().getDrawSurface().getSpriteBuffer();
+        if (pixels != nullptr) {
+            (void)sceneRenderer_.verifySpawnFrame(pixels, engine.getRenderer().getLogicalWidth(),
+                                                 engine.getRenderer().getLogicalHeight());
+        }
     }
 
     // D4.0c's census: what the image owns in dram0_0_seg, what the heap holds,
@@ -858,6 +872,11 @@ void DoomScene::init() {
     showUpdateEntry_ = 0;
     showHash_[0] = '\0';
     showLastReportUs_ = sampleMicros();
+    // The world starts at tic 0 and has run nothing: the level was just loaded
+    // and this init() has not returned to update() yet. `worldTic_` is the
+    // high-water mark the tic clock drives forward from here.
+    worldTic_ = 0;
+    showPlayer_ = doomc::ScenePlayerState{};
 #endif  // PIXELROOT32_DOOM_SHOW_E1M1
 
     // Anchors the tic clock at the scene's first microsecond sample, which is
@@ -938,12 +957,24 @@ void DoomScene::update(unsigned long deltaTime) {
     // which is what the on-screen slots and the bit field both mean. Taking the
     // sample once here also keeps a press from being reported and drawn from
     // two different readings.
+    //
+    // The sample is taken before the world tick below, because the world needs
+    // this frame's buttons and the tick must not be skipped by the change
+    // filter: a held button is exactly the case where the bit field does not
+    // change and the simulation must still run.
     std::uint8_t buttons = 0;
     for (int index = 0; index < kButtonCount; ++index) {
         if (input.isButtonDown(static_cast<std::uint8_t>(index))) {
             buttons = static_cast<std::uint8_t>(buttons | (1u << index));
         }
     }
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    // D4.2f: the world ticks on every frame, before the early return below. That
+    // return exists for the shell's repaint and the INPUT line; it must not stop
+    // the simulation, or a held button would freeze the game.
+    runWorldTics(buttons);
+#endif
 
     if (buttons == buttons_) {
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
@@ -971,9 +1002,37 @@ void DoomScene::update(unsigned long deltaTime) {
 #endif
 }
 
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+
+void DoomScene::runWorldTics(std::uint8_t buttons) {
+    if (!sceneRenderer_.isOpen()) {
+        return;
+    }
+
+    // The clock's tic is the target; worldTic_ is the tic the world has run to.
+    // The difference is exactly how many tics this frame owes, and it is the
+    // clock's own derivation -- never a per-frame increment -- so the world
+    // cannot drift away from 35 Hz the way an accumulated delta would.
+    const std::uint32_t tic = ticClock_.tic();
+    if (tic == worldTic_) {
+        return;
+    }
+    const std::uint32_t owed = tic - worldTic_;
+    worldTic_ = tic;
+
+    // Every owed tic runs, in order. A long stall (a serial write, a debugger
+    // pause) replays its backlog instead of dropping it: DOOM's own loop runs
+    // every available tic, and a dropped tic would be a simulation that silently
+    // ran slower than 35 Hz. There is no cap, because one would be a policy this
+    // task never chose; the burst is bounded by the stall, not by a constant.
+    (void)sceneRenderer_.runTics(owed, buttons);
+}
+
+#endif  // PIXELROOT32_DOOM_SHOW_E1M1
+
 void DoomScene::draw(Renderer& renderer) {
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
-    // D4.0's game frame: E1M1's spawn viewpoint, presented by the engine with
+    // D4.2f's game frame: the player's viewpoint, presented by the engine with
     // the PLAYPAL expansion the surface was given in init(). It takes precedence
     // over the palette test and the shell, but the flags never meet: this
     // environment defines only this one.
@@ -1031,12 +1090,21 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
         const std::uint32_t otherUs = frameUs > accounted ? frameUs - accounted : 0u;
         const std::uint32_t fpsX10 = frameUs != 0u ? 10000000u / frameUs : 0u;
 
-        char line[256];
+        char line[384];
         std::snprintf(line, sizeof line,
-                      "SHOW,frame=%u,render_us=%u,convert_us=%u,present_us=%u,"
+                      "SHOW,frame=%u,x=%ld,y=%ld,angle=%lu,viewz=%ld,tics=%u,health=%ld,"
+                      "render_us=%u,convert_us=%u,present_us=%u,"
                       "frame_us=%u,fps_x10=%u,update_us=%u,hash_us=%u,other_us=%u,"
-                      "hash=%s\n",
+                      "refused=%u,hash=%s\n",
                       static_cast<unsigned>(showFrame_ - 1u),
+                      // DOOM's own units, unconverted: 16.16 map units and a
+                      // 32-bit binary angle, the same integers the host's
+                      // movement gate prints, so the two logs compare directly.
+                      static_cast<long>(showPlayer_.x), static_cast<long>(showPlayer_.y),
+                      static_cast<unsigned long>(showPlayer_.angle),
+                      static_cast<long>(showPlayer_.viewz),
+                      static_cast<unsigned>(showPlayer_.tics),
+                      static_cast<long>(showPlayer_.health),
                       static_cast<unsigned>(showRenderMicros_),
                       static_cast<unsigned>(showConvertMicros_),
                       static_cast<unsigned>(presentUs),
@@ -1044,7 +1112,8 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
                       static_cast<unsigned>(fpsX10),
                       static_cast<unsigned>(showUpdateMicros_),
                       static_cast<unsigned>(showHashMicros_),
-                      static_cast<unsigned>(otherUs), showHash_);
+                      static_cast<unsigned>(otherUs), static_cast<unsigned>(showRefused_),
+                      showHash_);
         writeConsoleLine(line);
     }
 
@@ -1061,7 +1130,17 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
     }
 
     const std::uint32_t drawStart = sampleMicros();
+    // The player state this frame draws, captured before the render: the line is
+    // written at the top of the *next* draw, and every field on it describes the
+    // frame it reports.
+    showPlayer_ = sceneRenderer_.player();
     bool rendered = false;
+
+    // The refusal diagnostic outlives the two surface branches below. A refused
+    // frame is no longer replaced by the shell, so this record is the only place
+    // the cause is named (D4.2g).
+    const char* refusedStage = "none";
+    int refusedCode = 0;
 
     // The panel path: one byte per pixel, and the byte is a DOOM palette index.
     // init() installed the PLAYPAL -> RGB565 table on this surface through
@@ -1086,6 +1165,9 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
                 // Nothing to convert: the surface's expansion table owns it.
                 showConvertMicros_ = 0;
                 rendered = true;
+            } else {
+                refusedStage = measured.refusedStage;
+                refusedCode = measured.refusedCode;
             }
         }
     }
@@ -1125,16 +1207,56 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
                 }
                 showConvertMicros_ = sampleMicros() - convertStart;
                 rendered = true;
+            } else {
+                refusedStage = measured.refusedStage;
+                refusedCode = measured.refusedCode;
             }
         }
     }
 #endif
 
     if (!rendered) {
-        // A closed session (missing partition, rejected container) or a surface
-        // the renderer cannot use: keep the shell instead of freezing the last
-        // frame, and drop the pending line so it cannot describe a shell frame.
-        paintShellFrame(renderer, buttons_);
+        // Two different failures, two different answers (D4.2g).
+        //
+        //   no session, or a surface the renderer cannot use
+        //       The shell is the truth: no partition and no accepted container
+        //       mean the port really has no level, and its comment says so.
+        //
+        //   an open session whose pass refused this viewpoint
+        //       The session is fine and the surface still holds the last good
+        //       picture, because renderOnce() prefills only after the walk
+        //       succeeds. Replacing it with the shell would claim a Phase 0
+        //       fallback that never happened. Count it, name the stage/code pair
+        //       once, and leave the picture alone.
+        if (!sceneRenderer_.isOpen() || width != kLogicalWidth
+            || height != kLogicalHeight) {
+            paintShellFrame(renderer, buttons_);
+        } else {
+            ++showRefused_;
+            bool seen = false;
+            for (int index = 0; index < showRefusalKinds_; ++index) {
+                if (showRefusalCode_[index] == refusedCode
+                    && std::strcmp(showRefusalStage_[index], refusedStage) == 0) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                char line[96];
+                std::snprintf(line, sizeof line,
+                              "SHOW,renderfail,stage=%s,code=%d,frame=%u\n",
+                              refusedStage, refusedCode,
+                              static_cast<unsigned>(showFrame_));
+                writeConsoleLine(line);
+                if (showRefusalKinds_ < kShowRefusalKinds) {
+                    showRefusalStage_[showRefusalKinds_] = refusedStage;
+                    showRefusalCode_[showRefusalKinds_] = refusedCode;
+                    ++showRefusalKinds_;
+                }
+            }
+        }
+        // A line at the top of the next draw would describe a frame that was not
+        // drawn, so it is dropped in both cases.
         showPendingReport_ = false;
     }
 

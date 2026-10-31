@@ -511,7 +511,7 @@ void frameProbeRun(std::uint8_t* surface, int width, int height);
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
 
 /**
- * @brief The level session the shipped scene renders through (D4.0).
+ * @brief The level session the shipped scene renders through (D4.0 / D4.2f).
  *
  * The frame probe and the game frame want the same expensive thing: one open
  * container, E1M1's map bound into the walk state, the light table, the sprite
@@ -523,7 +523,8 @@ void frameProbeRun(std::uint8_t* surface, int width, int height);
  *   - `frameProbeRun()` opens it, renders 20 views and closes it, exactly as
  *     before (its `FRAMEPROF,...` lines are unchanged);
  *   - the shipped `_show` environment opens it once in `DoomScene::init()`,
- *     renders the spawn viewpoint every frame, and closes it only at shutdown.
+ *     ticks the world it owns and renders the player's viewpoint every frame,
+ *     and closes it only at shutdown.
  *
  * The session owns no memory of its own beyond the file-scope statics the probe
  * already had: the walk state, the clip pools and the baked manifest adapter are
@@ -540,13 +541,30 @@ void frameProbeRun(std::uint8_t* surface, int width, int height);
  * line and leaves nothing open. The `tag` is "FRAMEPROF" for the probe and
  * "SHOW" for the game, so a captured log says which caller opened the session.
  *
+ * THE WORLD (D4.2f)
+ *
+ * The game frame also owns the level's world: `p_level_init()` over a measured
+ * arena, `p_spawn_specials()`, and one `p_level_tic()` per elapsing 35 Hz tic.
+ * It is opened by the same call and only for the game: the probe measures a
+ * renderer, not a simulation, and `env:esp32dev_ILI9341_frameram` has under 1 KB
+ * of `dram0_0_seg` headroom for the level state. Opening prints the arena
+ * census -- the zone peak and used bytes, the heap before and after the generous
+ * measuring arena, and the size the session chose from the rule "peak plus at
+ * most 25 %, rounded up to 1 KB". A world that does not fit is a reported
+ * failure: the session closes and the scene keeps its shell, because trimming
+ * the renderer to make room would change the proven frame.
+ *
  * RENDER
  *
- * `frameLevelRenderSpawn()` renders the host harness's frame 0 -- the first
- * player-start THING, its sector's floor plus R_VIEWHEIGHT, angle 0, built by
- * the same `buildFrames()` rule the probe and `tools/rsegs_check.py` use -- into
- * a caller-owned 8bpp surface as DOOM palette indices. It does not convert:
- * colour is the scene's job, because the scene owns the surface contract.
+ * `frameLevelRenderView()` renders an arbitrary viewpoint into a caller-owned
+ * 8bpp surface as DOOM palette indices. `frameLevelRenderSpawn()` is the same
+ * call at the host harness's frame 0 -- the first player-start THING, its
+ * sector's floor plus R_VIEWHEIGHT, angle 0, built by the same `buildFrames()`
+ * rule the probe and `tools/rsegs_check.py` use -- so its hash is unchanged by
+ * construction rather than by a second code path kept in step.
+ *
+ * Neither converts: colour is the scene's job, because the scene owns the
+ * surface contract.
  *
  * When @p wantHash is true it also writes the SHA-256 of the 64,000 index bytes
  * followed by the 320 covered bytes, which is the host's `SPRSTAT ... framehash`
@@ -570,6 +588,123 @@ bool frameLevelRenderSpawn(std::uint8_t* surface, int width, int height,
                            FrameProfileSample* sample, char hash[65], bool wantHash,
                            std::uint32_t* hashMicros);
 void frameLevelClose();
+
+/**
+ * @brief One viewpoint in DOOM's units: 16.16 fixed point and a binary angle.
+ *
+ * The same four numbers `r_view_params_t` takes and `tools/rsegs_check.c`'s
+ * `frame_view_t` holds. They are spelled with fixed-width integer types here
+ * because this header deliberately includes no DOOM header: the driver must
+ * stay compilable in a build that has no `lib/doom` include path.
+ */
+struct LevelView {
+    std::int32_t x = 0;      ///< 16.16 fixed point, world units << 16.
+    std::int32_t y = 0;      ///< 16.16 fixed point.
+    std::int32_t z = 0;      ///< 16.16 fixed point; the eye height, not the floor.
+    std::uint32_t angle = 0; ///< 1/65536 turn; 0 is east, 90 degrees is +y.
+};
+
+/**
+ * @brief The console player's state, as the frame and the log read it (D4.2f).
+ *
+ * `view` is what the renderer consumes: `x`/`y` are the avatar's position, `z`
+ * is `playerState.viewz` (P_CalcHeight's eye height, including the bob) and
+ * `angle` is the avatar's facing. `leveltime` counts the tics the world has run
+ * since the level loaded, which is DOOM's own simulation clock and not the
+ * scene's frame counter.
+ */
+struct LevelPlayer {
+    LevelView view;            ///< The renderer's inputs.
+    std::int32_t health = 0;   ///< playerState.health; 100 at spawn.
+    std::uint32_t leveltime = 0; ///< p_level_t::leveltime, the tics simulated.
+    bool valid = false;        ///< True when the world is open and has an avatar.
+};
+
+/**
+ * @brief Renders one explicit viewpoint into a caller-owned index surface.
+ *
+ * This is the only render entry point the game uses; `frameLevelRenderSpawn()`
+ * calls it with the harness's spawn viewpoint. Nothing about the surface, the
+ * hash or the measurement changes between the two: the same four passes, the
+ * same 8bpp indices, the same SHA-256 over the same 64,320 bytes.
+ *
+ * @param surface  The 8bpp surface, at least 320x200 bytes.
+ * @param width    Its stride in bytes (must be >= R_SCREEN_WIDTH).
+ * @param height   Its rows (must be >= R_VIEW_HEIGHT).
+ * @param x        Viewpoint x, 16.16 fixed point.
+ * @param y        Viewpoint y, 16.16 fixed point.
+ * @param z        Eye height, 16.16 fixed point (the floor plus view height).
+ * @param angle    Facing, in 1/65536 turn.
+ * @param sample   Receives the renderer's measurements; may be NULL.
+ * @param hash     65 bytes for the hash and its NUL; untouched when
+ *                 @p wantHash is false.
+ * @param wantHash Take the SHA-256 of the index surface.
+ * @param hashMicros Optional: the time the hash took, 0 when not taken.
+ * @return false when no session is open or a pass refused the frame.
+ */
+bool frameLevelRenderView(std::uint8_t* surface, int width, int height, std::int32_t x,
+                          std::int32_t y, std::int32_t z, std::uint32_t angle,
+                          FrameProfileSample* sample, char hash[65], bool wantHash,
+                          std::uint32_t* hashMicros);
+
+/**
+ * @brief Which pass refused the last frame, and with which code (D4.2g).
+ *
+ * `frameLevelRenderView()` answers only "rendered or not", and a caller that
+ * cannot tell a capacity refusal from a closed session replaces a good picture
+ * with its fallback screen. This is the second answer: the stage the driver had
+ * reached ("walk", "walls", "planes", "sprites" or "masked") and that pass's own
+ * error code (`r_bsp_error_t`, `r_segs_error_t`, `r_plane_error_t` or
+ * `r_things_error_t`). Both are meaningful only after a render call returned
+ * false; before any frame the stage is "none".
+ *
+ * The strings are static, so the caller may keep the pointer.
+ *
+ * @param stage Receives the refusing stage; may be NULL.
+ * @param code  Receives the error code; may be NULL.
+ */
+void frameLevelLastRefusal(const char** stage, int* code);
+
+/**
+ * @brief The harness's frame-00 viewpoint, for a caller that wants it explicitly.
+ *
+ * Computed once from `buildFrames()`'s `frames[0]` and cached, exactly as
+ * `frameLevelRenderSpawn()` uses it. Exposed so a verification can render it
+ * through `frameLevelRenderView()` and prove the two are the same string.
+ *
+ * @param out Receives the viewpoint; untouched when the session is closed.
+ * @return true when a session is open and @p out was written.
+ */
+bool frameLevelSpawnView(LevelView* out);
+
+/**
+ * @brief Runs @p tics world tics with one command built from @p buttons (D4.2f).
+ *
+ * This is P_Ticker: `p_level_tic()` per tic, so P_PlayerThink, the thinker walk
+ * and `leveltime++` run in upstream's order. The simulation's rate is therefore
+ * DOOM's 35 Hz and not the frame rate: a frame that covers two tics calls this
+ * with 2, which is what the scene's tic clock reports, and a frame that covers
+ * none calls nothing.
+ *
+ * The command is rebuilt once per call and applied to every tic in it: the
+ * scene samples the buttons once per frame, and DOOM's own loop samples input
+ * once per tic from a device that updates far slower than 35 Hz. A held button
+ * is a level, not an edge, in either case.
+ *
+ * @param tics    How many tics elapsed since the last call. 0 is a no-op.
+ * @param buttons The engine's six bits (`doomc/InputMap.h`).
+ * @return false when no world is open or a tic refused to run.
+ */
+bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons);
+
+/**
+ * @brief Fills @p out with the console player's state.
+ *
+ * @param out Receives the state; @c valid is false when no world is open or the
+ *            level has no player start.
+ * @return the same @c valid flag.
+ */
+bool frameLevelPlayer(LevelPlayer* out);
 
 /**
  * @brief Palette 0 of the WAD's PLAYPAL lump, 768 bytes, or NULL before OPEN.

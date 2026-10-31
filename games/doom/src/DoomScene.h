@@ -108,7 +108,7 @@ namespace doom {
  * inside `init()`, before the shell draws its first frame.
  *
  * `PIXELROOT32_DOOM_SHOW_E1M1` (D4.0) replaces the shell with the game: `draw()`
- * renders E1M1's spawn viewpoint through `doomc/SceneRenderer.h` into the engine's
+ * renders the player's viewpoint through `doomc/SceneRenderer.h` into the engine's
  * 8bpp surface as DOOM palette indices, and `init()` installs the WAD PLAYPAL as
  * an RGB565 expansion table through `DrawSurface::setPalette8()`, so the engine's
  * present path expands those indices as it transfers. There is no per-frame
@@ -116,11 +116,34 @@ namespace doom {
  * covers are the bytes the panel draws from. The level is opened once in `init()`
  * and stays open: the same setup `frameProbeRun()` uses
  * (`doomc/FrameDriver.cpp`), so the board frame and the measurement cannot drift.
- * It prints `SHOW,setup`, `SHOW,mem`, two `SHOW,census` lines and then one
- * bounded `SHOW,frame=...` line: the first ten frames and one per second after,
- * until frame 600. The tic clock, the input line and every event line keep
- * running unchanged. The shipped environments never define it and keep painting
- * the shell.
+ *
+ * D4.2f makes that frame the game's: the same open session owns E1M1's world
+ * (`p_level_init()` + `p_spawn_specials()` over an arena the session measures and
+ * sizes, printed as two `SHOW,arena,...` lines), `update()` runs one
+ * `p_level_tic()` per tic the tic clock reports -- 0, 1 or 2 on a 20 fps panel --
+ * and `draw()` renders `playerState.viewz` at `player->x/y/angle` instead of the
+ * harness's fixed frame 00. Buttons become a `p_ticcmd_t` through
+ * `doomc/InputMap.h`, so `B` uses, `A` is counted for D4.2d and `up` walks. The
+ * `SHOW,frame=...` line therefore carries `x`, `y`, `angle`, `viewz`, `tics` and
+ * `health` beside the timings it always had, plus `refused=`, the number of
+ * frames a pass has refused since boot; and `init()` prints one
+ * `SHOW,frame00,...` line: the harness's frame-00 viewpoint rendered through the
+ * one view entry point, whose hash must be the host's.
+ *
+ * D4.2g makes a refused frame visible instead of a lie. A pass that runs out of
+ * a walk capacity used to make `drawSceneFrame()` paint the Phase 0 shell, which
+ * claims a fallback that never happened. Now the surface keeps the last good
+ * picture (`renderOnce()` prefills only after the walk succeeds), the frame is
+ * counted, and each distinct stage/code pair prints one
+ * `SHOW,renderfail,stage=<stage>,code=<n>,frame=<n>` line. The shell survives
+ * only for a session that never opened -- no partition, rejected container --
+ * which is what its comment always said it was for.
+ *
+ * It prints `SHOW,setup`, `SHOW,mem`, the two `SHOW,arena` lines,
+ * `SHOW,frame00`, two `SHOW,census` lines and then one bounded `SHOW,frame=...`
+ * line: the first ten frames and one per second after, until frame 600. The tic
+ * clock, the input line and every event line keep running unchanged. The shipped
+ * environments never define it and keep painting the shell.
  *
  * D4.0c asked whether a second 320x200 8-bit frame buffer could overlap the
  * present with the render. The census answers that with the board's own numbers:
@@ -160,13 +183,26 @@ private:
     /**
      * @brief Renders the game frame, measures it and closes the measurement.
      *
-     * This is D4.0's frame: E1M1's spawn viewpoint as DOOM palette indices in
+     * This is D4.0's frame: the player's viewpoint as DOOM palette indices in
      * the engine's 8bpp buffer, presented by the engine through the PLAYPAL
      * table installed in `init()`. It prints one bounded `SHOW,...` line per
      * reported frame and leaves the tic clock, input lines and console behaviour
      * untouched.
      */
     void drawSceneFrame(pixelroot32::graphics::Renderer& renderer);
+
+    /**
+     * @brief Runs the world tics this frame owes the simulation (D4.2f).
+     *
+     * Split out of `update()` and called on *every* frame, before the
+     * button-change early return: a frame that reports no input change still
+     * advances the simulation. The count is the tic clock's own delta, so a
+     * frame that covers two tics runs two, and the world's rate is DOOM's 35 Hz
+     * rather than the frame rate.
+     *
+     * @param buttons The buttons sampled for this frame.
+     */
+    void runWorldTics(std::uint8_t buttons);
 #endif
 
     /**
@@ -191,13 +227,23 @@ private:
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
     /**
-     * @brief The level the game frame renders (D4.0).
+     * @brief The level the game frame renders (D4.0) and its world (D4.2f).
      *
      * Declared only under the flag. It holds no buffers: the walk state and the
      * manifest adapter are the ones `src/doomc/FrameDriver.cpp` already owns for
      * the probe, so the game and the measurement share one copy of each.
      */
     doomc::SceneRenderer sceneRenderer_;
+
+    /// The tic the world has been ticked to. The clock's tic is the target and
+    /// this is the high-water mark, so `tic - worldTic_` is exactly how many tics
+    /// the world still owes this frame -- 0, 1 or (at 20 fps) occasionally 2.
+    std::uint32_t worldTic_ = 0;
+
+    /// The player state the *reported* frame drew, captured before that frame's
+    /// render: the line is written at the top of the next draw, as every other
+    /// field on it is.
+    doomc::ScenePlayerState showPlayer_;
 
     /// Frames rendered since boot, and the ones after which reporting stops.
     /// The scene keeps drawing past the cap; only the serial line ends, so a
@@ -227,6 +273,19 @@ private:
     bool showPendingReport_ = false;
     std::uint32_t showLastReportUs_ = 0;
     char showHash_[65] = {0};
+
+    /// Frames a pass refused, and the stage/code pairs already reported.
+    /// D4.2g: a refused frame keeps the previous picture, so the log is the only
+    /// place the refusal is visible -- one `SHOW,renderfail` line per distinct
+    /// pair, plus the running count on every periodic `SHOW,frame` line.
+    std::uint32_t showRefused_ = 0;
+    /// The stage and code of each pair already named on the serial line. The
+    /// vocabulary is the driver's five stages, so six slots cannot overflow for a
+    /// real build; a pair past the table is printed rather than swallowed.
+    static constexpr int kShowRefusalKinds = 6;
+    const char* showRefusalStage_[kShowRefusalKinds] = {};
+    int showRefusalCode_[kShowRefusalKinds] = {};
+    int showRefusalKinds_ = 0;
 #endif
 
 #if defined(PIXELROOT32_DOOM_FRAME_LOG)

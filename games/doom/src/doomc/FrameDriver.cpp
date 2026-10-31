@@ -448,9 +448,13 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 
 #include "doomc/BakedGraphics.h"
 #include "doomc/DoomConsole.h"
+#include "doomc/InputMap.h"
 #include "doomc/WhdSource.h"
 
 #include "doom_map.h"
+#include "p_setup.h"
+#include "p_spec.h"
+#include "p_user.h"
 #include "r_bsp.h"
 #include "r_data.h"
 #include "r_defs.h"
@@ -508,6 +512,14 @@ namespace {
 /// requires. 64 costs 3,328 B and covers the measured peak with headroom; the
 /// walk reports an overflow instead of writing past the array, and the probe
 /// prints that flag per frame.
+///
+/// D4.2g's sweep (tools/capacity_check.py: every subsector midpoint and every
+/// sector centre of the level at 8 angles) says 64 is still short. E1M1 needs 99
+/// drawsegs at ss202/a4 (2,752,-2,980); E1M2 needs 98 at ss168/a3. With 64, 99
+/// walkable E1M1 viewpoints (45 in E1M2) reach the array and r_bsp_render()
+/// *drops* their later fragments -- `drawsegOverflowed`, not an error, so nothing
+/// was ever printed about it. 99 with the sweep's +25% margin is 128, which costs
+/// 3,328 B more; see the budget note below for why it is not raised here.
 constexpr int kDrawsegCapacity = 64;
 
 /// A plane is allocated by the walk and may stay unmarked for the whole view, so
@@ -517,24 +529,45 @@ constexpr int kDrawsegCapacity = 64;
 /// R_BSP_ERR_VISPLANE_OVERFLOW on E1M2 frame 01. 40 costs 26,560 B (664 B each)
 /// and covers the measured peak; an overflow is a reported walk error, not a
 /// write past the array.
+///
+/// D4.2g's sweep measures 51 allocated planes at E1M1 ss202/a4 (E1M2: 47 at
+/// ss220/a7), so 40 refuses 19 walkable E1M1 viewpoints and 6 E1M2 viewpoints
+/// with R_BSP_ERR_VISPLANE_OVERFLOW (16). 51 with the +25% margin is 64, which
+/// costs 15,936 B more; see the budget note below.
 constexpr int kPlaneCapacity = 40;
 
 /// R_MAX_CLIP_SEGS, the minimum r_bsp_init() accepts (upstream's MAXSEGS).
+/// D4.2g's sweep never needs more than 2 interior posts on any walkable
+/// viewpoint of either level, so this minimum stays.
 constexpr int kClipRangeCapacity = 32;
 
-/// The D3.4 clip-block pool: 15 blocks of 320 shorts, reserved two included, is
-/// the measured peak, so 15 is the smallest correct capacity. One short and the
-/// wall pass refuses the frame with R_SEGS_ERR_SMALL_CLIP_POOL instead of
-/// writing past the pool. It is still needed without the masked pass: the wall
-/// pass snapshots every drawseg's clip arrays before it knows what will be drawn.
+/// The D3.4 clip-block pool: 15 blocks of 320 shorts, reserved two included, was
+/// the peak of the 20 sampled views, so 15 was the smallest correct capacity for
+/// those views. One short and the wall pass refuses the frame with
+/// R_SEGS_ERR_SMALL_CLIP_POOL instead of writing past the pool. It is still
+/// needed without the masked pass: the wall pass snapshots every drawseg's clip
+/// arrays before it knows what will be drawn.
+///
+/// D4.2g's sweep measures 71 blocks (reserved included) at E1M1 ss71/a0
+/// (-320,-3,232) and 60 at E1M2 ss168/a3, so 15 refuses 512 walkable E1M1
+/// viewpoints and 631 E1M2 viewpoints -- 20% of the walkable map. Those are the
+/// intermittent shells the panel showed. 71 blocks is 45,440 B and 89 (+25%) is
+/// 56,960 B, more than any free static block this image has; see the budget note
+/// below.
 constexpr int kClipBlockCapacity = 15;
 
 /// The masked pass's pools. D3.10 sized them for the whole episode: E1M2 submits
 /// 243 sprites and its densest view projects more than the E1M1-only 100 the
 /// capacity used to hold (frame 02 reports R_THINGS_ERR_VISSPRITE_OVERFLOW at
-/// 100), so 256 is the episode's peak with headroom, 44 B each. One opening
-/// block stays: no E1M1 view records a masked mid, so a view that records one
-/// allocates it instead of failing.
+/// 100), so 256 is the episode's peak with headroom, 44 B each. D4.2g's sweep
+/// measures 220 projected sprites at E1M2 ss151/a4 (E1M1: 125 at ss76/a0), so
+/// 256 still covers the peak.
+///
+/// D3.4's opening-block claim ("no E1M1 view records a masked mid, so one block
+/// is enough") was true only for the 20 sampled views: D4.2g measures 8 opening
+/// blocks at E1M1 ss197/a4 (3,632,-3,904) and no view of E1M2 needs one. With 1,
+/// 83 walkable E1M1 viewpoints refuse with R_SEGS_ERR_SMALL_OPENING_POOL (14).
+/// 8 with the +25% margin is 10, which costs 5,760 B more; see the budget note.
 constexpr int kVisspriteCapacity = 256;
 constexpr int kOpeningBlockCapacity = 1;
 
@@ -644,6 +677,42 @@ constexpr int kFirstSkippedMapLump = DOOM_MAP_REJECT;
  */
 
 /// The static half: the walk state, the clip-block pool and the coverage record.
+///
+/// THE D4.2g CAPACITY MEASUREMENT, AND WHY THE PEAKS ARE NOT RAISED HERE
+///
+/// tools/capacity_check.py renders every subsector midpoint and every sector
+/// centre of E1M1 and E1M2 at 8 angles (2,520 walkable E1M1 viewpoints; 4,768
+/// E1M2) through the same four passes this driver runs, then reports the peak
+/// each capacity consumes and every viewpoint a pass refused. Against this
+/// struct's capacities:
+///
+///   capacity      now   walkable peak   +25%   growth    refused viewpoints
+///   drawsegs       64   99 (E1M1)       128    +3,328 B   99 E1M1 / 45 E1M2 drop
+///   planes         40   51 (E1M1)        64   +15,936 B   19 E1M1 / 6 E1M2
+///   clip ranges    32    2                32        0 B   none
+///   clip blocks    15   71 (E1M1)        89   +47,360 B   512 E1M1 / 631 E1M2
+///   vis sprites   256  220 (E1M2)       256        0 B   none
+///   openings        1    8 (E1M1)        10    +5,760 B   83 E1M1
+///   ------------------------------------------------------------------------
+///   growth, no margin                                   +49,444 B
+///   growth, +25% on every short one                     +72,384 B
+///
+/// It does not fit. `dram0_0_seg` (0x3ffbdb5c + 0x1e6a4, end 0x3ffdc200) has
+/// 19,652 B free in env:esp32dev_ILI9341_show and 256 B in
+/// env:esp32dev_ILI9341_frameram, measured from the link map's `_bss_end`
+/// (0x3ffd7540 and 0x3ffdc100). And the pools cannot move to the heap instead:
+/// at frame time `SHOW,census` reports 60,496 B free with a 27,636 B largest
+/// block, while the 71-block clip pool alone is one 45,440 B block. `kStaticLumpBytes`
+/// is the RAM build's only elastic static block and it is 17,408 B, less than
+/// half of the smallest growth.
+///
+/// So the capacities stay at the values the 20-view measurement chose, and D4.2g
+/// makes the refusal honest instead of invisible or a lie: renderOnce() prefills
+/// only after the walk succeeds, and DoomScene::drawSceneFrame() keeps the last
+/// good picture and prints `SHOW,renderfail,stage=...,code=...` where it used to
+/// paint the Phase 0 shell. Fitting the walkable peak needs a lib/doom/ change
+/// (clip blocks sized to a fragment's x2-x1+1, or shared when two drawsegs leave
+/// identical arrays), which this task's edit surface excludes by design.
 struct DriverState {
     /// The walk's state, all of it caller-owned as r_bsp.h requires.
     alignas(8) r_drawseg_t drawsegs[kDrawsegCapacity];
@@ -1681,7 +1750,6 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     gFlatSet.reset();
     gSpriteSet.reset();
 
-    std::memset(pixels, 0xFF, static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
     std::memset(gState.covered, 0, sizeof gState.covered);
 #if defined(PIXELROOT32_DOOM_RASTER_PROBE)
     driver->probe = r_raster_probe_t{};
@@ -1707,9 +1775,18 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
         // The walk has its own vocabulary (clip list, plane capacity, depth); the
         // error line names the stage and this code, so a level that outgrows a
         // capacity says which one instead of reporting a bare `stage=walk`.
+        //
+        // The surface is NOT prefilled before the walk (D4.2g). A refused walk
+        // writes no pixel -- r_bsp_render() only fills the drawseg and visplane
+        // lists -- so leaving the previous frame in the surface is what lets the
+        // scene keep the last good picture instead of showing a blank or the
+        // Phase 0 shell it never fell back to. The prefill below is what every
+        // pass after the walk expects: a 0xFF background for the columns no wall
+        // and no flat wrote.
         gStageCode = static_cast<int>(walk);
         return false;
     }
+    std::memset(pixels, 0xFF, static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
     sample->drawsegs = driver->view.drawsegCount;
     sample->drawsegOverflowed = driver->view.drawsegOverflowed;
 
@@ -1798,6 +1875,10 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     driver->spriteListCycles = r_probe_cycles() - spriteListStart;
 #endif
     if (spriteCount < 0) {
+        // The list build is the caller's, so it has no renderer error code; -1
+        // says "this stage, no pass code" instead of leaving the previous
+        // frame's error to be reported as this one's.
+        gStageCode = -1;
         return false;
     }
 
@@ -2097,6 +2178,307 @@ constexpr std::size_t kPlaypalStaticBytes = kPlaypalBytes;
 constexpr std::size_t kPlaypalStaticBytes = 0u;
 #endif
 bool gPlaypalValid = false;
+
+// --- The world (D4.2f) -------------------------------------------------------
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+
+/*
+ * THE WORLD (D4.2f): one level, one arena, one tic at a time.
+ *
+ * Until now every p_level_* use in this port was a host tool's: a desktop
+ * harness allocated a 256 KB arena with malloc and ticked the world in a loop.
+ * On the board there is no 256 KB to spend, so the arena is a number this file
+ * measures instead of a number it assumes -- the one thing this project has paid
+ * for guessing twice (task record L13, L20).
+ *
+ * THE ARENA'S SIZE IS A MEASUREMENT, THEN A RULE
+ *
+ * The world is loaded twice at open. The first load runs over a generous arena
+ * -- the largest free block less a small reserve -- with nothing to squeeze it,
+ * and reports z_stats()'s peak and used bytes. `p_level_shutdown()` then frees
+ * every PU_LEVEL block and the block goes back to the heap. The second load runs
+ * over the size the rule chose: the measured peak plus at most 25 %, rounded up
+ * to 1 KB. The map is read-only through both loads -- p_level_init() copies
+ * SECTORS and LINEDEFS' special into the level, and the spawns allocate from the
+ * level's own zone -- so the trial cannot disturb the load that is kept.
+ *
+ * WHY THE WORLD IS NOT IN `LevelSession`
+ *
+ * `LevelSession` and `Driver` are compiled in the probe builds too, and
+ * `env:esp32dev_ILI9341_frameram` has under 1 KB of `dram0_0_seg` headroom: a
+ * p_level_t in the shared session would overflow it. The world, like
+ * `gShowDriver` and `gPlaypal`, therefore lives under the game's own flag, and
+ * the probe builds carry neither its state nor its code.
+ *
+ * WHO OWNS WHAT
+ *
+ *   the zone        every mobj, every special thinker, the sector array and the
+ *                   linedef-special copy -- all of it inside the arena below.
+ *   the world       `gWorld.level`, a `p_level_t` whose own fields point into
+ *                   the arena, so it must not move after the load: it is a
+ *                   file-scope static for that reason and not for style.
+ *   the tics        the scene's tic clock decides how many elapsed; this file
+ *                   runs exactly that many `p_level_tic()` calls.
+ */
+
+/// The headroom the sizing rule allows over the measured peak, in percent.
+constexpr std::uint32_t kArenaHeadroomPercent = 25u;
+
+/// The granularity the chosen size is rounded up to: 1 KB.
+constexpr std::uint32_t kArenaRoundBytes = 1024u;
+
+/// Bytes left in the heap when the measuring arena asks for the largest block.
+/// The reserve is not for the world: it keeps the probe from consuming a hole a
+/// later allocation (a level change, a sprite list) would need to see at all.
+constexpr std::uint32_t kArenaProbeReserveBytes = 4096u;
+
+/// The game's one world: the level state, its arena, and the heap block behind it.
+struct LevelWorld {
+    p_level_t level;
+    std::uint8_t* arena;   ///< What z_init() was given: `block` rounded up to 8.
+    void* block;           ///< What heap_caps_free() must get back.
+    std::uint32_t arenaBytes;
+    bool open;
+};
+
+LevelWorld gWorld;
+
+/// Rounds an arena size up to the sizing rule's 1 KB.
+std::uint32_t roundArenaUp(std::uint32_t bytes) {
+    return (bytes + kArenaRoundBytes - 1u) / kArenaRoundBytes * kArenaRoundBytes;
+}
+
+/**
+ * @brief Takes @p bytes of internal DRAM and aligns the payload to the zone.
+ *
+ * `heap_caps_malloc()`'s alignment is the allocator's promise, not this file's,
+ * and the zone refuses an arena that is not ZONE_ALIGNMENT-aligned. One extra
+ * alignment unit is requested and the payload is aligned here, so the world
+ * opens on any heap implementation; @p block is what must go back.
+ */
+bool takeArena(std::uint32_t bytes, std::uint8_t** arena, void** block) {
+    void* raw = heap_caps_malloc(static_cast<std::size_t>(bytes) + ZONE_ALIGNMENT,
+                                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (raw == nullptr) {
+        *arena = nullptr;
+        *block = nullptr;
+        return false;
+    }
+    const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(raw);
+    const std::uintptr_t mask = static_cast<std::uintptr_t>(ZONE_ALIGNMENT) - 1u;
+    *arena = reinterpret_cast<std::uint8_t*>((address + mask) & ~mask);
+    *block = raw;
+    return true;
+}
+
+/**
+ * @brief Loads the world once over @p map and reports the zone peak.
+ *
+ * @param map      The session's open map.
+ * @param arena    The arena to load into.
+ * @param bytes    Its size.
+ * @param level    Receives the load; left zeroed when the load is refused.
+ * @param zoneOut  Receives z_stats()'s snapshot; zeroed when the load is refused.
+ * @return P_SETUP_OK with @p zoneOut filled, or the p_level_init() code.
+ */
+p_setup_error_t probeWorld(const doom_map_t* map, std::uint8_t* arena, std::uint32_t bytes,
+                           p_level_t* level, zone_stats_t* zoneOut) {
+    *zoneOut = zone_stats_t{};
+    const p_spawn_rules_t rules = p_spawn_rules_default();
+    const p_setup_error_t setup = p_level_init(level, map, arena, bytes, &rules);
+    if (setup != P_SETUP_OK) {
+        return setup;
+    }
+    // P_SetupLevel's order: the THINGS run first, then the sector specials. The
+    // specials create the light and door thinkers the tic walks, so they are
+    // part of the peak this number is about.
+    if (p_spawn_specials(level) != P_SPEC_OK) {
+        p_level_shutdown(level);
+        return P_SETUP_ERR_ALLOC;
+    }
+    *zoneOut = z_stats(&level->zone);
+    return P_SETUP_OK;
+}
+
+/// Shuts the world down and releases its arena. Safe on a closed world.
+void closeWorldSession();
+
+/// Releases the whole level session. Defined after the open path it unwinds.
+void closeLevelSession();
+
+/**
+ * @brief Measures, sizes and opens the world; prints two `SHOW,arena,...` lines.
+ *
+ * Runs only for the game frame, from `openLevelSession()` after the session is
+ * open, because the frame path's own allocations (the display sprite, the sprite
+ * list) are what the arena has to fit next to. The arithmetic is printed instead
+ * of being asserted so a board with a different heap can be judged from its log.
+ *
+ * @return true when the world is open. On false nothing is left allocated and
+ *         the reason is already on the serial line.
+ */
+bool openWorldSession() {
+    gWorld = LevelWorld{};
+
+    if (!gSession.open || gSession.driver == nullptr) {
+        return false;
+    }
+    const doom_map_t* map = &gSession.driver->map;
+
+    // The session's one formatted-line buffer. openLevelSession() has already
+    // written its setup line, and nothing in this call graph re-enters it, so
+    // the 512 bytes are reused instead of bought twice.
+    char (&line)[kFrameProfileLineCapacity] = gSessionLine;
+
+    const int caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const std::uint32_t heapTotal = static_cast<std::uint32_t>(heap_caps_get_total_size(caps));
+    const std::uint32_t heapBefore = static_cast<std::uint32_t>(esp_get_free_heap_size());
+    const std::uint32_t largestBefore =
+        static_cast<std::uint32_t>(heap_caps_get_largest_free_block(caps));
+
+    // A generous arena: everything the largest hole has, less the reserve. This
+    // is the "does it fit at all" number, so it is deliberately not the size the
+    // session will keep.
+    std::uint32_t probeBytes =
+        largestBefore > kArenaProbeReserveBytes ? largestBefore - kArenaProbeReserveBytes : 0u;
+    probeBytes &= ~(static_cast<std::uint32_t>(ZONE_ALIGNMENT) - 1u);
+
+    std::uint8_t* probeArena = nullptr;
+    void* probeBlock = nullptr;
+    if (probeBytes < kArenaRoundBytes || !takeArena(probeBytes, &probeArena, &probeBlock)) {
+        std::snprintf(line, sizeof line,
+                      "SHOW,arena,probe,status=fail,reason=heap,peak=0,used=0,"
+                      "arena=%u,heap_free_before=%u,heap_largest_before=%u\n",
+                      static_cast<unsigned>(probeBytes), static_cast<unsigned>(heapBefore),
+                      static_cast<unsigned>(largestBefore));
+        writeLine(line);
+        return false;
+    }
+    const std::uint32_t heapDuringProbe = static_cast<std::uint32_t>(esp_get_free_heap_size());
+    const std::uint32_t largestDuringProbe =
+        static_cast<std::uint32_t>(heap_caps_get_largest_free_block(caps));
+
+    zone_stats_t zone;
+    const p_setup_error_t probeSetup =
+        probeWorld(map, probeArena, probeBytes, &gWorld.level, &zone);
+    const std::uint32_t things = gWorld.level.stats.things;
+    const std::uint32_t spawned = gWorld.level.stats.spawned;
+    const std::uint32_t spawnFailed = gWorld.level.stats.spawnFailed;
+    const std::uint32_t thinkers = gWorld.level.thinkers.count;
+    const std::uint32_t specials = gWorld.level.specStats.spawned;
+    const std::uint32_t mobjs = probeSetup == P_SETUP_OK ? p_level_mobj_count(&gWorld.level) : 0u;
+
+    if (probeSetup == P_SETUP_OK) {
+        std::snprintf(line, sizeof line,
+                      "SHOW,arena,probe,status=ok,peak=%u,used=%u,free=%u,overhead=%u,"
+                      "failures=%u,arena=%u,things=%u,spawned=%u,spawn_failed=%u,"
+                      "thinkers=%u,specials=%u,mobjs=%u,heap_total=%u,"
+                      "heap_free_before=%u,heap_largest_before=%u,heap_free_after=%u,"
+                      "heap_largest_after=%u\n",
+                      static_cast<unsigned>(zone.peakInUse), static_cast<unsigned>(zone.inUse),
+                      static_cast<unsigned>(zone.freeBytes),
+                      static_cast<unsigned>(zone.overhead),
+                      static_cast<unsigned>(zone.failures),
+                      static_cast<unsigned>(probeBytes), static_cast<unsigned>(things),
+                      static_cast<unsigned>(spawned), static_cast<unsigned>(spawnFailed),
+                      static_cast<unsigned>(thinkers), static_cast<unsigned>(specials),
+                      static_cast<unsigned>(mobjs), static_cast<unsigned>(heapTotal),
+                      static_cast<unsigned>(heapBefore), static_cast<unsigned>(largestBefore),
+                      static_cast<unsigned>(heapDuringProbe),
+                      static_cast<unsigned>(largestDuringProbe));
+    } else {
+        // A refused load is the one case where the peak means nothing: the zone
+        // never held a world. The arithmetic is printed with the code that
+        // refused it, so "too small" and "the map is wrong" are different lines.
+        std::snprintf(line, sizeof line,
+                      "SHOW,arena,probe,status=fail,reason=world,setup=%d,peak=0,used=0,"
+                      "arena=%u,things=%u,spawned=%u,spawn_failed=%u,heap_free_after=%u,"
+                      "heap_largest_after=%u\n",
+                      static_cast<int>(probeSetup), static_cast<unsigned>(probeBytes),
+                      static_cast<unsigned>(things), static_cast<unsigned>(spawned),
+                      static_cast<unsigned>(spawnFailed), static_cast<unsigned>(heapDuringProbe),
+                      static_cast<unsigned>(largestDuringProbe));
+    }
+    writeLine(line);
+
+    p_level_shutdown(&gWorld.level);
+    heap_caps_free(probeBlock);
+
+    if (probeSetup != P_SETUP_OK) {
+        return false;
+    }
+
+    // The rule: peak + 25 %, rounded up to 1 KB.
+    const std::uint32_t chosenBytes =
+        roundArenaUp(zone.peakInUse + zone.peakInUse * kArenaHeadroomPercent / 100u);
+    if (chosenBytes == 0u || chosenBytes > largestBefore) {
+        std::snprintf(line, sizeof line,
+                      "SHOW,arena,fit,status=fail,reason=no_fit,peak=%u,chosen=%u,"
+                      "heap_largest_before=%u,heap_largest=%u\n",
+                      static_cast<unsigned>(zone.peakInUse), static_cast<unsigned>(chosenBytes),
+                      static_cast<unsigned>(largestBefore),
+                      static_cast<unsigned>(heap_caps_get_largest_free_block(caps)));
+        writeLine(line);
+        return false;
+    }
+
+    if (!takeArena(chosenBytes, &gWorld.arena, &gWorld.block)) {
+        std::snprintf(line, sizeof line,
+                      "SHOW,arena,fit,status=fail,reason=alloc,peak=%u,chosen=%u,"
+                      "heap_free=%u,heap_largest=%u\n",
+                      static_cast<unsigned>(zone.peakInUse), static_cast<unsigned>(chosenBytes),
+                      static_cast<unsigned>(esp_get_free_heap_size()),
+                      static_cast<unsigned>(heap_caps_get_largest_free_block(caps)));
+        writeLine(line);
+        return false;
+    }
+    gWorld.arenaBytes = chosenBytes;
+
+    zone_stats_t live;
+    const p_setup_error_t setup =
+        probeWorld(map, gWorld.arena, gWorld.arenaBytes, &gWorld.level, &live);
+    if (setup != P_SETUP_OK) {
+        // The measured peak did not fit its own arena: report both numbers and
+        // leave nothing open rather than trimming the renderer to make room.
+        std::snprintf(line, sizeof line,
+                      "SHOW,arena,fit,status=fail,reason=world,setup=%d,peak=%u,chosen=%u,"
+                      "arena=%u,heap_free=%u,heap_largest=%u\n",
+                      static_cast<int>(setup), static_cast<unsigned>(zone.peakInUse),
+                      static_cast<unsigned>(chosenBytes),
+                      static_cast<unsigned>(gWorld.arenaBytes),
+                      static_cast<unsigned>(esp_get_free_heap_size()),
+                      static_cast<unsigned>(heap_caps_get_largest_free_block(caps)));
+        writeLine(line);
+        closeWorldSession();
+        return false;
+    }
+
+    gWorld.open = true;
+    std::snprintf(line, sizeof line,
+                  "SHOW,arena,fit,status=ok,chosen=%u,peak=%u,used=%u,headroom=25,round=1024,"
+                  "arena=%u,world_static=%u,heap_free=%u,heap_largest=%u\n",
+                  static_cast<unsigned>(chosenBytes), static_cast<unsigned>(zone.peakInUse),
+                  static_cast<unsigned>(live.inUse), static_cast<unsigned>(gWorld.arenaBytes),
+                  static_cast<unsigned>(sizeof(LevelWorld)),
+                  static_cast<unsigned>(esp_get_free_heap_size()),
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(caps)));
+    writeLine(line);
+    return true;
+}
+
+void closeWorldSession() {
+    if (gWorld.open) {
+        p_level_shutdown(&gWorld.level);
+    }
+    if (gWorld.block != nullptr) {
+        heap_caps_free(gWorld.block);
+    }
+    gWorld = LevelWorld{};
+}
+
+#endif  // PIXELROOT32_DOOM_SHOW_E1M1
+
 
 /// One `FRAMEPROF,mem` field, from `sizeof`: the driver's RAM cost is a printed/// number, never an estimate. `state_static` is the .bss half, `level_ram` is the
 /// decoded level (0 in the flash build) and `heap_before/after` bound the rest.
@@ -2450,6 +2832,21 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
                   kMapLumpCount - kFirstSkippedMapLump,
                   static_cast<unsigned>(elapsedMicros(setupStart)));
     writeLine(line);
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    // The game frame owns a world as well (D4.2f); the probe does not, because
+    // it measures a renderer and the RAM control environment has no room for a
+    // p_level_t. `loadPlaypal` is the flag that says "this is the game": the
+    // probe passes false for it and for the palette for the same reason.
+    //
+    // A world that does not fit closes the session instead of leaving a frame
+    // without a simulation: the scene's fallback is its shell, and the failure
+    // arithmetic is already on the serial line.
+    if (loadPlaypal && !openWorldSession()) {
+        closeLevelSession();
+        return false;
+    }
+#endif
     return true;
 }
 
@@ -2458,6 +2855,11 @@ void closeLevelSession() {
     if (!gSession.open) {
         return;
     }
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    // Before the mapping: the world's mobjs and thinkers live in its arena, and
+    // p_level_shutdown() walks the level's zone to release them.
+    closeWorldSession();
+#endif
     doom_whd_source_close();
     releaseWorkingSet();
     gSession.open = false;
@@ -2465,17 +2867,18 @@ void closeLevelSession() {
 }
 
 /**
- * @brief Renders the host harness's frame 0 into an index surface.
+ * @brief Renders one explicit viewpoint into an index surface.
  *
- * The viewpoint is `frames[0]` from the same `buildFrames()` rule the probe and
- * `tools/rsegs_check.py` use, computed once and cached: the first player-start
- * THING's position, its sector's floor plus R_VIEWHEIGHT, and angle 0. It is
- * *not* `r_bsp_spawn_view()`, which would use the THING record's own facing and
- * therefore hash differently from the host's frame 00.
+ * The one render implementation: `renderSessionSpawn()` calls it with the
+ * harness's cached spawn viewpoint, and the game calls it with the player's.
+ * Everything after the viewpoint -- the surface bind, the four passes, the
+ * measurement and the hash -- is therefore shared, which is what keeps the
+ * frame-00 hash identical across the two callers.
  */
-bool renderSessionSpawn(std::uint8_t* surface, int width, int height,
-                        FrameProfileSample* sample, char hash[65], bool wantHash,
-                        std::uint32_t* hashMicros) {
+bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_t x,
+                       std::int32_t y, std::int32_t z, std::uint32_t angle,
+                       FrameProfileSample* sample, char hash[65], bool wantHash,
+                       std::uint32_t* hashMicros) {
     if (hashMicros != nullptr) {
         *hashMicros = 0u;
     }
@@ -2484,19 +2887,16 @@ bool renderSessionSpawn(std::uint8_t* surface, int width, int height,
         return false;
     }
 
-    if (!gSession.spawnValid) {
-        FrameView frames[kViewCount];
-        if (!buildFrames(&gSession.driver->map, frames)) {
-            return false;
-        }
-        gSession.spawn = frames[0];
-        gSession.spawnValid = true;
-    }
+    FrameView view;
+    view.x = x;
+    view.y = y;
+    view.z = z;
+    view.angle = angle;
 
     bindSurface(gSession.driver, surface, width, height);
     FrameProfileSample local;
     FrameProfileSample* out = sample != nullptr ? sample : &local;
-    if (!renderOnce(gSession.driver, gSession.spawn, surface, width, height, out)) {
+    if (!renderOnce(gSession.driver, view, surface, width, height, out)) {
         return false;
     }
 
@@ -2516,7 +2916,61 @@ bool renderSessionSpawn(std::uint8_t* surface, int width, int height,
     return true;
 }
 
+/// Computes and caches `buildFrames()`'s `frames[0]` for this session.
+bool ensureSpawnView() {
+    if (!gSession.open) {
+        return false;
+    }
+    if (gSession.spawnValid) {
+        return true;
+    }
+    FrameView frames[kViewCount];
+    if (!buildFrames(&gSession.driver->map, frames)) {
+        return false;
+    }
+    gSession.spawn = frames[0];
+    gSession.spawnValid = true;
+    return true;
+}
+
+/**
+ * @brief Renders the host harness's frame 0 into an index surface.
+ *
+ * The viewpoint is `frames[0]` from the same `buildFrames()` rule the probe and
+ * `tools/rsegs_check.py` use, computed once and cached: the first player-start
+ * THING's position, its sector's floor plus R_VIEWHEIGHT, and angle 0. It is
+ * *not* `r_bsp_spawn_view()`, which would use the THING record's own facing and
+ * therefore hash differently from the host's frame 00.
+ *
+ * Since D4.2f this is a delegation to `renderSessionView()` with that cached
+ * viewpoint, so the frame-00 hash is produced by the same code the game frame
+ * runs rather than by a copy kept in step by hand.
+ */
+bool renderSessionSpawn(std::uint8_t* surface, int width, int height,
+                        FrameProfileSample* sample, char hash[65], bool wantHash,
+                        std::uint32_t* hashMicros) {
+    if (hashMicros != nullptr) {
+        *hashMicros = 0u;
+    }
+    if (!ensureSpawnView()) {
+        return false;
+    }
+    const FrameView& spawn = gSession.spawn;
+    return renderSessionView(surface, width, height, spawn.x, spawn.y, spawn.z, spawn.angle,
+                             sample, hash, wantHash, hashMicros);
+}
+
 }  // namespace
+
+void frameLevelLastRefusal(const char** stage, int* code) {
+    if (stage != nullptr) {
+        *stage = (gSession.open && gSession.driver != nullptr) ? gSession.driver->stage
+                                                               : "none";
+    }
+    if (code != nullptr) {
+        *code = gStageCode;
+    }
+}
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
 
@@ -2534,6 +2988,70 @@ bool frameLevelRenderSpawn(std::uint8_t* surface, int width, int height,
 }
 
 void frameLevelClose() { closeLevelSession(); }
+
+bool frameLevelRenderView(std::uint8_t* surface, int width, int height, std::int32_t x,
+                          std::int32_t y, std::int32_t z, std::uint32_t angle,
+                          FrameProfileSample* sample, char hash[65], bool wantHash,
+                          std::uint32_t* hashMicros) {
+    return renderSessionView(surface, width, height, x, y, z, angle, sample, hash, wantHash,
+                             hashMicros);
+}
+
+bool frameLevelSpawnView(LevelView* out) {
+    if (out == nullptr || !ensureSpawnView()) {
+        return false;
+    }
+    out->x = gSession.spawn.x;
+    out->y = gSession.spawn.y;
+    out->z = gSession.spawn.z;
+    out->angle = gSession.spawn.angle;
+    return true;
+}
+
+bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
+    if (!gWorld.open) {
+        return false;
+    }
+
+    // One command for the whole call: a held button is a level, and P_PlayerThink
+    // latches BT_USE itself, so a two-tic frame is two tics of the same input
+    // rather than two reads of a device that updates at frame rate.
+    const p_ticcmd_t cmd = mapButtons(buttons);
+    for (std::uint32_t tic = 0; tic < tics; ++tic) {
+        // No walk statistics: the scene reports the world's state, and D4.2d's
+        // combat owns the counters that would read them.
+        if (p_level_tic(&gWorld.level, &cmd, nullptr) != P_TICK_OK) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool frameLevelPlayer(LevelPlayer* out) {
+    if (out == nullptr) {
+        return false;
+    }
+    *out = LevelPlayer{};
+    if (!gWorld.open) {
+        return false;
+    }
+
+    const r_mobj_t* mobj = gWorld.level.playerState.mo;
+    if (mobj == nullptr) {
+        return false;
+    }
+    out->view.x = mobj->x;
+    out->view.y = mobj->y;
+    // The eye, not the floor: P_CalcHeight's viewz is the mobj's floor height
+    // plus the view height plus the bob. Before the first tic it is 0, which is
+    // the honest answer to "the world has not computed it yet".
+    out->view.z = gWorld.level.playerState.viewz;
+    out->view.angle = mobj->angle;
+    out->health = gWorld.level.playerState.health;
+    out->leveltime = static_cast<std::uint32_t>(gWorld.level.leveltime);
+    out->valid = true;
+    return true;
+}
 
 const std::uint8_t* frameLevelPlaypal() { return gPlaypalValid ? gPlaypal : nullptr; }
 
@@ -2713,6 +3231,17 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     (void)height;
 }
 
+void frameLevelLastRefusal(const char** stage, int* code) {
+    // A host build with no board driver never refuses a frame: there is no
+    // session to walk, so the honest answer is "nothing refused".
+    if (stage != nullptr) {
+        *stage = "none";
+    }
+    if (code != nullptr) {
+        *code = 0;
+    }
+}
+
 }  // namespace doomc
 }  // namespace doom
 
@@ -2750,6 +3279,46 @@ bool frameLevelRenderSpawn(std::uint8_t* surface, int width, int height,
     return false;
 }
 
+bool frameLevelRenderView(std::uint8_t* surface, int width, int height, std::int32_t x,
+                          std::int32_t y, std::int32_t z, std::uint32_t angle,
+                          FrameProfileSample* sample, char hash[65], bool wantHash,
+                          std::uint32_t* hashMicros) {
+    (void)surface;
+    (void)width;
+    (void)height;
+    (void)x;
+    (void)y;
+    (void)z;
+    (void)angle;
+    (void)sample;
+    (void)wantHash;
+    if (hash != nullptr) {
+        hash[0] = '\0';
+    }
+    if (hashMicros != nullptr) {
+        *hashMicros = 0u;
+    }
+    return false;
+}
+
+bool frameLevelSpawnView(LevelView* out) {
+    (void)out;
+    return false;
+}
+
+bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
+    (void)tics;
+    (void)buttons;
+    return false;
+}
+
+bool frameLevelPlayer(LevelPlayer* out) {
+    if (out != nullptr) {
+        *out = LevelPlayer{};
+    }
+    return false;
+}
+
 void frameLevelClose() {}
 
 const std::uint8_t* frameLevelPlaypal() { return nullptr; }
@@ -2759,6 +3328,15 @@ std::size_t frameLevelFormatMemory(char* out, std::size_t capacity) {
         out[0] = '\0';
     }
     return 0u;
+}
+
+void frameLevelLastRefusal(const char** stage, int* code) {
+    if (stage != nullptr) {
+        *stage = "none";
+    }
+    if (code != nullptr) {
+        *code = 0;
+    }
 }
 
 }  // namespace doomc
