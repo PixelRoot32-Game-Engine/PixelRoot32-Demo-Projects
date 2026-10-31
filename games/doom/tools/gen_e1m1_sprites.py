@@ -7,9 +7,13 @@ WHAT IT DOES
   2. refuses to run when a number is neither a player/deathmatch start (1-4,
      11: not mobjs, so not sprites) nor a row of the transcribed mobjinfo table
      in tools/e1m1_sprites.py;
-  3. builds R_InitSpriteDefs()'s sprite table from the S_START..S_END lumps and
+  3. adds the fixture's runtime set -- the mobj types the simulation creates
+     after the level is loaded, which E1M1's THINGS can never place -- and
+     refuses a runtime key that is also a DoomEd number this map carries,
+     because both namespaces share one array and one first-match scan;
+  4. builds R_InitSpriteDefs()'s sprite table from the S_START..S_END lumps and
      proves every selected frame has each rotation the projection can ask for;
-  4. emits the C table, or (with --check) compares it with the file on disk and
+  5. emits the C table, or (with --check) compares it with the file on disk and
      exits 1 when they differ.
 
 The emitted file holds DoomEd numbers, sprite names, frame indices and rotation
@@ -76,6 +80,22 @@ def check_types(types: list[int]) -> dict[int, int]:
     return counts
 
 
+def check_runtime_keys(map_types: list[int]) -> None:
+    """Rejects a runtime row whose key is also a DoomEd number this map carries.
+
+    The .inc holds both namespaces in one array and the runtime looks a row up
+    with a first-match scan (`spriteRule()`), so a shared number would answer a
+    THINGS lookup with a runtime row, or the other way round. DoomEd numbers are
+    what `thing_types()` returned; a runtime row's key is a `mobjtype_t`.
+    """
+    collisions = sorted({row.key for row in e1m1_sprites.RUNTIME_SPRITES}
+                        & set(map_types))
+    if collisions:
+        raise doom_ref.FormatError(
+            "a runtime sprite key is also a DoomEd number in this map: "
+            + ", ".join(str(key) for key in collisions))
+
+
 def check_rotations(tables: dict[str, dict[int, e1m1_sprites.FrameTable]],
                     rows: list[e1m1_sprites.ThingSprite]) -> None:
     """Every rotation the projection can produce must have a lump."""
@@ -115,9 +135,11 @@ def main(argv: list[str] | None = None) -> int:
         _identification, lumps = doom_ref.read_wad(arguments.wad)
         types = thing_types(lumps, arguments.map)
         check_types(types)
+        check_runtime_keys(types)
         tables = e1m1_sprites.build_sprite_tables(lump.name for lump in lumps)
-        rows = [e1m1_sprites.RULE_BY_TYPE[kind] for kind in sorted(set(types))
-                if kind in e1m1_sprites.RULE_BY_TYPE]
+        map_rows = [e1m1_sprites.RULE_BY_TYPE[kind] for kind in sorted(set(types))
+                    if kind in e1m1_sprites.RULE_BY_TYPE]
+        rows = map_rows + list(e1m1_sprites.RUNTIME_SPRITES)
         check_rotations(tables, rows)
     except (doom_ref.InputError, doom_ref.FormatError, ValueError) as error:
         print(f"gen_e1m1_sprites: {error}", file=sys.stderr)
@@ -142,7 +164,9 @@ def main(argv: list[str] | None = None) -> int:
     with open(target, "w", encoding="ascii", newline="\n") as handle:
         handle.write(text)
     print(f"gen_e1m1_sprites: wrote {target.name}: "
-          f"{len(rows)} thing types, "
+          f"{len(map_rows)} map types + "
+          f"{len(e1m1_sprites.RUNTIME_SPRITES)} runtime frames = "
+          f"{len(rows)} rules, "
           f"{sum(1 for row in rows if row.fullbright)} full bright")
     return 0
 

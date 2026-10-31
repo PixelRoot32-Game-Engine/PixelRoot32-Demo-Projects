@@ -23,6 +23,16 @@ that is frame 0; for a corpse (DoomEd 10, 12, 15) it is the death frame the map
 author chose, which is exactly what the map shows at rest. No animation, no
 tics, no AI, no pickups: all of that is Phase 4.
 
+``RUNTIME_SPRITES`` is the other half of the list, and it is not a level
+transcription: those rows are the mobj types the simulation *creates* after the
+level is loaded, which no THINGS record can ever place (P_SpawnPuff,
+P_SpawnBlood, the player's own missiles). They are keyed by ``mobjtype_t``, not
+by DoomEd number, and they carry one row per state of the spawn-state chain
+because this file is also the container's bake manifest
+(``whd_encode.py --sprite-list``): every frame a shot can be drawn in has to
+name its lump, or the renderer refuses the frame that shows it. Each entry names
+its spawn site.
+
 The sprite and frame come from the state table, not from the doomednum:
 
     frame = states[mobjinfo[type].spawnstate].frame
@@ -105,17 +115,21 @@ SPRITE_NAMES: tuple[str, ...] = (
 class ThingSprite:
     """One row of the transcription.
 
-    ``frame`` is the spawnstate's letter index (0..28, FF_FULLBRIGHT already
-    removed); ``fullbright`` is that flag. ``mobjtype`` and ``state`` are kept
-    so the .inc and the report can name where the row came from.
+    ``key`` is the row's lookup key: the DoomEd number of a thing the map can
+    place (``runtime`` false) or, for a row no THINGS record can produce, the
+    ``mobjtype_t`` number P_SpawnMobj() is handed (``runtime`` true). ``frame``
+    is the state's letter index (0..28, FF_FULLBRIGHT already removed);
+    ``fullbright`` is that flag. ``mobjtype`` and ``state`` are kept so the .inc
+    and the report can name where the row came from.
     """
 
-    doomednum: int
+    key: int
     mobjtype: str
     state: str
     sprite: str
     frame: int
     fullbright: bool
+    runtime: bool = False
 
 
 #: The mobjinfo[] rows for every type E1M1 actually contains, in DoomEd order.
@@ -149,8 +163,57 @@ THING_SPRITES: tuple[ThingSprite, ...] = (
     ThingSprite(3004, "MT_POSSESSED", "S_POSS_STND", "POSS", 0, False),
 )
 
-#: DoomEd number -> row.
-RULE_BY_TYPE: dict[int, ThingSprite] = {row.doomednum: row for row in THING_SPRITES}
+#: The mobj types the simulation creates at runtime and E1M1 never places.
+#:
+#: Source: upstream's ``mobjinfo[]`` (spawnstate and deathstate) and the
+#: ``states[]`` record for each; the DoomEd column there is -1 for every one of
+#: them, which is why no THINGS record can produce a row.
+#:
+#: One row per state of the spawn-state chain, not one per type. The spawnstate
+#: is first for each type because ``spriteRule()`` (src/doomc/FrameDriver.cpp) is
+#: a first-match scan and a runtime mobj is looked up by ``mobjtype_t``; the
+#: remaining frames are here because tools/e1m1_sprites.inc is also the
+#: container's bake manifest (``whd_encode.py --sprite-list``), and a frame with
+#: no lump name is the frame the renderer refuses (R_THINGS_ERR_SPRITE_MISSING).
+#:
+#: ``key`` is ``mobjtype_t``'s number (lib/doom/info_tables.h), not a DoomEd
+#: number. The two namespaces share one C array, so gen_e1m1_sprites.py refuses
+#: a runtime key that is also a DoomEd number the map carries.
+RUNTIME_SPRITES: tuple[ThingSprite, ...] = (
+    # P_SpawnPuff() (lib/doom/p_mobj.c:433) creates MT_PUFF wherever a hitscan
+    # stops -- P_LineAttack()'s two calls, p_map.c:1884 and :1933 -- and its
+    # melee branch (p_mobj.c:448) starts the burst at S_PUFF3 instead of
+    # S_PUFF1. S_PUFF1..4 is the animation that follows.
+    ThingSprite(37, "MT_PUFF", "S_PUFF1", "PUFF", 0, True, runtime=True),
+    ThingSprite(37, "MT_PUFF", "S_PUFF2", "PUFF", 1, False, runtime=True),
+    ThingSprite(37, "MT_PUFF", "S_PUFF3", "PUFF", 2, False, runtime=True),
+    ThingSprite(37, "MT_PUFF", "S_PUFF4", "PUFF", 3, False, runtime=True),
+    # P_SpawnBlood() (lib/doom/p_mobj.c:461) creates MT_BLOOD, and
+    # P_DamageMobj()'s own spray does the same at p_map.c:1225. The damage bands
+    # start it at S_BLOOD1, S_BLOOD2 or S_BLOOD3 (p_mobj.c:475-479), frames C, B
+    # and A; the chain walks them back to A.
+    ThingSprite(38, "MT_BLOOD", "S_BLOOD1", "BLUD", 2, False, runtime=True),
+    ThingSprite(38, "MT_BLOOD", "S_BLOOD2", "BLUD", 1, False, runtime=True),
+    ThingSprite(38, "MT_BLOOD", "S_BLOOD3", "BLUD", 0, False, runtime=True),
+    # A_FireMissile() (lib/doom/p_pspr.c:339) hands MT_ROCKET to
+    # P_SpawnPlayerMissile() (p_mobj.c:853), and E1M1 places the launcher
+    # (DoomEd 2003), so the shot is reachable in the shipped level. S_ROCKET is
+    # the flying frame, eight rotations; explode_missile() (p_mobj.c:611) then
+    # enters the death state S_EXPLODE1 and the chain runs S_EXPLODE1..3.
+    ThingSprite(33, "MT_ROCKET", "S_ROCKET", "MISL", 0, True, runtime=True),
+    ThingSprite(33, "MT_ROCKET", "S_EXPLODE1", "MISL", 1, True, runtime=True),
+    ThingSprite(33, "MT_ROCKET", "S_EXPLODE2", "MISL", 2, True, runtime=True),
+    ThingSprite(33, "MT_ROCKET", "S_EXPLODE3", "MISL", 3, True, runtime=True),
+)
+
+#: ``MT_PLASMA`` (34) and ``MT_BFG`` (35) are absent on purpose. A_FirePlasma()
+#: and A_FireBFG() (p_pspr.c:355, :364) can create them, but the shareware WAD
+#: this port ships has no PLSS, PLSE, BFS1, BFE1 or BFE2 lumps: those rows would
+#: fail the rotation check below and the bake would refuse a name with no
+#: definition. Add them when the container is built from a full IWAD.
+
+#: DoomEd number -> row, for the rows a THINGS record can ask for.
+RULE_BY_TYPE: dict[int, ThingSprite] = {row.key: row for row in THING_SPRITES}
 
 
 def rule_for(doomednum: int) -> ThingSprite | None:
@@ -346,16 +409,27 @@ def emit_inc(tables: dict[str, dict[int, FrameTable]],
              rows: Sequence[ThingSprite]) -> str:
     """The tools/e1m1_sprites.inc text for @p rows, as a C fragment.
 
-    One rule per DoomEd number: the sprite name, the frame letter index, the
+    One rule per sprite frame: the lookup key, the frame letter index, the
     fullbright flag and the eight (or one) rotation lumps with their flip flags.
     A non-rotating frame stores only entry 0 and sets ``rotations = 0``.
+
+    Map rows are ordered by DoomEd number; runtime rows keep the order they were
+    given in, which puts each runtime type's spawnstate first -- ``spriteRule()``
+    is a first-match scan, so the first row for a type is the one it answers.
     """
     lines: list[str] = []
     lines.append("/*")
-    lines.append(" * The E1M1 sprite fixture: DoomEd number -> sprite lump.")
+    lines.append(" * The sprite fixture: lookup key -> sprite lump.")
     lines.append(" *")
     lines.append(" * GENERATED FILE -- do not edit. Regenerate with:")
     lines.append(" *     python tools/gen_e1m1_sprites.py --wad <path-to-DOOM1.WAD>")
+    lines.append(" *")
+    lines.append(" * `type` is the DoomEd number for a thing the map places, and the")
+    lines.append(" * mobjtype number (lib/doom/info_tables.h) for a thing the simulation")
+    lines.append(" * creates at runtime: no THINGS record can produce one of those, and")
+    lines.append(" * a runtime mobj is answered by the first row of its type, which is its")
+    lines.append(" * spawnstate. The remaining rows of that type are the frames the")
+    lines.append(" * spawn-state chain can show, named here so the container bakes them.")
     lines.append(" *")
     lines.append(" * Fixture data, not renderer code: it is compiled into the host")
     lines.append(" * harness (tools/rsegs_check.c) and is never included by lib/doom/.")
@@ -380,9 +454,12 @@ def emit_inc(tables: dict[str, dict[int, FrameTable]],
     lines.append("} e1m1_sprite_rule_t;")
     lines.append("")
     lines.append("static const e1m1_sprite_rule_t kE1M1Sprites[] = {")
-    for row in sorted(rows, key=lambda item: item.doomednum):
+    ordered = ([row for row in sorted(rows, key=lambda item: item.key)
+                if not row.runtime]
+               + [row for row in rows if row.runtime])
+    for row in ordered:
         entry = tables[row.sprite][row.frame]
-        lines.append(f"    {{ {row.doomednum}, {row.frame}, "
+        lines.append(f"    {{ {row.key}, {row.frame}, "
                      f"{1 if row.fullbright else 0}, "
                      f"{1 if entry.rotate else 0}, \"{row.sprite}\", {{")
         if entry.rotate:

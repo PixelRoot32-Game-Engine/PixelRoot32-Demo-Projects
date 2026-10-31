@@ -1,8 +1,15 @@
 /*
- * The E1M1 sprite fixture: DoomEd number -> sprite lump.
+ * The sprite fixture: lookup key -> sprite lump.
  *
  * GENERATED FILE -- do not edit. Regenerate with:
  *     python tools/gen_e1m1_sprites.py --wad <path-to-DOOM1.WAD>
+ *
+ * `type` is the DoomEd number for a thing the map places, and the
+ * mobjtype number (lib/doom/info_tables.h) for a thing the simulation
+ * creates at runtime: no THINGS record can produce one of those, and
+ * a runtime mobj is answered by the first row of its type, which is its
+ * spawnstate. The remaining rows of that type are the frames the
+ * spawn-state chain can show, named here so the container bakes them.
  *
  * Fixture data, not renderer code: it is compiled into the host
  * harness (tools/rsegs_check.c) and is never included by lib/doom/.
@@ -122,6 +129,46 @@ static const e1m1_sprite_rule_t kE1M1Sprites[] = {
         { "POSSA4A6", 1 },
         { "POSSA3A7", 1 },
         { "POSSA2A8", 1 },
+    } },
+    { 37, 0, 1, 0, "PUFF", {
+        { "PUFFA0", 0 },
+    } },
+    { 37, 1, 0, 0, "PUFF", {
+        { "PUFFB0", 0 },
+    } },
+    { 37, 2, 0, 0, "PUFF", {
+        { "PUFFC0", 0 },
+    } },
+    { 37, 3, 0, 0, "PUFF", {
+        { "PUFFD0", 0 },
+    } },
+    { 38, 2, 0, 0, "BLUD", {
+        { "BLUDC0", 0 },
+    } },
+    { 38, 1, 0, 0, "BLUD", {
+        { "BLUDB0", 0 },
+    } },
+    { 38, 0, 0, 0, "BLUD", {
+        { "BLUDA0", 0 },
+    } },
+    { 33, 0, 1, 1, "MISL", {
+        { "MISLA1", 0 },
+        { "MISLA8A2", 1 },
+        { "MISLA7A3", 1 },
+        { "MISLA6A4", 1 },
+        { "MISLA5", 0 },
+        { "MISLA6A4", 0 },
+        { "MISLA7A3", 0 },
+        { "MISLA8A2", 0 },
+    } },
+    { 33, 1, 1, 0, "MISL", {
+        { "MISLB0", 0 },
+    } },
+    { 33, 2, 1, 0, "MISL", {
+        { "MISLC0", 0 },
+    } },
+    { 33, 3, 1, 0, "MISL", {
+        { "MISLD0", 0 },
     } },
 };
 

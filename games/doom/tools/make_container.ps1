@@ -26,7 +26,7 @@
                                them, so the shipped container does not carry
                                them.
       --bake E1M1..E1M9        the union bake: 100 textures + the sky, 50
-                               flats and 36 sprite lumps, 1,484,568 B.
+                               flats and 51 sprite lumps, 1,502,372 B.
       --drop-baked-sources     after the bake, remove the 156 wall-composition
                                patch lumps (155 names; SW18_7 appears twice).
                                Their bytes live on only as the dense width*128
@@ -37,10 +37,13 @@
                                ARE their manifest payloads and stay.
       (no --drop-unused-sprites)
                                every S_START..S_END lump stays in the container:
-                               483 sprite lumps, 533,310 B stored. The frame-0
-                               fixture names 36 of them for the bake; the other
-                               447 are compressed frames Phase 4 animation can
-                               address later, which is the point of D3.11.
+                               483 sprite lumps, 541,835 B stored. The fixture
+                               names 51 of them for the bake -- the frames
+                               E1M1's THINGS can show plus the puff, blood and
+                               rocket frames the simulation creates at runtime;
+                               the other 432 are compressed frames Phase 4
+                               animation can address later, which is the point
+                               of D3.11.
       --stats                  total, spare against the partitions_wad.csv `wad`
                                row, the dropped-by-kind trade, the sprite count
                                and what each level would cost baked alone.
@@ -82,13 +85,20 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Wad = (Join-Path $PSScriptRoot "DOOM1.WAD"),
-    [string]$Out = (Join-Path $PSScriptRoot "DOOM1.whd"),
+    [string]$Wad,
+    [string]$Out,
     [string]$Port = "COM4",
     [switch]$Flash
 )
 
 $ErrorActionPreference = "Stop"
+
+# Defaults live in the body, not in the param block: PowerShell 5.1 leaves
+# $PSScriptRoot empty while it binds a [CmdletBinding()] script's parameters, so
+# the documented `.\tools\make_container.ps1` failed with "Join-Path: Path is an
+# empty string" before it did anything.
+if (-not $Wad) { $Wad = Join-Path $PSScriptRoot "DOOM1.WAD" }
+if (-not $Out) { $Out = Join-Path $PSScriptRoot "DOOM1.whd" }
 
 # The container is written at this offset in the `wad` partition (D3.11).
 $ContainerOffset = "0x0D0000"
@@ -161,7 +171,7 @@ try {
     else {
         Write-Host ""
         Write-Host "Flash the app (and the new partition table) with:"
-        Write-Host "  & `"$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe`" run -e esp32dev_ILI9341_frame -t upload"
+        Write-Host "  & `"$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe`" run -e esp32dev_ILI9341_show -t upload"
         Write-Host "Flash the container with:"
         Write-Host "  & `"$env:USERPROFILE\.platformio\penv\Scripts\python.exe`" `"$env:USERPROFILE\.platformio\packages\tool-esptoolpy\esptool.py`" --chip esp32 --port $Port --baud 921600 write_flash $ContainerOffset $Out"
     }
