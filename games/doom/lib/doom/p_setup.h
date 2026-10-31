@@ -38,6 +38,7 @@
 #include "m_random.h"
 #include "p_action.h"
 #include "p_mobj.h"
+#include "p_spec.h"
 #include "p_tick.h"
 #include "z_zone.h"
 
@@ -85,6 +86,7 @@ typedef struct p_level_stats {
  *   P_SETUP_ERR_MAP_NOT_OPEN the map was never accepted by doom_map_open()
  *   P_SETUP_ERR_NULL_ARENA no arena buffer was passed
  *   P_SETUP_ERR_ARENA     z_init() refused the arena
+ *   P_SETUP_ERR_ALLOC     the arena refused the sector or line-special array
  *
  * A refused init leaves the level zeroed (`open` 0), so a stale level can never
  * answer a later tick.
@@ -95,7 +97,8 @@ typedef enum p_setup_error {
     P_SETUP_ERR_NULL_MAP = 2,
     P_SETUP_ERR_MAP_NOT_OPEN = 3,
     P_SETUP_ERR_NULL_ARENA = 4,
-    P_SETUP_ERR_ARENA = 5
+    P_SETUP_ERR_ARENA = 5,
+    P_SETUP_ERR_ALLOC = 6
 } p_setup_error_t;
 
 /*
@@ -114,6 +117,15 @@ typedef enum p_setup_error {
  *   rules           the filters and the spawn inputs, as loaded.
  *   context         the same four things plus the rules, in the shape the spawn
  *                   functions take.
+ *   sectors         the level's mutable sector state (p_spec.h), copied from
+ *                   SECTORS by p_level_init(). Every mover, light and
+ *                   surrounding-sector query reads and writes this array; the
+ *                   map's sector records stay the immutable source.
+ *   sectorCount     how many entries @c sectors holds.
+ *   lineSpecial     the mutable `line->special` copy, one per linedef, so a
+ *                   one-shot trigger can clear it without writing to the map.
+ *   lineCount       how many entries @c lineSpecial holds.
+ *   specStats       what p_spawn_specials() and the movers did (p_spec.h).
  *   player          the mobj of the console player's start (type 1), or NULL.
  *   playerStarts    the four start records, verbatim (upstream playerstarts[]).
  *   playerStartSeen one flag per slot: the record was present in THINGS.
@@ -121,8 +133,9 @@ typedef enum p_setup_error {
  *   deathmatchStartCount how many of those slots are filled.
  *   totalKills      MF_COUNTKILL things spawned (upstream totalkills).
  *   totalItems      MF_COUNTITEM things spawned (upstream totalitems).
- *   totalSecrets    the secret count; D4.1b raises it from the sector specials,
- *                   so it is zero after a D4.1a load.
+ *   totalSecrets    the secret count; p_spawn_specials() raises it for every
+ *                   sector special 9, which is where upstream's totalsecret++
+ *                   lives. Zero until that call.
  *   stats           the load's branch counts.
  *   error           the result of the last p_level_init().
  *   open            1 after a successful load, 0 after shutdown or a refusal.
@@ -135,6 +148,12 @@ typedef struct p_level {
     m_random_t random;
     p_spawn_rules_t rules;
     p_mobj_context_t context;
+
+    p_sector_t* sectors;
+    uint16_t sectorCount;
+    int16_t* lineSpecial;
+    uint16_t lineCount;
+    p_spec_stats_t specStats;
 
     r_mobj_t* player;
     p_mapthing_t playerStarts[MAXPLAYERS];
@@ -162,9 +181,17 @@ typedef struct p_level {
  *   1. zero the level state;
  *   2. z_init() the arena (a level change discards whatever the arena held);
  *   3. reset the thinker list, the action counters and the random sequence;
- *   4. for every THINGS record, in file order, p_spawn_map_thing();
- *   5. record the player and deathmatch starts, count MF_COUNTKILL and
+ *   4. copy SECTORS into the mutable `sectors[]` array (P_LoadSectors) and
+ *      LINEDEFS' `special` field into `lineSpecial[]` (P_LoadLineDefs);
+ *   5. for every THINGS record, in file order, p_spawn_map_thing();
+ *   6. record the player and deathmatch starts, count MF_COUNTKILL and
  *      MF_COUNTITEM spawns, and count which branch dropped the rest.
+ *
+ * It deliberately does *not* call p_spawn_specials(): that is P_SetupLevel's
+ * next step, it consumes the random sequence (light flashes and strobes draw),
+ * and keeping it separate is what keeps the THINGS-only dump comparable. The
+ * game -- and tools/specials_check.c -- calls p_level_init() then
+ * p_spawn_specials().
  *
  * Order matters and is upstream's: P_LoadThings() walks the records in file
  * order, which is why the P_Random() sequence a load consumes is fixed and

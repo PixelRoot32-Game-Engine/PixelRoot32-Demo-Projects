@@ -35,7 +35,13 @@
 #include <unity.h>
 
 #include "p_action.h"
+#include "p_ceilng.h"
+#include "p_doors.h"
+#include "p_floor.h"
+#include "p_lights.h"
+#include "p_plats.h"
 #include "p_setup.h"
+#include "p_spec.h"
 
 #include "../../test_config.h"
 
@@ -867,6 +873,597 @@ void test_ticking_a_mobj_advances_its_state(void) {
     TEST_ASSERT_EQUAL_UINT32(1u, stats.executed);
     TEST_ASSERT_EQUAL_INT(tics - 1, mobj->tics);
 }
+// --- D4.1b: sector and line specials ----------------------------------------
+
+/*
+ * One sector and one line as a test writes them. The builder below emits the
+ * 1993 record layout byte for byte, like MapBuilder; it exists separately
+ * because these cases need several sectors with heights that decide each
+ * other's targets, and an arbitrary number of tagged, two-sided lines.
+ */
+struct SpecSectorSpec {
+    i16 floor;
+    i16 ceiling;
+    i16 light;
+    i16 special;
+    i16 tag;
+};
+
+struct SpecMapBuilder {
+    std::vector<u8> things;
+    std::vector<u8> linedefs;
+    std::vector<u8> sidedefs;
+    std::vector<u8> vertexes;
+    std::vector<u8> segs;
+    std::vector<u8> ssectors;
+    std::vector<u8> sectors;
+    i16 lineCount = 0;
+    i16 sideCount = 0;
+    i16 segCount = 0;
+
+    explicit SpecMapBuilder(const std::vector<SpecSectorSpec>& specs) {
+        for (const SpecSectorSpec& sector : specs) {
+            put16(sectors, sector.floor);
+            put16(sectors, sector.ceiling);
+            putName(sectors, "FLOOR4_8");
+            putName(sectors, "CEIL3_5");
+            put16(sectors, sector.light);
+            put16(sectors, sector.special);
+            put16(sectors, sector.tag);
+        }
+    }
+
+    void addSide(i16 sector) {
+        put16(sidedefs, 0);          // texture offset
+        put16(sidedefs, 0);          // row offset
+        putName(sidedefs, "-");
+        putName(sidedefs, "-");
+        putName(sidedefs, "STARTAN3");
+        put16(sidedefs, sector);
+        sideCount = static_cast<i16>(sideCount + 1);
+    }
+
+    /// One line, two vertices and one seg (side 0). `twoSided` adds side 1.
+    void addLine(i16 flags, i16 special, i16 tag, i16 front, i16 back,
+                 bool twoSided) {
+        const i16 index = lineCount;
+
+        put16(vertexes, static_cast<i16>(index * 64));
+        put16(vertexes, 0);
+        put16(vertexes, static_cast<i16>(index * 64 + 32));
+        put16(vertexes, 0);
+
+        put16(linedefs, static_cast<i16>(index * 2));
+        put16(linedefs, static_cast<i16>(index * 2 + 1));
+        put16(linedefs, flags);
+        put16(linedefs, special);
+        put16(linedefs, tag);
+        put16(linedefs, sideCount);
+        if (twoSided) {
+            put16(linedefs, static_cast<i16>(sideCount + 1));
+        } else {
+            put16(linedefs, kNoSide);
+        }
+        addSide(front);
+        if (twoSided) {
+            addSide(back);
+        }
+
+        put16(segs, static_cast<i16>(index * 2));
+        put16(segs, static_cast<i16>(index * 2 + 1));
+        put16(segs, 0);
+        put16(segs, index);
+        put16(segs, 0);
+        put16(segs, 0);
+        lineCount = static_cast<i16>(lineCount + 1);
+        segCount = static_cast<i16>(segCount + 1);
+    }
+
+    doom_map_error_t open(doom_map_t* map) {
+        doom_map_source_t source{};
+
+        ssectors.clear();
+        put16(ssectors, segCount);
+        put16(ssectors, 0);
+
+        source.data[DOOM_MAP_THINGS] = things.empty() ? nullptr : things.data();
+        source.size[DOOM_MAP_THINGS] = things.size();
+        source.data[DOOM_MAP_LINEDEFS] = linedefs.data();
+        source.size[DOOM_MAP_LINEDEFS] = linedefs.size();
+        source.data[DOOM_MAP_SIDEDEFS] = sidedefs.data();
+        source.size[DOOM_MAP_SIDEDEFS] = sidedefs.size();
+        source.data[DOOM_MAP_VERTEXES] = vertexes.data();
+        source.size[DOOM_MAP_VERTEXES] = vertexes.size();
+        source.data[DOOM_MAP_SEGS] = segs.data();
+        source.size[DOOM_MAP_SEGS] = segs.size();
+        source.data[DOOM_MAP_SSECTORS] = ssectors.data();
+        source.size[DOOM_MAP_SSECTORS] = ssectors.size();
+        source.data[DOOM_MAP_SECTORS] = sectors.data();
+        source.size[DOOM_MAP_SECTORS] = sectors.size();
+        return doom_map_open(map, &source);
+    }
+};
+
+/* A whole level on the stack, with p_spawn_specials() already run. */
+struct SpecFixture {
+    SpecMapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[32768]{};
+    p_level_t level{};
+
+    explicit SpecFixture(const std::vector<SpecSectorSpec>& sectors)
+        : builder(sectors) {}
+
+    bool open() {
+        if (builder.open(&map) != DOOM_MAP_OK) {
+            return false;
+        }
+        if (p_level_init(&level, &map, arena, sizeof arena, nullptr) != P_SETUP_OK) {
+            return false;
+        }
+        return p_spawn_specials(&level) == P_SPEC_OK;
+    }
+
+    void tick(int count = 1) {
+        for (int i = 0; i < count; ++i) {
+            (void)p_level_tick(&level, nullptr);
+        }
+    }
+
+    p_thinker_t* first(i16 kind) {
+        for (const p_thinker_t* thinker = p_thinker_first(&level.thinkers);
+             thinker != nullptr; thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == kind) {
+                return const_cast<p_thinker_t*>(thinker);
+            }
+        }
+        return nullptr;
+    }
+
+    int count(i16 kind) const {
+        int found = 0;
+
+        for (const p_thinker_t* thinker = p_thinker_first(&level.thinkers);
+             thinker != nullptr; thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == kind) {
+                found += 1;
+            }
+        }
+        return found;
+    }
+
+    i16 sectorOfSlot(int slot) const {
+        int index = 0;
+
+        for (const p_thinker_t* thinker = p_thinker_first(&level.thinkers);
+             thinker != nullptr; thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == P_THINKER_MOBJ) {
+                continue;
+            }
+            if (index == slot) {
+                if (thinker->kind == P_THINKER_DOOR) {
+                    return static_cast<i16>(
+                        reinterpret_cast<const p_door_thinker_t*>(thinker)->sector);
+                }
+                if (thinker->kind == P_THINKER_FLOOR) {
+                    return static_cast<i16>(
+                        reinterpret_cast<const p_floor_thinker_t*>(thinker)->sector);
+                }
+                if (thinker->kind == P_THINKER_PLAT) {
+                    return static_cast<i16>(
+                        reinterpret_cast<const p_plat_thinker_t*>(thinker)->sector);
+                }
+                if (thinker->kind == P_THINKER_CEILING) {
+                    return static_cast<i16>(
+                        reinterpret_cast<const p_ceiling_thinker_t*>(thinker)->sector);
+                }
+                return static_cast<i16>(
+                    reinterpret_cast<const p_light_thinker_t*>(thinker)->sector);
+            }
+            index += 1;
+        }
+        return -1;
+    }
+};
+
+p_door_thinker_t* doorOf(p_thinker_t* thinker) {
+    return reinterpret_cast<p_door_thinker_t*>(thinker);
+}
+
+p_plat_thinker_t* platOf(p_thinker_t* thinker) {
+    return reinterpret_cast<p_plat_thinker_t*>(thinker);
+}
+
+p_ceiling_thinker_t* ceilingOf(p_thinker_t* thinker) {
+    return reinterpret_cast<p_ceiling_thinker_t*>(thinker);
+}
+
+p_light_thinker_t* lightOf(p_thinker_t* thinker) {
+    return reinterpret_cast<p_light_thinker_t*>(thinker);
+}
+
+/// Ticks until the predicate says stop, with a hard cap so a broken mover fails
+/// the case instead of hanging it.
+template <typename Predicate>
+int tickUntil(SpecFixture& fixture, Predicate done, int cap = 400) {
+    for (int i = 0; i < cap; ++i) {
+        if (done()) {
+            return i;
+        }
+        fixture.tick();
+    }
+    return -1;
+}
+
+void test_specs_door_opens_to_its_top_and_stops(void) {
+    // The door sector's ceiling is at the floor; the neighbour's is 128, so the
+    // top is 128 - 4 = 124 (p_doors.c EV_DoDoor).
+    SpecFixture fixture({{0, 0, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 4, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_DOOR));
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, 1));
+
+    p_thinker_t* door = fixture.first(P_THINKER_DOOR);
+    TEST_ASSERT_NOT_NULL(door);
+    TEST_ASSERT_EQUAL_INT(P_DOOR_NORMAL, doorOf(door)->type);
+    TEST_ASSERT_EQUAL_INT(1, doorOf(door)->direction);
+    TEST_ASSERT_EQUAL_INT32(124 * kFrac, doorOf(door)->topHeight);
+    TEST_ASSERT_EQUAL_INT32(2 * kFrac, doorOf(door)->speed);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return doorOf(door)->direction == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(124 * kFrac, fixture.level.sectors[0].ceilingHeight);
+    TEST_ASSERT_EQUAL_INT32(150, doorOf(door)->topCountdown);
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+}
+
+void test_specs_door_waits_then_closes_and_removes_itself(void) {
+    SpecFixture fixture({{0, 0, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 4, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, 1));
+    p_thinker_t* door = fixture.first(P_THINKER_DOOR);
+    TEST_ASSERT_NOT_NULL(door);
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return doorOf(door)->direction == 0;
+    }) >= 0);
+
+    // One tic short of the wait, the door is still waiting.
+    fixture.tick(149);
+    TEST_ASSERT_EQUAL_INT(0, doorOf(door)->direction);
+    fixture.tick();
+    TEST_ASSERT_EQUAL_INT(-1, doorOf(door)->direction);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_DOOR) == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.sectors[0].ceilingHeight);
+    TEST_ASSERT_NULL(fixture.level.sectors[0].specialdata);
+}
+
+void test_specs_door_closing_over_a_thing_reports_the_stub(void) {
+    // A player stands in the door sector. Upstream would crush or block; this
+    // layer's P_ChangeSector is the counted stub and answers "clear", so the
+    // door reaches the floor and the cached ceilingz follows it.
+    SpecFixture fixture({{0, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 3, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+    r_mobj_t* mobj = p_spawn_mobj(&fixture.level.context, 0, 0, ONFLOORZ,
+                                  MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(mobj);
+    TEST_ASSERT_EQUAL_UINT16(0u, mobj->sector);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac, mobj->ceilingz);
+
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, 1));
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_DOOR) == 0;
+    }) >= 0);
+
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.sectors[0].ceilingHeight);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->ceilingz);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->floorz);
+    TEST_ASSERT_EQUAL_INT(1, p_spec_p_change_sector_is_stubbed());
+    TEST_ASSERT_TRUE(fixture.level.specStats.changeSectorCalls > 0u);
+    TEST_ASSERT_EQUAL_UINT32(fixture.level.specStats.changeSectorCalls,
+                             fixture.level.specStats.changeSectorClear);
+    TEST_ASSERT_TRUE(fixture.level.specStats.thingRefreshes > 0u);
+}
+
+void test_specs_plat_goes_down_waits_and_returns(void) {
+    SpecFixture fixture({{64, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 88, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, 1));
+    p_thinker_t* thinker = fixture.first(P_THINKER_PLAT);
+    TEST_ASSERT_NOT_NULL(thinker);
+    TEST_ASSERT_EQUAL_INT(P_PLAT_DOWN_WAIT_UP_STAY, platOf(thinker)->type);
+    TEST_ASSERT_EQUAL_INT(P_PLAT_DOWN, platOf(thinker)->status);
+    TEST_ASSERT_EQUAL_INT32(0, platOf(thinker)->low);
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac, platOf(thinker)->high);
+    TEST_ASSERT_EQUAL_INT32(35 * P_PLATWAIT, platOf(thinker)->wait);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return platOf(thinker)->status == P_PLAT_WAITING;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.sectors[0].floorHeight);
+    TEST_ASSERT_EQUAL_INT32(35 * P_PLATWAIT, platOf(thinker)->count);
+
+    fixture.tick(35 * P_PLATWAIT);
+    TEST_ASSERT_EQUAL_INT(P_PLAT_UP, platOf(thinker)->status);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_PLAT) == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac, fixture.level.sectors[0].floorHeight);
+    TEST_ASSERT_NULL(fixture.level.sectors[0].specialdata);
+}
+
+void test_specs_raise_floor_stops_at_the_lowest_surrounding_ceiling(void) {
+    // The target is the neighbour's ceiling, not the sector's own (p_floor.c
+    // EV_DoFloor, raiseFloor).
+    SpecFixture fixture({{0, 256, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 5, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, 1));
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_FLOOR));
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac,
+                            reinterpret_cast<p_floor_thinker_t*>(
+                                fixture.first(P_THINKER_FLOOR))->destHeight);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_FLOOR) == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac, fixture.level.sectors[0].floorHeight);
+}
+
+void test_specs_lower_floor_stops_at_the_highest_surrounding_floor(void) {
+    // Two neighbours at 0 and 64: lowerFloor targets the higher one.
+    SpecFixture fixture({{128, 256, 160, 0, 1},
+                         {0, 256, 160, 0, 0},
+                         {64, 256, 160, 0, 0}});
+    fixture.builder.addLine(4, 19, 1, 0, 1, true);
+    fixture.builder.addLine(4, 0, 0, 0, 2, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, 1));
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac,
+                            reinterpret_cast<p_floor_thinker_t*>(
+                                fixture.first(P_THINKER_FLOOR))->destHeight);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_FLOOR) == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac, fixture.level.sectors[0].floorHeight);
+}
+
+void test_specs_ceiling_crush_and_raise_reverses(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 25, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, 1));
+    p_thinker_t* thinker = fixture.first(P_THINKER_CEILING);
+    TEST_ASSERT_NOT_NULL(thinker);
+    TEST_ASSERT_EQUAL_INT(P_CEIL_CRUSH_AND_RAISE, ceilingOf(thinker)->type);
+    TEST_ASSERT_EQUAL_INT32(8 * kFrac, ceilingOf(thinker)->bottomHeight);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return ceilingOf(thinker)->direction == 1;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(8 * kFrac, fixture.level.sectors[0].ceilingHeight);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return ceilingOf(thinker)->direction == -1;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac, fixture.level.sectors[0].ceilingHeight);
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_CEILING));
+}
+
+void test_specs_light_flash_period_uses_both_random_draws(void) {
+    // With no THINGS, p_level_init() leaves the RNG at 0, so the draws are
+    // upstream's 8, 109, 220, ... The first count is (8 & 64) + 1 = 9; the
+    // down phase uses maxtime (64), the up phase mintime (7).
+    SpecFixture fixture({{0, 128, 200, 1, 0}, {0, 128, 100, 0, 0}});
+    fixture.builder.addLine(4, 0, 0, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_LIGHTFLASH));
+    p_thinker_t* thinker = fixture.first(P_THINKER_LIGHTFLASH);
+    TEST_ASSERT_NOT_NULL(thinker);
+    TEST_ASSERT_EQUAL_INT(P_LIGHT_FLASH, lightOf(thinker)->type);
+    TEST_ASSERT_EQUAL_INT32(200, lightOf(thinker)->maxLight);
+    TEST_ASSERT_EQUAL_INT32(100, lightOf(thinker)->minLight);
+    TEST_ASSERT_EQUAL_INT32(1, lightOf(thinker)->count);   // (8 & 64) + 1
+    TEST_ASSERT_EQUAL_INT(200, fixture.level.sectors[0].lightLevel);
+
+    fixture.tick();
+    TEST_ASSERT_EQUAL_INT(100, fixture.level.sectors[0].lightLevel);
+    TEST_ASSERT_EQUAL_INT32(65, lightOf(thinker)->count);   // (109 & 64) + 1
+
+    fixture.tick(64);
+    TEST_ASSERT_EQUAL_INT32(1, lightOf(thinker)->count);
+    fixture.tick();
+    TEST_ASSERT_EQUAL_INT(200, fixture.level.sectors[0].lightLevel);
+    TEST_ASSERT_EQUAL_INT32(5, lightOf(thinker)->count);    // (220 & 7) + 1
+}
+
+void test_specs_strobe_two_phase_timing(void) {
+    // Sector special 12 is a slow strobe in sync: its count starts at 1 and
+    // then alternates dark 35 / bright 5.
+    SpecFixture fixture({{0, 128, 200, 12, 0}, {0, 128, 100, 0, 0}});
+    fixture.builder.addLine(4, 0, 0, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    p_thinker_t* thinker = fixture.first(P_THINKER_LIGHTFLASH);
+    TEST_ASSERT_NOT_NULL(thinker);
+    TEST_ASSERT_EQUAL_INT(P_LIGHT_STROBE, lightOf(thinker)->type);
+    TEST_ASSERT_EQUAL_INT32(1, lightOf(thinker)->count);
+    TEST_ASSERT_EQUAL_INT32(35, lightOf(thinker)->darkTime);
+    TEST_ASSERT_EQUAL_INT32(5, lightOf(thinker)->brightTime);
+
+    fixture.tick();
+    TEST_ASSERT_EQUAL_INT(100, fixture.level.sectors[0].lightLevel);
+    TEST_ASSERT_EQUAL_INT32(35, lightOf(thinker)->count);
+
+    fixture.tick(34);
+    TEST_ASSERT_EQUAL_INT(100, fixture.level.sectors[0].lightLevel);
+    fixture.tick();
+    TEST_ASSERT_EQUAL_INT(200, fixture.level.sectors[0].lightLevel);
+    TEST_ASSERT_EQUAL_INT32(5, lightOf(thinker)->count);
+
+    fixture.tick(4);
+    TEST_ASSERT_EQUAL_INT(200, fixture.level.sectors[0].lightLevel);
+    fixture.tick();
+    TEST_ASSERT_EQUAL_INT(100, fixture.level.sectors[0].lightLevel);
+    TEST_ASSERT_EQUAL_INT32(35, lightOf(thinker)->count);
+}
+
+void test_specs_perpetual_plat_stops_and_resumes_then_reverses(void) {
+    // 87/89 are the retrigger forms, so the line survives the first use.
+    SpecFixture fixture({{64, 128, 160, 0, 1},
+                         {0, 128, 160, 0, 0},
+                         {128, 256, 160, 0, 0}});
+    fixture.builder.addLine(4, 87, 1, 0, 1, true);
+    fixture.builder.addLine(4, 89, 1, 0, 2, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, 1));
+    p_thinker_t* thinker = fixture.first(P_THINKER_PLAT);
+    TEST_ASSERT_NOT_NULL(thinker);
+    TEST_ASSERT_EQUAL_INT32(0, platOf(thinker)->low);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac, platOf(thinker)->high);
+    // P_Random() at 0 answers 8, so 8 & 1 == 0 -> up.
+    TEST_ASSERT_EQUAL_INT(P_PLAT_UP, platOf(thinker)->status);
+
+    fixture.tick(10);
+    const fixed_t halfway = fixture.level.sectors[0].floorHeight;
+    TEST_ASSERT_TRUE(halfway > 64 * kFrac);
+
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 1,
+                                                    P_TRIGGER_CROSS, 1));
+    TEST_ASSERT_EQUAL_INT(P_PLAT_IN_STASIS, platOf(thinker)->status);
+    fixture.tick(10);
+    TEST_ASSERT_EQUAL_INT32(halfway, fixture.level.sectors[0].floorHeight);
+
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, 1));
+    TEST_ASSERT_EQUAL_INT(P_PLAT_UP, platOf(thinker)->status);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return platOf(thinker)->status == P_PLAT_WAITING;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac, fixture.level.sectors[0].floorHeight);
+    fixture.tick(35 * P_PLATWAIT);
+    TEST_ASSERT_EQUAL_INT(P_PLAT_DOWN, platOf(thinker)->status);
+    fixture.tick(10);
+    TEST_ASSERT_TRUE(fixture.level.sectors[0].floorHeight < 128 * kFrac);
+}
+
+void test_specs_tag_door_twice_creates_one_thinker(void) {
+    SpecFixture fixture({{0, 0, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 2, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_do_door(&fixture.level.context, 0, P_DOOR_OPEN));
+    // The second call is EV_DoDoor's merge rule: the sector already has a
+    // thinker, so nothing is created and the call reports no change.
+    TEST_ASSERT_EQUAL_INT(0, p_do_door(&fixture.level.context, 0, P_DOOR_OPEN));
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+    TEST_ASSERT_EQUAL_INT(1, doorOf(fixture.first(P_THINKER_DOOR))->direction);
+}
+
+void test_specs_manual_door_twice_reverses_instead_of_duplicating(void) {
+    // The manual door uses the line's *back* sector (p_doors.c
+    // EV_VerticalDoor), so side 0 is the room and side 1 is the door.
+    SpecFixture fixture({{0, 0, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 1, 0, 1, 0, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE, 1));
+    p_thinker_t* door = fixture.first(P_THINKER_DOOR);
+    TEST_ASSERT_NOT_NULL(door);
+    TEST_ASSERT_EQUAL_INT(1, doorOf(door)->direction);
+
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE, 1));
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+    TEST_ASSERT_EQUAL_INT(-1, doorOf(door)->direction);
+}
+
+void test_specs_secret_sectors_and_unsupported_specials_are_counted(void) {
+    SpecFixture fixture({{0, 128, 160, 9, 0},
+                         {0, 128, 160, 9, 0},
+                         {0, 128, 160, 9, 0},
+                         {0, 128, 160, 7, 0}});
+    fixture.builder.addLine(4, 0, 0, 0, 1, true);
+
+    TEST_ASSERT_EQUAL_INT(DOOM_MAP_OK, fixture.builder.open(&fixture.map));
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK,
+                          p_level_init(&fixture.level, &fixture.map, fixture.arena,
+                                       sizeof fixture.arena, nullptr));
+    // p_level_init alone is the THINGS step: no special has run yet.
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.totalSecrets);
+    TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_LIGHTFLASH));
+
+    TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&fixture.level));
+    TEST_ASSERT_EQUAL_INT32(3, fixture.level.totalSecrets);
+    TEST_ASSERT_EQUAL_UINT32(3u, fixture.level.specStats.secrets);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.unsupportedSectorSpecial);
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.level.specStats.spawned);
+    TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_LIGHTFLASH));
+}
+
+void test_specs_spawn_order_is_sector_index_order(void) {
+    // 13 (sync fast strobe) on sector 0, 9 (secret) on 1, 1 (flash) on 2,
+    // 8 (glow) on 3: the thinkers must appear as 0, 2, 3.
+    SpecFixture fixture({{0, 128, 160, 13, 0},
+                         {0, 128, 160, 9, 0},
+                         {0, 128, 160, 1, 0},
+                         {0, 128, 160, 8, 0}});
+    fixture.builder.addLine(4, 0, 0, 0, 2, true);
+    fixture.builder.addLine(4, 0, 0, 2, 3, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(3, fixture.count(P_THINKER_LIGHTFLASH));
+    TEST_ASSERT_EQUAL_INT(0, fixture.sectorOfSlot(0));
+    TEST_ASSERT_EQUAL_INT(2, fixture.sectorOfSlot(1));
+    TEST_ASSERT_EQUAL_INT(3, fixture.sectorOfSlot(2));
+    TEST_ASSERT_EQUAL_INT(P_LIGHT_STROBE,
+                          lightOf(fixture.first(P_THINKER_LIGHTFLASH))->type);
+}
+
+void test_specs_p_change_sector_stub_counts_and_answers_clear(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addLine(1, 0, 0, 0, 0, false);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    const u32 before = fixture.level.specStats.changeSectorCalls;
+    TEST_ASSERT_EQUAL_INT(1, p_spec_p_change_sector_is_stubbed());
+    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector(&fixture.level.context, 0));
+    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector(&fixture.level.context, 0));
+    TEST_ASSERT_EQUAL_UINT32(before + 2u,
+                             fixture.level.specStats.changeSectorCalls);
+    TEST_ASSERT_EQUAL_UINT32(before + 2u,
+                             fixture.level.specStats.changeSectorClear);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -898,6 +1495,21 @@ int main(int argc, char** argv) {
     RUN_TEST(test_action_dispatch_counts_what_is_missing);
     RUN_TEST(test_state_transition_dispatches_the_new_state_action);
     RUN_TEST(test_ticking_a_mobj_advances_its_state);
+    RUN_TEST(test_specs_door_opens_to_its_top_and_stops);
+    RUN_TEST(test_specs_door_waits_then_closes_and_removes_itself);
+    RUN_TEST(test_specs_door_closing_over_a_thing_reports_the_stub);
+    RUN_TEST(test_specs_plat_goes_down_waits_and_returns);
+    RUN_TEST(test_specs_raise_floor_stops_at_the_lowest_surrounding_ceiling);
+    RUN_TEST(test_specs_lower_floor_stops_at_the_highest_surrounding_floor);
+    RUN_TEST(test_specs_ceiling_crush_and_raise_reverses);
+    RUN_TEST(test_specs_light_flash_period_uses_both_random_draws);
+    RUN_TEST(test_specs_strobe_two_phase_timing);
+    RUN_TEST(test_specs_perpetual_plat_stops_and_resumes_then_reverses);
+    RUN_TEST(test_specs_tag_door_twice_creates_one_thinker);
+    RUN_TEST(test_specs_manual_door_twice_reverses_instead_of_duplicating);
+    RUN_TEST(test_specs_secret_sectors_and_unsupported_specials_are_counted);
+    RUN_TEST(test_specs_spawn_order_is_sector_index_order);
+    RUN_TEST(test_specs_p_change_sector_stub_counts_and_answers_clear);
 
     const int result = UNITY_END();
     test_teardown();

@@ -86,9 +86,10 @@ static int32_t type_for_doomednum(int16_t doomednum) {
  * and a subsector or sector index the map never named would otherwise be read
  * out of the mapped lump.
  */
-static p_mobj_error_t locate(const doom_map_t* map, fixed_t x, fixed_t y,
+static p_mobj_error_t locate(const p_mobj_context_t* world, fixed_t x, fixed_t y,
                              uint16_t* subsectorOut, uint16_t* sectorOut,
                              fixed_t* floorOut, fixed_t* ceilingOut) {
+    const doom_map_t* map = world->map;
     uint16_t subsector = 0;
     uint16_t sector;
     doom_subsector_t subsectorRecord;
@@ -105,12 +106,21 @@ static p_mobj_error_t locate(const doom_map_t* map, fixed_t x, fixed_t y,
     if ((uint32_t)sector >= map->lumps[DOOM_MAP_SECTORS].count) {
         return P_MOBJ_ERR_NO_SUBSECTOR;
     }
-    doom_map_get_sector(map, sector, &sectorRecord);
+
+    /* The level's mutable sector array is the truth once it exists (D4.1b);
+     * a hand-built context without one reads the map, which is what D4.1a's
+     * tests do. */
+    if (world->sectors != NULL && (uint32_t)sector < (uint32_t)world->sectorCount) {
+        *floorOut = world->sectors[sector].floorHeight;
+        *ceilingOut = world->sectors[sector].ceilingHeight;
+    } else {
+        doom_map_get_sector(map, sector, &sectorRecord);
+        *floorOut = sectorRecord.floorHeight;
+        *ceilingOut = sectorRecord.ceilingHeight;
+    }
 
     *subsectorOut = subsector;
     *sectorOut = sector;
-    *floorOut = sectorRecord.floorHeight;
-    *ceilingOut = sectorRecord.ceilingHeight;
     return P_MOBJ_OK;
 }
 
@@ -201,7 +211,7 @@ r_mobj_t* p_spawn_mobj(p_mobj_context_t* world, fixed_t x, fixed_t y, fixed_t z,
     mobj->sprite = spawn->sprite;
     mobj->frame = spawn->frame;
 
-    located = locate(world->map, x, y, &subsector, &sector, &floorHeight,
+    located = locate(world, x, y, &subsector, &sector, &floorHeight,
                      &ceilingHeight);
     if (located != P_MOBJ_OK) {
         /* Nothing is linked yet, so the block goes straight back and the

@@ -66,6 +66,7 @@
 #include "info_tables.h"
 #include "m_fixed.h"
 #include "m_random.h"
+#include "p_spec.h"
 #include "p_tick.h"
 #include "z_zone.h"
 
@@ -150,6 +151,20 @@ struct p_action_stats;
  * not consume the sequence, which is what a unit test that does not care about
  * randomness wants. A real level always passes a generator, because the
  * sequence position is part of demo fidelity.
+ *
+ * D4.1b added the level's mutable state to the same struct, because sector
+ * thinkers receive this context from p_run_thinkers() and a mobj spawned by one
+ * of them must read the same heights:
+ *
+ *   sectors, sectorCount  the level's p_sector_t array (p_spec.h). When set,
+ *                         p_spawn_mobj() copies floorz/ceilingz from it instead
+ *                         of re-reading the immutable doom_map record. NULL is
+ *                         legal for a hand-built test context, which then reads
+ *                         the map.
+ *   lineSpecial, lineCount the mutable `line->special` copy a one-shot trigger
+ *                         clears; NULL when the caller has no level.
+ *   specStats             the counters the movers and light thinkers raise
+ *                         (p_spec.h); NULL is legal.
  */
 typedef struct p_mobj_context {
     zone_state_t* zone;
@@ -158,6 +173,11 @@ typedef struct p_mobj_context {
     m_random_t* random;
     struct p_action_stats* actions;
     p_spawn_rules_t rules;
+    p_sector_t* sectors;
+    uint16_t sectorCount;
+    int16_t* lineSpecial;
+    uint16_t lineCount;
+    p_spec_stats_t* specStats;
 } p_mobj_context_t;
 
 /*

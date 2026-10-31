@@ -1709,11 +1709,12 @@ class ThingRun:
         return len(self.mobjs) - 1
 
 
-def report_things(lumps: list[Lump], map_name: str, skill_name: str) -> None:
-    """The `--things` protocol: P_LoadThings() through P_SpawnMapThing()."""
-    if skill_name not in SKILLS:
-        raise FormatError(f"--skill must be one of {', '.join(SKILLS)}")
-    skill = SKILLS.index(skill_name)
+def run_things(bsp: BspMap, skill: int) -> ThingRun:
+    """The THINGS pass without printing.
+
+    report_things() prints it; report_specials() uses the RNG position it leaves,
+    because P_SpawnSpecials() consumes the sequence *after* P_LoadThings().
+    """
     if skill == 0:
         bit = 1
     elif skill == 4:
@@ -1721,11 +1722,9 @@ def report_things(lumps: list[Lump], map_name: str, skill_name: str) -> None:
     else:
         bit = 1 << (skill - 1)
 
-    bsp = read_bsp_map(lumps, map_name)
     run = ThingRun(bsp, skill)
     player_in_game = [True, False, False, False]
 
-    print(f"THINGS {map_name} skill={skill} things={len(bsp.things)}")
     for record in bsp.things:
         kind = record["type"]
         run.counters["things"] += 1
@@ -1787,6 +1786,18 @@ def report_things(lumps: list[Lump], map_name: str, skill_name: str) -> None:
         if flags & MF_COUNTITEM:
             run.counters["items"] += 1
 
+    return run
+
+
+def report_things(lumps: list[Lump], map_name: str, skill_name: str) -> None:
+    """The `--things` protocol: P_LoadThings() through P_SpawnMapThing()."""
+    if skill_name not in SKILLS:
+        raise FormatError(f"--skill must be one of {', '.join(SKILLS)}")
+    skill = SKILLS.index(skill_name)
+    bsp = read_bsp_map(lumps, map_name)
+    run = run_things(bsp, skill)
+
+    print(f"THINGS {map_name} skill={skill} things={len(bsp.things)}")
     for index, mobj in enumerate(run.mobjs):
         print(f"MOBJ {index} type={mobj['type']} x={mobj['x']} y={mobj['y']} "
               f"z={mobj['z']} angle=0x{mobj['angle']:08x} "
@@ -1812,6 +1823,1332 @@ def report_things(lumps: list[Lump], map_name: str, skill_name: str) -> None:
 
     print(f"PLAYER {run.player_index}")
     print(f"RNG {run.rng}")
+
+
+# --- The specials run (D4.1b) ----------------------------------------------
+#
+# A second implementation of linuxdoom-1.10's sector specials, written from the
+# state machines in p_spec.c, p_floor.c, p_doors.c, p_plats.c, p_ceilng.c and
+# p_lights.c -- not from the C in this repository. It reads the map itself, owns
+# its own sector array and thinker list, and steps the same tics.
+#
+# The RNG table is upstream data (m_random.c) transcribed once; the C carries
+# the same 256 bytes in lib/doom/m_random.c. Every value below is DOOM's, not a
+# recording of the C output.
+
+RNDTABLE = (
+    0, 8, 109, 220, 222, 241, 149, 107, 75, 248, 254, 140, 16, 66,
+    74, 21, 211, 47, 80, 242, 154, 27, 205, 128, 161, 89, 77, 36,
+    95, 110, 85, 48, 212, 140, 211, 249, 22, 79, 200, 50, 28, 188,
+    52, 140, 202, 120, 68, 145, 62, 70, 184, 190, 91, 197, 152, 224,
+    149, 104, 25, 178, 252, 182, 202, 182, 141, 197, 4, 81, 181, 242,
+    145, 42, 39, 227, 156, 198, 225, 193, 219, 93, 122, 175, 249, 0,
+    175, 143, 70, 239, 46, 246, 163, 53, 163, 109, 168, 135, 2, 235,
+    25, 92, 20, 145, 138, 77, 69, 166, 78, 176, 173, 212, 166, 113,
+    94, 161, 41, 50, 239, 49, 111, 164, 70, 60, 2, 37, 171, 75,
+    136, 156, 11, 56, 42, 146, 138, 229, 73, 146, 77, 61, 98, 196,
+    135, 106, 63, 197, 195, 86, 96, 203, 113, 101, 170, 247, 181, 113,
+    80, 250, 108, 7, 255, 237, 129, 226, 79, 107, 112, 166, 103, 241,
+    24, 223, 239, 120, 198, 58, 60, 82, 128, 3, 184, 66, 143, 224,
+    145, 224, 81, 206, 163, 45, 63, 90, 168, 114, 59, 33, 159, 95,
+    28, 139, 123, 98, 125, 196, 15, 70, 194, 253, 54, 14, 109, 226,
+    71, 17, 161, 93, 186, 87, 244, 138, 20, 52, 123, 251, 26, 36,
+    17, 46, 52, 231, 232, 76, 31, 221, 84, 37, 216, 165, 212, 106,
+    197, 242, 98, 43, 39, 175, 254, 145, 190, 84, 118, 222, 187, 136,
+    120, 163, 236, 249,
+)
+
+FRAC = 1 << FRACBITS
+
+VDOORSPEED = FRAC * 2
+VDOORWAIT = 150
+FLOORSPEED = FRAC
+CEILSPEED = FRAC
+PLATSPEED = FRAC
+PLATWAIT = 3
+GLOWSPEED = 8
+STROBEBRIGHT = 5
+FASTDARK = 15
+SLOWDARK = 35
+
+# floor_e (p_spec.h)
+FLOOR_LOWER = 0
+FLOOR_LOWER_TO_LOWEST = 1
+FLOOR_TURBO_LOWER = 2
+FLOOR_RAISE = 3
+FLOOR_RAISE_TO_NEAREST = 4
+FLOOR_RAISE_TO_TEXTURE = 5
+FLOOR_LOWER_AND_CHANGE = 6
+FLOOR_RAISE_24 = 7
+FLOOR_RAISE_24_AND_CHANGE = 8
+FLOOR_RAISE_CRUSH = 9
+FLOOR_RAISE_TURBO = 10
+FLOOR_DONUT_RAISE = 11
+FLOOR_RAISE_512 = 12
+
+# vldoor_e
+DOOR_NORMAL = 0
+DOOR_CLOSE30 = 1
+DOOR_CLOSE = 2
+DOOR_OPEN = 3
+DOOR_RAISE5 = 4
+DOOR_BLAZE_RAISE = 5
+DOOR_BLAZE_OPEN = 6
+DOOR_BLAZE_CLOSE = 7
+
+# plat_e / plattype_e
+PLAT_UP = 0
+PLAT_DOWN = 1
+PLAT_WAITING = 2
+PLAT_IN_STASIS = 3
+PLAT_PERPETUAL = 0
+PLAT_DWUS = 1
+PLAT_RAISE_AND_CHANGE = 2
+PLAT_RAISE_NEAREST = 3
+PLAT_BLAZE_DWUS = 4
+
+# ceiling_e
+CEIL_LOWER_TO_FLOOR = 0
+CEIL_RAISE_TO_HIGHEST = 1
+CEIL_LOWER_AND_CRUSH = 2
+CEIL_CRUSH_AND_RAISE = 3
+CEIL_FAST_CRUSH = 4
+CEIL_SILENT_CRUSH = 5
+
+# p_light_type_t
+LIGHT_FLASH = 0
+LIGHT_STROBE = 1
+LIGHT_GLOW = 2
+LIGHT_FIRE = 3
+
+
+class RandomState:
+    """Upstream P_Random(): pre-increment the index, then read the table."""
+
+    def __init__(self, index: int) -> None:
+        self.index = index & 0xFF
+
+    def next(self) -> int:
+        self.index = (self.index + 1) & 0xFF
+        return RNDTABLE[self.index]
+
+
+class SpecLevel:
+    """One level's mutable sector state and thinker list."""
+
+    def __init__(self, bsp: BspMap, rng: RandomState) -> None:
+        self.bsp = bsp
+        self.sectors = []
+        for sector in bsp.sectors:
+            self.sectors.append({
+                "floor": sector["floor"],
+                "ceiling": sector["ceiling"],
+                "floorpic": sector["floorpic"],
+                "ceilingpic": sector["ceilingpic"],
+                "light": sector["light"],
+                "special": sector["special"],
+                "tag": sector["tag"],
+                "specialdata": None,
+            })
+        self.line_special = [line["special"] for line in bsp.linedefs]
+        self.thinkers: list[dict] = []
+        self.rng = rng
+        self.total_secrets = 0
+        self.stats = {
+            "spawned": 0, "secrets": 0, "changeSector": 0,
+            "unsupportedSector": 0, "unsupportedLine": 0,
+            "deferredLine": 0, "lineScrolls": 0, "triggers": 0, "refused": 0,
+        }
+
+
+def _line(level: SpecLevel, index: int) -> dict:
+    return level.bsp.linedefs[index]
+
+
+def _front_sector(level: SpecLevel, line: dict) -> int | None:
+    if line["side0"] < 0:
+        return None
+    return level.bsp.sidedefs[line["side0"]]["sector"]
+
+
+def _back_sector(level: SpecLevel, line: dict) -> int | None:
+    if not (line["flags"] & 4) or line["side1"] < 0:
+        return None
+    return level.bsp.sidedefs[line["side1"]]["sector"]
+
+
+def _other_sector(level: SpecLevel, line: dict, sector: int) -> int | None:
+    """getNextSector(): front -> back, otherwise front; None when one-sided."""
+    if not (line["flags"] & 4):
+        return None
+    front = _front_sector(level, line)
+    back = _back_sector(level, line)
+    if front is None or back is None:
+        return None
+    return back if front == sector else front
+
+
+def _neighbours(level: SpecLevel, sector: int):
+    """P_GroupLines' per-sector line list, reduced to the other sectors.
+
+    Only lines that actually touch @p sector count; `_other_sector` alone would
+    answer every two-sided line's front sector, which is upstream's
+    getNextSector() quirk and not this loop's input.
+    """
+    for line in level.bsp.linedefs:
+        if not (line["flags"] & 4):
+            continue
+        front = _front_sector(level, line)
+        back = _back_sector(level, line)
+        if front is None or back is None:
+            continue
+        if front == sector:
+            yield back
+        elif back == sector:
+            yield front
+
+
+def find_sector_from_tag(level: SpecLevel, tag: int, start: int) -> int:
+    for index in range(start + 1, len(level.sectors)):
+        if level.sectors[index]["tag"] == tag:
+            return index
+    return -1
+
+
+def find_lowest_floor_surrounding(level: SpecLevel, sector: int) -> int:
+    floor = level.sectors[sector]["floor"]
+    for other in _neighbours(level, sector):
+        if level.sectors[other]["floor"] < floor:
+            floor = level.sectors[other]["floor"]
+    return floor
+
+
+def find_highest_floor_surrounding(level: SpecLevel, sector: int) -> int:
+    floor = -500 * FRAC
+    for other in _neighbours(level, sector):
+        if level.sectors[other]["floor"] > floor:
+            floor = level.sectors[other]["floor"]
+    return floor
+
+
+def find_next_highest_floor(level: SpecLevel, sector: int, current: int) -> int:
+    heights = []
+    for other in _neighbours(level, sector):
+        height = level.sectors[other]["floor"]
+        if height > current:
+            heights.append(height)
+    if not heights:
+        return current
+    return min(heights[:20])
+
+
+def find_lowest_ceiling_surrounding(level: SpecLevel, sector: int) -> int:
+    height = 0x7FFFFFFF
+    for other in _neighbours(level, sector):
+        if level.sectors[other]["ceiling"] < height:
+            height = level.sectors[other]["ceiling"]
+    return height
+
+
+def find_highest_ceiling_surrounding(level: SpecLevel, sector: int) -> int:
+    height = 0
+    for other in _neighbours(level, sector):
+        if level.sectors[other]["ceiling"] > height:
+            height = level.sectors[other]["ceiling"]
+    return height
+
+
+def find_min_surrounding_light(level: SpecLevel, sector: int, maximum: int) -> int:
+    minimum = maximum
+    for other in _neighbours(level, sector):
+        if level.sectors[other]["light"] < minimum:
+            minimum = level.sectors[other]["light"]
+    return minimum
+
+
+def change_sector(level: SpecLevel) -> bool:
+    """p_spec_p_change_sector(): the counted stub, always 'clear'."""
+    level.stats["changeSector"] += 1
+    return False
+
+
+def move_plane(level: SpecLevel, sector_index: int, speed: int, dest: int,
+               crush: bool, floor_or_ceiling: int, direction: int) -> str:
+    """T_MovePlane() (p_floor.c)."""
+    sector = level.sectors[sector_index]
+    if floor_or_ceiling == 0:
+        if direction == -1:
+            if sector["floor"] - speed < dest:
+                last = sector["floor"]
+                sector["floor"] = dest
+                if change_sector(level):
+                    sector["floor"] = last
+                    change_sector(level)
+                return "pastdest"
+            last = sector["floor"]
+            sector["floor"] -= speed
+            if change_sector(level):
+                sector["floor"] = last
+                change_sector(level)
+                return "crushed"
+        elif direction == 1:
+            if sector["floor"] + speed > dest:
+                last = sector["floor"]
+                sector["floor"] = dest
+                if change_sector(level):
+                    sector["floor"] = last
+                    change_sector(level)
+                return "pastdest"
+            last = sector["floor"]
+            sector["floor"] += speed
+            if change_sector(level):
+                if crush:
+                    return "crushed"
+                sector["floor"] = last
+                change_sector(level)
+                return "crushed"
+    else:
+        if direction == -1:
+            if sector["ceiling"] - speed < dest:
+                last = sector["ceiling"]
+                sector["ceiling"] = dest
+                if change_sector(level):
+                    sector["ceiling"] = last
+                    change_sector(level)
+                return "pastdest"
+            last = sector["ceiling"]
+            sector["ceiling"] -= speed
+            if change_sector(level):
+                if crush:
+                    return "crushed"
+                sector["ceiling"] = last
+                change_sector(level)
+                return "crushed"
+        elif direction == 1:
+            if sector["ceiling"] + speed > dest:
+                last = sector["ceiling"]
+                sector["ceiling"] = dest
+                if change_sector(level):
+                    sector["ceiling"] = last
+                    change_sector(level)
+                return "pastdest"
+            sector["ceiling"] += speed
+            change_sector(level)     # upstream's revert is #if 0
+    return "ok"
+
+
+def new_thinker(level: SpecLevel, kind: str, **fields) -> dict:
+    thinker = {"kind": kind, "removed": False}
+    thinker.update(fields)
+    level.thinkers.append(thinker)
+    return thinker
+
+
+def finish(level: SpecLevel, thinker: dict) -> None:
+    sector = level.sectors[thinker["sector"]]
+    if sector["specialdata"] is thinker:
+        sector["specialdata"] = None
+    thinker["removed"] = True
+
+
+# --- Light spawns ------------------------------------------------------------
+
+def spawn_light_flash(level: SpecLevel, sector_index: int) -> bool:
+    sector = level.sectors[sector_index]
+    sector["special"] = 0
+    new_thinker(level, "light", sector=sector_index, type=LIGHT_FLASH, dir=0,
+                speed=0, count=(level.rng.next() & 64) + 1, maxLight=sector["light"],
+                minLight=find_min_surrounding_light(level, sector_index, sector["light"]),
+                maxTime=64, minTime=7, darkTime=0, brightTime=0)
+    return True
+
+
+def spawn_strobe_flash(level: SpecLevel, sector_index: int, fast_or_slow: int,
+                       in_sync: bool) -> bool:
+    sector = level.sectors[sector_index]
+    maxlight = sector["light"]
+    minlight = find_min_surrounding_light(level, sector_index, maxlight)
+    if minlight == maxlight:
+        minlight = 0
+    sector["special"] = 0
+    count = 1 if in_sync else (level.rng.next() & 7) + 1
+    new_thinker(level, "light", sector=sector_index, type=LIGHT_STROBE, dir=0,
+                speed=0, count=count, maxLight=maxlight, minLight=minlight,
+                maxTime=0, minTime=0, darkTime=fast_or_slow,
+                brightTime=STROBEBRIGHT)
+    return True
+
+
+def spawn_glowing_light(level: SpecLevel, sector_index: int) -> bool:
+    sector = level.sectors[sector_index]
+    minlight = find_min_surrounding_light(level, sector_index, sector["light"])
+    sector["special"] = 0
+    new_thinker(level, "light", sector=sector_index, type=LIGHT_GLOW, dir=-1,
+                speed=0, count=0, maxLight=sector["light"], minLight=minlight,
+                maxTime=0, minTime=0, darkTime=0, brightTime=0)
+    return True
+
+
+def spawn_fire_flicker(level: SpecLevel, sector_index: int) -> bool:
+    sector = level.sectors[sector_index]
+    sector["special"] = 0
+    new_thinker(level, "light", sector=sector_index, type=LIGHT_FIRE, dir=0,
+                speed=0, count=4, maxLight=sector["light"],
+                minLight=find_min_surrounding_light(level, sector_index,
+                                                    sector["light"]) + 16,
+                maxTime=0, minTime=0, darkTime=0, brightTime=0)
+    return True
+
+
+# --- Doors ------------------------------------------------------------------
+
+def new_door(level: SpecLevel, sector_index: int) -> dict:
+    thinker = new_thinker(level, "door", sector=sector_index, type=DOOR_NORMAL,
+                          dir=0, topHeight=0, speed=VDOORSPEED,
+                          topWait=VDOORWAIT, count=0)
+    level.sectors[sector_index]["specialdata"] = thinker
+    return thinker
+
+
+def door_top_height(level: SpecLevel, sector_index: int) -> int:
+    return find_lowest_ceiling_surrounding(level, sector_index) - 4 * FRAC
+
+
+def do_door(level: SpecLevel, line_index: int, door_type: int) -> bool:
+    tag = _line(level, line_index)["tag"]
+    rtn = False
+    secnum = -1
+    while True:
+        secnum = find_sector_from_tag(level, tag, secnum)
+        if secnum < 0:
+            break
+        sector = level.sectors[secnum]
+        if sector["specialdata"] is not None:
+            continue
+        door = new_door(level, secnum)
+        rtn = True
+        door["type"] = door_type
+        door["topWait"] = VDOORWAIT
+        door["speed"] = VDOORSPEED
+        if door_type == DOOR_BLAZE_CLOSE:
+            door["topHeight"] = door_top_height(level, secnum)
+            door["dir"] = -1
+            door["speed"] = VDOORSPEED * 4
+        elif door_type == DOOR_CLOSE:
+            door["topHeight"] = door_top_height(level, secnum)
+            door["dir"] = -1
+        elif door_type == DOOR_CLOSE30:
+            door["topHeight"] = sector["ceiling"]
+            door["dir"] = -1
+        elif door_type in (DOOR_BLAZE_RAISE, DOOR_BLAZE_OPEN):
+            door["dir"] = 1
+            door["topHeight"] = door_top_height(level, secnum)
+            door["speed"] = VDOORSPEED * 4
+        elif door_type in (DOOR_NORMAL, DOOR_OPEN):
+            door["dir"] = 1
+            door["topHeight"] = door_top_height(level, secnum)
+    return rtn
+
+
+def vertical_door(level: SpecLevel, line_index: int, by_player: bool) -> bool:
+    line = _line(level, line_index)
+    sector_index = _back_sector(level, line)
+    if sector_index is None:
+        return False
+    sector = level.sectors[sector_index]
+    special = level.line_special[line_index]
+
+    if sector["specialdata"] is not None:
+        door = sector["specialdata"]
+        if door["kind"] != "door":
+            level.stats["refused"] += 1
+            return False
+        if special in (1, 26, 27, 28, 117):
+            if door["dir"] == -1:
+                door["dir"] = 1
+            else:
+                if not by_player:
+                    return False
+                door["dir"] = -1
+            return True
+        level.stats["refused"] += 1
+        return False
+
+    door = new_door(level, sector_index)
+    door["dir"] = 1
+    door["speed"] = VDOORSPEED
+    door["topWait"] = VDOORWAIT
+    if special in (1, 26, 27, 28):
+        door["type"] = DOOR_NORMAL
+    elif special in (31, 32, 33, 34):
+        door["type"] = DOOR_OPEN
+        level.line_special[line_index] = 0
+    elif special == 117:
+        door["type"] = DOOR_BLAZE_RAISE
+        door["speed"] = VDOORSPEED * 4
+    elif special == 118:
+        door["type"] = DOOR_BLAZE_OPEN
+        door["speed"] = VDOORSPEED * 4
+        level.line_special[line_index] = 0
+    else:
+        door["type"] = DOOR_NORMAL
+    door["topHeight"] = door_top_height(level, sector_index)
+    return True
+
+
+def spawn_door_close_in_30(level: SpecLevel, sector_index: int) -> bool:
+    door = new_door(level, sector_index)
+    level.sectors[sector_index]["special"] = 0
+    door["dir"] = 0
+    door["type"] = DOOR_NORMAL
+    door["speed"] = VDOORSPEED
+    door["count"] = 30 * 35
+    return True
+
+
+def spawn_door_raise_in_5_mins(level: SpecLevel, sector_index: int) -> bool:
+    door = new_door(level, sector_index)
+    level.sectors[sector_index]["special"] = 0
+    door["dir"] = 2
+    door["type"] = DOOR_RAISE5
+    door["speed"] = VDOORSPEED
+    door["topHeight"] = door_top_height(level, sector_index)
+    door["topWait"] = VDOORWAIT
+    door["count"] = 5 * 60 * 35
+    return True
+
+
+# --- Floors -----------------------------------------------------------------
+
+def new_floor(level: SpecLevel, sector_index: int, floor_type: int) -> dict:
+    thinker = new_thinker(level, "floor", sector=sector_index, type=floor_type,
+                          dir=0, speed=FLOORSPEED, crush=0, newspecial=0,
+                          texture=b"", dest=0)
+    level.sectors[sector_index]["specialdata"] = thinker
+    return thinker
+
+
+def start_floor(level: SpecLevel, sector_index: int, line_index: int,
+                floor_type: int) -> bool:
+    sector = level.sectors[sector_index]
+    if floor_type == FLOOR_RAISE_TO_TEXTURE:
+        # textureheight[] is r_data's and is not this layer's.
+        level.stats["deferredLine"] += 1
+        return False
+    floor = new_floor(level, sector_index, floor_type)
+    if floor_type == FLOOR_LOWER:
+        floor["dir"] = -1
+        floor["dest"] = find_highest_floor_surrounding(level, sector_index)
+    elif floor_type == FLOOR_LOWER_TO_LOWEST:
+        floor["dir"] = -1
+        floor["dest"] = find_lowest_floor_surrounding(level, sector_index)
+    elif floor_type == FLOOR_TURBO_LOWER:
+        floor["dir"] = -1
+        floor["speed"] = FLOORSPEED * 4
+        floor["dest"] = find_highest_floor_surrounding(level, sector_index)
+        if floor["dest"] != sector["floor"]:
+            floor["dest"] += 8 * FRAC
+    elif floor_type in (FLOOR_RAISE, FLOOR_RAISE_CRUSH):
+        if floor_type == FLOOR_RAISE_CRUSH:
+            floor["crush"] = 1
+        floor["dir"] = 1
+        floor["dest"] = find_lowest_ceiling_surrounding(level, sector_index)
+        if floor["dest"] > sector["ceiling"]:
+            floor["dest"] = sector["ceiling"]
+        if floor_type == FLOOR_RAISE_CRUSH:
+            floor["dest"] -= 8 * FRAC
+    elif floor_type == FLOOR_RAISE_TURBO:
+        floor["dir"] = 1
+        floor["speed"] = FLOORSPEED * 4
+        floor["dest"] = find_next_highest_floor(level, sector_index, sector["floor"])
+    elif floor_type == FLOOR_RAISE_TO_NEAREST:
+        floor["dir"] = 1
+        floor["dest"] = find_next_highest_floor(level, sector_index, sector["floor"])
+    elif floor_type == FLOOR_RAISE_24:
+        floor["dir"] = 1
+        floor["dest"] = sector["floor"] + 24 * FRAC
+    elif floor_type == FLOOR_RAISE_512:
+        floor["dir"] = 1
+        floor["dest"] = sector["floor"] + 512 * FRAC
+    elif floor_type == FLOOR_RAISE_24_AND_CHANGE:
+        floor["dir"] = 1
+        floor["dest"] = sector["floor"] + 24 * FRAC
+        front = _front_sector(level, _line(level, line_index))
+        if front is not None:
+            sector["floorpic"] = level.sectors[front]["floorpic"]
+            sector["special"] = level.sectors[front]["special"]
+    elif floor_type == FLOOR_LOWER_AND_CHANGE:
+        floor["dir"] = -1
+        floor["dest"] = find_lowest_floor_surrounding(level, sector_index)
+        floor["texture"] = sector["floorpic"]
+        for line in level.bsp.linedefs:
+            if not (line["flags"] & 4):
+                continue
+            if line["side0"] < 0 or line["side1"] < 0:
+                continue
+            side0 = level.bsp.sidedefs[line["side0"]]["sector"]
+            side1 = level.bsp.sidedefs[line["side1"]]["sector"]
+            if side0 == sector_index:
+                other = side1
+            elif side1 == sector_index:
+                other = side0
+            else:
+                continue
+            if level.sectors[other]["floor"] == floor["dest"]:
+                floor["texture"] = level.sectors[other]["floorpic"]
+                floor["newspecial"] = level.sectors[other]["special"]
+                break
+    return True
+
+
+def do_floor(level: SpecLevel, line_index: int, floor_type: int) -> bool:
+    tag = _line(level, line_index)["tag"]
+    rtn = False
+    secnum = -1
+    while True:
+        secnum = find_sector_from_tag(level, tag, secnum)
+        if secnum < 0:
+            break
+        if level.sectors[secnum]["specialdata"] is not None:
+            continue
+        rtn = start_floor(level, secnum, line_index, floor_type)
+    return rtn
+
+
+# --- Plats ------------------------------------------------------------------
+
+def new_plat(level: SpecLevel, sector_index: int, tag: int) -> dict:
+    thinker = new_thinker(level, "plat", sector=sector_index, type=PLAT_PERPETUAL,
+                          status=PLAT_WAITING, oldStatus=PLAT_WAITING, crush=0,
+                          tag=tag, speed=PLATSPEED, low=0, high=0, wait=0,
+                          count=0)
+    level.sectors[sector_index]["specialdata"] = thinker
+    return thinker
+
+
+def activate_in_stasis_plats(level: SpecLevel, tag: int) -> bool:
+    rtn = False
+    for thinker in level.thinkers:
+        if (thinker["kind"] == "plat" and thinker["tag"] == tag and
+                thinker["status"] == PLAT_IN_STASIS):
+            thinker["status"] = thinker["oldStatus"]
+            rtn = True
+    return rtn
+
+
+def do_plat(level: SpecLevel, line_index: int, plat_type: int, amount: int) -> bool:
+    line = _line(level, line_index)
+    front = _front_sector(level, line)
+    tag = line["tag"]
+    if plat_type == PLAT_PERPETUAL:
+        activate_in_stasis_plats(level, tag)
+    rtn = False
+    secnum = -1
+    while True:
+        secnum = find_sector_from_tag(level, tag, secnum)
+        if secnum < 0:
+            break
+        sector = level.sectors[secnum]
+        if sector["specialdata"] is not None:
+            continue
+        plat = new_plat(level, secnum, tag)
+        rtn = True
+        plat["type"] = plat_type
+        if plat_type == PLAT_RAISE_NEAREST:
+            plat["speed"] = PLATSPEED // 2
+            if front is not None:
+                sector["floorpic"] = level.sectors[front]["floorpic"]
+            plat["high"] = find_next_highest_floor(level, secnum, sector["floor"])
+            plat["wait"] = 0
+            plat["status"] = PLAT_UP
+            sector["special"] = 0
+        elif plat_type == PLAT_RAISE_AND_CHANGE:
+            plat["speed"] = PLATSPEED // 2
+            if front is not None:
+                sector["floorpic"] = level.sectors[front]["floorpic"]
+            plat["high"] = sector["floor"] + amount * FRAC
+            plat["wait"] = 0
+            plat["status"] = PLAT_UP
+        elif plat_type == PLAT_DWUS:
+            plat["speed"] = PLATSPEED * 4
+            plat["low"] = find_lowest_floor_surrounding(level, secnum)
+            if plat["low"] > sector["floor"]:
+                plat["low"] = sector["floor"]
+            plat["high"] = sector["floor"]
+            plat["wait"] = 35 * PLATWAIT
+            plat["status"] = PLAT_DOWN
+        elif plat_type == PLAT_BLAZE_DWUS:
+            plat["speed"] = PLATSPEED * 8
+            plat["low"] = find_lowest_floor_surrounding(level, secnum)
+            if plat["low"] > sector["floor"]:
+                plat["low"] = sector["floor"]
+            plat["high"] = sector["floor"]
+            plat["wait"] = 35 * PLATWAIT
+            plat["status"] = PLAT_DOWN
+        elif plat_type == PLAT_PERPETUAL:
+            plat["speed"] = PLATSPEED
+            plat["low"] = find_lowest_floor_surrounding(level, secnum)
+            if plat["low"] > sector["floor"]:
+                plat["low"] = sector["floor"]
+            plat["high"] = find_highest_floor_surrounding(level, secnum)
+            if plat["high"] < sector["floor"]:
+                plat["high"] = sector["floor"]
+            plat["wait"] = 35 * PLATWAIT
+            plat["status"] = level.rng.next() & 1
+    return rtn
+
+
+def stop_plat(level: SpecLevel, line_index: int) -> bool:
+    tag = _line(level, line_index)["tag"]
+    rtn = False
+    for thinker in level.thinkers:
+        if (thinker["kind"] == "plat" and thinker["tag"] == tag and
+                thinker["status"] != PLAT_IN_STASIS):
+            thinker["oldStatus"] = thinker["status"]
+            thinker["status"] = PLAT_IN_STASIS
+            rtn = True
+    return rtn
+
+
+# --- Ceilings ---------------------------------------------------------------
+
+def new_ceiling(level: SpecLevel, sector_index: int, tag: int) -> dict:
+    thinker = new_thinker(level, "ceiling", sector=sector_index,
+                          type=CEIL_LOWER_TO_FLOOR, dir=0, crush=0, tag=tag,
+                          oldDir=0, topHeight=0, bottomHeight=0, speed=CEILSPEED)
+    level.sectors[sector_index]["specialdata"] = thinker
+    return thinker
+
+
+def activate_in_stasis_ceilings(level: SpecLevel, tag: int) -> bool:
+    rtn = False
+    for thinker in level.thinkers:
+        if (thinker["kind"] == "ceiling" and thinker["tag"] == tag and
+                thinker["dir"] == 0):
+            thinker["dir"] = thinker["oldDir"]
+            rtn = True
+    return rtn
+
+
+def ceiling_crush_stop(level: SpecLevel, line_index: int) -> bool:
+    tag = _line(level, line_index)["tag"]
+    rtn = False
+    for thinker in level.thinkers:
+        if (thinker["kind"] == "ceiling" and thinker["tag"] == tag and
+                thinker["dir"] != 0):
+            thinker["oldDir"] = thinker["dir"]
+            thinker["dir"] = 0
+            rtn = True
+    return rtn
+
+
+def do_ceiling(level: SpecLevel, line_index: int, ceiling_type: int) -> bool:
+    tag = _line(level, line_index)["tag"]
+    if ceiling_type in (CEIL_FAST_CRUSH, CEIL_SILENT_CRUSH, CEIL_CRUSH_AND_RAISE):
+        activate_in_stasis_ceilings(level, tag)
+    rtn = False
+    secnum = -1
+    while True:
+        secnum = find_sector_from_tag(level, tag, secnum)
+        if secnum < 0:
+            break
+        sector = level.sectors[secnum]
+        if sector["specialdata"] is not None:
+            continue
+        ceiling = new_ceiling(level, secnum, tag)
+        rtn = True
+        ceiling["crush"] = 0
+        if ceiling_type == CEIL_FAST_CRUSH:
+            ceiling["crush"] = 1
+            ceiling["topHeight"] = sector["ceiling"]
+            ceiling["bottomHeight"] = sector["floor"] + 8 * FRAC
+            ceiling["dir"] = -1
+            ceiling["speed"] = CEILSPEED * 2
+        elif ceiling_type in (CEIL_SILENT_CRUSH, CEIL_CRUSH_AND_RAISE):
+            ceiling["crush"] = 1
+            ceiling["topHeight"] = sector["ceiling"]
+            ceiling["bottomHeight"] = sector["floor"] + 8 * FRAC
+            ceiling["dir"] = -1
+            ceiling["speed"] = CEILSPEED
+        elif ceiling_type == CEIL_LOWER_AND_CRUSH:
+            ceiling["bottomHeight"] = sector["floor"] + 8 * FRAC
+            ceiling["dir"] = -1
+            ceiling["speed"] = CEILSPEED
+        elif ceiling_type == CEIL_LOWER_TO_FLOOR:
+            ceiling["bottomHeight"] = sector["floor"]
+            ceiling["dir"] = -1
+            ceiling["speed"] = CEILSPEED
+        elif ceiling_type == CEIL_RAISE_TO_HIGHEST:
+            ceiling["topHeight"] = find_highest_ceiling_surrounding(level, secnum)
+            ceiling["dir"] = 1
+            ceiling["speed"] = CEILSPEED
+        ceiling["tag"] = sector["tag"]
+        ceiling["type"] = ceiling_type
+    return rtn
+
+
+# --- The light EV helpers ---------------------------------------------------
+
+def start_light_strobing(level: SpecLevel, line_index: int) -> bool:
+    tag = _line(level, line_index)["tag"]
+    rtn = False
+    secnum = -1
+    while True:
+        secnum = find_sector_from_tag(level, tag, secnum)
+        if secnum < 0:
+            break
+        if level.sectors[secnum]["specialdata"] is not None:
+            continue
+        if spawn_strobe_flash(level, secnum, SLOWDARK, False):
+            rtn = True
+    return rtn
+
+
+def light_turn_on(level: SpecLevel, line_index: int, bright: int) -> bool:
+    tag = _line(level, line_index)["tag"]
+    for index, sector in enumerate(level.sectors):
+        if sector["tag"] != tag:
+            continue
+        if bright == 0:
+            for other in _neighbours(level, index):
+                if level.sectors[other]["light"] > bright:
+                    bright = level.sectors[other]["light"]
+        sector["light"] = bright
+    return True
+
+
+def turn_tag_lights_off(level: SpecLevel, line_index: int) -> bool:
+    tag = _line(level, line_index)["tag"]
+    for index, sector in enumerate(level.sectors):
+        if sector["tag"] != tag:
+            continue
+        minimum = sector["light"]
+        for other in _neighbours(level, index):
+            if level.sectors[other]["light"] < minimum:
+                minimum = level.sectors[other]["light"]
+        sector["light"] = minimum
+    return True
+
+
+def do_donut(level: SpecLevel, line_index: int) -> bool:
+    tag = _line(level, line_index)["tag"]
+    rtn = False
+    secnum = -1
+    while True:
+        secnum = find_sector_from_tag(level, tag, secnum)
+        if secnum < 0:
+            break
+        s1 = secnum
+        if level.sectors[s1]["specialdata"] is not None:
+            continue
+        s2 = None
+        for other in _neighbours(level, s1):
+            if other != s1:
+                s2 = other
+                break
+        if s2 is None:
+            continue
+        s3 = None
+        for other in _neighbours(level, s2):
+            if other not in (s1, s2):
+                s3 = other
+                break
+        if s3 is None:
+            continue
+        rtn = True
+        up = new_floor(level, s2, FLOOR_DONUT_RAISE)
+        up["dest"] = level.sectors[s3]["floor"]
+        up["dir"] = 1
+        up["speed"] = FLOORSPEED // 2
+        up["texture"] = level.sectors[s3]["floorpic"]
+        down = new_floor(level, s1, FLOOR_LOWER)
+        down["dest"] = level.sectors[s3]["floor"]
+        down["dir"] = -1
+        down["speed"] = FLOORSPEED // 2
+    return rtn
+
+
+# --- P_SpawnSpecials --------------------------------------------------------
+
+def spawn_specials(level: SpecLevel) -> None:
+    for index, sector in enumerate(level.sectors):
+        special = sector["special"]
+        if not special:
+            continue
+        if special == 1:
+            if spawn_light_flash(level, index):
+                level.stats["spawned"] += 1
+        elif special == 2:
+            if spawn_strobe_flash(level, index, FASTDARK, False):
+                level.stats["spawned"] += 1
+        elif special == 3:
+            if spawn_strobe_flash(level, index, SLOWDARK, False):
+                level.stats["spawned"] += 1
+        elif special == 4:
+            if spawn_strobe_flash(level, index, FASTDARK, False):
+                level.stats["spawned"] += 1
+            level.sectors[index]["special"] = 4
+        elif special == 8:
+            if spawn_glowing_light(level, index):
+                level.stats["spawned"] += 1
+        elif special == 9:
+            level.stats["secrets"] += 1
+            level.total_secrets += 1
+        elif special == 10:
+            if spawn_door_close_in_30(level, index):
+                level.stats["spawned"] += 1
+        elif special == 12:
+            if spawn_strobe_flash(level, index, SLOWDARK, True):
+                level.stats["spawned"] += 1
+        elif special == 13:
+            if spawn_strobe_flash(level, index, FASTDARK, True):
+                level.stats["spawned"] += 1
+        elif special == 14:
+            if spawn_door_raise_in_5_mins(level, index):
+                level.stats["spawned"] += 1
+        elif special == 17:
+            if spawn_fire_flicker(level, index):
+                level.stats["spawned"] += 1
+        else:
+            level.stats["unsupportedSector"] += 1
+
+    for special in level.line_special:
+        if special == 48:
+            level.stats["lineScrolls"] += 1
+
+
+# --- Ticking ----------------------------------------------------------------
+
+def tick_door(level: SpecLevel, door: dict) -> None:
+    sector = level.sectors[door["sector"]]
+    if door["dir"] == 0:
+        door["count"] -= 1
+        if door["count"] != 0:
+            return
+        if door["type"] in (DOOR_BLAZE_RAISE, DOOR_NORMAL):
+            door["dir"] = -1
+        elif door["type"] == DOOR_CLOSE30:
+            door["dir"] = 1
+    elif door["dir"] == 2:
+        door["count"] -= 1
+        if door["count"] != 0:
+            return
+        if door["type"] == DOOR_RAISE5:
+            door["dir"] = 1
+            door["type"] = DOOR_NORMAL
+    elif door["dir"] == -1:
+        result = move_plane(level, door["sector"], door["speed"], sector["floor"],
+                            False, 1, -1)
+        if result == "pastdest":
+            if door["type"] in (DOOR_BLAZE_RAISE, DOOR_BLAZE_CLOSE,
+                                DOOR_NORMAL, DOOR_CLOSE):
+                finish(level, door)
+            elif door["type"] == DOOR_CLOSE30:
+                door["dir"] = 0
+                door["count"] = 35 * 30
+        elif result == "crushed":
+            if door["type"] not in (DOOR_BLAZE_CLOSE, DOOR_CLOSE):
+                door["dir"] = 1
+    elif door["dir"] == 1:
+        result = move_plane(level, door["sector"], door["speed"],
+                            door["topHeight"], False, 1, 1)
+        if result == "pastdest":
+            if door["type"] in (DOOR_BLAZE_RAISE, DOOR_NORMAL):
+                door["dir"] = 0
+                door["count"] = door["topWait"]
+            elif door["type"] in (DOOR_CLOSE30, DOOR_BLAZE_OPEN, DOOR_OPEN):
+                finish(level, door)
+
+
+def tick_floor(level: SpecLevel, floor: dict) -> None:
+    sector = level.sectors[floor["sector"]]
+    result = move_plane(level, floor["sector"], floor["speed"], floor["dest"],
+                        floor["crush"], 0, floor["dir"])
+    if result != "pastdest":
+        return
+    sector["specialdata"] = None
+    if floor["dir"] == 1 and floor["type"] == FLOOR_DONUT_RAISE:
+        sector["special"] = floor["newspecial"]
+        sector["floorpic"] = floor["texture"]
+    elif floor["dir"] == -1 and floor["type"] == FLOOR_LOWER_AND_CHANGE:
+        sector["special"] = floor["newspecial"]
+        sector["floorpic"] = floor["texture"]
+    floor["removed"] = True
+
+
+def tick_plat(level: SpecLevel, plat: dict) -> None:
+    sector = level.sectors[plat["sector"]]
+    if plat["status"] == PLAT_UP:
+        result = move_plane(level, plat["sector"], plat["speed"], plat["high"],
+                            bool(plat["crush"]), 0, 1)
+        if result == "crushed" and not plat["crush"]:
+            plat["count"] = plat["wait"]
+            plat["status"] = PLAT_DOWN
+        elif result == "pastdest":
+            plat["count"] = plat["wait"]
+            plat["status"] = PLAT_WAITING
+            if plat["type"] in (PLAT_BLAZE_DWUS, PLAT_DWUS,
+                                PLAT_RAISE_AND_CHANGE, PLAT_RAISE_NEAREST):
+                finish(level, plat)
+    elif plat["status"] == PLAT_DOWN:
+        result = move_plane(level, plat["sector"], plat["speed"], plat["low"],
+                            False, 0, -1)
+        if result == "pastdest":
+            plat["count"] = plat["wait"]
+            plat["status"] = PLAT_WAITING
+    elif plat["status"] == PLAT_WAITING:
+        plat["count"] -= 1
+        if plat["count"] == 0:
+            plat["status"] = PLAT_UP if sector["floor"] == plat["low"] else PLAT_DOWN
+
+
+def tick_ceiling(level: SpecLevel, ceiling: dict) -> None:
+    if ceiling["dir"] == 1:
+        result = move_plane(level, ceiling["sector"], ceiling["speed"],
+                            ceiling["topHeight"], False, 1, 1)
+        if result == "pastdest":
+            if ceiling["type"] == CEIL_RAISE_TO_HIGHEST:
+                finish(level, ceiling)
+            elif ceiling["type"] in (CEIL_SILENT_CRUSH, CEIL_FAST_CRUSH,
+                                     CEIL_CRUSH_AND_RAISE):
+                ceiling["dir"] = -1
+    elif ceiling["dir"] == -1:
+        result = move_plane(level, ceiling["sector"], ceiling["speed"],
+                            ceiling["bottomHeight"], bool(ceiling["crush"]), 1, -1)
+        if result == "pastdest":
+            if ceiling["type"] in (CEIL_SILENT_CRUSH, CEIL_CRUSH_AND_RAISE,
+                                   CEIL_FAST_CRUSH):
+                if ceiling["type"] in (CEIL_SILENT_CRUSH, CEIL_CRUSH_AND_RAISE):
+                    ceiling["speed"] = CEILSPEED
+                ceiling["dir"] = 1
+            elif ceiling["type"] in (CEIL_LOWER_AND_CRUSH, CEIL_LOWER_TO_FLOOR):
+                finish(level, ceiling)
+        elif result == "crushed":
+            if ceiling["type"] in (CEIL_SILENT_CRUSH, CEIL_CRUSH_AND_RAISE,
+                                   CEIL_LOWER_AND_CRUSH):
+                ceiling["speed"] = CEILSPEED // 8
+
+
+def tick_light(level: SpecLevel, light: dict) -> None:
+    sector = level.sectors[light["sector"]]
+    if light["type"] == LIGHT_FLASH:
+        light["count"] -= 1
+        if light["count"] != 0:
+            return
+        if sector["light"] == light["maxLight"]:
+            sector["light"] = light["minLight"]
+            light["count"] = (level.rng.next() & light["maxTime"]) + 1
+        else:
+            sector["light"] = light["maxLight"]
+            light["count"] = (level.rng.next() & light["minTime"]) + 1
+    elif light["type"] == LIGHT_STROBE:
+        light["count"] -= 1
+        if light["count"] != 0:
+            return
+        if sector["light"] == light["minLight"]:
+            sector["light"] = light["maxLight"]
+            light["count"] = light["brightTime"]
+        else:
+            sector["light"] = light["minLight"]
+            light["count"] = light["darkTime"]
+    elif light["type"] == LIGHT_GLOW:
+        if light["dir"] == -1:
+            sector["light"] -= GLOWSPEED
+            if sector["light"] <= light["minLight"]:
+                sector["light"] += GLOWSPEED
+                light["dir"] = 1
+        elif light["dir"] == 1:
+            sector["light"] += GLOWSPEED
+            if sector["light"] >= light["maxLight"]:
+                sector["light"] -= GLOWSPEED
+                light["dir"] = -1
+    elif light["type"] == LIGHT_FIRE:
+        light["count"] -= 1
+        if light["count"] != 0:
+            return
+        amount = (level.rng.next() & 3) * 16
+        if sector["light"] - amount < light["minLight"]:
+            sector["light"] = light["minLight"]
+        else:
+            sector["light"] = light["maxLight"] - amount
+        light["count"] = 4
+
+
+def run_tic(level: SpecLevel) -> None:
+    index = 0
+    while index < len(level.thinkers):
+        thinker = level.thinkers[index]
+        if thinker["removed"]:
+            del level.thinkers[index]
+            continue
+        if thinker["kind"] == "door":
+            tick_door(level, thinker)
+        elif thinker["kind"] == "floor":
+            tick_floor(level, thinker)
+        elif thinker["kind"] == "plat":
+            tick_plat(level, thinker)
+        elif thinker["kind"] == "ceiling":
+            tick_ceiling(level, thinker)
+        elif thinker["kind"] == "light":
+            tick_light(level, thinker)
+        if thinker["removed"]:
+            del level.thinkers[index]
+            continue
+        index += 1
+
+
+# --- The trigger script -----------------------------------------------------
+
+USE_SPECIALS = {
+    1, 9, 11, 14, 15, 18, 20, 21, 23, 26, 27, 28, 29, 31, 32, 33, 34, 41, 42,
+    43, 45, 49, 50, 51, 55, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,
+    99, 101, 102, 103, 111, 112, 113, 114, 115, 116, 117, 118, 122, 123, 127,
+    131, 132, 133, 134, 135, 136, 137, 138, 139, 140,
+}
+
+MANUAL_DOORS = {1, 26, 27, 28, 31, 32, 33, 34, 117, 118}
+
+
+def trigger_kind_for(special: int) -> str:
+    return "use" if special in USE_SPECIALS else "cross"
+
+
+def _trigger_special_line(level: SpecLevel, line_index: int, kind: str,
+                          by_player: bool) -> int:
+    special = level.line_special[line_index]
+    if special == 0:
+        return 0
+    if kind == "use":
+        if not by_player and special not in (1, 32, 33, 34):
+            level.stats["refused"] += 1
+            return 0
+        if special in MANUAL_DOORS:
+            return 1 if vertical_door(level, line_index, by_player) else 0
+        if special in (11, 51):
+            level.stats["deferredLine"] += 1
+            level.line_special[line_index] = 0
+            return 0
+        use = {
+            9: ("donut",), 14: ("plat", PLAT_RAISE_AND_CHANGE, 32),
+            15: ("plat", PLAT_RAISE_AND_CHANGE, 24),
+            18: ("floor", FLOOR_RAISE_TO_NEAREST),
+            20: ("plat", PLAT_RAISE_NEAREST, 0),
+            21: ("plat", PLAT_DWUS, 0),
+            23: ("floor", FLOOR_LOWER_TO_LOWEST),
+            29: ("door", DOOR_NORMAL),
+            41: ("ceiling", CEIL_LOWER_TO_FLOOR),
+            49: ("ceiling", CEIL_CRUSH_AND_RAISE),
+            50: ("door", DOOR_CLOSE),
+            55: ("floor", FLOOR_RAISE_CRUSH),
+            71: ("floor", FLOOR_TURBO_LOWER),
+            101: ("floor", FLOOR_RAISE),
+            102: ("floor", FLOOR_LOWER),
+            103: ("door", DOOR_OPEN),
+            111: ("door", DOOR_BLAZE_RAISE),
+            112: ("door", DOOR_BLAZE_OPEN),
+            113: ("door", DOOR_BLAZE_CLOSE),
+            122: ("plat", PLAT_BLAZE_DWUS, 0),
+            131: ("floor", FLOOR_RAISE_TURBO),
+            133: ("door", DOOR_BLAZE_OPEN),
+            135: ("door", DOOR_BLAZE_OPEN),
+            137: ("door", DOOR_BLAZE_OPEN),
+            140: ("floor", FLOOR_RAISE_512),
+        }
+        button = {
+            42: ("door", DOOR_CLOSE), 43: ("ceiling", CEIL_LOWER_TO_FLOOR),
+            45: ("floor", FLOOR_LOWER),
+            60: ("floor", FLOOR_LOWER_TO_LOWEST), 61: ("door", DOOR_OPEN),
+            62: ("plat", PLAT_DWUS, 1), 63: ("door", DOOR_NORMAL),
+            64: ("floor", FLOOR_RAISE), 65: ("floor", FLOOR_RAISE_CRUSH),
+            66: ("plat", PLAT_RAISE_AND_CHANGE, 24),
+            67: ("plat", PLAT_RAISE_AND_CHANGE, 32),
+            68: ("plat", PLAT_RAISE_NEAREST, 0),
+            69: ("floor", FLOOR_RAISE_TO_NEAREST),
+            70: ("floor", FLOOR_TURBO_LOWER),
+            99: ("door", DOOR_BLAZE_OPEN), 114: ("door", DOOR_BLAZE_RAISE),
+            115: ("door", DOOR_BLAZE_OPEN), 116: ("door", DOOR_BLAZE_CLOSE),
+            123: ("plat", PLAT_BLAZE_DWUS, 0),
+            132: ("floor", FLOOR_RAISE_TURBO),
+            134: ("door", DOOR_BLAZE_OPEN), 136: ("door", DOOR_BLAZE_OPEN),
+            138: ("light_on", 255), 139: ("light_on", 35),
+        }
+        if special in use:
+            effect = use[special]
+            if effect[0] == "donut":
+                do_donut(level, line_index)
+            else:
+                run_effect(level, line_index, effect)
+            level.stats["deferredLine"] += 1
+            level.line_special[line_index] = 0
+            return 1
+        if special in button:
+            run_effect(level, line_index, button[special])
+            level.stats["deferredLine"] += 1
+            return 1
+        level.stats["unsupportedLine"] += 1
+        return 0
+
+    # CROSS
+    if not by_player and special not in (4, 10, 39, 88, 97, 125, 126):
+        level.stats["refused"] += 1
+        return 0
+    one_shot = {
+        2: ("door", DOOR_OPEN), 3: ("door", DOOR_CLOSE),
+        4: ("door", DOOR_NORMAL), 5: ("floor", FLOOR_RAISE),
+        6: ("ceiling", CEIL_FAST_CRUSH), 10: ("plat", PLAT_DWUS, 0),
+        12: ("light_on", 0), 13: ("light_on", 255),
+        16: ("door", DOOR_CLOSE30), 17: ("strobe",),
+        19: ("floor", FLOOR_LOWER), 22: ("plat", PLAT_RAISE_NEAREST, 0),
+        25: ("ceiling", CEIL_CRUSH_AND_RAISE),
+        30: ("floor", FLOOR_RAISE_TO_TEXTURE), 35: ("light_on", 35),
+        36: ("floor", FLOOR_TURBO_LOWER),
+        37: ("floor", FLOOR_LOWER_AND_CHANGE),
+        38: ("floor", FLOOR_LOWER_TO_LOWEST), 40: ("both40",),
+        44: ("ceiling", CEIL_LOWER_AND_CRUSH),
+        53: ("plat", PLAT_PERPETUAL, 0), 54: ("stop_plat",),
+        56: ("floor", FLOOR_RAISE_CRUSH), 57: ("ceiling_stop",),
+        58: ("floor", FLOOR_RAISE_24),
+        59: ("floor", FLOOR_RAISE_24_AND_CHANGE), 104: ("lights_off",),
+        108: ("door", DOOR_BLAZE_RAISE), 109: ("door", DOOR_BLAZE_OPEN),
+        110: ("door", DOOR_BLAZE_CLOSE),
+        119: ("floor", FLOOR_RAISE_TO_NEAREST), 121: ("plat", PLAT_BLAZE_DWUS, 0),
+        130: ("floor", FLOOR_RAISE_TURBO),
+        141: ("ceiling", CEIL_SILENT_CRUSH),
+    }
+    retrigger = {
+        72: ("ceiling", CEIL_LOWER_AND_CRUSH),
+        73: ("ceiling", CEIL_CRUSH_AND_RAISE), 74: ("ceiling_stop",),
+        75: ("door", DOOR_CLOSE), 76: ("door", DOOR_CLOSE30),
+        77: ("ceiling", CEIL_FAST_CRUSH), 79: ("light_on", 35),
+        80: ("light_on", 0), 81: ("light_on", 255),
+        82: ("floor", FLOOR_LOWER_TO_LOWEST), 83: ("floor", FLOOR_LOWER),
+        84: ("floor", FLOOR_LOWER_AND_CHANGE), 86: ("door", DOOR_OPEN),
+        87: ("plat", PLAT_PERPETUAL, 0), 88: ("plat", PLAT_DWUS, 0),
+        89: ("stop_plat",), 90: ("door", DOOR_NORMAL),
+        91: ("floor", FLOOR_RAISE), 92: ("floor", FLOOR_RAISE_24),
+        93: ("floor", FLOOR_RAISE_24_AND_CHANGE),
+        94: ("floor", FLOOR_RAISE_CRUSH),
+        95: ("plat", PLAT_RAISE_NEAREST, 0),
+        96: ("floor", FLOOR_RAISE_TO_TEXTURE),
+        98: ("floor", FLOOR_TURBO_LOWER),
+        105: ("door", DOOR_BLAZE_RAISE), 106: ("door", DOOR_BLAZE_OPEN),
+        107: ("door", DOOR_BLAZE_CLOSE), 120: ("plat", PLAT_BLAZE_DWUS, 0),
+        128: ("floor", FLOOR_RAISE_TO_NEAREST),
+        129: ("floor", FLOOR_RAISE_TURBO),
+    }
+    if special in one_shot:
+        run_effect(level, line_index, one_shot[special])
+        level.line_special[line_index] = 0
+        return 1
+    if special in retrigger:
+        run_effect(level, line_index, retrigger[special])
+        return 1
+    level.stats["unsupportedLine"] += 1
+    return 0
+
+
+def trigger_special_line(level: SpecLevel, line_index: int, kind: str,
+                         by_player: bool) -> int:
+    """The trigger entry point: runs the special and counts a success."""
+    result = _trigger_special_line(level, line_index, kind, by_player)
+    if result:
+        level.stats["triggers"] += 1
+    return result
+
+
+def run_effect(level: SpecLevel, line_index: int, effect: tuple) -> None:
+    name = effect[0]
+    if name == "door":
+        do_door(level, line_index, effect[1])
+    elif name == "floor":
+        do_floor(level, line_index, effect[1])
+    elif name == "plat":
+        do_plat(level, line_index, effect[1], effect[2] if len(effect) > 2 else 0)
+    elif name == "ceiling":
+        do_ceiling(level, line_index, effect[1])
+    elif name == "light_on":
+        light_turn_on(level, line_index, effect[1])
+    elif name == "strobe":
+        start_light_strobing(level, line_index)
+    elif name == "stop_plat":
+        stop_plat(level, line_index)
+    elif name == "ceiling_stop":
+        ceiling_crush_stop(level, line_index)
+    elif name == "lights_off":
+        turn_tag_lights_off(level, line_index)
+    elif name == "both40":
+        do_ceiling(level, line_index, CEIL_RAISE_TO_HIGHEST)
+        do_floor(level, line_index, FLOOR_LOWER_TO_LOWEST)
+
+
+# --- The dump ---------------------------------------------------------------
+
+def print_thinker(tic: int, slot: int, thinker: dict) -> None:
+    kind = thinker["kind"]
+    if kind == "door":
+        type_, direction, speed = thinker["type"], thinker["dir"], thinker["speed"]
+        count, a, b, c = thinker["count"], thinker["topHeight"], thinker["topWait"], 0
+    elif kind == "floor":
+        type_, direction, speed = thinker["type"], thinker["dir"], thinker["speed"]
+        count, a, b, c = 0, thinker["dest"], thinker["crush"], thinker["newspecial"]
+    elif kind == "plat":
+        type_, direction, speed = thinker["type"], thinker["status"], thinker["speed"]
+        count, a, b, c = thinker["count"], thinker["high"], thinker["low"], thinker["wait"]
+    elif kind == "ceiling":
+        type_, direction, speed = thinker["type"], thinker["dir"], thinker["speed"]
+        count, a, b, c = 0, thinker["topHeight"], thinker["bottomHeight"], thinker["tag"]
+    else:
+        type_, direction = thinker["type"], thinker["dir"]
+        speed, count = 0, thinker["count"]
+        a, b = thinker["maxLight"], thinker["minLight"]
+        c = thinker["darkTime"] if thinker["type"] == LIGHT_STROBE else thinker["maxTime"]
+    print(f"THINKER {tic} {slot} kind={kind} sector={thinker['sector']} "
+          f"type={type_} dir={direction} speed={speed} count={count} "
+          f"a={a} b={b} c={c}")
+
+
+def dump_specials_tic(level: SpecLevel, tic: int) -> None:
+    for index, sector in enumerate(level.sectors):
+        print(f"SECTOR {tic} {index} floor={sector['floor']} "
+              f"ceil={sector['ceiling']} light={sector['light']}")
+    for slot, thinker in enumerate(level.thinkers):
+        print_thinker(tic, slot, thinker)
+
+
+def report_specials(lumps: list[Lump], map_name: str, tics: int) -> None:
+    """The `--specials` protocol: P_SpawnSpecials and the E1M1 trigger script."""
+    bsp = read_bsp_map(lumps, map_name)
+    things = run_things(bsp, 2)         # the level's default skill
+    level = SpecLevel(bsp, RandomState(things.rng))
+
+    print(f"SPECIALS {map_name} tics={tics} sectors={len(bsp.sectors)} "
+          f"lines={len(bsp.linedefs)}")
+
+    spawn_specials(level)
+
+    # Tic 0: every special line, ascending, as the C harness documents.
+    for line_index, special in enumerate(level.line_special):
+        if special == 0:
+            continue
+        kind = trigger_kind_for(special)
+        result = trigger_special_line(level, line_index, kind, True)
+        print(f"TRIGGER 0 line={line_index} special={special} kind={kind} "
+              f"result={result}")
+
+    dump_specials_tic(level, 0)
+    for tic in range(1, tics + 1):
+        run_tic(level)
+        dump_specials_tic(level, tic)
+
+    stats = level.stats
+    print(f"SUMMARY spawned={stats['spawned']} secrets={stats['secrets']} "
+          f"totalSecrets={level.total_secrets} "
+          f"changeSector={stats['changeSector']} "
+          f"unsupportedSector={stats['unsupportedSector']} "
+          f"unsupportedLine={stats['unsupportedLine']} "
+          f"deferredLine={stats['deferredLine']} "
+          f"lineScrolls={stats['lineScrolls']} triggers={stats['triggers']} "
+          f"refused={stats['refused']}")
 
 
 # --- BSP reporting ----------------------------------------------------------
@@ -3180,6 +4517,13 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
     parser.add_argument("--things", metavar="NAME",
                         help="run the map's THINGS lump through P_SpawnMapThing()'s "
                              "filters and print every mobj it produces (D4.1a)")
+    parser.add_argument("--specials", metavar="NAME",
+                        help="run P_SpawnSpecials, trigger every special line at "
+                             "tic 0 and dump the sectors and thinkers every tic "
+                             "(D4.1b)")
+    parser.add_argument("--tics", type=int, default=420, metavar="N",
+                        help="with --specials: tics to step after the tic-0 dump "
+                             "(default: 420)")
     parser.add_argument("--skill", default="medium", metavar="NAME",
                         help="with --things: baby, easy, medium, hard or nightmare "
                              "(default: medium)")
@@ -3216,11 +4560,13 @@ def main(argv: list[str] | None = None) -> int:
     flats_wanted = arguments.flats or arguments.all
     if not (patches_wanted or textures_wanted or flats_wanted or arguments.map
             or arguments.stats or arguments.bsp or arguments.segs
-            or arguments.things):
+            or arguments.things or arguments.specials):
         parser.error("nothing to do: pass --patches, --textures, --flats, --all, "
-                     "--map, --stats, --bsp, --segs or --things")
+                     "--map, --stats, --bsp, --segs, --things or --specials")
     if arguments.limit is not None and arguments.limit < 0:
         parser.error("--limit cannot be negative")
+    if arguments.tics < 0:
+        parser.error("--tics cannot be negative")
     if arguments.drawsegs < 1:
         parser.error("--drawsegs must be at least 1")
     if arguments.planes < 1:
@@ -3279,6 +4625,8 @@ def main(argv: list[str] | None = None) -> int:
                         arguments.planes, arguments.segs_detail, segs_column)
         if arguments.things:
             report_things(lumps, arguments.things.upper(), arguments.skill)
+        if arguments.specials:
+            report_specials(lumps, arguments.specials.upper(), arguments.tics)
     except FormatError as error:
         print(f"doom_ref: {error}", file=sys.stderr)
         return EXIT_INPUT

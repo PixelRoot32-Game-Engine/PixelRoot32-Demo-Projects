@@ -47,6 +47,70 @@ void p_level_release_thinker(void* context, p_thinker_t* thinker) {
     (void)z_free(world->zone, thinker);
 }
 
+/* --- P_LoadSectors / P_LoadLineDefs -------------------------------------- */
+
+/*
+ * Copies the two map arrays the simulation mutates into the level's arena:
+ * `sectors[]` (P_LoadSectors' step) and `lineSpecial[]` (P_LoadLineDefs'
+ * `ld->special`). doom_map is const zero-copy and cannot hold either; see
+ * p_spec.h for the full reason. Both are PU_LEVEL, so p_level_shutdown() and
+ * the next level load free them together with the mobjs.
+ */
+static p_setup_error_t load_mutable_map(p_level_t* level) {
+    const doom_map_t* map = level->map;
+    uint32_t sectorCount = map->lumps[DOOM_MAP_SECTORS].count;
+    uint32_t lineCount = map->lumps[DOOM_MAP_LINEDEFS].count;
+    uint32_t i;
+    zone_error_t zoneError = ZONE_ERR_OK;
+    p_sector_t* sectors;
+    int16_t* lineSpecial;
+
+    if (sectorCount == 0u || lineCount == 0u ||
+        sectorCount > 0xFFFFu || lineCount > 0xFFFFu) {
+        return P_SETUP_ERR_ALLOC;
+    }
+
+    sectors = (p_sector_t*)z_alloc(&level->zone,
+                                   (size_t)sectorCount * sizeof(p_sector_t),
+                                   PU_LEVEL, &zoneError);
+    if (sectors == NULL) {
+        return P_SETUP_ERR_ALLOC;
+    }
+    for (i = 0; i < sectorCount; ++i) {
+        doom_sector_t record;
+
+        doom_map_get_sector(map, (uint16_t)i, &record);
+        sectors[i].floorHeight = record.floorHeight;
+        sectors[i].ceilingHeight = record.ceilingHeight;
+        sectors[i].floorPic = record.floorPic;
+        sectors[i].ceilingPic = record.ceilingPic;
+        sectors[i].lightLevel = record.lightLevel;
+        sectors[i].special = record.special;
+        sectors[i].tag = record.tag;
+        sectors[i].specialdata = NULL;
+    }
+
+    lineSpecial = (int16_t*)z_alloc(&level->zone,
+                                    (size_t)lineCount * sizeof(int16_t),
+                                    PU_LEVEL, &zoneError);
+    if (lineSpecial == NULL) {
+        return P_SETUP_ERR_ALLOC;
+    }
+    for (i = 0; i < lineCount; ++i) {
+        lineSpecial[i] = p_line_special(map, (uint16_t)i);
+    }
+
+    level->sectors = sectors;
+    level->sectorCount = (uint16_t)sectorCount;
+    level->lineSpecial = lineSpecial;
+    level->lineCount = (uint16_t)lineCount;
+    level->context.sectors = sectors;
+    level->context.sectorCount = (uint16_t)sectorCount;
+    level->context.lineSpecial = lineSpecial;
+    level->context.lineCount = (uint16_t)lineCount;
+    return P_SETUP_OK;
+}
+
 /* --- Load ---------------------------------------------------------------- */
 
 /* Records one outcome in the level's counters, and the start arrays. */
@@ -163,6 +227,20 @@ p_setup_error_t p_level_init(p_level_t* level, const doom_map_t* map, void* aren
     level->context.random = &level->random;
     level->context.actions = &level->actions;
     level->context.rules = level->rules;
+    level->context.specStats = &level->specStats;
+
+    /* P_LoadSectors and P_LoadLineDefs' mutable half. A level without them
+     * cannot be simulated, so this is a load failure, not a counter. */
+    {
+        const p_setup_error_t loaded = load_mutable_map(level);
+
+        if (loaded != P_SETUP_OK) {
+            (void)z_free_tag(&level->zone, PU_LEVEL, NULL);
+            memset(level, 0, sizeof *level);
+            level->error = loaded;
+            return loaded;
+        }
+    }
 
     level->open = 1;
 
