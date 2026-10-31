@@ -1111,6 +1111,53 @@ const e1m1_sprite_rule_t* spriteRule(int type) {
     return nullptr;
 }
 
+/*
+ * THE LIVE FRAME, NOT THE TYPE (T23)
+ *
+ * A static row per type can only name the type's spawn frame, so a pain frame,
+ * a death animation, a corpse or a puff could never be drawn from it. The world
+ * supplies the frame: r_mobj_t already carries the current state's `sprite` and
+ * `frame`, so the lump is looked up by the *pair*, and the fixture
+ * (tools/e1m1_sprites.inc) answers which frames the container baked.
+ *
+ * `frame` is the state's FF_FRAMEMASKed letter index; FF_FULLBRIGHT is carried
+ * separately from the mobj's own frame word, exactly as R_ProjectSprite folds
+ * it into `fullbright`.
+ */
+const e1m1_sprite_rule_t* spriteFrameRule(const char* sprite, int frame) {
+    for (int index = 0; index < E1M1_SPRITE_RULE_COUNT; ++index) {
+        if (kE1M1Sprites[index].frame == static_cast<signed char>(frame)
+            && std::strncmp(kE1M1Sprites[index].sprite, sprite, 4) == 0) {
+            return &kE1M1Sprites[index];
+        }
+    }
+    return nullptr;
+}
+
+/*
+ * A mobj whose live frame was not baked falls back to its type's spawn-state
+ * row -- the frame the old static list always showed. The alternative is a
+ * whole-frame refusal for one unbakeable frame (R_THINGS_ERR_SPRITE_MISSING),
+ * which would blank the panel, or a silent drop, which would make an animated
+ * item flicker out of existence. This keeps every mobj drawn and every pixel
+ * where it was; the gate (tools/sprite_check.c) reports how many submissions
+ * took the fallback, so the gap is a number on the host side. NULL means even
+ * the spawn row is absent (the player avatar's S_PLAY_STND is not in the bake),
+ * and the caller skips that mobj: it is the camera at the viewpoint, which
+ * R_ProjectSprite culls anyway.
+ */
+const e1m1_sprite_rule_t* spawnRuleForType(int mobjType) {
+    if (mobjType < 0 || mobjType >= NUM_MOBJ_TYPES) {
+        return nullptr;
+    }
+    const int spawnState = mobjinfo[mobjType].spawnstate;
+    if (spawnState < 0 || spawnState >= NUM_STATES) {
+        return nullptr;
+    }
+    const doom_state_t& spawn = states[spawnState];
+    return spriteFrameRule(sprnames[spawn.sprite], static_cast<int>(spawn.frame & 0x7FFF));
+}
+
 bool sectorAt(const doom_map_t* map, fixed_t x, fixed_t y, std::uint16_t* sector) {
     std::uint16_t subsector = 0u;
     doom_subsector_t sub;
@@ -1210,6 +1257,100 @@ int buildSprites(const doom_map_t* map, const r_view_params_t* view) {
     }
     return gSpriteBaseCount;
 }
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+/*
+ * THE LIVE LIST (T23)
+ *
+ * For the game frame the sprite list is the world's mobjs, walked per frame
+ * through p_level_first_mobj()/p_level_next_mobj(). The static THINGS list
+ * above is only a stand-in for this path: it is kept for the two measurement
+ * probes (FRAMEPROF, which measures a renderer and owns no world) and is never
+ * built in the `_show` build while the world is open, so nothing is drawn
+ * twice.
+ *
+ * Each mobj contributes its own `x`, `y`, `z`, `angle` and the light of the
+ * sector it stands in (`p_level_t::sectors`, upstream's mutable copy -- the
+ * same one every mover and light writer changes). Its lump comes from its own
+ * state, not from its type: `sprite` indexes sprnames[] and `frame` is the
+ * FF_FRAMEMASKed letter index. `FF_FULLBRIGHT` is taken from the same frame
+ * word. The rotation is R_ProjectSprite's rule, unchanged from the static list.
+ *
+ * The name is rebuilt per mobj on every frame, because one static row per type
+ * can express one frame and a live mobj can show any frame of its chain.
+ *
+ * The bound is the masked pass's own vis-sprite capacity (256): a longer list
+ * cannot project to fewer vis sprites, so exceeding it is
+ * R_THINGS_ERR_VISSPRITE_OVERFLOW -- the pass's existing refusal code -- rather
+ * than a silent truncation. There is no per-frame allocation: the array is the
+ * one `openLevelSession()` took.
+ */
+const p_level_t* gFrameWorld = nullptr;
+
+/// Set by buildWorldSprites() so renderOnce() can report *why* the list refused
+/// instead of the generic -1 the static build's failure has always used.
+int gSpriteBuildCode = -1;
+
+int buildWorldSprites(const doom_map_t* map, const r_view_params_t* view) {
+    if (gFrameWorld == nullptr) {
+        return buildSprites(map, view);
+    }
+
+    int count = 0;
+    for (const r_mobj_t* mobj = p_level_first_mobj(gFrameWorld); mobj != nullptr;
+         mobj = p_level_next_mobj(mobj)) {
+        if (mobj->thinker.removed != 0u) {
+            continue;
+        }
+        if (count >= kVisspriteCapacity) {
+            gSpriteBuildCode = static_cast<int>(R_THINGS_ERR_VISSPRITE_OVERFLOW);
+            return -1;
+        }
+
+        const int frame = static_cast<int>(mobj->frame & 0x7FFF);
+        const int spriteIndex = static_cast<int>(mobj->sprite);
+        const e1m1_sprite_rule_t* rule =
+            (spriteIndex >= 0 && spriteIndex < NUM_SPRITES)
+                ? spriteFrameRule(sprnames[spriteIndex], frame)
+                : nullptr;
+        if (rule == nullptr) {
+            rule = spawnRuleForType(static_cast<int>(mobj->type));
+            if (rule == nullptr) {
+                // Even the type's spawn frame was not baked (the avatar's
+                // S_PLAY_STND): nothing can be drawn for it. It stands at the
+                // viewpoint, where R_ProjectSprite culls it anyway.
+                continue;
+            }
+        }
+
+        const angle_t facing = pointToAngle(view, mobj->x, mobj->y);
+        const int rotation =
+            static_cast<int>((facing - mobj->angle + ((ANG45 / 2u) * 9u)) >> 29);
+        const int lump = rule->rotations ? rotation : 0;
+        // The per-mobj lump: rebuilt from this mobj's frame, never a static row
+        // per type. Two mobjs of one type can name two different frames, so the
+        // eight characters live here for this submission and nowhere else.
+        char lumpName[9];
+        for (int i = 0; i < 8; ++i) {
+            lumpName[i] = rule->lumps[lump].name[i];
+        }
+        lumpName[8] = '\0';
+
+        gSprites[count].x = mobj->x;
+        gSprites[count].y = mobj->y;
+        gSprites[count].z = mobj->z;
+        gSprites[count].angle = mobj->angle;
+        gSprites[count].lump =
+            r_pack_name(reinterpret_cast<const std::uint8_t*>(lumpName));
+        gSprites[count].lightLevel = gFrameWorld->sectors[mobj->sector].lightLevel;
+        gSprites[count].flip = rule->lumps[lump].flip;
+        gSprites[count].fullbright = (mobj->frame & 0x8000) != 0;
+        gSprites[count].noClip = 0;
+        ++count;
+    }
+    return count;
+}
+#endif  // PIXELROOT32_DOOM_SHOW_E1M1
 
 /// The same rule tools/rsegs_check.c's buildFrames() uses, so the two describe
 /// the same 20 views.
@@ -1891,15 +2032,27 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
 #if defined(PIXELROOT32_DOOM_RASTER_PROBE)
     const std::uint32_t spriteListStart = r_probe_cycles();
 #endif
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    // The game frame submits the world; the probes (which own no world) keep the
+    // static THINGS list. This is the one switch between the two, so the game
+    // can never draw both lists and double-draw a thing T23 made live.
+    const int spriteCount = buildWorldSprites(&driver->map, &params);
+#else
     const int spriteCount = buildSprites(&driver->map, &params);
+#endif
 #if defined(PIXELROOT32_DOOM_RASTER_PROBE)
     driver->spriteListCycles = r_probe_cycles() - spriteListStart;
 #endif
     if (spriteCount < 0) {
-        // The list build is the caller's, so it has no renderer error code; -1
-        // says "this stage, no pass code" instead of leaving the previous
-        // frame's error to be reported as this one's.
+        // The list build is the caller's, so it has no renderer error code; the
+        // live builder sets one when the world exceeds the vis-sprite bound, and
+        // -1 (no code) otherwise, instead of leaving the previous frame's error
+        // to be reported as this one's.
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+        gStageCode = gSpriteBuildCode;
+#else
         gStageCode = -1;
+#endif
         return false;
     }
 
@@ -2341,6 +2494,7 @@ void closeLevelSession();
  */
 bool openWorldSession() {
     gWorld = LevelWorld{};
+    gFrameWorld = nullptr;
 
     if (!gSession.open || gSession.driver == nullptr) {
         return false;
@@ -2476,6 +2630,7 @@ bool openWorldSession() {
     }
 
     gWorld.open = true;
+    gFrameWorld = &gWorld.level;
     std::snprintf(line, sizeof line,
                   "SHOW,arena,fit,status=ok,chosen=%u,peak=%u,used=%u,headroom=25,round=1024,"
                   "arena=%u,world_static=%u,heap_free=%u,heap_largest=%u\n",
@@ -2489,6 +2644,7 @@ bool openWorldSession() {
 }
 
 void closeWorldSession() {
+    gFrameWorld = nullptr;
     if (gWorld.open) {
         p_level_shutdown(&gWorld.level);
     }
@@ -2745,9 +2901,16 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
 
     // The sprite list. It is the caller's thing list, so it is the caller's
     // block. It is taken *after* the map is open and the level's blocks are
-    // bound, and it is exactly one record per THINGS entry: E1M1 needs 129, E1M6
-    // 389, and the upper bound is the level's own THINGS count.
+    // bound. The probe's static list is exactly one record per THINGS entry
+    // (E1M1 needs 129, E1M6 389); the game's live list is bounded by the masked
+    // pass's own vis-sprite capacity (256), because a longer submission cannot
+    // project to fewer vis sprites.
     const std::uint32_t thingCount = map.lumps[DOOM_MAP_THINGS].count;
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    const std::uint32_t spriteSlots = static_cast<std::uint32_t>(kVisspriteCapacity);
+#else
+    const std::uint32_t spriteSlots = thingCount;
+#endif
     if (thingCount == 0u || thingCount > static_cast<std::uint32_t>(kSpriteCapacity)) {
         std::snprintf(line, sizeof line,
                       "%s,setup,status=fail,reason=sprites,things=%u,capacity=%d\n", tag,
@@ -2758,13 +2921,13 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
         return false;
     }
     gSprites = static_cast<r_sprite_t*>(
-        heap_caps_malloc(static_cast<std::size_t>(thingCount) * sizeof(r_sprite_t),
+        heap_caps_malloc(static_cast<std::size_t>(spriteSlots) * sizeof(r_sprite_t),
                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     if (gSprites == nullptr) {
         std::snprintf(line, sizeof line,
                       "%s,setup,status=fail,reason=sprites,need=%u,heap=%u,"
                       "largest=%u\n",
-                      tag, static_cast<unsigned>(thingCount * sizeof(r_sprite_t)),
+                      tag, static_cast<unsigned>(spriteSlots * sizeof(r_sprite_t)),
                       static_cast<unsigned>(esp_get_free_heap_size()),
                       static_cast<unsigned>(heap_caps_get_largest_free_block(
                           MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));

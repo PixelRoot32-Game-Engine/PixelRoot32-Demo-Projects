@@ -113,7 +113,13 @@
  * view needs is what keeps every pixel -- and therefore every hash -- identical
  * to the host's. The surface is not a 64,000 B private buffer: it is the engine's own
  * 8bpp framebuffer. REJECT, BLOCKMAP and THINGS are in the container's raw
- * section but only THINGS is read, once per view, to place the sprites.
+ * section but only THINGS is read, once per view, to place the sprites -- and
+ * only for the two probes, which own no world. The game frame (T23) walks the
+ * live mobjs through p_level_first_mobj()/p_level_next_mobj() instead, one
+ * submission per mobj, the lump derived from that mobj's state's `sprite` and
+ * `frame`; the fixture then says which of those frames the container baked, and
+ * an unbakeable one falls back to the type's spawn row rather than refusing the
+ * frame. The two lists never run together, so nothing is drawn twice.
  *
  * THE 20 VIEWS
  *
