@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Compare the C movement core against the Python oracle (D4.2b).
+"""Compare the C movement core and the player against the Python oracle.
 
 WHAT THIS PROVES
 
 ``test/unit/test_world`` pins each rule on a synthetic map. This script is the
 other half: it builds ``tools/movement_check.c`` -- which calls
-``lib/doom/p_setup.c``, ``lib/doom/p_mobj.c``, ``lib/doom/p_map.c`` and the
-special dispatch -- runs it on a real WAD's E1M1, and compares its per-tic dump,
-line for line, with ``tools/doom_ref.py --movement``, an independent
-implementation written from linuxdoom-1.10's p_map.c / p_maputl.c and
-p_mobj.c's P_XYMovement / P_ZMovement.
+``lib/doom/p_setup.c``, ``lib/doom/p_mobj.c``, ``lib/doom/p_map.c``,
+``lib/doom/p_user.c`` and the special dispatch -- runs it on a real WAD's E1M1,
+and compares its per-tic dump, line for line, with ``tools/doom_ref.py``, an
+independent implementation written from linuxdoom-1.10.
 
-THE SCRIPT (identical in both implementations, documented in movement_check.c)
+TWO PROTOCOLS
+
+``--movement`` (the default) is D4.2b's walk. The harness sets the angle and
+calls P_Thrust/P_MobjThinker directly, so the collision core is exercised
+without a player record. The script (documented in movement_check.c) is:
 
     tics   0..31   angle 0,      thrust 0x19 * 2048  (walk speed)
     tics  32..63   angle 90,     thrust 0x19 * 2048  (into a wall, slides)
@@ -19,16 +22,28 @@ THE SCRIPT (identical in both implementations, documented in movement_check.c)
     tics  96..127  no thrust                         (friction only)
     tics 128..159  angle 180,    thrust 0x19 * 2048  (back into the room)
 
-The level load keeps the first player start's mobj (the one P_LoadThings()
-already spawned through P_SpawnPlayer) and removes every other thing, so the
-walk exercises the map's linedefs rather than E1M1's population.
+``--player`` is D4.2c's tic. A real ``p_ticcmd_t`` drives the avatar through
+``p_level_tic()``, so P_PlayerThink, P_MovePlayer, P_CalcHeight and the use
+trace run in upstream's order (200 tics):
+
+    tics   0..31   forwardmove 0x19                  (walk forward)
+    tics  32..63   forwardmove 0x32                  (run into the wall, slide)
+    tics  64..95   forwardmove 0x19, angleturn -640  (turn right while walking)
+    tics  96..127  sidemove 0x19                     (strafe right)
+    tics 128..159  forwardmove -0x19                 (backpedal)
+    tics 160..167  buttons BT_USE                    (one press, held)
+    tics 168..199  no input                          (friction to rest)
+
+Both runs keep only the first player start's mobj (the one P_LoadThings()
+already spawned through P_SpawnPlayer) and remove every other thing, so the walk
+exercises the map's linedefs rather than E1M1's population. Neither calls
+P_SpawnSpecials.
 
 WHAT IS COMPARED
 
-    MOVEMENT ...   the map, the tic count and the script name
-    TIC ...        x, y, z, momentum, the two cached heights, sector, subsector,
-                   whether this tic was blocked and how many lines it crossed
-    SUMMARY ...    the final state and the checks/blocked/crossed counters
+    MOVEMENT/PLAYER ...   the map, the tic count and the script name
+    TIC ...               every field the protocol names (see movement_check.c)
+    SUMMARY ...           the final state and the counters
 
 ``INFO `` lines are C-only measurements (the mean and peak microseconds of one
 P_CheckPosition and the size of the brute-force candidate set); ``WAD `` is the
@@ -37,13 +52,16 @@ oracle's banner. Both are excluded.
 PROVING THE GATE CAN FAIL
 
     python tools/movement_check.py --wad ... --perturb friction
+    python tools/movement_check.py --wad ... --player --perturb viewheight
 
-adds ``-DP_ORIG_FRICTION=0xE000`` to the C build only. The outputs must diverge
-and the script must exit 1; a comparison that cannot fail is not a gate.
+adds one compile-time definition to the C build only. The outputs must diverge
+and the script must exit 1; a comparison that cannot fail is not a gate. The
+view-height perturbation changes only the PLAYER protocol, so using it without
+--player is refused.
 
 USAGE
 
-    python tools/movement_check.py --wad path/to/DOOM1.WAD
+    python tools/movement_check.py --wad path/to/DOOM1.WAD [--player]
 
 The WAD is copyrighted shareware data and is never committed; point this tool
 at a file outside the repository. The harness is compiled into a temporary
@@ -69,15 +87,16 @@ from pathlib import Path
 
 MAP_NAME = "E1M1"
 TICS = 160
+PLAYER_TICS = 200
 
 EXIT_OK = 0
 EXIT_MISMATCH = 1
 EXIT_USAGE = 2
 
 SOURCES = (
-    "p_setup.c", "p_mobj.c", "p_map.c", "p_tick.c", "p_action.c", "m_random.c",
-    "z_zone.c", "doom_map.c", "r_bsp.c", "r_plane.c", "r_tables.c", "w_wad.c",
-    "p_spec.c", "p_floor.c", "p_doors.c", "p_plats.c", "p_ceilng.c",
+    "p_setup.c", "p_mobj.c", "p_map.c", "p_user.c", "p_tick.c", "p_action.c",
+    "m_random.c", "z_zone.c", "doom_map.c", "r_bsp.c", "r_plane.c", "r_tables.c",
+    "w_wad.c", "p_spec.c", "p_floor.c", "p_doors.c", "p_plats.c", "p_ceilng.c",
     "p_lights.c",
 )
 
@@ -86,6 +105,9 @@ PERTURBATIONS = {
     # One constant, one compile-time definition, C side only. The value is a
     # different friction scale, so every tic after the first thrust diverges.
     "friction": ["-DP_ORIG_FRICTION=0xE000"],
+    # P_CalcHeight's base eye height, 41 -> 40 map units. Only the PLAYER
+    # protocol calls P_CalcHeight, so this one needs --player.
+    "viewheight": ["-DP_VIEWHEIGHT=(40*FRACUNIT)"],
 }
 
 
@@ -179,8 +201,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="C compiler to build the harness with (default: gcc)")
     parser.add_argument("--map", default=MAP_NAME, metavar="NAME",
                         help=f"the map to load (default: {MAP_NAME})")
-    parser.add_argument("--tics", type=int, default=TICS, metavar="N",
-                        help=f"tics to run (default: {TICS})")
+    parser.add_argument("--player", action="store_true",
+                        help="run the 200-tic player script through p_level_tic() "
+                             "(P_PlayerThink) instead of the raw movement walk")
+    parser.add_argument("--tics", type=int, default=None, metavar="N",
+                        help=f"tics to run (default: {TICS}; {PLAYER_TICS} with "
+                             "--player)")
     parser.add_argument("--perturb", choices=sorted(PERTURBATIONS), default="none",
                         help="build the C side with one deliberate constant changed, "
                              "to prove the comparison can fail (default: none)")
@@ -189,8 +215,14 @@ def main(argv: list[str] | None = None) -> int:
     if not arguments.wad.is_file():
         print(f"movement_check: {arguments.wad} is not a file", file=sys.stderr)
         return EXIT_USAGE
-    if arguments.tics < 0:
+    tics = (arguments.tics if arguments.tics is not None
+            else (PLAYER_TICS if arguments.player else TICS))
+    if tics < 0:
         print("movement_check: --tics cannot be negative", file=sys.stderr)
+        return EXIT_USAGE
+    if arguments.perturb == "viewheight" and not arguments.player:
+        print("movement_check: --perturb viewheight only changes the PLAYER "
+              "protocol; add --player", file=sys.stderr)
         return EXIT_USAGE
 
     root = project_root()
@@ -200,10 +232,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         executable = compile_harness(workdir, arguments.cc, arguments.perturb)
 
-        c_result = subprocess.run(
-            [str(executable), str(arguments.wad), arguments.map,
-             str(arguments.tics)],
-            capture_output=True, text=True)
+        c_command = [str(executable)]
+        if arguments.player:
+            c_command.append("--player")
+        c_command.extend([str(arguments.wad), arguments.map, str(tics)])
+        c_result = subprocess.run(c_command, capture_output=True, text=True)
         if c_result.returncode != 0:
             print(c_result.stderr or c_result.stdout, file=sys.stderr)
             print("movement_check: the C harness failed", file=sys.stderr)
@@ -211,7 +244,8 @@ def main(argv: list[str] | None = None) -> int:
 
         ref_result = subprocess.run(
             [sys.executable, str(oracle_script), "--wad", str(arguments.wad),
-             "--movement", arguments.map, "--tics", str(arguments.tics)],
+             "--player" if arguments.player else "--movement", arguments.map,
+             "--tics", str(tics)],
             capture_output=True, text=True)
         if ref_result.returncode != 0:
             print(ref_result.stderr or ref_result.stdout, file=sys.stderr)
@@ -232,11 +266,13 @@ def main(argv: list[str] | None = None) -> int:
             if not first:
                 first = first_divergence(left, right)
 
-        movement = next((line for line in c_lines if line.startswith("MOVEMENT ")), "")
+        movement = next((line for line in c_lines
+                         if line.startswith("MOVEMENT ")
+                         or line.startswith("PLAYER ")), "")
         summary = next((line for line in c_lines if line.startswith("SUMMARY ")), "")
         info = next((line for line in c_result.stdout.splitlines()
                      if line.startswith("INFO check")), "")
-        print(f"{arguments.map}: {arguments.tics} tics, {len(c_lines)} compared "
+        print(f"{arguments.map}: {tics} tics, {len(c_lines)} compared "
               f"lines, {mismatches} divergent (perturb={arguments.perturb})")
         print(f"  {movement}")
         print(f"  {summary}")

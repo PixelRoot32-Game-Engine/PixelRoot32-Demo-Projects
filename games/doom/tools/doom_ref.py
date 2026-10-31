@@ -454,6 +454,7 @@ ANG180 = 0x80000000
 ANG270 = 0xC0000000
 ANGLETOFINESHIFT = 19
 FINEANGLES = 8192
+FINEMASK = FINEANGLES - 1
 SLOPERANGE = 2048
 SCREEN_WIDTH = 320
 SCREEN_HEIGHT = 200
@@ -1954,6 +1955,7 @@ class SpecLevel:
         self.thinkers: list[dict] = []
         self.rng = rng
         self.total_secrets = 0
+        self.leveltime = 0
         self.stats = {
             "spawned": 0, "secrets": 0, "changeSector": 0,
             "unsupportedSector": 0, "unsupportedLine": 0,
@@ -3185,6 +3187,32 @@ MOVEMENT_SCRIPT = "walk-slide-corner-friction-return"
 MOVEMENT_PLAYER_RADIUS = 16 << FRACBITS
 MOVEMENT_PLAYER_HEIGHT = 56 << FRACBITS
 
+# --- The player (D4.2c) -----------------------------------------------------
+#
+# A second implementation of linuxdoom-1.10 p_user.c: P_PlayerThink,
+# P_MovePlayer, P_CalcHeight and P_Thrust, plus the P_UseLines half of p_map.c
+# the BT_USE press needs. It reuses this file's movement core and special
+# dispatch; it never calls the C.
+
+PLAYER_VIEWHEIGHT = 41 * FRACUNIT          # p_local.h VIEWHEIGHT
+PLAYER_MAXBOB = 0x100000                   # p_user.c MAXBOB
+PLAYER_MAXHEALTH = 100                     # p_local.h MAXHEALTH
+PLAYER_BOB_FINE_STEP = FINEANGLES // 20    # `FINEANGLES/20*leveltime`
+PLAYER_SCRIPT = "player-walk-turn-strafe-use"
+
+# d_player.h playerstate_t and doomdef.h buttoncode_t.
+PST_LIVE = 0
+PST_DEAD = 1
+PST_REBORN = 2
+
+BT_ATTACK = 1
+BT_USE = 2
+BT_CHANGE = 4
+BT_WEAPONMASK = 8 + 16 + 32
+BT_WEAPONSHIFT = 3
+BT_SPECIAL = 128
+BT_SPECIALMASK = 3
+
 # The mobj flag word (doomdef.h) and the three mobjtype indices the missile
 # species test names. The values are the 1993 ones; the C side reads them from
 # info_tables.h, this side from a second reading of info.c (see MOBJINFO).
@@ -3656,8 +3684,11 @@ def movement_xy_movement(level: "SpecLevel", mo: dict) -> None:
     ymove = mo["momy"]
     while True:
         if xmove > MOVEMENT_MAXMOVE // 2 or ymove > MOVEMENT_MAXMOVE // 2:
-            ptryx = mo["x"] + xmove // 2
-            ptryy = mo["y"] + ymove // 2
+            # C: `ptryx = mo->x + xmove/2;` truncates toward zero, while
+            # `xmove >>= 1` below floors. For a negative odd move the two
+            # differ by one, so the position half must use trunc_div.
+            ptryx = mo["x"] + trunc_div(xmove, 2)
+            ptryy = mo["y"] + trunc_div(ymove, 2)
             xmove >>= 1
             ymove >>= 1
         else:
@@ -3758,12 +3789,14 @@ def movement_phase(tic: int) -> tuple[int | None, int]:
     return None, 0
 
 
-def movement_player(level: "SpecLevel") -> dict:
+def movement_player(level: "SpecLevel", use_start_angle: bool = False) -> dict:
     """P_SpawnPlayer()'s mobj for the first type-1 THING, as p_level_init leaves it.
 
     The level load already consumed the RNG for the whole THINGS pass, which is
     why the caller seeds RandomState from run_things(). Only the collision fields
-    the movement rules read are carried.
+    the movement rules read are carried. ``--movement`` overrides the angle to
+    zero; ``--player`` keeps the THING record's angle, which is what
+    P_SpawnPlayer's `angle = ANG45 * (mthing->angle/45)` produces.
     """
     record = None
     for candidate in level.bsp.things:
@@ -3778,10 +3811,13 @@ def movement_player(level: "SpecLevel") -> dict:
     sector = sector_of_subsector(level.bsp, subsector)
     floor = level.sectors[sector]["floor"]
     ceiling = level.sectors[sector]["ceiling"]
+    angle = 0
+    if use_start_angle:
+        angle = u32(ANG45 * (record["angle"] // 45))
     return {
         "x": x, "y": y, "z": floor,
         "momx": 0, "momy": 0, "momz": 0,
-        "angle": 0,
+        "angle": angle,
         "radius": MOVEMENT_PLAYER_RADIUS,
         "height": MOVEMENT_PLAYER_HEIGHT,
         "floorz": floor, "ceilingz": ceiling,
@@ -3793,6 +3829,7 @@ def movement_player(level: "SpecLevel") -> dict:
         "player": True,
         "type": 0,
         "target": None,
+        "reactiontime": PLAYER_INFO[4],
     }
 
 
@@ -3837,6 +3874,241 @@ def report_movement(lumps: list[Lump], map_name: str, tics: int) -> None:
           f"finalz={mo['z']} blocked={level.move_stats['blocked']} "
           f"cross={level.move_stats['crossed']} "
           f"checks={level.move_stats['checks']}")
+
+
+# --- The player (D4.2c) -----------------------------------------------------
+
+
+def movement_use_lines(level: "SpecLevel", mo: dict) -> None:
+    """P_UseLines(): the nearest special line within USERANGE.
+
+    p_map.c's repeated-minimum intercept walk, line for line: ascending
+    intercept fraction, skip a fraction already visited (so only the first line
+    of a tie is examined), a non-special line with no opening stops the trace
+    ("can't use through a wall"), and the first special line is triggered once.
+    """
+    angle = mo["angle"] >> ANGLETOFINESHIFT
+    x1, y1 = mo["x"], mo["y"]
+    # `x2 = x1 + (USERANGE>>FRACBITS)*finecosine[angle]` -- 64 map units, not a
+    # FixedMul.
+    x2 = x1 + (MOVEMENT_USERANGE >> FRACBITS) * FINE_SINE[angle + FINEANGLES // 4]
+    y2 = y1 + (MOVEMENT_USERANGE >> FRACBITS) * FINE_SINE[angle]
+    dx = i32(x2 - x1)
+    dy = i32(y2 - y1)
+
+    last_frac = -1
+    while True:
+        best_frac = FRACUNIT + 1
+        best_line = None
+        for index in range(len(level.bsp.linedefs)):
+            frac = movement_trace_line(level, x1, y1, dx, dy, index)
+            if frac is None or frac <= last_frac:
+                continue
+            if frac < best_frac:
+                best_frac = frac
+                best_line = index
+        if best_line is None:
+            return
+        last_frac = best_frac
+
+        if level.line_special[best_line] == 0:
+            opening = movement_line_opening(level, best_line)
+            if opening["range"] <= 0:
+                return
+            continue
+
+        trigger_special_line(level, best_line, "use", True)
+        return
+
+
+def player_record(mo: dict) -> dict:
+    """G_PlayerReborn()'s live record: everything zero, then the spawn fields."""
+    return {
+        "mo": mo,
+        "playerstate": PST_LIVE,
+        "cmd": {"forwardmove": 0, "sidemove": 0, "angleturn": 0, "buttons": 0},
+        "viewz": 0, "viewheight": 0, "deltaviewheight": 0, "bob": 0,
+        "health": PLAYER_MAXHEALTH, "armorpoints": 0, "armortype": 0,
+        "attackdown": 1, "usedown": 1, "refire": 0,
+        "killcount": 0, "itemcount": 0, "secretcount": 0,
+        "damagecount": 0, "bonuscount": 0, "extralight": 0,
+        "fixedcolormap": 0, "attacker": None, "message": None,
+        "didsecret": False, "onground": 0, "useTriggered": 0,
+        "useTriggers": 0, "unsupportedAttack": 0,
+        "unsupportedWeaponChange": 0, "unsupportedDeath": 0,
+    }
+
+
+def player_move_player(level: "SpecLevel", player: dict) -> None:
+    """P_MovePlayer(): turn, then forward and side thrust on the ground."""
+    mo = player["mo"]
+    cmd = player["cmd"]
+
+    # `player->mo->angle += (cmd->angleturn<<16);`
+    mo["angle"] = u32(mo["angle"] + (cmd["angleturn"] << 16))
+    # `onground = (player->mo->z <= player->mo->floorz);`
+    player["onground"] = 1 if mo["z"] <= mo["floorz"] else 0
+
+    if cmd["forwardmove"] and player["onground"]:
+        movement_thrust(level, mo, mo["angle"], cmd["forwardmove"] * 2048)
+    if cmd["sidemove"] and player["onground"]:
+        # `P_Thrust (player, player->mo->angle-ANG90, cmd->sidemove*2048);`
+        movement_thrust(level, mo, u32(mo["angle"] - ANG90),
+                        cmd["sidemove"] * 2048)
+
+    # `P_SetMobjState (player->mo, S_PLAY_RUN1)` changes only the sprite and
+    # the state tic counter, neither of which this protocol prints; the oracle
+    # models no state machine.
+
+
+def player_calc_height(level: "SpecLevel", player: dict) -> None:
+    """P_CalcHeight(): the bounded bob and the view height walk."""
+    mo = player["mo"]
+
+    player["bob"] = i32(
+        (fixed_mul(mo["momx"], mo["momx"]) +
+         fixed_mul(mo["momy"], mo["momy"])) >> 2)
+    if player["bob"] > PLAYER_MAXBOB:
+        player["bob"] = PLAYER_MAXBOB
+
+    # `(player->cheats & CF_NOMOMENTUM)` is absent: there are no cheats (D5).
+    if not player["onground"]:
+        player["viewz"] = i32(mo["z"] + PLAYER_VIEWHEIGHT)
+        if player["viewz"] > mo["ceilingz"] - 4 * FRACUNIT:
+            player["viewz"] = mo["ceilingz"] - 4 * FRACUNIT
+        # Upstream's next statement overwrites the clamp; kept verbatim.
+        player["viewz"] = i32(mo["z"] + player["viewheight"])
+        return
+
+    angle = (PLAYER_BOB_FINE_STEP * level.leveltime) & FINEMASK
+    bob = fixed_mul(player["bob"] // 2, FINE_SINE[angle])
+
+    if player["playerstate"] == PST_LIVE:
+        player["viewheight"] = i32(
+            player["viewheight"] + player["deltaviewheight"])
+
+        if player["viewheight"] > PLAYER_VIEWHEIGHT:
+            player["viewheight"] = PLAYER_VIEWHEIGHT
+            player["deltaviewheight"] = 0
+
+        if player["viewheight"] < PLAYER_VIEWHEIGHT // 2:
+            player["viewheight"] = PLAYER_VIEWHEIGHT // 2
+            if player["deltaviewheight"] <= 0:
+                player["deltaviewheight"] = 1
+
+        if player["deltaviewheight"]:
+            player["deltaviewheight"] = i32(
+                player["deltaviewheight"] + FRACUNIT // 4)
+            if player["deltaviewheight"] == 0:
+                player["deltaviewheight"] = 1
+
+    player["viewz"] = i32(mo["z"] + player["viewheight"] + bob)
+    if player["viewz"] > mo["ceilingz"] - 4 * FRACUNIT:
+        player["viewz"] = mo["ceilingz"] - 4 * FRACUNIT
+
+
+def player_think(level: "SpecLevel", player: dict, cmd: dict) -> None:
+    """P_PlayerThink(): upstream's body, minus the D4.2d branches."""
+    player["cmd"] = dict(cmd)
+    command = player["cmd"]
+    player["useTriggered"] = 0
+
+    if player["playerstate"] != PST_LIVE:
+        # `P_DeathThink (player); return;` is D4.2d's: counted, not faked.
+        player["unsupportedDeath"] += 1
+        return
+
+    mo = player["mo"]
+    if mo["reactiontime"]:
+        mo["reactiontime"] -= 1
+    else:
+        player_move_player(level, player)
+
+    player_calc_height(level, player)
+
+    # `if (cmd->buttons & BT_SPECIAL) cmd->buttons = 0;`
+    if command["buttons"] & BT_SPECIAL:
+        command["buttons"] = 0
+
+    if command["buttons"] & BT_CHANGE:
+        player["unsupportedWeaponChange"] += 1
+
+    if command["buttons"] & BT_USE:
+        if not player["usedown"]:
+            before = level.stats["triggers"]
+            movement_use_lines(level, mo)
+            if level.stats["triggers"] != before:
+                player["useTriggered"] = 1
+                player["useTriggers"] += 1
+            player["usedown"] = 1
+    else:
+        player["usedown"] = 0
+
+    if command["buttons"] & BT_ATTACK:
+        player["unsupportedAttack"] += 1
+
+    if player["damagecount"]:
+        player["damagecount"] -= 1
+    if player["bonuscount"]:
+        player["bonuscount"] -= 1
+
+
+def player_command(tic: int) -> dict:
+    """The PLAYER script's command for one tic (documented in movement_check.c)."""
+    cmd = {"forwardmove": 0, "sidemove": 0, "angleturn": 0, "buttons": 0}
+    if tic < 32:
+        cmd["forwardmove"] = 0x19
+    elif tic < 64:
+        cmd["forwardmove"] = 0x32
+    elif tic < 96:
+        cmd["forwardmove"] = 0x19
+        cmd["angleturn"] = -640
+    elif tic < 128:
+        cmd["sidemove"] = 0x19
+    elif tic < 160:
+        cmd["forwardmove"] = -0x19
+    elif tic < 168:
+        cmd["buttons"] = BT_USE
+    return cmd
+
+
+def report_player(lumps: list[Lump], map_name: str, tics: int) -> None:
+    """The `--player` protocol: a ticcmd drives the avatar through P_PlayerThink."""
+    if tics < 0:
+        raise FormatError("--tics cannot be negative")
+
+    bsp = read_bsp_map(lumps, map_name)
+    things = run_things(bsp, 2)          # the RNG position the level load leaves
+    level = SpecLevel(bsp, RandomState(things.rng))
+    level.mobjs = [movement_player(level, use_start_angle=True)]
+    level.move_stats = {"checks": 0, "blocked": 0, "crossed": 0, "slides": 0}
+
+    mo = level.mobjs[0]
+    player = player_record(mo)
+
+    print(f"PLAYER {map_name} tics={tics} script={PLAYER_SCRIPT}")
+
+    for tic in range(tics):
+        player_think(level, player, player_command(tic))
+
+        # P_RunThinkers: the avatar is the first mobj; run_tic walks the sector
+        # thinkers the use press may just have appended.
+        if mo["momx"] or mo["momy"] or (mo["flags"] & MF_SKULLFLY):
+            movement_xy_movement(level, mo)
+        if mo["z"] != mo["floorz"] or mo["momz"]:
+            movement_z_movement(level, mo)
+        run_tic(level)
+        level.leveltime += 1
+
+        print(f"TIC {tic} x={mo['x']} y={mo['y']} z={mo['z']} "
+              f"angle={mo['angle'] & 0xFFFFFFFF} momx={mo['momx']} "
+              f"momy={mo['momy']} floorz={mo['floorz']} sector={mo['sector']} "
+              f"viewz={player['viewz']} viewheight={player['viewheight']} "
+              f"bob={player['bob']} use={player['useTriggered']}")
+
+    print(f"SUMMARY tics={tics} finalx={mo['x']} finaly={mo['y']} "
+          f"finalangle={mo['angle'] & 0xFFFFFFFF} "
+          f"finalviewz={player['viewz']} used={player['useTriggers']}")
 
 
 # --- BSP reporting ----------------------------------------------------------
@@ -5213,10 +5485,14 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
                         help="run the 160-tic movement script (thrust, wall, "
                              "slide, corner, friction, return) and print the mobj "
                              "every tic (D4.2b)")
+    parser.add_argument("--player", metavar="NAME",
+                        help="run the 200-tic player script through P_PlayerThink "
+                             "(walk, run, turn, strafe, backpedal, use, friction) "
+                             "and print the avatar and view every tic (D4.2c)")
     parser.add_argument("--tics", type=int, default=420, metavar="N",
-                        help="with --specials or --movement: tics to run "
+                        help="with --specials, --movement or --player: tics to run "
                              "(default: 420 for --specials; the movement gate "
-                             "passes 160)")
+                             "passes 160 or 200)")
     parser.add_argument("--skill", default="medium", metavar="NAME",
                         help="with --things: baby, easy, medium, hard or nightmare "
                              "(default: medium)")
@@ -5253,10 +5529,11 @@ def main(argv: list[str] | None = None) -> int:
     flats_wanted = arguments.flats or arguments.all
     if not (patches_wanted or textures_wanted or flats_wanted or arguments.map
             or arguments.stats or arguments.bsp or arguments.segs
-            or arguments.things or arguments.specials or arguments.movement):
+            or arguments.things or arguments.specials or arguments.movement
+            or arguments.player):
         parser.error("nothing to do: pass --patches, --textures, --flats, --all, "
-                     "--map, --stats, --bsp, --segs, --things, --specials or "
-                     "--movement")
+                     "--map, --stats, --bsp, --segs, --things, --specials, "
+                     "--movement or --player")
     if arguments.limit is not None and arguments.limit < 0:
         parser.error("--limit cannot be negative")
     if arguments.tics < 0:
@@ -5323,6 +5600,8 @@ def main(argv: list[str] | None = None) -> int:
             report_specials(lumps, arguments.specials.upper(), arguments.tics)
         if arguments.movement:
             report_movement(lumps, arguments.movement.upper(), arguments.tics)
+        if arguments.player:
+            report_player(lumps, arguments.player.upper(), arguments.tics)
     except FormatError as error:
         print(f"doom_ref: {error}", file=sys.stderr)
         return EXIT_INPUT

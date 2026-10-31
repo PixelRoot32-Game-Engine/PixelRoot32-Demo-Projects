@@ -1,24 +1,26 @@
 /*
- * Host harness for movement and collision (D4.2b).
+ * Host harness for movement, collision and the player (D4.2b / D4.2c).
  *
  * It loads a level through lib/doom/p_setup.c, keeps only the player mobj that
  * P_LoadThings() already spawned (the first type-1 THING, through
- * P_SpawnPlayer), runs the scripted 160-tic walk against the real p_map.c, and
+ * P_SpawnPlayer), runs a scripted input against the real p_map.c/p_mobj.c, and
  * prints the state after every tic.
  *
  * tools/movement_check.py compiles this file, runs it next to
- * tools/doom_ref.py --movement, and compares the two outputs line for line.
+ * tools/doom_ref.py --movement (or --player), and compares the two outputs line
+ * for line.
  *
- * PROTOCOL (identical to doom_ref.py's --movement output; stated in both so
- * neither has to be read to compare them)
+ * TWO PROTOCOLS
+ *
+ * MOVEMENT (the default) is D4.2b's gate: the harness itself sets the angle and
+ * calls p_thrust()/p_mobj_thinker(), so the walk exercises the collision core
+ * without a player record. Its output is unchanged.
  *
  *   MOVEMENT <map> tics=<N> script=<name>
  *   TIC <n> x=<i32> y=<i32> z=<i32> momx=<i32> momy=<i32> floorz=<i32>
  *       ceilingz=<i32> sector=<i32> subsector=<i32> blocked=<0|1> cross=<n>
  *   SUMMARY tics=<N> finalx=<i32> finaly=<i32> finalz=<i32> blocked=<n>
  *           cross=<n> checks=<n>
- *
- * THE SCRIPT (documented here and in doom_ref.py; identical in both)
  *
  *   tic 0 is the state after the first thrust and the first thinker run; tic n
  *   is after n + 1. The mobj starts as p_spawn_player() leaves it (angle from
@@ -35,6 +37,44 @@
  * (the first refusal is what a slide then recovers from). `cross` is the number
  * of P_CrossSpecialLine invocations from that tic's move.
  *
+ * PLAYER (--player) is D4.2c's gate: a real p_ticcmd_t drives the avatar
+ * through p_level_tic(), so P_PlayerThink, P_MovePlayer and P_CalcHeight run in
+ * upstream's order and the thinker list moves the mobj afterwards.
+ *
+ *   PLAYER <map> tics=<N> script=<name>
+ *   TIC <n> x=<i32> y=<i32> z=<i32> angle=<u32> momx=<i32> momy=<i32>
+ *       floorz=<i32> sector=<i32> viewz=<i32> viewheight=<i32> bob=<i32>
+ *       use=<0|1>
+ *   SUMMARY tics=<N> finalx=<i32> finaly=<i32> finalangle=<u32>
+ *           finalviewz=<i32> used=<n>
+ *
+ *   The avatar spawns at the first player start with the map's normal skill
+ *   (skill 2, p_spawn_rules_default()) and keeps the THING record's angle.
+ *
+ *     tics   0..31   forwardmove 0x19                  (walk forward)
+ *     tics  32..63   forwardmove 0x32                  (run into the wall, slide)
+ *     tics  64..95   forwardmove 0x19, angleturn -640  (turn right while walking)
+ *     tics  96..127  sidemove 0x19                     (strafe right)
+ *     tics 128..159  forwardmove -0x19                 (backpedal)
+ *     tics 160..167  buttons BT_USE                    (one press, held)
+ *     tics 168..199  no input                          (friction to rest)
+ *
+ * `use` is 1 when that tic's *newly pressed* BT_USE opened/triggered a special
+ * line. P_UseLines() reports nothing, so the flag is the special dispatcher's
+ * trigger counter delta around the call: a line crossed later in the same tic
+ * by the mobj's movement cannot be mistaken for the press. `used` in SUMMARY is
+ * how many presses triggered something.
+ *
+ * BOTH SCRIPTED RUNS DISCARD THE OTHER THINGS
+ *
+ * The level load spawns E1M1's population. Both runs keep only the avatar and
+ * let one thinker walk release the rest, so the comparison is the map's
+ * geometry rather than a monster blockmap the oracle does not model. Neither
+ * run calls p_spawn_specials(): sector specials (light flashes, close-in-30)
+ * are tools/specials_check.py's subject, and leaving them out keeps the tic
+ * clock and the RNG identical on both sides. A door created by BT_USE is a
+ * thinker all the same, and p_level_tic() ticks it.
+ *
  * Lines starting with `INFO ` are C-only measurements: the mean and peak
  * microseconds of one P_CheckPosition over a fixed number of probes, and the
  * number of linedefs the brute-force walk examines. They are excluded from the
@@ -42,9 +82,12 @@
  *
  * THE PERTURBATION HOOK
  *
- * P_ORIG_FRICTION is a #ifndef in p_map.h, so the whole build can be perturbed
- * with -DP_ORIG_FRICTION=0xE000. tools/movement_check.py --perturb friction does
- * exactly that, which is how the gate is proved able to fail.
+ * P_ORIG_FRICTION is a #ifndef in p_map.h and P_VIEWHEIGHT a #ifndef in
+ * p_user.h, so the whole build can be perturbed with -DP_ORIG_FRICTION=0xE000
+ * or -DP_VIEWHEIGHT=(40*FRACUNIT). tools/movement_check.py --perturb does
+ * exactly that, which is how the gate is proved able to fail. The view-height
+ * perturbation only changes the PLAYER protocol (MOVEMENT never calls
+ * P_CalcHeight), so the script refuses it without --player.
  *
  * Build: see tools/movement_check.py. This is a desktop tool: malloc, stdio, the
  * WAD and a wall clock come from the host, none of which the firmware uses.
@@ -63,11 +106,16 @@
 #include "p_map.h"
 #include "p_setup.h"
 #include "p_spec.h"
+#include "p_user.h"
 #include "w_wad.h"
 
 #define MOVEMENT_ARENA_BYTES (256u * 1024u)
 #define MOVEMENT_DEFAULT_TICS 160
 #define MOVEMENT_PROBES 2000
+
+#define PLAYER_DEFAULT_TICS 200
+#define PLAYER_SCRIPT "player-walk-turn-strafe-use"
+#define MOVEMENT_SCRIPT "walk-slide-corner-friction-return"
 
 static uint8_t* readFile(const char* path, size_t* size) {
     FILE* handle = fopen(path, "rb");
@@ -117,6 +165,8 @@ static double nowMicroseconds(void) {
 #endif
 }
 
+/* --- MOVEMENT script ------------------------------------------------------ */
+
 /* The scripted angle and thrust for one tic, and whether to thrust at all. */
 static int phaseForTic(int tic, angle_t* angle, fixed_t* move) {
     if (tic < 32) {
@@ -145,6 +195,167 @@ static int phaseForTic(int tic, angle_t* angle, fixed_t* move) {
     return 0;
 }
 
+/* --- PLAYER script -------------------------------------------------------- */
+
+/*
+ * One tic's command, identical to doom_ref.py's player_command(). Fresh zeros
+ * every tic: `buttons` is a level, not a toggle, so a held key is the same word
+ * on every tic and the player's `usedown` latch decides when it counts.
+ */
+static void playerCommandForTic(int tic, p_ticcmd_t* cmd) {
+    memset(cmd, 0, sizeof *cmd);
+
+    if (tic < 32) {
+        cmd->forwardmove = 0x19;                 /* walk forward */
+    } else if (tic < 64) {
+        cmd->forwardmove = 0x32;                 /* run forward */
+    } else if (tic < 96) {
+        cmd->forwardmove = 0x19;
+        cmd->angleturn = -640;                   /* turn right while walking */
+    } else if (tic < 128) {
+        cmd->sidemove = 0x19;                    /* strafe right */
+    } else if (tic < 160) {
+        cmd->forwardmove = -0x19;                /* backpedal */
+    } else if (tic < 168) {
+        cmd->buttons = BT_USE;                   /* one press, held */
+    }
+    /* tics 168..: no input, friction to rest. */
+}
+
+/* --- The two runs --------------------------------------------------------- */
+
+static void runMovement(p_level_t* level, const char* mapName, int tics) {
+    const doom_map_t* map = level->map;
+    r_mobj_t* mobj;
+    p_move_stats_t stats;
+    p_position_result_t probe;
+    uint32_t lines;
+    uint32_t blockedAtStart;
+    uint32_t crossedAtStart;
+    int removed;
+    int tic;
+
+    mobj = level->player;
+    mobj->angle = 0;
+    mobj->health = mobjinfo[MT_PLAYER].spawnhealth;
+
+    /* C-only measurement: one P_CheckPosition, at four positions around the
+     * spawn, over a fixed number of probes. The move counters are NULL here so
+     * the script's `checks` is not polluted. */
+    lines = map->lumps[DOOM_MAP_LINEDEFS].count;
+    {
+        static const fixed_t offsets[4] = {0, 8 * FRACUNIT, -8 * FRACUNIT,
+                                           24 * FRACUNIT};
+        double total = 0.0;
+        double peak = 0.0;
+        int samples = 0;
+        uint32_t i;
+
+        for (i = 0; i < 4u; ++i) {
+            int probeIndex;
+
+            for (probeIndex = 0; probeIndex < MOVEMENT_PROBES; ++probeIndex) {
+                const fixed_t px = mobj->x + offsets[i];
+                const fixed_t py = mobj->y + offsets[(i + 1) & 3u];
+                double start = nowMicroseconds();
+                double elapsed;
+
+                (void)p_check_position(&level->context, mobj, px, py, &probe);
+                elapsed = nowMicroseconds() - start;
+                total += elapsed;
+                if (elapsed > peak) {
+                    peak = elapsed;
+                }
+                samples += 1;
+            }
+        }
+        /* 475 is the whole candidate set: the brute-force walk decodes every
+         * LINEDEF and lets the bbox test reject most of them. */
+        printf("INFO check mean_us=%.3f peak_us=%.3f samples=%d lines=%u\n",
+               total / (double)samples, peak, samples, (unsigned)lines);
+        printf("INFO level baseline=%u lines=%u sector=%u subsector=%u\n",
+               (unsigned)sizeof(p_level_t), (unsigned)map->lumps[DOOM_MAP_LINEDEFS].count,
+               (unsigned)map->lumps[DOOM_MAP_SECTORS].count,
+               (unsigned)map->lumps[DOOM_MAP_SSECTORS].count);
+    }
+
+    memset(&stats, 0, sizeof stats);
+    level->context.moveStats = &stats;
+
+    printf("MOVEMENT %s tics=%d script=%s\n", mapName, tics, MOVEMENT_SCRIPT);
+
+    for (tic = 0; tic < tics; ++tic) {
+        angle_t angle = mobj->angle;
+        fixed_t move = 0;
+        int thrust = phaseForTic(tic, &angle, &move);
+
+        if (thrust) {
+            mobj->angle = angle;
+            p_thrust(&level->context, mobj, angle, move);
+        }
+
+        blockedAtStart = stats.blocked;
+        crossedAtStart = stats.crossed;
+        p_mobj_thinker(&mobj->thinker, &level->context);
+        removed = mobj->thinker.removed != 0u;
+
+        printf("TIC %d x=%ld y=%ld z=%ld momx=%ld momy=%ld floorz=%ld "
+               "ceilingz=%ld sector=%u subsector=%u blocked=%d cross=%u\n",
+               tic, (long)mobj->x, (long)mobj->y, (long)mobj->z,
+               (long)mobj->momx, (long)mobj->momy, (long)mobj->floorz,
+               (long)mobj->ceilingz, (unsigned)mobj->sector,
+               (unsigned)mobj->subsector,
+               stats.blocked != blockedAtStart ? 1 : 0,
+               (unsigned)(stats.crossed - crossedAtStart));
+
+        if (removed) {
+            break;
+        }
+    }
+
+    printf("SUMMARY tics=%d finalx=%ld finaly=%ld finalz=%ld blocked=%u "
+           "cross=%u checks=%u\n",
+           tics, (long)mobj->x, (long)mobj->y, (long)mobj->z,
+           (unsigned)stats.blocked, (unsigned)stats.crossed,
+           (unsigned)stats.checks);
+}
+
+static void runPlayer(p_level_t* level, const char* mapName, int tics) {
+    int tic;
+
+    printf("PLAYER %s tics=%d script=%s\n", mapName, tics, PLAYER_SCRIPT);
+
+    for (tic = 0; tic < tics; ++tic) {
+        p_ticcmd_t cmd;
+        p_thinker_run_t run;
+        r_mobj_t* mobj;
+
+        playerCommandForTic(tic, &cmd);
+        (void)p_level_tic(level, &cmd, &run);
+
+        /* The script cannot remove the avatar: no input, no damage and no
+         * teleport exist yet. The pointer is the level's own. */
+        mobj = level->player;
+        printf("TIC %d x=%ld y=%ld z=%ld angle=%lu momx=%ld momy=%ld "
+               "floorz=%ld sector=%u viewz=%ld viewheight=%ld bob=%ld "
+               "use=%d\n",
+               tic, (long)mobj->x, (long)mobj->y, (long)mobj->z,
+               (unsigned long)mobj->angle, (long)mobj->momx, (long)mobj->momy,
+               (long)mobj->floorz, (unsigned)mobj->sector,
+               (long)level->playerState.viewz,
+               (long)level->playerState.viewheight,
+               (long)level->playerState.bob,
+               level->playerState.useTriggered != 0u ? 1 : 0);
+    }
+
+    printf("SUMMARY tics=%d finalx=%ld finaly=%ld finalangle=%lu "
+           "finalviewz=%ld used=%lu\n",
+           tics, (long)level->player->x, (long)level->player->y,
+           (unsigned long)level->player->angle,
+           (long)level->playerState.viewz,
+           (unsigned long)level->playerState.useTriggers);
+}
+
 int main(int argc, char** argv) {
     wad_state_t wad;
     doom_map_source_t source;
@@ -155,36 +366,38 @@ int main(int argc, char** argv) {
     uint8_t* arena;
     size_t size = 0;
     const char* mapName = "E1M1";
-    int tics = MOVEMENT_DEFAULT_TICS;
+    int tics;
+    int playerMode = 0;
+    int firstArg = 1;
     int marker;
     int index;
-    int tic;
     r_mobj_t* mobj;
-    p_move_stats_t stats;
-    p_position_result_t probe;
-    uint32_t lines;
-    uint32_t blockedAtStart;
-    uint32_t crossedAtStart;
-    int removed;
 
-    if (argc < 2 || argc > 4) {
-        fprintf(stderr, "usage: movement_check <path-to-WAD> [map] [tics]\n");
+    if (argc >= 2 && strcmp(argv[1], "--player") == 0) {
+        playerMode = 1;
+        firstArg = 2;
+    }
+    if (argc - firstArg < 1 || argc - firstArg > 3) {
+        fprintf(stderr,
+                "usage: movement_check [--player] <path-to-WAD> [map] [tics]\n");
         return 2;
     }
-    if (argc >= 3) {
-        mapName = argv[2];
+    if (argc - firstArg >= 2) {
+        mapName = argv[firstArg + 1];
     }
-    if (argc >= 4) {
-        tics = atoi(argv[3]);
+    if (argc - firstArg >= 3) {
+        tics = atoi(argv[firstArg + 2]);
+    } else {
+        tics = playerMode ? PLAYER_DEFAULT_TICS : MOVEMENT_DEFAULT_TICS;
     }
     if (tics < 0) {
         fprintf(stderr, "movement_check: tics cannot be negative\n");
         return 2;
     }
 
-    bytes = readFile(argv[1], &size);
+    bytes = readFile(argv[firstArg], &size);
     if (bytes == NULL) {
-        fprintf(stderr, "movement_check: cannot read %s\n", argv[1]);
+        fprintf(stderr, "movement_check: cannot read %s\n", argv[firstArg]);
         return 2;
     }
     if (wad_open(&wad, bytes, size) != WAD_ERR_OK) {
@@ -251,90 +464,11 @@ int main(int argc, char** argv) {
     (void)p_run_thinkers(&level.thinkers, &p_level_release_thinker,
                          &level.context, NULL);
 
-    mobj = level.player;
-    mobj->angle = 0;
-    mobj->health = mobjinfo[MT_PLAYER].spawnhealth;
-
-    /* C-only measurement: one P_CheckPosition, at four positions around the
-     * spawn, over a fixed number of probes. The move counters are NULL here so
-     * the script's `checks` is not polluted. */
-    lines = map.lumps[DOOM_MAP_LINEDEFS].count;
-    {
-        static const fixed_t offsets[4] = {0, 8 * FRACUNIT, -8 * FRACUNIT,
-                                           24 * FRACUNIT};
-        double total = 0.0;
-        double peak = 0.0;
-        int samples = 0;
-        uint32_t i;
-
-        for (i = 0; i < 4u; ++i) {
-            int probeIndex;
-
-            for (probeIndex = 0; probeIndex < MOVEMENT_PROBES; ++probeIndex) {
-                const fixed_t px = mobj->x + offsets[i];
-                const fixed_t py = mobj->y + offsets[(i + 1) & 3u];
-                double start = nowMicroseconds();
-                double elapsed;
-
-                (void)p_check_position(&level.context, mobj, px, py, &probe);
-                elapsed = nowMicroseconds() - start;
-                total += elapsed;
-                if (elapsed > peak) {
-                    peak = elapsed;
-                }
-                samples += 1;
-            }
-        }
-        /* 475 is the whole candidate set: the brute-force walk decodes every
-         * LINEDEF and lets the bbox test reject most of them. */
-        printf("INFO check mean_us=%.3f peak_us=%.3f samples=%d lines=%u\n",
-               total / (double)samples, peak, samples, (unsigned)lines);
-        printf("INFO level baseline=%u lines=%u sector=%u subsector=%u\n",
-               (unsigned)sizeof(p_level_t), (unsigned)map.lumps[DOOM_MAP_LINEDEFS].count,
-               (unsigned)map.lumps[DOOM_MAP_SECTORS].count,
-               (unsigned)map.lumps[DOOM_MAP_SSECTORS].count);
+    if (playerMode) {
+        runPlayer(&level, mapName, tics);
+    } else {
+        runMovement(&level, mapName, tics);
     }
-
-    memset(&stats, 0, sizeof stats);
-    level.context.moveStats = &stats;
-
-    printf("MOVEMENT %s tics=%d script=walk-slide-corner-friction-return\n",
-           mapName, tics);
-
-    for (tic = 0; tic < tics; ++tic) {
-        angle_t angle = mobj->angle;
-        fixed_t move = 0;
-        int thrust = phaseForTic(tic, &angle, &move);
-
-        if (thrust) {
-            mobj->angle = angle;
-            p_thrust(&level.context, mobj, angle, move);
-        }
-
-        blockedAtStart = stats.blocked;
-        crossedAtStart = stats.crossed;
-        p_mobj_thinker(&mobj->thinker, &level.context);
-        removed = mobj->thinker.removed != 0u;
-
-        printf("TIC %d x=%ld y=%ld z=%ld momx=%ld momy=%ld floorz=%ld "
-               "ceilingz=%ld sector=%u subsector=%u blocked=%d cross=%u\n",
-               tic, (long)mobj->x, (long)mobj->y, (long)mobj->z,
-               (long)mobj->momx, (long)mobj->momy, (long)mobj->floorz,
-               (long)mobj->ceilingz, (unsigned)mobj->sector,
-               (unsigned)mobj->subsector,
-               stats.blocked != blockedAtStart ? 1 : 0,
-               (unsigned)(stats.crossed - crossedAtStart));
-
-        if (removed) {
-            break;
-        }
-    }
-
-    printf("SUMMARY tics=%d finalx=%ld finaly=%ld finalz=%ld blocked=%u "
-           "cross=%u checks=%u\n",
-           tics, (long)mobj->x, (long)mobj->y, (long)mobj->z,
-           (unsigned)stats.blocked, (unsigned)stats.crossed,
-           (unsigned)stats.checks);
 
     p_level_shutdown(&level);
     free(arena);

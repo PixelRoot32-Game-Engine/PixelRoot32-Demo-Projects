@@ -43,6 +43,7 @@
 #include "p_plats.h"
 #include "p_setup.h"
 #include "p_spec.h"
+#include "p_user.h"
 #include "r_tables.h"
 
 #include "../../test_config.h"
@@ -1625,6 +1626,15 @@ struct MoveMapBuilder {
         addLine(v3, v0, DOOM_ML_BLOCKING, 0, 0, front, -1);
     }
 
+    /// One THINGS record, in the 1993 layout the loader reads.
+    void addThing(i16 x, i16 y, i16 angle, i16 type, i16 options) {
+        put16(things, x);
+        put16(things, y);
+        put16(things, angle);
+        put16(things, type);
+        put16(things, options);
+    }
+
     doom_map_error_t open(doom_map_t* map) {
         doom_map_source_t source{};
 
@@ -1905,6 +1915,325 @@ void test_move_use_lines_triggers_the_special_line_in_front(void) {
     TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
 }
 
+// --- D4.2c: the player ------------------------------------------------------
+
+/*
+ * A whole level with a type-1 THING, so p_level_init runs P_SpawnPlayer and
+ * wires the player record the way the game does. The room is 256 x 256 with a
+ * 128-unit ceiling: enough to walk, turn and clamp the view without a WAD.
+ */
+struct PlayerFixture {
+    MoveMapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[32768]{};
+    p_level_t level{};
+
+    PlayerFixture() : builder({{0, 128, 160, 0, 0}}) {
+        builder.addRoom(0);
+        builder.addThing(0, 0, 90, 1, 7);   // player 1, facing +y
+    }
+
+    bool open() {
+        if (builder.open(&map) != DOOM_MAP_OK) {
+            return false;
+        }
+        return p_level_init(&level, &map, arena, sizeof arena, nullptr) ==
+               P_SETUP_OK;
+    }
+
+    p_player_t& player() { return level.playerState; }
+    r_mobj_t* mo() { return level.player; }
+};
+
+// A room with no THING: the caller spawns and wires its own avatar.
+struct SpawnFixture {
+    SpecMapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[32768]{};
+    p_level_t level{};
+
+    SpawnFixture() : builder({{0, 128, 160, 0, 0}, {0, 128, 160, 0, 0}}) {}
+
+    bool open() {
+        if (builder.open(&map) != DOOM_MAP_OK) {
+            return false;
+        }
+        return p_level_init(&level, &map, arena, sizeof arena, nullptr) ==
+               P_SETUP_OK;
+    }
+
+    p_player_t& player() { return level.playerState; }
+
+    int count(i16 kind) const {
+        int found = 0;
+
+        for (const p_thinker_t* thinker = p_thinker_first(&level.thinkers);
+             thinker != nullptr; thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == kind) {
+                found += 1;
+            }
+        }
+        return found;
+    }
+};
+
+void test_player_init_wires_the_avatar_and_reborn_defaults(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_NOT_NULL(fixture.level.player);
+
+    const p_player_t& player = fixture.level.playerState;
+    TEST_ASSERT_EQUAL_PTR(fixture.level.player, player.mo);
+    TEST_ASSERT_EQUAL_INT(P_PST_LIVE, player.playerstate);
+    TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH, player.health);
+    // `p->usedown = p->attackdown = true;	// don't do anything immediately`
+    TEST_ASSERT_EQUAL_INT32(1, player.usedown);
+    TEST_ASSERT_EQUAL_INT32(1, player.attackdown);
+    // G_PlayerReborn memsets the record: the view grows from zero on tic 0.
+    TEST_ASSERT_EQUAL_INT32(0, player.viewheight);
+    TEST_ASSERT_EQUAL_INT32(0, player.viewz);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.leveltime);
+    TEST_ASSERT_EQUAL_INT(0, player.cmd.forwardmove);
+    TEST_ASSERT_EQUAL_UINT8(0u, player.cmd.buttons);
+}
+
+void test_player_think_turns_walks_and_raises_the_view(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    p_ticcmd_t cmd{};
+    cmd.forwardmove = 0x19;
+    cmd.angleturn = -640;               // one slow-turn step, clockwise
+
+    const fixed_t walk = 0x19 * 2048;
+    const angle_t startAngle = fixture.mo()->angle;
+    p_player_think(&fixture.level, &cmd);
+
+    // `mo->angle += (cmd->angleturn<<16)`
+    const angle_t turned =
+        static_cast<angle_t>(startAngle + (static_cast<angle_t>(
+                                              static_cast<u32>(
+                                                  static_cast<i32>(-640))
+                                              << 16)));
+    TEST_ASSERT_EQUAL_UINT32(turned, fixture.mo()->angle);
+
+    // `P_Thrust (player, mo->angle, cmd->forwardmove*2048)`
+    TEST_ASSERT_EQUAL_INT32(
+        static_cast<i32>(fixed_mul(walk,
+                                   r_fine_sine[(turned >> ANGLETOFINESHIFT) +
+                                               FINEANGLES / 4])),
+        fixture.mo()->momx);
+    TEST_ASSERT_EQUAL_INT32(
+        static_cast<i32>(fixed_mul(walk, r_fine_sine[turned >>
+                                                     ANGLETOFINESHIFT])),
+        fixture.mo()->momy);
+
+    // The first P_CalcHeight grows the view from 0 to VIEWHEIGHT/2 and starts
+    // the half step: `deltaviewheight = 1` then `+= FRACUNIT/4`.
+    TEST_ASSERT_EQUAL_INT32(P_VIEWHEIGHT / 2, fixture.player().viewheight);
+    TEST_ASSERT_EQUAL_INT32(1 + kFrac / 4,
+                            fixture.player().deltaviewheight);
+
+    // bob is bounded horizontal momentum, and viewz is the first P_CalcHeight's
+    // `mo->z + viewheight + FixedMul(bob/2, finesine[0])` at leveltime 0.
+    const fixed_t expectedBob =
+        (fixed_mul(fixture.mo()->momx, fixture.mo()->momx) +
+         fixed_mul(fixture.mo()->momy, fixture.mo()->momy)) >> 2;
+    TEST_ASSERT_EQUAL_INT32(expectedBob, fixture.player().bob);
+    TEST_ASSERT_EQUAL_INT32(fixture.mo()->z + fixture.player().viewheight +
+                                fixed_mul(expectedBob / 2, r_fine_sine[0]),
+                            fixture.player().viewz);
+    TEST_ASSERT_EQUAL_INT(1, fixture.player().onground);
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.player().useTriggered);
+}
+
+void test_player_think_strafes_at_minus_ninety_degrees(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    fixture.mo()->angle = 0;
+
+    p_ticcmd_t cmd{};
+    cmd.sidemove = 0x19;
+    p_player_think(&fixture.level, &cmd);
+
+    // `P_Thrust (player, mo->angle-ANG90, cmd->sidemove*2048)`: positive
+    // sidemove is strafe right, which at angle 0 is -y.
+    const fixed_t side = 0x19 * 2048;
+    const uint32_t index = ANG270 >> ANGLETOFINESHIFT;
+    TEST_ASSERT_EQUAL_INT32(
+        static_cast<i32>(fixed_mul(side, r_fine_sine[index + FINEANGLES / 4])),
+        fixture.mo()->momx);
+    TEST_ASSERT_EQUAL_INT32(static_cast<i32>(fixed_mul(
+                                side, r_fine_sine[index])),
+                            fixture.mo()->momy);
+    TEST_ASSERT_TRUE(fixture.mo()->momy < 0);
+}
+
+void test_player_think_reactiontime_blocks_movement_and_keeps_the_view_low(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    fixture.mo()->reactiontime = 2;
+
+    p_ticcmd_t cmd{};
+    cmd.forwardmove = 0x19;
+    const angle_t startAngle = fixture.mo()->angle;
+
+    // `if (player->mo->reactiontime) player->mo->reactiontime--;`
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_EQUAL_INT16(1, fixture.mo()->reactiontime);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.mo()->momx);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.mo()->momy);
+    TEST_ASSERT_EQUAL_UINT32(startAngle, fixture.mo()->angle);
+
+    // P_MovePlayer never ran, so upstream's `onground` was never written: it
+    // is still 0, and P_CalcHeight takes the airborne branch `viewz = mo->z +
+    // viewheight` with viewheight still zero.
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.player().onground);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.player().viewheight);
+    TEST_ASSERT_EQUAL_INT32(fixture.mo()->z, fixture.player().viewz);
+
+    // The next tic decrements to zero (still no movement), and the one after
+    // it moves: `if (reactiontime) reactiontime--; else P_MovePlayer`.
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_EQUAL_INT16(0, fixture.mo()->reactiontime);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.mo()->momx);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.mo()->momy);
+
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_NOT_EQUAL(0, fixture.mo()->momx + fixture.mo()->momy);
+    TEST_ASSERT_EQUAL_UINT8(1u, fixture.player().onground);
+}
+
+void test_player_think_use_latches_and_counts_the_trigger(void) {
+    // A two-sided special line (1: manual door) in front of the avatar. The
+    // spawn record sets usedown, so the very first press is ignored, exactly as
+    // G_PlayerReborn's "don't do anything immediately" intends.
+    SpawnFixture fixture;
+    fixture.builder.addLine(DOOM_ML_TWOSIDED, 1, 0, 0, 1, true);
+    TEST_ASSERT_TRUE(fixture.open());
+
+    r_mobj_t* mobj = p_spawn_mobj(&fixture.level.context, 16 * kFrac,
+                                  -16 * kFrac, ONFLOORZ, MT_PLAYER, nullptr);
+    TEST_ASSERT_NOT_NULL(mobj);
+    mobj->angle = ANG90;
+    p_player_init(&fixture.level, mobj);
+
+    p_ticcmd_t cmd{};
+    cmd.buttons = BT_USE;
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.player().useTriggers);
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.player().useTriggered);
+    TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_DOOR));
+
+    // Release clears the latch.
+    cmd.buttons = 0;
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.player().usedown);
+
+    // A new press runs P_UseLines once and opens the door.
+    cmd.buttons = BT_USE;
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().useTriggers);
+    TEST_ASSERT_EQUAL_UINT8(1u, fixture.player().useTriggered);
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+
+    // Holding the button does not use twice.
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().useTriggers);
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+}
+
+void test_player_think_counts_the_deferred_buttons_and_death(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    p_ticcmd_t attack{};
+    attack.buttons = BT_ATTACK;
+    p_player_think(&fixture.level, &attack);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().unsupportedAttack);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.player().refire);   // D4.2d's counter
+
+    p_ticcmd_t change{};
+    change.buttons = BT_CHANGE;
+    p_player_think(&fixture.level, &change);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().unsupportedWeaponChange);
+
+    // `if (cmd->buttons & BT_SPECIAL) cmd->buttons = 0;` clears every bit,
+    // including a fire bit sharing the word.
+    p_ticcmd_t special{};
+    special.buttons = static_cast<u8>(BT_SPECIAL | BT_ATTACK);
+    p_player_think(&fixture.level, &special);
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.player().cmd.buttons);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().unsupportedAttack);
+
+    // PST_DEAD is P_DeathThink's (D4.2d): counted, not faked.
+    fixture.player().playerstate = P_PST_DEAD;
+    const fixed_t viewz = fixture.player().viewz;
+    p_ticcmd_t walk{};
+    walk.forwardmove = 0x19;
+    p_player_think(&fixture.level, &walk);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().unsupportedDeath);
+    TEST_ASSERT_EQUAL_INT(P_PST_DEAD, fixture.player().playerstate);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.mo()->momx);
+    TEST_ASSERT_EQUAL_INT32(viewz, fixture.player().viewz);
+    fixture.player().playerstate = P_PST_LIVE;
+}
+
+void test_player_calc_height_clamps_bob_and_ceiling(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // MAXMOVE in both axes: bob is clamped to MAXBOB, as
+    // `if (player->bob>MAXBOB) player->bob = MAXBOB;` does.
+    fixture.mo()->momx = 30 * kFrac;
+    fixture.mo()->momy = 30 * kFrac;
+    p_ticcmd_t idle{};
+    p_player_think(&fixture.level, &idle);
+    TEST_ASSERT_EQUAL_INT32(P_MAXBOB, fixture.player().bob);
+
+    // An active delta of one unit overshoots VIEWHEIGHT and settles: the view
+    // is clamped and the delta is zeroed, so the next tic does not grow it.
+    fixture.player().viewheight = P_VIEWHEIGHT - kFrac / 8;
+    fixture.player().deltaviewheight = kFrac;
+    p_player_think(&fixture.level, &idle);
+    TEST_ASSERT_EQUAL_INT32(P_VIEWHEIGHT, fixture.player().viewheight);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.player().deltaviewheight);
+
+    // `if (player->viewz > mo->ceilingz-4*FRACUNIT) viewz = ...`
+    fixture.mo()->z = 0;
+    fixture.mo()->ceilingz = 10 * kFrac;
+    fixture.player().viewheight = P_VIEWHEIGHT;
+    fixture.player().deltaviewheight = 0;
+    p_player_think(&fixture.level, &idle);
+    TEST_ASSERT_EQUAL_INT32(10 * kFrac - 4 * kFrac, fixture.player().viewz);
+}
+
+void test_level_tic_runs_the_player_then_the_thinkers(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    p_ticcmd_t cmd{};
+    cmd.forwardmove = 0x19;
+    p_thinker_run_t stats{};
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_level_tic(&fixture.level, &cmd, &stats));
+
+    // `leveltime++` is P_Ticker's last statement.
+    TEST_ASSERT_EQUAL_INT32(1, fixture.level.leveltime);
+    // The player's own mobj thinker is in the walk, so the avatar moved and the
+    // view was computed before the move, as upstream orders it.
+    TEST_ASSERT_TRUE(stats.executed >= 1u);
+    TEST_ASSERT_TRUE(fixture.mo()->y > 0);
+    TEST_ASSERT_TRUE(fixture.player().viewz != 0);
+
+    // The split is real: p_level_tick alone never runs the player think, so it
+    // changes neither the view nor the clock. This is what keeps the two
+    // player-less gates byte-identical.
+    const fixed_t viewz = fixture.player().viewz;
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_level_tick(&fixture.level, nullptr));
+    TEST_ASSERT_EQUAL_INT32(1, fixture.level.leveltime);
+    TEST_ASSERT_EQUAL_INT32(viewz, fixture.player().viewz);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1960,6 +2289,14 @@ int main(int argc, char** argv) {
     RUN_TEST(test_move_z_movement_gravity_floor_and_ceiling);
     RUN_TEST(test_move_change_sector_steps_up_and_counts_an_unsupported_crush);
     RUN_TEST(test_move_use_lines_triggers_the_special_line_in_front);
+    RUN_TEST(test_player_init_wires_the_avatar_and_reborn_defaults);
+    RUN_TEST(test_player_think_turns_walks_and_raises_the_view);
+    RUN_TEST(test_player_think_strafes_at_minus_ninety_degrees);
+    RUN_TEST(test_player_think_reactiontime_blocks_movement_and_keeps_the_view_low);
+    RUN_TEST(test_player_think_use_latches_and_counts_the_trigger);
+    RUN_TEST(test_player_think_counts_the_deferred_buttons_and_death);
+    RUN_TEST(test_player_calc_height_clamps_bob_and_ceiling);
+    RUN_TEST(test_level_tic_runs_the_player_then_the_thinkers);
 
     const int result = UNITY_END();
     test_teardown();

@@ -40,6 +40,7 @@
 #include "p_mobj.h"
 #include "p_spec.h"
 #include "p_tick.h"
+#include "p_user.h"
 #include "z_zone.h"
 
 #ifdef __cplusplus
@@ -127,6 +128,13 @@ typedef enum p_setup_error {
  *   lineCount       how many entries @c lineSpecial holds.
  *   specStats       what p_spawn_specials() and the movers did (p_spec.h).
  *   player          the mobj of the console player's start (type 1), or NULL.
+ *   playerState     the console player's record (upstream players[0]): the view
+ *                   height, the counters and this tic's command (p_user.h).
+ *                   `player` keeps naming the avatar mobj, because the two
+ *                   existing gates read that pointer and are not this task's.
+ *   leveltime       P_Ticker's tic counter since the level loaded. P_CalcHeight
+ *                   uses it for the bob angle; G_DoCompleted's par time (D4.3)
+ *                   reads it too.
  *   playerStarts    the four start records, verbatim (upstream playerstarts[]).
  *   playerStartSeen one flag per slot: the record was present in THINGS.
  *   deathmatchStarts the first ten type-11 records (upstream deathmatchstarts[]).
@@ -146,6 +154,7 @@ typedef struct p_level {
     p_thinker_list_t thinkers;
     p_action_stats_t actions;
     m_random_t random;
+    int32_t leveltime;
     p_spawn_rules_t rules;
     p_mobj_context_t context;
 
@@ -156,6 +165,7 @@ typedef struct p_level {
     p_spec_stats_t specStats;
 
     r_mobj_t* player;
+    p_player_t playerState;
     p_mapthing_t playerStarts[MAXPLAYERS];
     uint8_t playerStartSeen[MAXPLAYERS];
     p_mapthing_t deathmatchStarts[P_MAX_DEATHMATCH_STARTS];
@@ -221,7 +231,11 @@ p_setup_error_t p_level_init(p_level_t* level, const doom_map_t* map, void* aren
 void p_level_shutdown(p_level_t* level);
 
 /**
- * @brief Runs one tic: p_run_thinkers() over this level's list.
+ * @brief Runs one tic of the world alone: p_run_thinkers() over this list.
+ *
+ * There is no player step here on purpose; p_level_tic() is the game's tic and
+ * calls this function after P_PlayerThink(). The two existing gates call this
+ * one because their oracle has no player (see p_level_tic's comment).
  *
  * Removed mobjs are unlinked and returned to the level's zone during the walk,
  * which is the deferred half of P_RemoveMobj(). `stats` is optional.
@@ -230,6 +244,45 @@ void p_level_shutdown(p_level_t* level);
  *         P_TICK_ERR_NULL_RELEASE (cannot happen with a valid level).
  */
 p_tick_error_t p_level_tick(p_level_t* level, p_thinker_run_t* stats);
+
+/**
+ * @brief P_Ticker(): the player's commands, then every thinker, then time.
+ *
+ * This is the game's tic, in upstream's order (p_tick.c P_Ticker):
+ *
+ *   1. P_PlayerThink() for the level's player, when one is wired;
+ *   2. p_level_tick(): P_RunThinkers() over the same list;
+ *   3. leveltime++.
+ *
+ * WHY THIS IS A SECOND ENTRY POINT
+ *
+ * p_level_tick() is deliberately thinkers-only. The two existing procedural
+ * gates -- tools/specials_check.py and tools/things_check.py -- simulate a level
+ * *without* a player and compare it, byte for byte, with an oracle that has no
+ * player either. Growing p_level_tick() to run P_PlayerThink would give both
+ * gates an avatar they never asked for and change every compared line. The
+ * split makes "a game tic" opt-in: a caller that wants the player calls
+ * p_level_tic(), one that wants the world alone keeps p_level_tick().
+ *
+ * The player step is skipped when the level has no player (a map with no type-1
+ * start). `stats` receives the thinker walk's counters exactly as before.
+ *
+ * DEFINED IN p_user.c
+ *
+ * p_level_tick() stays p_setup.c's; this function is the player layer's and is
+ * defined in p_user.c. That is not cosmetic: tools/specials_check.py and
+ * tools/things_check.py build p_setup.c with their own hard-coded source list
+ * and must keep linking without p_user.c. A p_setup.c that referenced
+ * p_player_think() would break those two gates' builds, which no behaviour
+ * change is allowed to do.
+ *
+ * @param level The level; must be open.
+ * @param cmd   This tic's command; NULL is one tic of no input.
+ * @param stats Optional out for the thinker walk (p_tick.h).
+ * @return P_TICK_OK, P_TICK_ERR_NULL_LIST (no level), or P_TICK_ERR_NOT_OPEN.
+ */
+p_tick_error_t p_level_tic(p_level_t* level, const p_ticcmd_t* cmd,
+                           p_thinker_run_t* stats);
 
 /**
  * @brief The release callback for level-owned thinkers, for a direct

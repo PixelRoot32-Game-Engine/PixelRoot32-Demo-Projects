@@ -148,6 +148,12 @@ static void account(p_level_t* level, const p_mapthing_t* thing,
          * it just is not `level->player`. */
         if (outcome->isPlayerStart && thing->type == 1 && level->player == NULL) {
             level->player = outcome->mobj;
+            /* G_PlayerReborn(): wire the one record this port drives to the
+             * avatar P_SpawnPlayer() just made. This is the single assignment
+             * of `level->player`, so the two cannot disagree. p_player_wire()
+             * is header-only so this file keeps linking without p_user.c --
+             * the two pre-existing gates build it with their own source list. */
+            p_player_wire(&level->playerState, outcome->mobj);
         }
         return;
     }
