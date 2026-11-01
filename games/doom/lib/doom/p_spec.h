@@ -63,8 +63,8 @@
  * either an authoring mistake or a mover's `newspecial` write.
  *
  * Line specials (P_CrossSpecialLine, P_UseSpecialLine, P_ShootSpecialLine):
- * every number whose EV function exists below is dispatched; stairs, teleports,
- * exits, texture scrolling (48) and the remaining switch numbers are counted as
+ * every number whose EV function exists below is dispatched; texture scrolling
+ * (48) and the remaining switch numbers are counted as
  * `unsupportedLineSpecial` / `deferredLineSpecial`. A number that upstream's
  * trigger function does not name at all is a no-op upstream and is not counted
  * here: see `upstream_handles()` in p_spec.c. The header of each EV file lists
@@ -75,23 +75,26 @@
  *     6,25,40,44,141 ceilings; 10,22,53,54,121 plats;
  *     12,13,17,35,104 lights          implemented
  *     30,96 raiseToTexture            deferred (needs textureheight[], r_data)
+ *     8,100 stairs                    implemented (EV_BuildStairs)
+ *     39,125 teleport                 implemented (EV_Teleport, one-shot)
  *   P_CrossSpecialLine, retrigger (the number stays)
  *     72,73,77 ceilings; 75,76,86,90 doors;
  *     82,83,84,91..94,98,128,129 floors;
  *     87,88,89 plats; 79,80,81 lights implemented
- *     8,100 stairs; 39,97,125,126 teleport; 48 scroll
- *                                     unsupported by this layer
+ *     97,126 teleport                 implemented (EV_Teleport, the line stays)
+ *     48 scroll                       unsupported by this layer
  *     52,124 exit                     implemented (D4.5): the level's exit
  *                                     request is set, the line is not cleared
  *                                     (upstream's G_ExitLevel/G_SecretExitLevel
  *                                     do not write `line->special = 0`)
  *   P_UseSpecialLine
  *     1,26,27,28,31,32,33,34,117,118  manual doors, implemented (keys: D5)
+ *     7,127 stairs                    implemented (EV_BuildStairs; the switch
+ *                                     half is P_ChangeSwitchTexture, deferred)
  *     9,14,15,18,20,21,23,29,41,42,43,45,49,50,55,60..71,99,101,
  *     102,103,111..116,122,123,131..140
  *                                     EV implemented; the switch *texture*
  *                                     change is deferred (see p_switch note)
- *     7,127 stairs                    deferred
  *     11,51 exit                      implemented (D4.5): the level's exit
  *                                     request is set and the line is cleared,
  *                                     which is P_ChangeSwitchTexture(line, 0)'s
@@ -125,7 +128,7 @@
  *
  * NOT IMPLEMENTED AT ALL, DELIBERATELY
  *
- *   - EV_BuildStairs, EV_Teleport, P_ChangeSwitchTexture, the level timer
+ *   - P_ChangeSwitchTexture (the SW2 capacity decision above), the level timer
  *     (-avg/-timer), texture animation and P_UpdateSpecials' scrolling.
  *   - EV_SlidingDoor (compiled out upstream too).
  *   - P_PlayerInSpecialSector's `player->cheats &= ~CF_GODMODE` in case 11: this
@@ -646,22 +649,69 @@ typedef enum p_trigger_kind {
 } p_trigger_kind_t;
 
 /**
+ * @brief EV_Teleport(): P_TeleportMove plus the two fogs.
+ *
+ * Upstream's EV_Teleport (p_telept.c), in its order:
+ *
+ *   1. `if (thing->flags & MF_MISSILE) return 0;` and `if (side == 1) return 0;`
+ *      -- a missile never teleports, and a line crossed from its back side
+ *      ("so you can get out of teleporter") does not either;
+ *   2. for each sector whose `tag` is the line's, look for an MT_TELEPORTMAN
+ *      *whose own subsector's sector is that sector*. A tagged sector with no
+ *      teleportman standing in it is a dead teleporter, and the loop moves on to
+ *      the next tagged sector;
+ *   3. remember the thing's x/y/z, P_TeleportMove() it to the teleportman's
+ *      x/y, then `thing->z = thing->floorz` (the destination's floor);
+ *   4. a player's `viewz` is rewritten to `z + viewheight`;
+ *   5. two MT_TFOG mobjs: one at the source (`oldx, oldy, oldz`) and one at
+ *      `m->x + 20*finecosine[an], m->y + 20*finesine[an], thing->z` with
+ *      `an = m->angle >> ANGLETOFINESHIFT`;
+ *   6. a player's `reactiontime = 18`, `thing->angle = m->angle`, and all three
+ *      momentum components are zeroed.
+ *
+ * `S_StartSound(fog, sfx_telept)` is not in this port: there is no sound layer
+ * yet, so the call is named here and nothing is faked.
+ *
+ * @param level     The level; its mobjs are searched and its player record is
+ *                  written.
+ * @param lineIndex The linedef whose `tag` names the destination sector.
+ * @param thing     The thing that crossed (NULL is refused: there is no actor).
+ * @param side      P_PointOnLineSide() of the position the thing came from.
+ * @return 1 when the thing moved and the fogs were spawned, 0 otherwise.
+ */
+int p_do_teleport(struct p_level* level, uint16_t lineIndex,
+                  struct r_mobj* thing, int side);
+
+/* The teleport's two constants, named so the gate and the oracle share them. */
+#define P_TELEPORT_REACTIONTIME 18
+#define P_TELEPORT_FOG_DISTANCE 20
+
+/**
  * @brief Runs one line's special, with upstream's trigger rules.
  *
  * Reads the level's mutable `lineSpecial[]`, dispatches to the EV function the
  * number names, and clears the number for a one-shot trigger exactly as
- * upstream's `line->special = 0` does (retriggers are left alone). `byPlayer`
- * feeds the two mode checks upstream makes: a non-player thing may only cross
- * the short list in P_CrossSpecialLine, and may only use 1/32/33/34.
+ * upstream's `line->special = 0` does (retriggers are left alone).
  *
- * The gate triggers lines directly because D4.2 owns P_UseLines/P_TryMove; this
- * is the same entry point those will call.
+ * `thing` is upstream's actor argument: P_CrossSpecialLine's `thing`,
+ * P_UseSpecialLine's `thing` and P_ShootSpecialLine's `thing`. `thing->player`
+ * is the mode check both functions make (a non-player thing may only cross the
+ * short list in P_CrossSpecialLine, may only use 1/32/33/34, and may only shoot
+ * 46), and it is now also the thing EV_Teleport moves. A NULL thing is "no
+ * actor": it is treated as a non-player and a teleport it reaches is refused.
+ * `tools/level_check.c` uses NULL for the "a monster must not end the level"
+ * fixtures, which need no actor.
+ *
+ * `side` is P_PointOnLineSide() of the *old* position for P_TRIGGER_CROSS (the
+ * side the thing came from), and the user's side for P_TRIGGER_USE. It is
+ * ignored by P_TRIGGER_SHOOT.
  *
  * @return 1 when an EV function ran (or a deferred effect was recognised),
  *         0 when the line has no special or the trigger was refused.
  */
 int p_trigger_special_line(struct p_level* level, uint16_t lineIndex,
-                           p_trigger_kind_t kind, int byPlayer);
+                           p_trigger_kind_t kind, struct r_mobj* thing,
+                           int side);
 
 #ifdef __cplusplus
 } /* extern "C" */

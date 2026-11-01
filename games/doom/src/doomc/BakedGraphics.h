@@ -66,15 +66,16 @@ constexpr std::uint16_t kBakedManifestVersion = 1u;
 constexpr std::size_t kBakedManifestHeaderSize = 16u;
 constexpr std::size_t kBakedManifestRecordSize = 20u;
 
-/// The manifest's capacity in this port: T25's bake needs 352 entries (100
-/// textures + the sky, 50 flats and 201 sprite lumps -- every state chain of the
-/// mobj types E1M1 places plus the puff, blood and rocket), so 384 leaves 32
-/// slots for the imp fireball's five lumps and the rest of T15. The records are
-/// parsed straight into the adapter's own array, so one slot costs
-/// sizeof(BakedEntry) + sizeof(Value) + 4 B across entries_, values_ and the
-/// three sorted views. Measured on the target: 256 -> 384 is +1,016 B
-/// (static_used 120,528 -> 121,544), leaving seg_free=3,036 B of the 124,580 B
-/// dram0_0_seg.
+/// The manifest's capacity in this port: the shipped bake needs 367 entries (100
+/// textures + the sky, 50 flats and 216 sprite lumps -- every state chain of the
+/// mobj types E1M1 places, the puff, blood, rocket, the imp's fireball and the
+/// teleport fog), so 384 leaves 17 slots. The records are parsed straight into
+/// the adapter's own array, so one slot costs sizeof(BakedEntry) +
+/// sizeof(Value) + 4 B across entries_, values_ and the three sorted views.
+/// Measured on the target: 256 -> 384 is +1,016 B (static_used 120,528 ->
+/// 121,544), leaving seg_free=3,036 B of the 124,580 B dram0_0_seg; the board
+/// now reports 2,988 B after later tasks. tools/make_container.ps1 reads this
+/// constant and fails the encode when the bake would exceed it (T27).
 constexpr int kBakedCapacity = 384;
 
 constexpr std::uint8_t kBakedFlagMask = 0x01u;

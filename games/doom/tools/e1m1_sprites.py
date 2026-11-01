@@ -35,8 +35,8 @@ frames are all there when the state machine starts using them.
 ``RUNTIME_SPRITES`` is the other half of the list, and it is not a level
 transcription: those rows are the mobj types the simulation *creates* after the
 level is loaded, which no THINGS record can ever place (P_SpawnPuff,
-P_SpawnBlood, the player's own missiles, and the imp's fireball A_TroopAttack
-throws). They are keyed by ``mobjtype_t``, not
+P_SpawnBlood, the player's own missiles, the imp's fireball A_TroopAttack
+throws, and EV_Teleport's teleport fog). They are keyed by ``mobjtype_t``, not
 by DoomEd number, and they carry one row per state of their own chain because
 this file is also the container's bake manifest
 (``whd_encode.py --sprite-list``): every frame a shot can be drawn in has to
@@ -226,6 +226,27 @@ RUNTIME_SPRITES: tuple[ThingSprite, ...] = (
     ThingSprite(31, "MT_TROOPSHOT", "S_TBALLX1", "BAL1", 2, True, runtime=True),
     ThingSprite(31, "MT_TROOPSHOT", "S_TBALLX2", "BAL1", 3, True, runtime=True),
     ThingSprite(31, "MT_TROOPSHOT", "S_TBALLX3", "BAL1", 4, True, runtime=True),
+    # EV_Teleport() spawns two MT_TFOG mobjs per teleport (T34): one at the
+    # source and one 20 map units along the destination teleportman's angle.
+    # TFOG is a non-rotating sprite -- the WAD holds one `TFOGx0` lump per frame,
+    # ten lumps, 7,408 B -- and its chain is twelve states over those ten
+    # frames (S_TFOG and S_TFOG02 are both frame A, S_TFOG01 and S_TFOG2 both B),
+    # so two rows repeat a frame. The rule table is a first-match scan and the
+    # bake deduplicates by lump name, so a repeated frame costs nothing in the
+    # container; it is here because check_runtime_rows() requires one row per
+    # state of the type's own chain.
+    ThingSprite(39, "MT_TFOG", "S_TFOG", "TFOG", 0, True, runtime=True),
+    ThingSprite(39, "MT_TFOG", "S_TFOG01", "TFOG", 1, True, runtime=True),
+    ThingSprite(39, "MT_TFOG", "S_TFOG02", "TFOG", 0, True, runtime=True),
+    ThingSprite(39, "MT_TFOG", "S_TFOG2", "TFOG", 1, True, runtime=True),
+    ThingSprite(39, "MT_TFOG", "S_TFOG3", "TFOG", 2, True, runtime=True),
+    ThingSprite(39, "MT_TFOG", "S_TFOG4", "TFOG", 3, True, runtime=True),
+    ThingSprite(39, "MT_TFOG", "S_TFOG5", "TFOG", 4, True, runtime=True),
+    ThingSprite(39, "MT_TFOG", "S_TFOG6", "TFOG", 5, True, runtime=True),
+    ThingSprite(39, "MT_TFOG", "S_TFOG7", "TFOG", 6, True, runtime=True),
+    ThingSprite(39, "MT_TFOG", "S_TFOG8", "TFOG", 7, True, runtime=True),
+    ThingSprite(39, "MT_TFOG", "S_TFOG9", "TFOG", 8, True, runtime=True),
+    ThingSprite(39, "MT_TFOG", "S_TFOG10", "TFOG", 9, True, runtime=True),
 )
 
 #: ``MT_PLASMA`` (34) and ``MT_BFG`` (35) are absent on purpose. A_FirePlasma()

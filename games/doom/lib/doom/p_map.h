@@ -290,6 +290,38 @@ int p_check_position(p_mobj_context_t* world, r_mobj_t* mobj, fixed_t x,
                      fixed_t y, p_position_result_t* out);
 
 /**
+ * @brief P_TeleportMove(): the teleport write, without the line checks.
+ *
+ * Upstream's P_TeleportMove is deliberately *not* P_TryMove: it takes the base
+ * floor and ceiling from the destination's subsector, runs only
+ * PIT_StompThing over the things already there, then links the thing at the new
+ * position. No line is examined, so a teleport destination inside a wall is not
+ * refused -- the map is trusted, which is what upstream does.
+ *
+ * PIT_StompThing, in upstream's order:
+ *
+ *   1. only MF_SHOOTABLE things are candidates;
+ *   2. `blockdist = thing->radius + tmthing->radius`, and a candidate farther
+ *      than that on either axis is not hit;
+ *   3. the teleporting thing itself is never a candidate;
+ *   4. `if (!tmthing->player && gamemap != 30) return false;` -- a monster does
+ *      not stomp, it refuses the teleport. This port loads DOOM1's episode 1,
+ *      whose maps are gamemap 1..9, so the `gamemap != 30` half is always true
+ *      and the refusal is named here rather than faked;
+ *   5. otherwise P_DamageMobj(10000) with the teleporter as inflictor and
+ *      source, which is what makes a teleport onto a player a kill.
+ *
+ * @param world The level context; its map supplies the BSP and its RNG is not
+ *              drawn (P_SpawnMobj is the caller's, not this function's).
+ * @param mobj  The thing being moved; its floorz/ceilingz/subsector/sector are
+ *              rewritten from the destination.
+ * @param x,y   Destination, 16.16.
+ * @return 1 when the thing moved, 0 when a thing refused it.
+ */
+int p_teleport_move(p_mobj_context_t* world, r_mobj_t* mobj, fixed_t x,
+                    fixed_t y);
+
+/**
  * @brief P_TryMove(): the position check, the fit tests, the relink and the
  *        line crossings.
  *

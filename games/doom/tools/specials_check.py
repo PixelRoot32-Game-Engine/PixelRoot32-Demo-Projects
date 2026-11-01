@@ -80,6 +80,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import doom_ref  # noqa: E402  (path-dependent by design)
+
 MAP_NAME = "E1M1"
 TICS = 420
 
@@ -87,6 +90,45 @@ TICS = 420
 # switch can move in the oracle.
 DAMAGE_MAPS = tuple(f"E1M{i}" for i in range(1, 10))
 PERTURBATIONS = ("none", "damage", "threshold", "ironfeet")
+
+# --- T34: stairs and teleports ---------------------------------------------
+#
+# The numbers the stage measures, split the way upstream splits them:
+#
+#   7    P_UseSpecialLine,   EV_BuildStairs(build8),   the clear is conditional
+#   127  P_UseSpecialLine,   EV_BuildStairs(turbo16),  the clear is conditional
+#   8    P_CrossSpecialLine, EV_BuildStairs(build8),   the clear is unconditional
+#   100  P_CrossSpecialLine, EV_BuildStairs(turbo16),  the clear is unconditional
+#   39   P_CrossSpecialLine, EV_Teleport, one-shot
+#   97   P_CrossSpecialLine, EV_Teleport, retrigger
+#   125  P_CrossSpecialLine, EV_Teleport, monster-only, one-shot
+#   126  P_CrossSpecialLine, EV_Teleport, monster-only, retrigger
+STAIR_SPECIALS = (7, 8, 100, 127)
+TELEPORT_SPECIALS = (39, 97, 125, 126)
+STAIR_TELEPORT_SPECIALS = STAIR_SPECIALS + TELEPORT_SPECIALS
+
+#: A staircase's last step is 32 tics apart on E1M3's build8 chain (10 sectors)
+#: and E1M8's runs 14 sectors, i.e. 448 tics; 480 finishes every chain the nine
+#: maps carry and every turbo16 variant needs at most 60.
+STAIR_TICS = 480
+#: A teleport does not move a sector: two tics are enough for the fog thinkers
+#: to exist and show up in the dump.
+TELEPORT_TICS = 2
+
+#: The fixtures for numbers no episode-1 map carries. The carrier line is a real
+#: line of the map, and `synthetic=1` in the protocol says so, the same
+#: disclosure the sector-damage stage makes for 4 and 5. 127 and 100 are
+#: EV_BuildStairs' turbo16 on the two trigger functions; 39/125/126 are
+#: EV_Teleport's one-shot, monster-only and monster-only-retrigger numbers.
+SYNTHETIC_FIXTURES = (
+    ("E1M3", 967, 100, 0, STAIR_TICS),
+    ("E1M3", 967, 127, 0, STAIR_TICS),
+    ("E1M5", 787, 39, 0, TELEPORT_TICS),
+    ("E1M5", 787, 125, 0, TELEPORT_TICS),
+    ("E1M5", 787, 126, 0, TELEPORT_TICS),
+)
+
+STAIR_PERTURBATIONS = ("none", "stairs", "teleport")
 
 EXIT_OK = 0
 EXIT_MISMATCH = 1
@@ -192,7 +234,6 @@ def run_harness(executable: Path, wad: Path, map_name: str, tics: int,
                            + (result.stderr or result.stdout))
     return result.stdout.splitlines()
 
-
 def run_oracle(oracle_script: Path, wad: Path, arguments: list[str]) -> list[str]:
     """The oracle's protocol lines, banners removed."""
     result = subprocess.run(
@@ -220,6 +261,82 @@ def compare(c_lines: list[str], ref_lines: list[str]) -> tuple[int, str]:
     return mismatches, first
 
 
+# --- T34: the stair and teleport stage --------------------------------------
+
+def stair_census(wad: Path) -> dict[tuple[str, int], list[int]]:
+    """(map, special) -> the lines carrying it, for the eight numbers.
+
+    Counted from the WAD, not assumed: this is what decides which fixtures the
+    maps themselves justify and which need a synthetic carrier.
+    """
+    _identification, lumps = doom_ref.read_wad(wad)
+    census: dict[tuple[str, int], list[int]] = {}
+    for number in range(1, 10):
+        map_name = f"E1M{number}"
+        bsp = doom_ref.read_bsp_map(lumps, map_name)
+        for index, line in enumerate(bsp.linedefs):
+            special = line["special"]
+            if special in STAIR_TELEPORT_SPECIALS:
+                census.setdefault((map_name, special), []).append(index)
+    return census
+
+
+def stair_fixtures(census: dict[tuple[str, int], list[int]]) -> list[tuple]:
+    """(map, line, special, side, tics) for every line the maps carry, plus the
+    synthetic carriers for the numbers no map carries."""
+    fixtures = []
+    for (map_name, special), lines in sorted(census.items()):
+        tics = STAIR_TICS if special in STAIR_SPECIALS else TELEPORT_TICS
+        for line in lines:
+            fixtures.append((map_name, line, special, 0, tics))
+    fixtures.extend(SYNTHETIC_FIXTURES)
+    return fixtures
+
+
+def report_census(census: dict[tuple[str, int], list[int]]) -> None:
+    """One line per number the maps carry, then the numbers they do not.
+
+    This is the measurement the fixtures follow: the map decides which numbers
+    are real and which need a synthetic carrier.
+    """
+    print("stairs/teleports carried by the nine maps:")
+    for special in STAIR_TELEPORT_SPECIALS:
+        where = sorted((map_name, len(lines)) for (map_name, number), lines
+                       in census.items() if number == special)
+        kind = "use" if special in (7, 127) else "cross"
+        if where:
+            print(f"  {special:3d} {kind:5s} "
+                  + " ".join(f"{name}x{count}" for name, count in where))
+    absent = [special for special in STAIR_TELEPORT_SPECIALS
+              if not any(number == special for (_map, number) in census)]
+    print("  absent: " + (" ".join(str(s) for s in absent) if absent else "none")
+          + " -- synthetic carriers: "
+          + " ".join(f"{map_name}:{line}={special}"
+                     for map_name, line, special, _side, _tics
+                     in SYNTHETIC_FIXTURES))
+
+
+def run_stair_fixture(executable: Path, oracle: Path, wad: Path,
+                      fixture: tuple, perturb: str) -> tuple[int, str, int]:
+    """One fixture both ways: (compared lines, first divergence, mismatches)."""
+    map_name, line, special, side, tics = fixture
+    result = subprocess.run(
+        [str(executable), str(wad), map_name, str(tics), "stairs", str(line),
+         str(special), str(side)],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"the C harness failed on {map_name} line {line} "
+                           f"special {special}:\n"
+                           + (result.stderr or result.stdout))
+    ref_lines = run_oracle(oracle, wad,
+                           ["--stairs", map_name,
+                            "--stairs-fixture",
+                            f"{line},{special},{side},{tics}",
+                            "--stairs-perturb", perturb])
+    mismatches, first = compare(result.stdout.splitlines(), ref_lines)
+    return len(protocol_lines(result.stdout)), first, mismatches
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="specials_check.py",
@@ -242,6 +359,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--perturb", choices=PERTURBATIONS, default="none",
                         help="move one sector-damage constant in the oracle only, "
                              "and require the comparison to fail")
+    parser.add_argument("--perturb-stairs", choices=STAIR_PERTURBATIONS,
+                        default="none",
+                        help="move one stair/teleport constant in the oracle only, "
+                             "and require the stair stage to fail")
     arguments = parser.parse_args(argv)
 
     if not arguments.wad.is_file():
@@ -309,6 +430,44 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.perturb != "none":
             print(f"specials_check: --perturb {arguments.perturb} did not diverge, "
                   "so the sector-damage comparison cannot fail", file=sys.stderr)
+            return EXIT_MISMATCH
+
+        # --- Stage 3: EV_BuildStairs and EV_Teleport --------------------------
+        census = stair_census(arguments.wad)
+        report_census(census)
+        fixtures = stair_fixtures(census)
+        stair_lines = 0
+        stair_mismatches = 0
+        diverged = 0
+        for fixture in fixtures:
+            count, first_stair, mismatches_here = run_stair_fixture(
+                executable, oracle_script, arguments.wad, fixture,
+                arguments.perturb_stairs)
+            stair_lines += count
+            stair_mismatches += mismatches_here
+            if mismatches_here:
+                diverged += 1
+                print(f"specials_check: {mismatches_here} divergent line(s) on "
+                      f"{fixture[0]} line {fixture[1]} special {fixture[2]}; "
+                      f"first: {first_stair}", file=sys.stderr)
+        print(f"stairs: {len(fixtures)} fixtures, {stair_lines} compared lines, "
+              f"{stair_mismatches} divergent (perturb={arguments.perturb_stairs})")
+        if arguments.perturb_stairs != "none":
+            if not diverged:
+                print(f"specials_check: --perturb-stairs "
+                      f"{arguments.perturb_stairs} did not diverge, so the stair "
+                      "and teleport comparison cannot fail", file=sys.stderr)
+                return EXIT_MISMATCH
+            print(f"stairs: --perturb-stairs {arguments.perturb_stairs} moved "
+                  f"{diverged} of {len(fixtures)} fixtures")
+            # The perturbed run is expected to fail: that is the proof the
+            # comparison can fail at all. Every other gate in this repository
+            # (`--perturb frame`, `--perturb viewheight`, `--perturb eye`,
+            # `--perturb next`, `--perturb damage`) exits 1 under a perturbation
+            # that diverges, and a canary whose success and failure both exit 0
+            # cannot be run from CI.
+            return EXIT_MISMATCH
+        if stair_mismatches:
             return EXIT_MISMATCH
     except RuntimeError as error:
         print(f"specials_check: {error}", file=sys.stderr)

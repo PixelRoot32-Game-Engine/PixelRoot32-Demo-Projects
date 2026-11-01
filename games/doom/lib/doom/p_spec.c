@@ -26,10 +26,12 @@
 #include "p_floor.h"
 #include "p_inter.h"
 #include "p_lights.h"
+#include "p_map.h"
 #include "p_mobj.h"
 #include "p_plats.h"
 #include "p_setup.h"
 #include "p_user.h"
+#include "r_tables.h"
 
 /* --- Line geometry ------------------------------------------------------- */
 
@@ -589,6 +591,86 @@ void p_player_in_special_sector(p_level_t* level, p_player_t* player) {
     }
 }
 
+/* --- EV_Teleport --------------------------------------------------------- */
+
+int p_do_teleport(struct p_level* level, uint16_t lineIndex, r_mobj_t* thing,
+                  int side) {
+    int16_t tag;
+    int secnum = -1;
+
+    if (level == NULL || thing == NULL || level->sectors == NULL ||
+        level->map == NULL) {
+        return 0;
+    }
+    /* don't teleport missiles */
+    if ((thing->flags & MF_MISSILE) != 0u) {
+        return 0;
+    }
+    /* Don't teleport if hit back of line, so you can get out of teleporter. */
+    if (side == 1) {
+        return 0;
+    }
+
+    tag = p_line_tag(level->map, lineIndex);
+
+    while ((secnum = p_find_sector_from_line_tag(&level->context, tag, secnum)) >= 0) {
+        r_mobj_t* man;
+
+        /* `thinker = thinkercap.next; ... if (m->type != MT_TELEPORTMAN)
+         * continue; sector = m->subsector->sector; if (sector-sectors != i)
+         * continue;` -- the list order is the spawn order and the sector test is
+         * the teleportman's own subsector, not its record's sector field. */
+        for (man = (r_mobj_t*)p_level_first_mobj(level); man != NULL;
+             man = (r_mobj_t*)p_level_next_mobj(man)) {
+            fixed_t oldx;
+            fixed_t oldy;
+            fixed_t oldz;
+
+            if (man->type != (int16_t)MT_TELEPORTMAN) {
+                continue;
+            }
+            if ((int)man->sector != secnum) {
+                continue;
+            }
+
+            oldx = thing->x;
+            oldy = thing->y;
+            oldz = thing->z;
+
+            if (!p_teleport_move(&level->context, thing, man->x, man->y)) {
+                return 0;
+            }
+            thing->z = thing->floorz;
+            if (thing->player != 0u) {
+                level->playerState.viewz =
+                    thing->z + level->playerState.viewheight;
+            }
+
+            /* spawn teleport fog at source and destination. The sound call is
+             * `S_StartSound (fog, sfx_telept)`, named and not faked: this port
+             * has no sound layer yet. */
+            (void)p_spawn_mobj(&level->context, oldx, oldy, oldz, MT_TFOG, NULL);
+            (void)p_spawn_mobj(
+                &level->context,
+                man->x + P_TELEPORT_FOG_DISTANCE * r_fine_cosine(man->angle),
+                man->y + P_TELEPORT_FOG_DISTANCE *
+                             r_fine_sine[man->angle >> ANGLETOFINESHIFT],
+                thing->z, MT_TFOG, NULL);
+
+            /* don't move for a bit */
+            if (thing->player != 0u) {
+                thing->reactiontime = P_TELEPORT_REACTIONTIME;
+            }
+            thing->angle = man->angle;
+            thing->momx = 0;
+            thing->momy = 0;
+            thing->momz = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* --- Trigger dispatch ---------------------------------------------------- */
 
 /* Clears a one-shot line, as `line->special = 0` does. */
@@ -699,8 +781,32 @@ static void note_line_special(struct p_level* level, uint16_t lineIndex,
     trace->count += 1u;
 }
 
-/* The short list a non-player thing may cross (P_CrossSpecialLine). */
-static int thing_can_cross(int16_t special) {
+/* The short list a non-player thing may cross (P_CrossSpecialLine), plus the
+ * two prologues upstream runs before it:
+ *
+ *   `switch(thing->type)` returns for MT_ROCKET, MT_PLASMA, MT_BFG,
+ *   MT_TROOPSHOT, MT_HEADSHOT and MT_BRUISERSHOT -- a projectile never triggers
+ *   a line -- and then the ok-list below decides. A NULL thing (the gate's "no
+ *   actor" fixture) has no type to refuse, so it takes the ok-list alone.
+ */
+static int thing_is_missile(int16_t type) {
+    switch (type) {
+        case MT_ROCKET:
+        case MT_PLASMA:
+        case MT_BFG:
+        case MT_TROOPSHOT:
+        case MT_HEADSHOT:
+        case MT_BRUISERSHOT:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int thing_can_cross(const r_mobj_t* thing, int16_t special) {
+    if (thing != NULL && thing_is_missile(thing->type)) {
+        return 0;
+    }
     switch (special) {
         case 39:    /* TELEPORT TRIGGER */
         case 97:    /* TELEPORT RETRIGGER */
@@ -716,11 +822,12 @@ static int thing_can_cross(int16_t special) {
 }
 
 static int trigger_cross(struct p_level* level, uint16_t lineIndex,
-                         int byPlayer) {
+                         r_mobj_t* thing, int side) {
     p_mobj_context_t* world = &level->context;
     int16_t special = level->lineSpecial[lineIndex];
+    const int byPlayer = (thing != NULL && thing->player != 0u) ? 1 : 0;
 
-    if (!byPlayer && !thing_can_cross(special)) {
+    if (!byPlayer && !thing_can_cross(thing, special)) {
         level->specStats.triggersRefused += 1u;
         return 0;
     }
@@ -745,6 +852,12 @@ static int trigger_cross(struct p_level* level, uint16_t lineIndex,
             return 1;
         case 6:
             (void)p_do_ceiling(world, lineIndex, P_CEIL_FAST_CRUSH_AND_RAISE);
+            consume_line(level, lineIndex);
+            return 1;
+        /* Build Stairs. P_CrossSpecialLine ignores EV_BuildStairs' answer and
+         * clears the line either way. */
+        case 8:
+            (void)p_do_stairs(world, lineIndex, P_STAIR_BUILD8);
             consume_line(level, lineIndex);
             return 1;
         case 10:
@@ -799,6 +912,13 @@ static int trigger_cross(struct p_level* level, uint16_t lineIndex,
             (void)p_do_floor(world, lineIndex, P_FLOOR_LOWER_TO_LOWEST);
             consume_line(level, lineIndex);
             return 1;
+        case 39:
+            /* TELEPORT! `EV_Teleport(line, side, thing); line->special = 0;` --
+             * the clear is unconditional, so a refused teleport still consumes
+             * a one-shot line. */
+            (void)p_do_teleport(level, lineIndex, thing, side);
+            consume_line(level, lineIndex);
+            return 1;
         case 40:
             (void)p_do_ceiling(world, lineIndex, P_CEIL_RAISE_TO_HIGHEST);
             (void)p_do_floor(world, lineIndex, P_FLOOR_LOWER_TO_LOWEST);
@@ -817,6 +937,16 @@ static int trigger_cross(struct p_level* level, uint16_t lineIndex,
         case 124:
             level->exitRequest = (uint8_t)P_EXIT_SECRET;
             return 1;
+        case 125:
+            /* TELEPORT MonsterONLY: `if (!thing->player) { EV_Teleport(...);
+             * line->special = 0; }` -- a player walks over it and nothing
+             * happens, not even the clear. */
+            if (!byPlayer) {
+                (void)p_do_teleport(level, lineIndex, thing, side);
+                consume_line(level, lineIndex);
+                return 1;
+            }
+            return 0;
         case 53:
             (void)p_do_plat(world, lineIndex, P_PLAT_PERPETUAL_RAISE, 0);
             consume_line(level, lineIndex);
@@ -851,6 +981,11 @@ static int trigger_cross(struct p_level* level, uint16_t lineIndex,
             return 1;
         case 109:
             (void)p_do_door(world, lineIndex, P_DOOR_BLAZE_OPEN);
+            consume_line(level, lineIndex);
+            return 1;
+        case 100:
+            /* Build Stairs Turbo 16: EV_BuildStairs(line, turbo16). */
+            (void)p_do_stairs(world, lineIndex, P_STAIR_TURBO16);
             consume_line(level, lineIndex);
             return 1;
         case 110:
@@ -944,6 +1079,10 @@ static int trigger_cross(struct p_level* level, uint16_t lineIndex,
         case 96:
             (void)p_do_floor(world, lineIndex, P_FLOOR_RAISE_TO_TEXTURE);
             return 1;
+        case 97:
+            /* TELEPORT! A retrigger: no clear. */
+            (void)p_do_teleport(level, lineIndex, thing, side);
+            return 1;
         case 98:
             (void)p_do_floor(world, lineIndex, P_FLOOR_TURBO_LOWER);
             return 1;
@@ -959,6 +1098,13 @@ static int trigger_cross(struct p_level* level, uint16_t lineIndex,
         case 120:
             (void)p_do_plat(world, lineIndex, P_PLAT_BLAZE_DWUS, 0);
             return 1;
+        case 126:
+            /* TELEPORT MonsterONLY, retrigger: no clear when it fires. */
+            if (!byPlayer) {
+                (void)p_do_teleport(level, lineIndex, thing, side);
+                return 1;
+            }
+            return 0;
         case 128:
             (void)p_do_floor(world, lineIndex, P_FLOOR_RAISE_TO_NEAREST);
             return 1;
@@ -967,8 +1113,9 @@ static int trigger_cross(struct p_level* level, uint16_t lineIndex,
             return 1;
 
         default:
-            /* 8/100 stairs, 39/97/125/126 teleports; 48 scroll, and every number
-             * upstream's cross switch does not name, do nothing. */
+            /* 48 scroll, and every number upstream's cross switch does not
+             * name, do nothing. Stairs (8, 100) and teleports (39, 97, 125,
+             * 126) are handled above. */
             note_line_special(level, lineIndex, special, P_TRIGGER_CROSS);
             return 0;
     }
@@ -978,9 +1125,19 @@ static int trigger_cross(struct p_level* level, uint16_t lineIndex,
  * the button specials, which upstream leaves reusable; `clear` says whether a
  * one-shot switch clears its line. The texture change itself is deferred (see
  * p_switch in this file's report). */
-static int trigger_use(struct p_level* level, uint16_t lineIndex, int byPlayer) {
+static int trigger_use(struct p_level* level, uint16_t lineIndex,
+                       r_mobj_t* thing, int side) {
     p_mobj_context_t* world = &level->context;
     int16_t special = level->lineSpecial[lineIndex];
+    const int byPlayer = (thing != NULL && thing->player != 0u) ? 1 : 0;
+
+    /* `if (side) { switch(line->special) { case 124: break; default: return
+     * false; } }` -- "Use the back sides of VERY SPECIAL lines". 124 is the
+     * sliding door upstream compiled out, so reaching the switch with it does
+     * nothing at all; the port's use switch has no case for it either. */
+    if (side != 0 && special != 124) {
+        return 0;
+    }
 
     if (!byPlayer) {
         /* `never open secret doors` aside, only these four are allowed. */
@@ -1220,11 +1377,22 @@ static int trigger_use(struct p_level* level, uint16_t lineIndex, int byPlayer) 
             level->specStats.deferredLineSpecial += 1u;
             return 1;
 
-        /* Stairs (7, 127) have no EV here. */
+        /* Stairs. Upstream is `if (EV_BuildStairs(line, type))
+         * P_ChangeSwitchTexture(line, 0);` -- the only switch in this switch
+         * whose EV answer gates the one-shot clear, which is why the clear and
+         * the deferred count are inside the `if` here. */
         case 7:
+            if (p_do_stairs(world, lineIndex, P_STAIR_BUILD8)) {
+                level->specStats.deferredLineSpecial += 1u;
+                consume_line(level, lineIndex);
+            }
+            return 1;
         case 127:
-            note_line_special(level, lineIndex, special, P_TRIGGER_USE);
-            return 0;
+            if (p_do_stairs(world, lineIndex, P_STAIR_TURBO16)) {
+                level->specStats.deferredLineSpecial += 1u;
+                consume_line(level, lineIndex);
+            }
+            return 1;
 
         default:
             note_line_special(level, lineIndex, special, P_TRIGGER_USE);
@@ -1233,10 +1401,12 @@ static int trigger_use(struct p_level* level, uint16_t lineIndex, int byPlayer) 
 }
 
 static int trigger_shoot(struct p_level* level, uint16_t lineIndex,
-                         int byPlayer) {
+                         r_mobj_t* thing, int side) {
     p_mobj_context_t* world = &level->context;
     int16_t special = level->lineSpecial[lineIndex];
+    const int byPlayer = (thing != NULL && thing->player != 0u) ? 1 : 0;
 
+    (void)side;
     if (!byPlayer && special != 46) {
         level->specStats.triggersRefused += 1u;
         return 0;
@@ -1261,7 +1431,7 @@ static int trigger_shoot(struct p_level* level, uint16_t lineIndex,
 }
 
 int p_trigger_special_line(struct p_level* level, uint16_t lineIndex,
-                           p_trigger_kind_t kind, int byPlayer) {
+                           p_trigger_kind_t kind, r_mobj_t* thing, int side) {
     int result;
 
     if (level == NULL || !level->open || level->lineSpecial == NULL ||
@@ -1274,14 +1444,14 @@ int p_trigger_special_line(struct p_level* level, uint16_t lineIndex,
 
     switch (kind) {
         case P_TRIGGER_USE:
-            result = trigger_use(level, lineIndex, byPlayer);
+            result = trigger_use(level, lineIndex, thing, side);
             break;
         case P_TRIGGER_SHOOT:
-            result = trigger_shoot(level, lineIndex, byPlayer);
+            result = trigger_shoot(level, lineIndex, thing, side);
             break;
         case P_TRIGGER_CROSS:
         default:
-            result = trigger_cross(level, lineIndex, byPlayer);
+            result = trigger_cross(level, lineIndex, thing, side);
             break;
     }
     if (result) {

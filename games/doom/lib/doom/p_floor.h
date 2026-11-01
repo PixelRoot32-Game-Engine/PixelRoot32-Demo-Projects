@@ -159,6 +159,48 @@ int p_do_floor(struct p_mobj_context* world, uint16_t lineIndex,
  */
 int p_do_donut(struct p_mobj_context* world, uint16_t lineIndex);
 
+/*
+ * stair_e (p_spec.h), in upstream's order. The numbers are not dumped, so they
+ * are free to be an enum, but they stay in upstream's order so the fold into
+ * `line->special - 8` (8 -> build8, 100 -> turbo16) reads the same here.
+ *
+ *   P_STAIR_BUILD8    build8:   FLOORSPEED/4, 8 map units a step
+ *   P_STAIR_TURBO16   turbo16:  FLOORSPEED*4, 16 map units a step
+ */
+typedef enum p_stair_type {
+    P_STAIR_BUILD8 = 0,
+    P_STAIR_TURBO16 = 1
+} p_stair_type_t;
+
+/**
+ * @brief EV_BuildStairs(): starts a staircase from the line's tagged sectors.
+ *
+ * Upstream's chain rule, in its order, is what this reproduces:
+ *
+ *   1. every sector whose `tag` is the line's gets the first thinker, skipped
+ *      when it already has `specialdata` ("ALREADY MOVING?  IF SO, KEEP GOING");
+ *   2. `height = sec->floorheight + stairsize`, so the first step's destination
+ *      is relative to the *tagged* sector's floor, not the chain's;
+ *   3. the next sector is the first two-sided line (in LINEDEFS order, which is
+ *      P_GroupLines' per-sector order) whose front side is the current sector
+ *      and whose back sector has the same `floorpic`;
+ *   4. `height += stairsize` happens *before* the "already moving" test, so a
+ *      neighbour that is skipped still advances the height of the next one;
+ *   5. the walk repeats from the sector it just took.
+ *
+ * `floor->type` is upstream's zero: floormove_t is Z_Malloc'd and EV_BuildStairs
+ * never assigns `type`, so it stays lowerFloor (0), and T_MoveFloor's
+ * pastdest switch has no branch for it. Writing P_FLOOR_LOWER here is that zero
+ * named rather than left uninitialised.
+ *
+ * @param world     The level context; its sector array is written.
+ * @param lineIndex The linedef whose tag selects the sectors.
+ * @param type      P_STAIR_BUILD8 or P_STAIR_TURBO16.
+ * @return 1 when at least one thinker was created, 0 otherwise.
+ */
+int p_do_stairs(struct p_mobj_context* world, uint16_t lineIndex,
+                p_stair_type_t type);
+
 /** T_MoveFloor()'s entry point. */
 void p_floor_thinker(p_thinker_t* thinker, void* context);
 

@@ -457,6 +457,128 @@ int p_do_donut(struct p_mobj_context* world, uint16_t lineIndex) {
     return rtn;
 }
 
+/* --- EV_BuildStairs ------------------------------------------------------ */
+
+/*
+ * One step of EV_BuildStairs' chain walk: the first two-sided line of
+ * @p sectorIndex whose front side is that sector and whose back sector carries
+ * @p texture.
+ *
+ * The `*height += stairsize` sits before the "already moving" test because that
+ * is where upstream put it: a neighbour that is skipped still raises the height
+ * the next accepted neighbour will be given. Folding the increment into the
+ * caller after it accepted a sector would silently shorten a staircase whenever
+ * one of its steps was mid-move.
+ *
+ * P_GroupLines stores each sector's lines in LINEDEFS order, so scanning every
+ * LINEDEFS record in ascending order and filtering on `frontsector == sector`
+ * visits exactly upstream's `sec->lines[i]` sequence.
+ */
+static int stair_step(struct p_mobj_context* world, uint16_t sectorIndex,
+                      r_name_t texture, int32_t* height, fixed_t stairsize,
+                      uint16_t* out) {
+    const uint32_t lineCount = world->map->lumps[DOOM_MAP_LINEDEFS].count;
+    uint32_t i;
+
+    for (i = 0; i < lineCount; ++i) {
+        doom_line_t line;
+        uint16_t front;
+        uint16_t back;
+
+        doom_map_get_line(world->map, (uint16_t)i, &line);
+        if ((line.flags & DOOM_ML_TWOSIDED) == 0) {
+            continue;
+        }
+        if (!p_line_front_sector(world->map, &line, &front) ||
+            front != sectorIndex) {
+            continue;
+        }
+        if (!p_line_back_sector(world->map, &line, &back)) {
+            continue;
+        }
+        if (world->sectors[back].floorPic != texture) {
+            continue;
+        }
+        *height += (int32_t)stairsize;
+        if (world->sectors[back].specialdata != NULL) {
+            continue;
+        }
+        *out = back;
+        return 1;
+    }
+    return 0;
+}
+
+/* The thinker every EV_BuildStairs step creates, whatever the step's type. */
+static p_floor_thinker_t* stair_floor(struct p_mobj_context* world,
+                                     uint16_t sectorIndex, fixed_t speed,
+                                     int32_t height) {
+    /* Upstream never writes `floor->type` here; floormove_t is Z_Malloc'd, so it
+     * is lowerFloor (0). Named, not left to the allocator. */
+    p_floor_thinker_t* floor = new_floor(world, sectorIndex, P_FLOOR_LOWER);
+
+    if (floor == NULL) {
+        return NULL;
+    }
+    floor->direction = 1;
+    floor->speed = speed;
+    floor->destHeight = (fixed_t)height;
+    return floor;
+}
+
+int p_do_stairs(struct p_mobj_context* world, uint16_t lineIndex,
+                p_stair_type_t type) {
+    int16_t tag;
+    int secnum = -1;
+    int rtn = 0;
+    fixed_t speed;
+    fixed_t stairsize;
+
+    if (world == NULL || world->map == NULL || world->sectors == NULL) {
+        return 0;
+    }
+    switch (type) {
+        case P_STAIR_BUILD8:
+            speed = P_FLOORSPEED / 4;
+            stairsize = 8 * FRACUNIT;
+            break;
+        case P_STAIR_TURBO16:
+            speed = P_FLOORSPEED * 4;
+            stairsize = 16 * FRACUNIT;
+            break;
+        default:
+            return 0;
+    }
+
+    tag = p_line_tag(world->map, lineIndex);
+
+    while ((secnum = p_find_sector_from_line_tag(world, tag, secnum)) >= 0) {
+        int32_t height;
+        r_name_t texture;
+        uint16_t current;
+
+        /* ALREADY MOVING?  IF SO, KEEP GOING... (p_floor.c EV_BuildStairs) */
+        if (world->sectors[secnum].specialdata != NULL) {
+            continue;
+        }
+        rtn = 1;
+        height = (int32_t)world->sectors[secnum].floorHeight + (int32_t)stairsize;
+        texture = world->sectors[secnum].floorPic;
+        current = (uint16_t)secnum;
+
+        if (stair_floor(world, current, speed, height) == NULL) {
+            continue;
+        }
+        while (stair_step(world, current, texture, &height, stairsize,
+                          &current)) {
+            if (stair_floor(world, current, speed, height) == NULL) {
+                break;
+            }
+        }
+    }
+    return rtn;
+}
+
 /* --- T_MoveFloor --------------------------------------------------------- */
 
 void p_floor_thinker(p_thinker_t* thinker, void* context) {

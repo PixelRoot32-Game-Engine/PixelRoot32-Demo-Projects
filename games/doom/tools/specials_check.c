@@ -151,7 +151,7 @@ static uint8_t* readFile(const char* path, size_t* size) {
  * other special line in this gate is walked over. */
 static const char* trigger_kind_for(int16_t special) {
     switch (special) {
-        case 1: case 9: case 11: case 14: case 15: case 18: case 20: case 21:
+        case 1: case 7: case 9: case 11: case 14: case 15: case 18: case 20: case 21:
         case 23: case 26: case 27: case 28: case 29: case 31: case 32:
         case 33: case 34: case 41: case 42: case 43: case 45: case 49:
         case 50: case 51: case 55: case 60: case 61: case 62: case 63:
@@ -542,6 +542,135 @@ static int buildScenarios(const p_level_t* level, damage_scenario_t* out) {
     return count;
 }
 
+/* --- The stair/teleport section (T34) ------------------------------------ */
+
+/*
+ * One fixture: a single line, triggered once by the player, then the same
+ * per-tic dump as the map script.
+ *
+ * PROTOCOL (identical in doom_ref.py)
+ *
+ *   STAIRS <map> line=<i> special=<n> kind=<use|cross> synthetic=<0|1>
+ *          side=<0|1> tics=<N>
+ *   LINE <i> result=<0|1> consumed=<0|1>
+ *   TELEPORT <i> result=<0|1> from=<x,y,z,angle> to=<x,y,z> angle=<a>
+ *            fogs=<n> last=<x,y,z|none>
+ *   SECTOR ... / THINKER ...   (the stage-1 records, per tic)
+ *   SUMMARY floors=<n> fogs=<n> triggers=<n> refused=<n>
+ *           unsupportedLine=<n> deferredLine=<n>
+ *
+ * `synthetic=1` says the special number was written into a line the map carries
+ * for another number, the same disclosure the sector-damage fixtures make.
+ *
+ * The actor is always the player. The monster half of EV_Teleport -- 125/126's
+ * `if (!thing->player)`, the missile refusal and PIT_StompThing's "monsters
+ * don't stomp" -- is a unit test in test/unit/test_world, where the map and the
+ * P_Random sequence are the fixture's own; a spawned imp in this harness runs
+ * A_Look, whose `lastlook` draw moves the map's light flashes off the line this
+ * fixture is comparing.
+ */
+
+static int countMobjsOfType(const p_level_t* level, int16_t type,
+                            const r_mobj_t** last) {
+    const r_mobj_t* mobj;
+    int count = 0;
+
+    for (mobj = p_level_first_mobj(level); mobj != NULL;
+         mobj = p_level_next_mobj(mobj)) {
+        if (mobj->type == type) {
+            count += 1;
+            if (last != NULL) {
+                *last = mobj;
+            }
+        }
+    }
+    return count;
+}
+
+static int countFloors(const p_level_t* level) {
+    const p_thinker_t* thinker;
+    int count = 0;
+
+    for (thinker = p_thinker_first(&level->thinkers); thinker != NULL;
+         thinker = p_thinker_next(thinker)) {
+        if (thinker->kind == (int16_t)P_THINKER_FLOOR) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+static int isTeleportSpecial(int16_t special) {
+    return special == 39 || special == 97 || special == 125 || special == 126;
+}
+
+static int runStairFixture(p_level_t* level, const char* mapName,
+                           uint16_t line, int16_t special, int side, int tics) {
+    r_mobj_t* actor = level->player;
+    const char* kindName;
+    fixed_t fromX;
+    fixed_t fromY;
+    fixed_t fromZ;
+    angle_t fromAngle;
+    int fogBefore;
+    int fogCount = 0;
+    const r_mobj_t* lastFog = NULL;
+    int result;
+    int synthetic;
+    uint32_t tic;
+
+    if (actor == NULL || line >= level->lineCount) {
+        return 0;
+    }
+    synthetic = level->lineSpecial[line] != special;
+    level->lineSpecial[line] = special;
+    kindName = trigger_kind_for(special);
+    printf("STAIRS %s line=%u special=%d kind=%s synthetic=%d side=%d tics=%d\n",
+           mapName, (unsigned)line, (int)special, kindName, synthetic, side,
+           tics);
+
+    fromX = actor->x;
+    fromY = actor->y;
+    fromZ = actor->z;
+    fromAngle = actor->angle;
+    fogBefore = countMobjsOfType(level, (int16_t)MT_TFOG, NULL);
+
+    result = p_trigger_special_line(level, line, trigger_kind_value(kindName),
+                                    actor, side);
+    printf("LINE %u result=%d consumed=%d\n", (unsigned)line, result,
+           level->lineSpecial[line] == 0);
+
+    if (isTeleportSpecial(special)) {
+        fogCount = countMobjsOfType(level, (int16_t)MT_TFOG, &lastFog) -
+                   fogBefore;
+        printf("TELEPORT %u result=%d from=%ld,%ld,%ld,%lu to=%ld,%ld,%ld "
+               "angle=%lu fogs=%d last=",
+               (unsigned)line, result, (long)fromX, (long)fromY, (long)fromZ,
+               (unsigned long)fromAngle, (long)actor->x, (long)actor->y,
+               (long)actor->z, (unsigned long)actor->angle, fogCount);
+        if (lastFog != NULL && fogCount > 0) {
+            printf("%ld,%ld,%ld\n", (long)lastFog->x, (long)lastFog->y,
+                   (long)lastFog->z);
+        } else {
+            printf("none\n");
+        }
+    }
+
+    dumpTic(level, 0u);
+    for (tic = 1; tic <= (uint32_t)tics; ++tic) {
+        (void)p_level_tick(level, NULL);
+        dumpTic(level, tic);
+    }
+
+    printf("SUMMARY floors=%d fogs=%d triggers=%u refused=%u "
+           "unsupportedLine=%u deferredLine=%u\n",
+           countFloors(level), countMobjsOfType(level, (int16_t)MT_TFOG, NULL),
+           level->specStats.triggers, level->specStats.triggersRefused,
+           level->specStats.unsupportedLineSpecial,
+           level->specStats.deferredLineSpecial);
+    return 1;
+}
+
 int main(int argc, char** argv) {
     wad_state_t wad;
     doom_map_source_t source;
@@ -560,10 +689,16 @@ int main(int argc, char** argv) {
     const char* mode = "full";
     damage_scenario_t scenarios[MAX_SCENARIOS];
     int scenarioCount = 0;
+    uint16_t stairLine = 0;
+    int16_t stairSpecial = 0;
+    int stairSide = 0;
 
-    if (argc < 2 || argc > 5) {
+    if (argc < 2 || argc > 8) {
         fprintf(stderr,
-                "usage: specials_check <path-to-WAD> [map] [tics] [full|damage]\n");
+                "usage: specials_check <path-to-WAD> [map] [tics] "
+                "[full|damage|stairs]\n"
+                "       specials_check <wad> <map> <tics> stairs "
+                "<line> <special> <side>\n");
         return 2;
     }
     if (argc >= 3) {
@@ -575,12 +710,22 @@ int main(int argc, char** argv) {
     if (argc >= 5) {
         mode = argv[4];
     }
+    if (strcmp(mode, "stairs") == 0) {
+        if (argc != 8) {
+            fprintf(stderr, "specials_check: the stairs mode needs a fixture\n");
+            return 2;
+        }
+        stairLine = (uint16_t)atoi(argv[5]);
+        stairSpecial = (int16_t)atoi(argv[6]);
+        stairSide = atoi(argv[7]);
+    }
     if (tics < 0) {
         fprintf(stderr, "specials_check: tics cannot be negative\n");
         return 2;
     }
-    if (strcmp(mode, "full") != 0 && strcmp(mode, "damage") != 0) {
-        fprintf(stderr, "specials_check: mode is 'full' or 'damage'\n");
+    if (strcmp(mode, "full") != 0 && strcmp(mode, "damage") != 0 &&
+        strcmp(mode, "stairs") != 0) {
+        fprintf(stderr, "specials_check: mode is 'full', 'damage' or 'stairs'\n");
         return 2;
     }
 
@@ -640,6 +785,16 @@ int main(int argc, char** argv) {
      * 420-tic run below moves floors and rewrites specials. */
     scenarioCount = buildScenarios(&level, scenarios);
 
+    if (strcmp(mode, "stairs") == 0) {
+        const int ok = runStairFixture(&level, mapName, stairLine, stairSpecial,
+                                       stairSide, tics);
+
+        p_level_shutdown(&level);
+        free(arena);
+        free(bytes);
+        return ok ? 0 : 2;
+    }
+
     if (strcmp(mode, "damage") == 0) {
         int damageIndex;
         int damageFailed = 0;
@@ -673,7 +828,9 @@ int main(int argc, char** argv) {
             continue;
         }
         kindName = trigger_kind_for(special);
-        result = p_trigger_special_line(&level, line, trigger_kind_value(kindName), 1);
+        result = p_trigger_special_line(&level, line,
+                                        trigger_kind_value(kindName),
+                                        level.player, 0);
         printf("TRIGGER 0 line=%u special=%d kind=%s result=%d\n", (unsigned)line,
                (int)special, kindName, result);
     }

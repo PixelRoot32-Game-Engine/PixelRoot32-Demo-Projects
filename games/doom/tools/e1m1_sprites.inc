@@ -826,6 +826,42 @@ static const e1m1_sprite_rule_t kE1M1Sprites[] = {
     { 31, 4, 1, 0, "BAL1", {
         { "BAL1E0", 0 },
     } },
+    { 39, 0, 1, 0, "TFOG", {
+        { "TFOGA0", 0 },
+    } },
+    { 39, 1, 1, 0, "TFOG", {
+        { "TFOGB0", 0 },
+    } },
+    { 39, 0, 1, 0, "TFOG", {
+        { "TFOGA0", 0 },
+    } },
+    { 39, 1, 1, 0, "TFOG", {
+        { "TFOGB0", 0 },
+    } },
+    { 39, 2, 1, 0, "TFOG", {
+        { "TFOGC0", 0 },
+    } },
+    { 39, 3, 1, 0, "TFOG", {
+        { "TFOGD0", 0 },
+    } },
+    { 39, 4, 1, 0, "TFOG", {
+        { "TFOGE0", 0 },
+    } },
+    { 39, 5, 1, 0, "TFOG", {
+        { "TFOGF0", 0 },
+    } },
+    { 39, 6, 1, 0, "TFOG", {
+        { "TFOGG0", 0 },
+    } },
+    { 39, 7, 1, 0, "TFOG", {
+        { "TFOGH0", 0 },
+    } },
+    { 39, 8, 1, 0, "TFOG", {
+        { "TFOGI0", 0 },
+    } },
+    { 39, 9, 1, 0, "TFOG", {
+        { "TFOGJ0", 0 },
+    } },
 };
 
 #define E1M1_SPRITE_RULE_COUNT \

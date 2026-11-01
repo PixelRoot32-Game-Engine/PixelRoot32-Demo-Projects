@@ -1889,6 +1889,14 @@ FLOOR_RAISE_TURBO = 10
 FLOOR_DONUT_RAISE = 11
 FLOOR_RAISE_512 = 12
 
+# stair_e (p_spec.h), in upstream's order.
+STAIR_BUILD8 = 0
+STAIR_TURBO16 = 1
+
+# EV_Teleport's two constants (p_spec.h P_TELEPORT_*).
+TELEPORT_REACTIONTIME = 18
+TELEPORT_FOG_DISTANCE = 20
+
 # vldoor_e
 DOOR_NORMAL = 0
 DOOR_CLOSE30 = 1
@@ -2690,6 +2698,170 @@ def do_donut(level: SpecLevel, line_index: int) -> bool:
     return rtn
 
 
+# --- EV_BuildStairs and EV_Teleport (p_floor.c / p_telept.c) ----------------
+
+def do_stairs(level: SpecLevel, line_index: int, stair_type: int) -> bool:
+    """EV_BuildStairs(): the chain walk, upstream's order and arithmetic.
+
+    `height += stairsize` sits before the "already moving" test because that is
+    where upstream put it: a neighbour that is skipped still raises the height
+    the next accepted neighbour is given. `type` stays FLOOR_LOWER (0), which is
+    what the Z_Malloc'd floormove_t holds upstream because EV_BuildStairs never
+    assigns it.
+    """
+    if stair_type == STAIR_BUILD8:
+        speed = FLOORSPEED // 4
+        stairsize = (8 + STAIR_PERTURB["stairs"]) * FRACUNIT
+    elif stair_type == STAIR_TURBO16:
+        speed = FLOORSPEED * 4
+        stairsize = (16 + STAIR_PERTURB["stairs"]) * FRACUNIT
+    else:
+        return False
+
+    tag = _line(level, line_index)["tag"]
+    rtn = False
+    secnum = -1
+    while True:
+        secnum = find_sector_from_tag(level, tag, secnum)
+        if secnum < 0:
+            break
+        sec = level.sectors[secnum]
+        if sec["specialdata"] is not None:
+            continue
+        rtn = True
+        height = sec["floor"] + stairsize
+        texture = sec["floorpic"]
+        floor = new_floor(level, secnum, FLOOR_LOWER)
+        floor["dir"] = 1
+        floor["speed"] = speed
+        floor["dest"] = height
+        current = secnum
+        while True:
+            found = None
+            for line in level.bsp.linedefs:
+                if not (line["flags"] & 4):
+                    continue
+                if _front_sector(level, line) != current:
+                    continue
+                back = _back_sector(level, line)
+                if back is None:
+                    continue
+                if level.sectors[back]["floorpic"] != texture:
+                    continue
+                height += stairsize
+                if level.sectors[back]["specialdata"] is not None:
+                    continue
+                found = back
+                break
+            if found is None:
+                break
+            current = found
+            floor = new_floor(level, current, FLOOR_LOWER)
+            floor["dir"] = 1
+            floor["speed"] = speed
+            floor["dest"] = height
+    return rtn
+
+
+#: P_CrossSpecialLine's missile list (`switch(thing->type)`).
+CROSS_MISSILE_TYPES = (32, 33, 34, 35, 30, 31)
+
+
+def spec_teleportmen(level: SpecLevel) -> list[dict]:
+    """The MT_TELEPORTMAN mobjs, in THINGS (= spawn = thinker) order.
+
+    p_spawn_specials never creates one: P_LoadThings does, one per DoomEd-14
+    record, and the search in EV_Teleport walks that list. The sector is the one
+    R_PointInSubsector answers for the record's own position, not the record's
+    `sector` field, exactly as the C reads `m->subsector->sector`.
+    """
+    if getattr(level, "teleportmen", None) is None:
+        men = []
+        for record in level.bsp.things:
+            if record["type"] != 14:
+                continue
+            x = _fixed16(record["x"])
+            y = _fixed16(record["y"])
+            subsector = point_in_subsector(level.bsp, x, y)
+            men.append({
+                "x": x, "y": y,
+                "angle": u32(ANG45 * (record["angle"] // 45)),
+                "sector": sector_of_subsector(level.bsp, subsector),
+                "type": 14,
+            })
+        level.teleportmen = men
+    return level.teleportmen
+
+
+def teleport_move(level: SpecLevel, mo: dict, x: int, y: int) -> bool:
+    """P_TeleportMove(): PIT_StompThing, then the write, no line checks."""
+    subsector = point_in_subsector(level.bsp, x, y)
+    sector = sector_of_subsector(level.bsp, subsector)
+
+    for other in getattr(level, "mobjs", []):
+        if not (other["flags"] & MF_SHOOTABLE):
+            continue
+        blockdist = other["radius"] + mo["radius"]
+        if abs(other["x"] - x) >= blockdist or abs(other["y"] - y) >= blockdist:
+            continue
+        if other is mo:
+            continue
+        # `if ( !tmthing->player && gamemap != 30) return false;` -- DOOM1's
+        # episode 1 has no gamemap 30.
+        if not mo["player"]:
+            return False
+        damage_damage(level, other, mo, mo, 10000)
+
+    mo["floorz"] = level.sectors[sector]["floor"]
+    mo["ceilingz"] = level.sectors[sector]["ceiling"]
+    mo["subsector"] = subsector
+    mo["sector"] = sector
+    mo["x"] = x
+    mo["y"] = y
+    return True
+
+
+def do_teleport(level: SpecLevel, line_index: int, mo, side: int) -> bool:
+    """EV_Teleport(): the tagged sector's teleportman, the fogs, the write."""
+    if mo is None:
+        return False
+    if mo["flags"] & MF_MISSILE:
+        return False
+    if side == 1:
+        return False
+
+    tag = _line(level, line_index)["tag"]
+    secnum = -1
+    while True:
+        secnum = find_sector_from_tag(level, tag, secnum)
+        if secnum < 0:
+            return False
+        for man in spec_teleportmen(level):
+            if man["sector"] != secnum:
+                continue
+            oldx, oldy, oldz = mo["x"], mo["y"], mo["z"]
+            if not teleport_move(level, mo, man["x"], man["y"]):
+                return False
+            mo["z"] = mo["floorz"]
+            if mo["player"] and getattr(level, "player_record", None) is not None:
+                level.player_record["viewz"] = mo["z"] + level.player_record["viewheight"]
+            an = man["angle"] >> ANGLETOFINESHIFT
+            distance = TELEPORT_FOG_DISTANCE + STAIR_PERTURB["teleport"]
+            fogs = [
+                (oldx, oldy, oldz),
+                (man["x"] + distance * FINE_SINE[an + FINEANGLES // 4],
+                 man["y"] + distance * FINE_SINE[an],
+                 mo["z"]),
+            ]
+            level.fogs.extend(fogs)
+            if mo["player"]:
+                mo["reactiontime"] = TELEPORT_REACTIONTIME
+            mo["angle"] = man["angle"]
+            mo["momx"] = mo["momy"] = mo["momz"] = 0
+            return True
+    return False
+
+
 # --- P_SpawnSpecials --------------------------------------------------------
 
 def spawn_specials(level: SpecLevel) -> None:
@@ -2964,11 +3136,17 @@ def upstream_handles(kind: str, special: int) -> bool:
 
 
 def _trigger_special_line(level: SpecLevel, line_index: int, kind: str,
-                          by_player: bool) -> int:
+                          mo, side: int) -> int:
     special = level.line_special[line_index]
     if special == 0:
         return 0
+    by_player = bool(mo is not None and mo.get("player"))
     if kind == "use":
+        # `if (side) { switch(line->special) { case 124: break; default: return
+        # false; } }` -- 124 is the sliding door upstream compiled out, so it
+        # reaches the switch and does nothing.
+        if side != 0 and special != 124:
+            return 0
         if not by_player and special not in (1, 32, 33, 34):
             level.stats["refused"] += 1
             return 0
@@ -2981,6 +3159,14 @@ def _trigger_special_line(level: SpecLevel, line_index: int, kind: str,
             # not modelled: the container holds no SW2 partner (D4.5).
             level.line_special[line_index] = 0
             level.exit_request = "normal" if special == 11 else "secret"
+            return 1
+        # `if (EV_BuildStairs(line, type)) P_ChangeSwitchTexture(line, 0);` --
+        # the one switch in P_UseSpecialLine whose clear the EV result gates.
+        if special in (7, 127):
+            if do_stairs(level, line_index,
+                         STAIR_BUILD8 if special == 7 else STAIR_TURBO16):
+                level.stats["deferredLine"] += 1
+                level.line_special[line_index] = 0
             return 1
         use = {
             9: ("donut",), 14: ("plat", PLAT_RAISE_AND_CHANGE, 32),
@@ -3044,9 +3230,11 @@ def _trigger_special_line(level: SpecLevel, line_index: int, kind: str,
         return 0
 
     # CROSS
-    if not by_player and special not in (4, 10, 39, 88, 97, 125, 126):
-        level.stats["refused"] += 1
-        return 0
+    if not by_player:
+        missile = mo is not None and mo.get("type") in CROSS_MISSILE_TYPES
+        if missile or special not in (4, 10, 39, 88, 97, 125, 126):
+            level.stats["refused"] += 1
+            return 0
     # EXIT! / SECRET EXIT: G_ExitLevel()/G_SecretExitLevel() and, unlike the
     # one-shot cases below, no `line->special = 0` in P_CrossSpecialLine.
     if special == 52:
@@ -3054,6 +3242,32 @@ def _trigger_special_line(level: SpecLevel, line_index: int, kind: str,
         return 1
     if special == 124:
         level.exit_request = "secret"
+        return 1
+    # One-shot stairs: EV_BuildStairs' answer is ignored and the line is
+    # cleared either way. 39/125 are the same shape for EV_Teleport.
+    if special in (8, 100):
+        do_stairs(level, line_index,
+                  STAIR_BUILD8 if special == 8 else STAIR_TURBO16)
+        level.line_special[line_index] = 0
+        return 1
+    if special == 39:
+        do_teleport(level, line_index, mo, side)
+        level.line_special[line_index] = 0
+        return 1
+    if special == 125:
+        # `if (!thing->player) { EV_Teleport(...); line->special = 0; }`
+        if by_player:
+            return 0
+        do_teleport(level, line_index, mo, side)
+        level.line_special[line_index] = 0
+        return 1
+    if special == 97:
+        do_teleport(level, line_index, mo, side)
+        return 1
+    if special == 126:
+        if by_player:
+            return 0
+        do_teleport(level, line_index, mo, side)
         return 1
     one_shot = {
         2: ("door", DOOR_OPEN), 3: ("door", DOOR_CLOSE),
@@ -3112,9 +3326,14 @@ def _trigger_special_line(level: SpecLevel, line_index: int, kind: str,
 
 
 def trigger_special_line(level: SpecLevel, line_index: int, kind: str,
-                         by_player: bool) -> int:
-    """The trigger entry point: runs the special and counts a success."""
-    result = _trigger_special_line(level, line_index, kind, by_player)
+                         mo, side: int = 0) -> int:
+    """The trigger entry point: runs the special and counts a success.
+
+    ``mo`` is upstream's actor (None is the gate's "no actor"), ``side`` is
+    P_PointOnLineSide() of the position the thing came from for a crossing and
+    the user's side for a use.
+    """
+    result = _trigger_special_line(level, line_index, kind, mo, side)
     if result:
         level.stats["triggers"] += 1
     return result
@@ -3189,13 +3408,15 @@ def report_specials(lumps: list[Lump], map_name: str, tics: int) -> None:
           f"lines={len(bsp.linedefs)}")
 
     spawn_specials(level)
+    actor = movement_player(level, use_start_angle=True)
+    level.mobjs = [actor]
 
     # Tic 0: every special line, ascending, as the C harness documents.
     for line_index, special in enumerate(level.line_special):
         if special == 0:
             continue
         kind = trigger_kind_for(special)
-        result = trigger_special_line(level, line_index, kind, True)
+        result = trigger_special_line(level, line_index, kind, actor)
         print(f"TRIGGER 0 line={line_index} special={special} kind={kind} "
               f"result={result}")
 
@@ -3219,8 +3440,82 @@ def report_specials(lumps: list[Lump], map_name: str, tics: int) -> None:
     report_sector_damage(lumps, map_name)
 
 
-# --- Movement and collision (D4.2b) -----------------------------------------
-#
+# --- Stairs and teleports on a real map (T34) -------------------------------
+
+#: The eight numbers this stage measures. 7/8/100/127 are EV_BuildStairs' two
+#: types over the two trigger functions; 39/97/125/126 are EV_Teleport's.
+STAIR_SPECIALS = frozenset({7, 8, 100, 127})
+TELEPORT_SPECIALS = frozenset({39, 97, 125, 126})
+STAIR_TELEPORT_SPECIALS = STAIR_SPECIALS | TELEPORT_SPECIALS
+
+
+def print_teleport(level: SpecLevel, line_index: int, result: int, before,
+                   before_fogs: int) -> None:
+    """TELEPORT: the actor's pose on both ends and the destination fog."""
+    new = level.fogs[before_fogs:]
+    actor = level.mobjs[0] if level.mobjs else None
+    if actor is None:
+        print(f"TELEPORT {line_index} result={result} from=none to=none "
+              f"angle=0 fogs=0 last=none")
+        return
+    fromtext = ",".join(str(value) for value in before)
+    print(f"TELEPORT {line_index} result={result} from={fromtext} "
+          f"to={actor['x']},{actor['y']},{actor['z']} angle={actor['angle']} "
+          f"fogs={len(new)} "
+          f"last={','.join(str(value) for value in new[-1]) if new else 'none'}")
+
+
+def report_stairs(lumps: list[Lump], map_name: str, line_index: int,
+                  special: int, side: int, tics: int) -> None:
+    """The `--stairs` protocol: one fixture, one line, compared line for line.
+
+    The header names the fixture; LINE is the trigger's answer; TELEPORT is
+    printed for the four teleport numbers and carries the fog positions; the
+    SECTOR/THINKER dumps are the stair mover's evidence. `synthetic` says
+    whether the number was written into a line the map carries for another
+    special, the same disclosure the sector-damage fixtures make.
+
+    The actor is the player. The monster half of EV_Teleport is a unit test:
+    a spawned imp runs A_Look, whose `lastlook` draw moves the map's light
+    flashes off the line this fixture compares.
+    """
+    bsp = read_bsp_map(lumps, map_name)
+    things = run_things(bsp, 2)
+    level = SpecLevel(bsp, RandomState(things.rng))
+    level.fogs = []
+    spawn_specials(level)
+
+    synthetic = int(level.line_special[line_index] != special)
+    kind = trigger_kind_for(special)
+    level.line_special[line_index] = special
+    actor = movement_player(level, use_start_angle=True)
+    level.mobjs = [actor]
+
+    print(f"STAIRS {map_name} line={line_index} special={special} kind={kind} "
+          f"synthetic={synthetic} side={side} tics={tics}")
+
+    before = (actor["x"], actor["y"], actor["z"], actor["angle"])
+    before_fogs = len(level.fogs)
+    result = trigger_special_line(level, line_index, kind, actor, side)
+    print(f"LINE {line_index} result={result} "
+          f"consumed={1 if level.line_special[line_index] == 0 else 0}")
+
+    if special in TELEPORT_SPECIALS:
+        print_teleport(level, line_index, result, before, before_fogs)
+
+    dump_specials_tic(level, 0)
+    for tic in range(1, tics + 1):
+        run_tic(level)
+        dump_specials_tic(level, tic)
+
+    floors = sum(1 for thinker in level.thinkers if thinker["kind"] == "floor")
+    print(f"SUMMARY floors={floors} fogs={len(level.fogs)} "
+          f"triggers={level.stats['triggers']} refused={level.stats['refused']} "
+          f"unsupportedLine={level.stats['unsupportedLine']} "
+          f"deferredLine={level.stats['deferredLine']}")
+
+
+
 # A second implementation of linuxdoom-1.10 p_map.c / p_maputl.c / p_mobj.c's
 # movement half: P_CheckPosition, P_TryMove, P_SlideMove, P_HitSlideLine,
 # P_LineOpening, P_ThingHeightClip, P_XYMovement and P_ZMovement. It shares this
@@ -3612,7 +3907,7 @@ def movement_try_move(level: "SpecLevel", mo: dict, x: int, y: int) -> bool:
             side = movement_point_on_line_side(mo["x"], mo["y"], v1, dx, dy)
             oldside = movement_point_on_line_side(oldx, oldy, v1, dx, dy)
             if side != oldside:
-                trigger_special_line(level, index, "cross", bool(mo["player"]))
+                trigger_special_line(level, index, "cross", mo, oldside)
                 level.move_stats["crossed"] += 1
     return True
 
@@ -4023,7 +4318,13 @@ def movement_use_lines(level: "SpecLevel", mo: dict) -> None:
                 return
             continue
 
-        trigger_special_line(level, best_line, "use", True)
+        # `if (P_PointOnLineSide (usething->x, usething->y, in->d.line) == 1)
+        # side = 1;` -- P_UseSpecialLine refuses a back-side press.
+        use_line = level.bsp.linedefs[best_line]
+        use_v1, _use_v2, use_dx, use_dy = movement_line_geometry(level.bsp, use_line)
+        use_side = movement_point_on_line_side(mo["x"], mo["y"], use_v1, use_dx,
+                                               use_dy)
+        trigger_special_line(level, best_line, "use", mo, use_side)
         return
 
 
@@ -5440,6 +5741,14 @@ SECTOR_IRONFEET = 3
 # Filled in by the command line: the gate's `--perturb` names one of these.
 SECTOR_PERTURB = {"damage": 0, "threshold": 0, "ironfeet": 0}
 
+#: T34's two perturbations, applied in the oracle only so the stair and teleport
+#: comparisons are shown to be able to fail:
+#:
+#:   stairs    one extra map unit per step (build8 9, turbo16 17)
+#:   teleport  the destination fog 20 -> 21 map units along the teleportman's
+#:             angle, and the actor's angle left unchanged
+STAIR_PERTURB = {"stairs": 0, "teleport": 0}
+
 
 def sector_damage_amount(amount: int) -> int:
     """The shipped number, or +1 when the gate perturbs every amount."""
@@ -6454,7 +6763,7 @@ def attack_shoot_special_line(level: "SpecLevel", shooter: dict,
     """P_ShootSpecialLine(): p_spec.c owns the trigger rules."""
     if not shooter.get("player"):
         return
-    trigger_special_line(level, index, "shoot", True)
+    trigger_special_line(level, index, "shoot", shooter)
 
 
 def attack_player_think(level: "SpecLevel", player: dict, cmd: dict) -> None:
@@ -8990,6 +9299,16 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
                         default="none",
                         help="with --sector-damage: move one constant in this "
                              "implementation only, so the gate can prove it fails")
+    parser.add_argument("--stairs", metavar="MAP",
+                        help="run one stair/teleport fixture on MAP: one line "
+                             "triggered once, then the sector and thinker dumps "
+                             "(T34)")
+    parser.add_argument("--stairs-fixture", metavar="LINE,SPECIAL,SIDE,TICS",
+                        help="with --stairs: the fixture, e.g. 787,97,0,2")
+    parser.add_argument("--stairs-perturb", choices=("none", "stairs", "teleport"),
+                        default="none",
+                        help="with --stairs: move one constant in this "
+                             "implementation only, so the gate can prove it fails")
     parser.add_argument("--movement", metavar="NAME",
                         help="run the 160-tic movement script (thrust, wall, "
                              "slide, corner, friction, return) and print the mobj "
@@ -9057,13 +9376,13 @@ def main(argv: list[str] | None = None) -> int:
     if not (patches_wanted or textures_wanted or flats_wanted or arguments.map
             or arguments.stats or arguments.bsp or arguments.segs
             or arguments.things or arguments.specials or arguments.sector_damage
-            or arguments.movement
+            or arguments.movement or arguments.stairs
             or arguments.player or arguments.door or arguments.damage
             or arguments.attack or arguments.enemy):
         parser.error("nothing to do: pass --patches, --textures, --flats, --all, "
                      "--map, --stats, --bsp, --segs, --things, --specials, "
                      "--sector-damage, --movement, --player, --door, --damage, "
-                     "--attack or --enemy")
+                     "--stairs, --attack or --enemy")
     if arguments.limit is not None and arguments.limit < 0:
         parser.error("--limit cannot be negative")
     if arguments.tics < 0:
@@ -9088,6 +9407,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if arguments.sector_perturb != "none":
         SECTOR_PERTURB[arguments.sector_perturb] = 1
+    if arguments.stairs_perturb != "none":
+        STAIR_PERTURB[arguments.stairs_perturb] = 1
+
+    stairs_fixture = None
+    if arguments.stairs is not None or arguments.stairs_fixture is not None:
+        if arguments.stairs is None or arguments.stairs_fixture is None:
+            parser.error("--stairs needs --stairs-fixture")
+        parts = arguments.stairs_fixture.split(",")
+        if len(parts) != 4:
+            parser.error("--stairs-fixture wants LINE,SPECIAL,SIDE,TICS")
+        try:
+            stairs_fixture = (int(parts[0]), int(parts[1]), int(parts[2]),
+                              int(parts[3]))
+        except ValueError:
+            parser.error("--stairs-fixture's four fields are integers")
 
     try:
         identification, lumps = read_wad(arguments.wad)
@@ -9133,6 +9467,10 @@ def main(argv: list[str] | None = None) -> int:
             report_specials(lumps, arguments.specials.upper(), arguments.tics)
         if arguments.sector_damage:
             report_sector_damage(lumps, arguments.sector_damage.upper())
+        if arguments.stairs:
+            report_stairs(lumps, arguments.stairs.upper(), stairs_fixture[0],
+                          stairs_fixture[1], stairs_fixture[2],
+                          stairs_fixture[3])
         if arguments.movement:
             report_movement(lumps, arguments.movement.upper(), arguments.tics)
         if arguments.player:

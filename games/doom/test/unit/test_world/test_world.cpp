@@ -977,6 +977,15 @@ struct SpecMapBuilder {
         sideCount = static_cast<i16>(sideCount + 1);
     }
 
+    /// One THINGS record: position in map units, angle in degrees, DoomEd type.
+    void addThing(i16 x, i16 y, i16 angle, u16 type, u16 options = 7) {
+        put16(things, x);
+        put16(things, y);
+        put16(things, angle);
+        put16(things, type);
+        put16(things, options);
+    }
+
     /// One line, two vertices and one seg (side 0). `twoSided` adds side 1.
     void addLine(i16 flags, i16 special, i16 tag, i16 front, i16 back,
                  bool twoSided) {
@@ -1120,6 +1129,20 @@ struct SpecFixture {
     }
 };
 
+/* The thing a trigger is standing in for.
+ *
+ * A SpecFixture's map has no THINGS lump unless the test adds one, so most
+ * cases have no avatar mobj; the trigger's mode checks read only
+ * `thing->player`. Teleport fixtures add a real player start and get the real
+ * mobj, because EV_Teleport writes its position.
+ */
+r_mobj_t* playerActor(SpecFixture& fixture) {
+    static r_mobj_t standIn{};
+
+    standIn.player = 1;
+    return fixture.level.player != nullptr ? fixture.level.player : &standIn;
+}
+
 p_door_thinker_t* doorOf(p_thinker_t* thinker) {
     return reinterpret_cast<p_door_thinker_t*>(thinker);
 }
@@ -1158,7 +1181,7 @@ void test_specs_door_opens_to_its_top_and_stops(void) {
     TEST_ASSERT_TRUE(fixture.open());
     TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_DOOR));
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_CROSS, 1));
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
 
     p_thinker_t* door = fixture.first(P_THINKER_DOOR);
     TEST_ASSERT_NOT_NULL(door);
@@ -1181,7 +1204,7 @@ void test_specs_door_waits_then_closes_and_removes_itself(void) {
 
     TEST_ASSERT_TRUE(fixture.open());
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_CROSS, 1));
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
     p_thinker_t* door = fixture.first(P_THINKER_DOOR);
     TEST_ASSERT_NOT_NULL(door);
     TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
@@ -1220,7 +1243,7 @@ void test_specs_door_closing_over_a_thing_stops_at_its_height(void) {
     TEST_ASSERT_EQUAL_INT32(128 * kFrac, mobj->ceilingz);
 
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_CROSS, 1));
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
     p_thinker_t* door = fixture.first(P_THINKER_DOOR);
     TEST_ASSERT_NOT_NULL(door);
 
@@ -1256,7 +1279,7 @@ void test_specs_plat_goes_down_waits_and_returns(void) {
 
     TEST_ASSERT_TRUE(fixture.open());
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_CROSS, 1));
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
     p_thinker_t* thinker = fixture.first(P_THINKER_PLAT);
     TEST_ASSERT_NOT_NULL(thinker);
     TEST_ASSERT_EQUAL_INT(P_PLAT_DOWN_WAIT_UP_STAY, platOf(thinker)->type);
@@ -1289,7 +1312,7 @@ void test_specs_raise_floor_stops_at_the_lowest_surrounding_ceiling(void) {
 
     TEST_ASSERT_TRUE(fixture.open());
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_CROSS, 1));
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
     TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_FLOOR));
     TEST_ASSERT_EQUAL_INT32(128 * kFrac,
                             reinterpret_cast<p_floor_thinker_t*>(
@@ -1311,7 +1334,7 @@ void test_specs_lower_floor_stops_at_the_highest_surrounding_floor(void) {
 
     TEST_ASSERT_TRUE(fixture.open());
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_CROSS, 1));
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
     TEST_ASSERT_EQUAL_INT32(64 * kFrac,
                             reinterpret_cast<p_floor_thinker_t*>(
                                 fixture.first(P_THINKER_FLOOR))->destHeight);
@@ -1328,7 +1351,7 @@ void test_specs_ceiling_crush_and_raise_reverses(void) {
 
     TEST_ASSERT_TRUE(fixture.open());
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_CROSS, 1));
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
     p_thinker_t* thinker = fixture.first(P_THINKER_CEILING);
     TEST_ASSERT_NOT_NULL(thinker);
     TEST_ASSERT_EQUAL_INT(P_CEIL_CRUSH_AND_RAISE, ceilingOf(thinker)->type);
@@ -1415,7 +1438,7 @@ void test_specs_perpetual_plat_stops_and_resumes_then_reverses(void) {
 
     TEST_ASSERT_TRUE(fixture.open());
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_CROSS, 1));
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
     p_thinker_t* thinker = fixture.first(P_THINKER_PLAT);
     TEST_ASSERT_NOT_NULL(thinker);
     TEST_ASSERT_EQUAL_INT32(0, platOf(thinker)->low);
@@ -1428,13 +1451,13 @@ void test_specs_perpetual_plat_stops_and_resumes_then_reverses(void) {
     TEST_ASSERT_TRUE(halfway > 64 * kFrac);
 
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 1,
-                                                    P_TRIGGER_CROSS, 1));
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
     TEST_ASSERT_EQUAL_INT(P_PLAT_IN_STASIS, platOf(thinker)->status);
     fixture.tick(10);
     TEST_ASSERT_EQUAL_INT32(halfway, fixture.level.sectors[0].floorHeight);
 
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_CROSS, 1));
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
     TEST_ASSERT_EQUAL_INT(P_PLAT_UP, platOf(thinker)->status);
 
     TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
@@ -1468,13 +1491,13 @@ void test_specs_manual_door_twice_reverses_instead_of_duplicating(void) {
 
     TEST_ASSERT_TRUE(fixture.open());
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_USE, 1));
+                                                    P_TRIGGER_USE, playerActor(fixture), 0));
     p_thinker_t* door = fixture.first(P_THINKER_DOOR);
     TEST_ASSERT_NOT_NULL(door);
     TEST_ASSERT_EQUAL_INT(1, doorOf(door)->direction);
 
     TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_USE, 1));
+                                                    P_TRIGGER_USE, playerActor(fixture), 0));
     TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
     TEST_ASSERT_EQUAL_INT(-1, doorOf(door)->direction);
 }
@@ -1518,7 +1541,7 @@ void test_specs_ignored_trigger_is_not_a_missing_handler(void) {
     trace.tic = 7u;
 
     TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_CROSS, 1));
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
     TEST_ASSERT_EQUAL_UINT32(0u, fixture.level.specStats.unsupportedLineSpecial);
     TEST_ASSERT_EQUAL_UINT32(1u, trace.count);
     TEST_ASSERT_EQUAL_INT16(1, trace.entries[0].special);
@@ -1531,40 +1554,237 @@ void test_specs_ignored_trigger_is_not_a_missing_handler(void) {
     TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_DOOR));
 }
 
-void test_specs_unhandled_upstream_special_is_counted_once_in_the_set(void) {
-    // 8 is build-stairs and 7 is build-stairs on a switch: upstream acts on
-    // both, this port has no EV. They are the gap the counter names, and the
-    // set is distinct (special, kind) with the first line and tic.
-    SpecFixture fixture({{0, 0, 160, 0, 1}, {0, 128, 160, 0, 0}});
+void test_specs_stairs_build8_chain_from_the_tagged_sector(void) {
+    // One tagged sector (floor 0, FLOOR4_8) whose two-sided line leads to a
+    // second sector (floor 16, the same picture): EV_BuildStairs raises the
+    // first to 8 and the neighbour to 16, both at FLOORSPEED/4 and both
+    // relative to the *tagged* sector's floor.
+    SpecFixture fixture({{0, 128, 160, 0, 1}, {16, 128, 160, 0, 0}});
     fixture.builder.addLine(4, 8, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS,
+                                                    playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT(2, fixture.count(P_THINKER_FLOOR));
+    TEST_ASSERT_EQUAL_INT(0, fixture.level.lineSpecial[0]);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.triggers);
+
+    // Upstream never writes `floor->type` in EV_BuildStairs, so it is
+    // lowerFloor (0); T_MoveFloor's pastdest switch has no branch for it.
+    p_thinker_t* first = fixture.first(P_THINKER_FLOOR);
+    TEST_ASSERT_EQUAL_INT(P_FLOOR_LOWER,
+                          reinterpret_cast<p_floor_thinker_t*>(first)->type);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_FLOOR) == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(8 * kFrac, fixture.level.sectors[0].floorHeight);
+    TEST_ASSERT_EQUAL_INT32(16 * kFrac, fixture.level.sectors[1].floorHeight);
+}
+
+void test_specs_stairs_turbo16_and_the_use_clear(void) {
+    // 127 is P_UseSpecialLine's turbo16: 16 units a step at FLOORSPEED*4, and
+    // `if (EV_BuildStairs(...)) P_ChangeSwitchTexture(line, 0)` -- the clear is
+    // conditional, unlike every other switch in that switch.
+    SpecFixture fixture({{0, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 127, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE,
+                                                    playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT(2, fixture.count(P_THINKER_FLOOR));
+    TEST_ASSERT_EQUAL_INT(0, fixture.level.lineSpecial[0]);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.deferredLineSpecial);
+    TEST_ASSERT_EQUAL_INT32(4 * kFrac,
+                            reinterpret_cast<p_floor_thinker_t*>(
+                                fixture.first(P_THINKER_FLOOR))->speed);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_FLOOR) == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(16 * kFrac, fixture.level.sectors[0].floorHeight);
+    TEST_ASSERT_EQUAL_INT32(32 * kFrac, fixture.level.sectors[1].floorHeight);
+}
+
+void test_specs_stairs_use_leaves_the_line_when_already_moving(void) {
+    // The second press finds the tagged sector's `specialdata` set, so
+    // EV_BuildStairs answers 0 and upstream does not run
+    // P_ChangeSwitchTexture: the line stays and nothing new is counted.
+    SpecFixture fixture({{0, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
     fixture.builder.addLine(4, 7, 1, 0, 1, true);
 
     TEST_ASSERT_TRUE(fixture.open());
-    p_spec_trace_t trace{};
-    fixture.level.context.specTrace = &trace;
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE,
+                                                    playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT(2, fixture.count(P_THINKER_FLOOR));
+    // Put the line back, as a second press on a retriggered switch would be.
+    fixture.level.lineSpecial[0] = 7;
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE,
+                                                    playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT(7, fixture.level.lineSpecial[0]);
+    TEST_ASSERT_EQUAL_INT(2, fixture.count(P_THINKER_FLOOR));
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.deferredLineSpecial);
+}
 
-    trace.tic = 3u;
-    TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_CROSS, 1));
-    trace.tic = 9u;
-    TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 0,
-                                                    P_TRIGGER_CROSS, 1));
-    TEST_ASSERT_EQUAL_UINT32(2u, fixture.level.specStats.unsupportedLineSpecial);
-    TEST_ASSERT_EQUAL_UINT32(1u, trace.count);
-    TEST_ASSERT_EQUAL_INT16(8, trace.entries[0].special);
-    TEST_ASSERT_EQUAL_UINT32(3u, trace.entries[0].firstTic);
-    TEST_ASSERT_EQUAL_UINT32(2u, trace.entries[0].hits);
+void test_specs_teleport_moves_the_player_and_spawns_two_fogs(void) {
+    // One sector tagged 5 holds an MT_TELEPORTMAN (DoomEd 14) at (512, 0) with
+    // angle 90. EV_Teleport writes the actor's x/y, its z from the
+    // destination's floor, the teleportman's angle, and spawns two MT_TFOG
+    // mobjs: one at the source and one 20 units along that angle.
+    SpecFixture fixture({{0, 128, 160, 0, 5}});
+    fixture.builder.addThing(0, 0, 0, 1);              // single-player start
+    fixture.builder.addThing(512, 0, 90, 14);          // MT_TELEPORTMAN
+    fixture.builder.addLine(0, 39, 5, 0, 0, false);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_NOT_NULL(fixture.level.player);
+
+    const int fogsBefore = [&] {
+        int count = 0;
+        for (const r_mobj_t* mobj = p_level_first_mobj(&fixture.level);
+             mobj != nullptr; mobj = p_level_next_mobj(mobj)) {
+            if (mobj->type == MT_TFOG) {
+                count += 1;
+            }
+        }
+        return count;
+    }();
+
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS,
+                                                    fixture.level.player, 0));
+    // 39 is the one-shot number: the line is cleared.
+    TEST_ASSERT_EQUAL_INT(0, fixture.level.lineSpecial[0]);
+    TEST_ASSERT_EQUAL_INT32(512 * kFrac, fixture.level.player->x);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.player->y);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.player->z);
+    TEST_ASSERT_EQUAL_UINT32(ANG90, fixture.level.player->angle);
+    TEST_ASSERT_EQUAL_INT(P_TELEPORT_REACTIONTIME,
+                          fixture.level.player->reactiontime);
+
+    int fogs = 0;
+    fixed_t fogX = 0;
+    fixed_t fogY = 0;
+    for (const r_mobj_t* mobj = p_level_first_mobj(&fixture.level);
+         mobj != nullptr; mobj = p_level_next_mobj(mobj)) {
+        if (mobj->type == MT_TFOG) {
+            fogs += 1;
+            fogX = mobj->x;
+            fogY = mobj->y;
+        }
+    }
+    TEST_ASSERT_EQUAL_INT(fogsBefore + 2, fogs);
+    // The last fog is the destination one: (512, 0) + 20*(cos 90, sin 90). The
+    // fine table's cosine at a quarter turn is not exactly zero (-25 in 16.16
+    // here), so the expected x is the table's own product, not 512*FRACUNIT.
+    TEST_ASSERT_EQUAL_INT32(512 * kFrac +
+                                P_TELEPORT_FOG_DISTANCE * r_fine_cosine(ANG90),
+                            fogX);
+    TEST_ASSERT_EQUAL_INT32(P_TELEPORT_FOG_DISTANCE *
+                                r_fine_sine[ANG90 >> ANGLETOFINESHIFT],
+                            fogY);
+}
+
+void test_specs_teleport_retrigger_and_the_player_only_forms(void) {
+    // 97 keeps its line; 125 and 126 are monster-only, so a player crossing
+    // one runs nothing and the line is not cleared.
+    SpecFixture fixture({{0, 128, 160, 0, 5}});
+    fixture.builder.addThing(0, 0, 0, 1);
+    fixture.builder.addThing(512, 0, 0, 14);
+    fixture.builder.addLine(0, 97, 5, 0, 0, false);
+    fixture.builder.addLine(0, 125, 5, 0, 0, false);
+    fixture.builder.addLine(0, 126, 5, 0, 0, false);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* player = fixture.level.player;
+
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, player, 0));
+    TEST_ASSERT_EQUAL_INT(97, fixture.level.lineSpecial[0]);
+    TEST_ASSERT_EQUAL_INT32(512 * kFrac, player->x);
 
     TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 1,
-                                                    P_TRIGGER_USE, 1));
-    TEST_ASSERT_EQUAL_UINT32(3u, fixture.level.specStats.unsupportedLineSpecial);
-    TEST_ASSERT_EQUAL_UINT32(2u, trace.count);
-    TEST_ASSERT_EQUAL_INT16(7, trace.entries[1].special);
-    TEST_ASSERT_EQUAL_INT16(static_cast<i16>(P_TRIGGER_USE),
-                            trace.entries[1].kind);
-    TEST_ASSERT_EQUAL_UINT16(1u, trace.entries[1].line);
-    TEST_ASSERT_EQUAL_UINT8(1u, trace.entries[1].unsupported);
+                                                    P_TRIGGER_CROSS, player, 0));
+    TEST_ASSERT_EQUAL_INT(125, fixture.level.lineSpecial[1]);
+    TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 2,
+                                                    P_TRIGGER_CROSS, player, 0));
+    TEST_ASSERT_EQUAL_INT(126, fixture.level.lineSpecial[2]);
 }
+
+void test_specs_teleport_refuses_the_back_side_and_missiles(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 5}});
+    fixture.builder.addThing(0, 0, 0, 1);
+    fixture.builder.addThing(512, 0, 0, 14);
+    fixture.builder.addLine(0, 39, 5, 0, 0, false);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* player = fixture.level.player;
+    const fixed_t startX = player->x;
+
+    // `if (side == 1) return 0;` -- the thing came from the back of the line.
+    TEST_ASSERT_EQUAL_INT(0, p_do_teleport(&fixture.level, 0, player, 1));
+    TEST_ASSERT_EQUAL_INT32(startX, player->x);
+
+    // `if (thing->flags & MF_MISSILE) return 0;` -- a missile never teleports.
+    player->flags |= MF_MISSILE;
+    TEST_ASSERT_EQUAL_INT(0, p_do_teleport(&fixture.level, 0, player, 0));
+    TEST_ASSERT_EQUAL_INT32(startX, player->x);
+}
+
+void test_specs_teleport_monster_refuses_an_occupied_destination(void) {
+    // PIT_StompThing: a monster teleporting onto a shootable thing is refused
+    // ("monsters don't stomp things except on boss level"); the player stomps
+    // it for 10000 instead.
+    SpecFixture fixture({{0, 128, 160, 0, 5}});
+    fixture.builder.addThing(0, 0, 0, 1);
+    fixture.builder.addThing(512, 0, 0, 14);
+    fixture.builder.addLine(0, 97, 5, 0, 0, false);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* player = fixture.level.player;
+    player->x = 512 * kFrac;
+    player->y = 0;
+
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+    r_mobj_t* imp = p_spawn_mobj(&fixture.level.context, 0, 0, ONFLOORZ,
+                                 MT_TROOP, &error);
+    TEST_ASSERT_NOT_NULL(imp);
+    TEST_ASSERT_EQUAL_INT(0, p_do_teleport(&fixture.level, 0, imp, 0));
+    TEST_ASSERT_EQUAL_INT32(0, imp->x);
+    TEST_ASSERT_EQUAL_INT32(0, imp->y);
+
+    // The player, teleporting onto the imp now standing at the destination,
+    // damages it for 10000 and moves.
+    imp->x = 512 * kFrac;
+    imp->y = 0;
+    player->x = 0;
+    player->y = 0;
+    const int health = imp->health;
+    TEST_ASSERT_EQUAL_INT(1, p_do_teleport(&fixture.level, 0, player, 0));
+    TEST_ASSERT_EQUAL_INT32(512 * kFrac, player->x);
+    TEST_ASSERT_EQUAL_INT32(0, player->y);
+    TEST_ASSERT_EQUAL_INT(health - 10000, imp->health);
+}
+
+void test_specs_use_from_the_back_side_is_refused(void) {
+    // P_UseSpecialLine's prologue: `if (side) return false;` (124 aside).
+    SpecFixture fixture({{0, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 29, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE,
+                                                    playerActor(fixture), 1));
+    TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_DOOR));
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE,
+                                                    playerActor(fixture), 0));
+}
+
 
 void test_specs_spawn_order_is_sector_index_order(void) {
     // 13 (sync fast strobe) on sector 0, 9 (secret) on 1, 1 (flash) on 2,
@@ -3329,7 +3549,14 @@ int main(int argc, char** argv) {
     RUN_TEST(test_player_sector_damage_suit_blocks_five_and_seven_and_draws_for_sixteen);
     RUN_TEST(test_player_sector_9_counts_one_secret_and_clears_itself);
     RUN_TEST(test_specs_ignored_trigger_is_not_a_missing_handler);
-    RUN_TEST(test_specs_unhandled_upstream_special_is_counted_once_in_the_set);
+    RUN_TEST(test_specs_stairs_build8_chain_from_the_tagged_sector);
+    RUN_TEST(test_specs_stairs_turbo16_and_the_use_clear);
+    RUN_TEST(test_specs_stairs_use_leaves_the_line_when_already_moving);
+    RUN_TEST(test_specs_teleport_moves_the_player_and_spawns_two_fogs);
+    RUN_TEST(test_specs_teleport_retrigger_and_the_player_only_forms);
+    RUN_TEST(test_specs_teleport_refuses_the_back_side_and_missiles);
+    RUN_TEST(test_specs_teleport_monster_refuses_an_occupied_destination);
+    RUN_TEST(test_specs_use_from_the_back_side_is_refused);
     RUN_TEST(test_specs_spawn_order_is_sector_index_order);
     RUN_TEST(test_specs_p_change_sector_counts_and_answers_clear);
     RUN_TEST(test_line_record_exposes_special_and_tag);

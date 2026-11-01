@@ -319,7 +319,16 @@ static int findExitLine(p_level_t* level, int16_t special,
                 const int64_t stepY = (int64_t)((double)ny / length *
                                                 (double)gaps[gapIndex]);
 
-                for (sign = 1; sign >= -1; sign -= 2) {
+                /* The front half-plane first: `(-dy, dx)` points to the *back*
+                 * side of P_PointOnLineSide's test (for dx > 0, dy == 0 it
+                 * points at +y, which the rule answers 1), so -1 puts the
+                 * avatar where side 0 is. P_UseSpecialLine refuses a back-side
+                 * press, so a fixture that stood at +1 would be pressing a
+                 * switch from the side upstream rejects -- which is what
+                 * level_check did before the side argument existed. The sector
+                 * test still decides: on several exit lines both sides are the
+                 * same sector, and only one of them is side 0. */
+                for (sign = -1; sign <= 1; sign += 2) {
                     const fixed_t px =
                         (fixed_t)((uint32_t)mx + (uint32_t)(sign * stepX));
                     const fixed_t py =
@@ -878,7 +887,7 @@ int main(int argc, char** argv) {
 
                 cross.lineSpecial[line] = 52;
                 cross.exitRequest = (uint8_t)P_EXIT_NONE;
-                result = p_trigger_special_line(&cross, line, P_TRIGGER_CROSS, 1);
+                result = p_trigger_special_line(&cross, line, P_TRIGGER_CROSS, cross.player, 0);
                 printf("CROSS special=52 kind=cross result=%d exit=%s consumed=%d\n",
                        result,
                        cross.exitRequest == (uint8_t)P_EXIT_NORMAL ? "normal" : "other",
@@ -891,7 +900,7 @@ int main(int argc, char** argv) {
 
                 cross.lineSpecial[line] = 124;
                 cross.exitRequest = (uint8_t)P_EXIT_NONE;
-                result = p_trigger_special_line(&cross, line, P_TRIGGER_CROSS, 1);
+                result = p_trigger_special_line(&cross, line, P_TRIGGER_CROSS, cross.player, 0);
                 printf("CROSS special=124 kind=cross result=%d exit=%s consumed=%d\n",
                        result,
                        cross.exitRequest == (uint8_t)P_EXIT_SECRET ? "secret" : "other",
@@ -906,7 +915,7 @@ int main(int argc, char** argv) {
                  * level. */
                 cross.lineSpecial[line] = 52;
                 cross.exitRequest = (uint8_t)P_EXIT_NONE;
-                result = p_trigger_special_line(&cross, line, P_TRIGGER_CROSS, 0);
+                result = p_trigger_special_line(&cross, line, P_TRIGGER_CROSS, NULL, 0);
                 printf("CROSS special=52 kind=cross byplayer=0 result=%d refused=%u\n",
                        result, (unsigned)(cross.specStats.triggersRefused - refused));
                 expect(result == 0 &&

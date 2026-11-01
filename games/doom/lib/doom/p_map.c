@@ -661,6 +661,70 @@ int p_check_position(p_mobj_context_t* world, r_mobj_t* mobj, fixed_t x,
     return 1;
 }
 
+/* --- P_TeleportMove ------------------------------------------------------ */
+
+int p_teleport_move(p_mobj_context_t* world, r_mobj_t* mobj, fixed_t x,
+                    fixed_t y) {
+    uint16_t subsector = 0;
+    uint16_t sector;
+    doom_subsector_t record;
+    fixed_t floor;
+    fixed_t ceiling;
+    const r_mobj_t* other;
+
+    if (world == NULL || mobj == NULL || world->map == NULL) {
+        return 0;
+    }
+
+    /* `newsubsec = R_PointInSubsector (x,y);` and the base heights from it. No
+     * line is examined: P_TeleportMove trusts the map's teleport destination. */
+    if (r_bsp_point_in_subsector(world->map, x, y, &subsector) != R_BSP_OK) {
+        return 0;
+    }
+    if ((uint32_t)subsector >= world->map->lumps[DOOM_MAP_SSECTORS].count) {
+        return 0;
+    }
+    doom_map_get_subsector(world->map, subsector, &record);
+    sector = doom_map_subsector_sector(world->map, &record);
+    if (!sector_heights(world, sector, &floor, &ceiling)) {
+        return 0;
+    }
+
+    /* PIT_StompThing over every thing in the world, in list order. A match that
+     * the teleporter's own class refuses ends the move before it is written. */
+    for (other = mobj_first(world); other != NULL;
+         other = mobj_next(world, other)) {
+        fixed_t blockdist;
+
+        if ((other->flags & MF_SHOOTABLE) == 0u) {
+            continue;
+        }
+        blockdist = other->radius + mobj->radius;
+        if (distance_abs(other->x, x) >= (int64_t)blockdist ||
+            distance_abs(other->y, y) >= (int64_t)blockdist) {
+            continue;
+        }
+        if (other == mobj) {
+            continue; /* don't clip against self */
+        }
+        /* `if ( !tmthing->player && gamemap != 30) return false;` -- monsters
+         * don't stomp things except on the boss level. DOOM1's episode 1 is
+         * gamemap 1..9, so a non-player teleporter always refuses here. */
+        if (mobj->player == 0u) {
+            return 0;
+        }
+        p_damage_mobj(world, (r_mobj_t*)other, mobj, mobj, 10000);
+    }
+
+    mobj->floorz = floor;
+    mobj->ceilingz = ceiling;
+    mobj->subsector = subsector;
+    mobj->sector = sector;
+    mobj->x = x;
+    mobj->y = y;
+    return 1;
+}
+
 /* --- P_TryMove ----------------------------------------------------------- */
 
 static int try_move(p_mobj_context_t* world, r_mobj_t* mobj, fixed_t x,
@@ -766,9 +830,11 @@ static int try_move(p_mobj_context_t* world, r_mobj_t* mobj, fixed_t x,
             side = point_on_line_side(mobj->x, mobj->y, &v1, dx, dy);
             oldSide = point_on_line_side(oldx, oldy, &v1, dx, dy);
             if (side != oldSide && world->level != NULL) {
+                /* P_CrossSpecialLine (ld-lines, oldside, thing): the side is the
+                 * one the thing came from, which is what EV_Teleport's
+                 * `if (side == 1) return 0;` reads. */
                 (void)p_trigger_special_line(world->level, lineIndex,
-                                             P_TRIGGER_CROSS,
-                                             mobj->player ? 1 : 0);
+                                             P_TRIGGER_CROSS, mobj, oldSide);
                 if (world->moveStats != NULL) {
                     world->moveStats->crossed += 1u;
                 }
@@ -1352,18 +1418,26 @@ void p_use_lines(p_mobj_context_t* world, r_mobj_t* mobj) {
                 continue;
             }
 
-            /* Upstream computes the user's side and passes it to
-             * P_UseSpecialLine; this port's dispatch has no side argument, so
-             * the crossing itself is the decision. `useLineHits` is PTR_UseTraverse's
+            /* Upstream computes the user's side with
+             * `P_PointOnLineSide (usething->x, usething->y, in->d.line)` and
+             * passes it to P_UseSpecialLine, whose prologue refuses a back-side
+             * use (124 is the unused exception). `useLineHits` is PTR_UseTraverse's
              * answer -- a special line was reached -- and is recorded apart from
              * `triggers` because an EV that declines still means the ray got
              * there. */
             if (world->level != NULL) {
+                doom_vertex_t v1;
+                doom_vertex_t v2;
+                fixed_t lineDx;
+                fixed_t lineDy;
+
                 if (world->specStats != NULL) {
                     world->specStats->useLineHits += 1u;
                 }
-                (void)p_trigger_special_line(world->level, bestLine,
-                                             P_TRIGGER_USE, 1);
+                line_geometry(world->map, &line, &v1, &v2, &lineDx, &lineDy);
+                (void)p_trigger_special_line(
+                    world->level, bestLine, P_TRIGGER_USE, mobj,
+                    point_on_line_side(mobj->x, mobj->y, &v1, lineDx, lineDy));
             }
             /* Can't use more than one special line in a row. */
             return;
@@ -2102,10 +2176,10 @@ void p_shoot_special_line(p_mobj_context_t* world, r_mobj_t* shooter,
 
     /* Upstream's `if (!thing->player) return;` and its switch both live in
      * p_spec.c's trigger_shoot(), which is the one place a line special is
-     * dispatched. The player half is passed through, so a monster's shot is
-     * refused there exactly as upstream refuses it here. */
+     * dispatched. The shooter is passed through, so a monster's shot is refused
+     * there exactly as upstream refuses it here. */
     result = p_trigger_special_line(world->level, lineIndex, P_TRIGGER_SHOOT,
-                                    shooter->player ? 1 : 0);
+                                    shooter, 0);
     if (result) {
         stat_attack(world, count_special);
     }
