@@ -59,9 +59,10 @@
     SOURCE WAD's patches -- the container no longer carries them, and a
     container agreeing with itself would prove nothing.
 
-    The container is flashed to 0x0D0000, the `wad` partition of
-    partitions_wad.csv (D3.11). That offset moved from 0x100000 when the app slot
-    shrank to 768 KB; flashing a new partition table erases NVS, which this
+    The container is flashed to 0x0C0000, the `wad` partition of
+    partitions_wad.csv (D3.11, moved again by T36). The offset went 0x100000 ->
+    0x0D0000 when the app slot shrank to 768 KB and 0x0D0000 -> 0x0C0000 when
+    it shrank to 720,896 B for the HUD art; flashing a new partition table erases NVS, which this
     project does not use. Flash the app image too, because the table is part of
     it.
 
@@ -103,8 +104,8 @@ if (-not $Wad) { $Wad = Join-Path $PSScriptRoot "DOOM1.WAD" }
 if (-not $Out) { $Out = Join-Path $PSScriptRoot "DOOM1.whd" }
 
 # The container is written at this offset in the `wad` partition (D3.11).
-$ContainerOffset = "0x0D0000"
-$Budget = 3342336
+$ContainerOffset = "0x0C0000"
+$Budget = 3407872
 $Levels = "E1M1,E1M2,E1M3,E1M4,E1M5,E1M6,E1M7,E1M8,E1M9"
 $Root = Split-Path -Parent $PSScriptRoot
 
@@ -139,11 +140,12 @@ try {
         "--bake", $Levels,
         "--drop-baked-sources",
         "--sprite-list", "tools/e1m1_sprites.inc",
+        "--raw-list", "tools/hud_lumps.txt",
         "--budget", $Budget,
         "--baked-capacity", $BakedCapacity
     )
 
-    Write-Host "== encode: nine levels, every sprite, union bake, 3,342,336 B budget, $BakedCapacity manifest entries =="
+    Write-Host "== encode: nine levels, every sprite, the HUD art, union bake, 3,407,872 B budget, $BakedCapacity manifest entries =="
     & python tools/whd_encode.py $Wad -o $Out --force @EncodeArgs --stats
     if ($LASTEXITCODE -ne 0) {
         throw "whd_encode.py exited $LASTEXITCODE"
@@ -171,6 +173,16 @@ try {
     & python tools/bake_graphics.py --check-container $Out --wad $Wad
     if ($LASTEXITCODE -ne 0) {
         throw "bake_graphics.py --check-container exited $LASTEXITCODE"
+    }
+
+    Write-Host "== prove: the 86 status-bar patches are raw, aligned and equal to the WAD's =="
+    & python tools/gen_hud_lumps.py --wad $Wad --check
+    if ($LASTEXITCODE -ne 0) {
+        throw "gen_hud_lumps.py --check exited $LASTEXITCODE"
+    }
+    & python tools/hud_check.py --container $Out --wad $Wad
+    if ($LASTEXITCODE -ne 0) {
+        throw "hud_check.py exited $LASTEXITCODE"
     }
 
     if ($Flash) {

@@ -130,7 +130,8 @@
  * swap would therefore ask the renderer for a texture the container does not
  * hold. Baking the partners costs 131,072 B of payload (131,744 B with the
  * container's per-lump overhead) against 46,116 B of free container space
- * (3,342,336 B partition - 3,296,220 B used), so it is a capacity decision and
+ * (the 3,342,336 B partition of the time - 3,296,220 B used; T36 later grew it to
+ * 3,407,872 B), so it is a capacity decision and
  * not this task's. The one-shot line clear is kept because it is the part of
  * P_ChangeSwitchTexture(line, 0) the simulation can represent without a texture.
  *

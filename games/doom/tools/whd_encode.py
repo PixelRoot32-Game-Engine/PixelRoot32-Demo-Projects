@@ -74,11 +74,12 @@ DEFLATE_WINDOW_BITS = -15
 DEFLATE_MEMORY_LEVEL = 9
 
 # The partition the shipped container is written to: partitions_wad.csv gives
-# `wad` 0x0D0000..0x400000 (D3.11), 3,342,336 B. The app slot shrank to 768 KB
-# so the container gained 196,608 B without dropping a single Phase-5 lump.
+# `wad` 0x0C0000..0x400000 (T36), 3,407,872 B. D3.11 shrank the app slot to
+# 768 KB so the container gained 196,608 B without dropping a single Phase-5
+# lump; T36 took another 65,536 B from the app (now 720,896 B) for the HUD art.
 # --budget overrides it for a probe of some other layout; every answer below is
 # measured against whatever it is given.
-FLASH_BUDGET = 3_342_336
+FLASH_BUDGET = 3_407_872
 
 WAD_HEADER_SIZE = 12
 WAD_DIRECTORY_ENTRY_SIZE = 16
@@ -1094,11 +1095,16 @@ dropping and baking (both default off; the command records the choice):
                       (SW18_7 is two lumps) the nine-level union consumes.
   --sprite-list PATH  the sprite lumps the bake keeps: the generated .inc form
                       or one name per line.
+  --raw-list PATH     --raw for every name in a file, one per line. The shipped
+                      container passes tools/hud_lumps.txt, the 86 status-bar
+                      patches D5.1 draws (T36): raw and 4-byte aligned, they are
+                      read in place from the mapped partition by name, with no
+                      manifest slot and no RAM.
   --sky NAME          the sky texture to bake (default SKY1).
 
 budget and proofs:
-  --budget BYTES   the wad partition the container must fit (default 3,342,336 B,
-                   the shipped partitions_wad.csv: 0x0D0000..0x400000). --stats
+  --budget BYTES   the wad partition the container must fit (default 3,407,872 B,
+                   the shipped partitions_wad.csv: 0x0C0000..0x400000). --stats
                    reports total, spare and what each level would cost if it
                    were baked alone.
   --baked-capacity ENTRIES
@@ -1193,6 +1199,10 @@ exit codes:
     parser.add_argument("--sprite-list", type=Path, metavar="PATH",
                         help="file naming the sprite lumps --bake keeps: the generated "
                              ".inc form or one name per line")
+    parser.add_argument("--raw-list", type=Path, action="append", default=[], metavar="PATH",
+                        help="file naming lumps to keep raw, one name per line (the form "
+                             "tools/gen_hud_lumps.py writes); repeatable, same effect as "
+                             "--raw NAME for every name in it")
     return parser
 
 
@@ -1317,8 +1327,8 @@ def check_levels(arguments: argparse.Namespace, parser: argparse.ArgumentParser)
     """``--check-levels``: opens all nine maps out of the container through C."""
     if (arguments.output is not None or arguments.check or arguments.raw
             or arguments.raw_level or arguments.drop_lumps or arguments.drop_level
-            or arguments.bake or arguments.sprite_list or arguments.sky is not None
-            or arguments.drop_unused_sprites or arguments.drop_baked_sources
+            or arguments.bake or arguments.sprite_list or arguments.raw_list
+            or arguments.sky is not None or arguments.drop_unused_sprites or arguments.drop_baked_sources
             or arguments.baked_capacity is not None):
         parser.error("--check-levels reads a container as it is; it writes nothing "
                      "and selects nothing")
@@ -1427,6 +1437,8 @@ def main(argv: list[str] | None = None) -> int:
                      "one, or --check-levels to open all nine maps out of one")
 
     raw_names = _split_names(arguments.raw)
+    for raw_list in arguments.raw_list:
+        raw_names.extend(bake.read_sprite_list(raw_list))
     raw_levels = _split_names(arguments.raw_level)
     drop_patterns = _split_names(arguments.drop_lumps)
     drop_levels = _split_names(arguments.drop_level)
@@ -1567,7 +1579,7 @@ def check_container(arguments: argparse.Namespace,
     """``--check`` on a container: verify it, and compare against its source WAD."""
     if (arguments.raw or arguments.raw_level or arguments.drop_lumps
             or arguments.drop_level or arguments.bake or arguments.sprite_list
-            or arguments.sky is not None or arguments.drop_unused_sprites
+            or arguments.raw_list or arguments.sky is not None or arguments.drop_unused_sprites
             or arguments.drop_baked_sources or arguments.baked_capacity is not None):
         parser.error("--raw, --raw-level, --drop-lumps, --drop-level, --bake, "
                      "--sprite-list, --drop-unused-sprites, --drop-baked-sources and "
