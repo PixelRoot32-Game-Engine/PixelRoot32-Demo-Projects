@@ -70,6 +70,7 @@ static p_setup_error_t load_mutable_map(p_level_t* level) {
     zone_error_t zoneError = ZONE_ERR_OK;
     p_sector_t* sectors;
     int16_t* lineSpecial;
+    p_sector_sound_t* sectorSound;
 
     if (sectorCount == 0u || lineCount == 0u ||
         sectorCount > 0xFFFFu || lineCount > 0xFFFFu) {
@@ -106,6 +107,19 @@ static p_setup_error_t load_mutable_map(p_level_t* level) {
         lineSpecial[i] = p_line_special(map, (uint16_t)i);
     }
 
+    /* T15a's per-sector sound state: P_RecursiveSound's soundtarget,
+     * soundtraversed and validcount, one record per sector, zeroed so "never
+     * flooded" is the initial state. It lives in the arena (not in p_sector_t and
+     * not inline in the context) because the board's .bss has no room for it and
+     * a level change frees it with everything else. */
+    sectorSound = (p_sector_sound_t*)z_alloc(
+        &level->zone, (size_t)sectorCount * sizeof(p_sector_sound_t), PU_LEVEL,
+        &zoneError);
+    if (sectorSound == NULL) {
+        return P_SETUP_ERR_ALLOC;
+    }
+    memset(sectorSound, 0, (size_t)sectorCount * sizeof(p_sector_sound_t));
+
     level->sectors = sectors;
     level->sectorCount = (uint16_t)sectorCount;
     level->lineSpecial = lineSpecial;
@@ -114,6 +128,9 @@ static p_setup_error_t load_mutable_map(p_level_t* level) {
     level->context.sectorCount = (uint16_t)sectorCount;
     level->context.lineSpecial = lineSpecial;
     level->context.lineCount = (uint16_t)lineCount;
+    level->context.sectorSound = sectorSound;
+    level->context.sectorSoundCount = (uint16_t)sectorCount;
+    level->context.soundValidCount = 0;
     return P_SETUP_OK;
 }
 

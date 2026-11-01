@@ -90,6 +90,7 @@ typedef enum doom_map_lump {
 #define DOOM_ML_TWOSIDED 4
 #define DOOM_ML_DONTPEGTOP 8
 #define DOOM_ML_DONTPEGBOTTOM 16
+#define DOOM_ML_SOUNDBLOCK 64
 #define DOOM_ML_MAPPED 256
 
 /* A sidedef's "no texture" field is "-" padded with NULs, which DOOM maps to

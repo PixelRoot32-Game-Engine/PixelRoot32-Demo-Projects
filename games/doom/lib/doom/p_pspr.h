@@ -44,8 +44,9 @@
  *     something to read when it arrives.
  *   - audio. Every `S_StartSound` the weapon actions make is counted in
  *     p_player_t::silentSounds (S2 has no audio layer at all).
- *   - P_NoiseAlert. It wakes monsters, which is T15's; P_FireWeapon counts the
- *     call in p_player_t::noiseAlerts instead.
+ *   - P_NoiseAlert. T15a owns the flood; P_FireWeapon calls it and still counts
+ *     the call in p_player_t::noiseAlerts, so "a shot woke the neighbours" and
+ *     "the call was reached" are separately visible.
  *   - A_Saw, A_FireShotgun2, A_BFGSpray and A_BFGsound. They are the chainsaw and
  *     the super shotgun, which no shareware level can hand the player, and the
  *     BFG's spray, which needs P_CheckSight. p_pspr.c routes them to
@@ -295,8 +296,10 @@ int p_check_ammo(p_mobj_context_t* world, struct p_player* player);
  * P_SetPsprite (player, ps_weapon, weaponinfo[readyweapon].atkstate);
  * P_NoiseAlert (player->mo, player->mo);`
  *
- * P_NoiseAlert is T15's (it wakes monsters and needs P_CheckSight), so the call
- * is counted in `noiseAlerts` and not made.
+ * P_NoiseAlert is p_sight.c's flood (T15a): it starts at the player's sector,
+ * crosses every open two-sided line and stops at a closed door, so a monster
+ * behind a wall but in an open room hears the shot while one behind a closed
+ * door does not. The call is also counted in `noiseAlerts`.
  */
 void p_fire_weapon(p_mobj_context_t* world, struct p_player* player);
 

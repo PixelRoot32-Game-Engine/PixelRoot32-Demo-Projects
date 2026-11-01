@@ -14,24 +14,26 @@
  *
  * WHAT IS HERE, AND WHY SOME OF IT IS A STUB
  *
- *   A_Look       D4.1a's deliberate stub: upstream's A_Look (p_enemy.c) scans
- *                the sector for a visible player, plays the see sound and enters
- *                the run state, all of which need P_CheckSight and the sound
- *                layer (T15). The state machine's shape is left alone.
+ *   A_Look       real (T15a): upstream's A_Look (p_enemy.c) reads the sector's
+ *                sound target, falls back to a visible-player scan, discards the
+ *                see sound's P_Random draw and enters the run state. A_Chase,
+ *                the run state's action, is still T15b's and is counted by the
+ *                default branch.
  *   A_Fall       real, and the smallest real action in the game:
  *                `actor->flags &= ~MF_SOLID;` -- a corpse stops blocking. This
  *                is the action the player's death chain carries (S_PLAY_DIE3) and
  *                every monster's death chain too.
  *   A_Scream, A_XScream, A_PlayerScream, A_Pain
  *                sound only, so they are stubs until the APU layer exists (S2).
- *                They are counted rather than skipped for the same reason A_Look
- *                is: "the death played its sound" and "the death was silent" must
- *                not look the same from a counter.
+ *                They are counted rather than skipped for the same reason
+ *                A_Chase is: "the death played its sound" and "the death was
+ *                silent" must not look the same from a counter.
  *
  * This is C99 only: no allocation, no globals, no stdio, no floating point.
  */
 #include "p_action.h"
 
+#include "p_enemy.h"
 #include "p_user.h"
 
 void p_action_init(p_action_stats_t* stats) {
@@ -74,12 +76,15 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
 
     switch (action) {
         case A_Look:
-            /* D4.1a stub: a spawned monster stands and looks at nothing. */
+            /* A_Look (p_enemy.c, T15a): read the sector's sound target, scan for
+             * a visible player, discard the see sound's draw and enter the see
+             * state. A_Chase, the state's next action, is T15b's. */
+            p_enemy_look(world, mobj);
             if (stats != NULL) {
                 stats->calls += 1u;
-                stats->stubs += 1u;
+                stats->done += 1u;
             }
-            return P_ACTION_STUB;
+            return P_ACTION_DONE;
 
         case A_Fall:
             /* `actor->flags &= ~MF_SOLID;` (p_enemy.c) -- the corpse lies down

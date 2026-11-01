@@ -607,6 +607,7 @@ class BspMap:
     ssectors: tuple[dict, ...]
     nodes: tuple[dict, ...]
     sectors: tuple[dict, ...]
+    reject: bytes
 
 
 def read_bsp_map(lumps: list[Lump], map_name: str) -> BspMap:
@@ -731,7 +732,7 @@ def read_bsp_map(lumps: list[Lump], map_name: str) -> BspMap:
                 raise FormatError(f"{map_name} NODES[{index}]: node child out of range")
 
     return BspMap(map_name, things, vertexes, linedefs, sidedefs, segs,
-                  ssectors, nodes, sectors)
+                  ssectors, nodes, sectors, raw["REJECT"])
 
 
 # --- The BSP walk (D3.1) ----------------------------------------------------
@@ -1706,6 +1707,7 @@ class ThingRun:
             "flags": u32(flags | extra_flags),
             "health": health,
             "state": spawnstate,
+            "height": height,
         })
         return len(self.mobjs) - 1
 
@@ -1934,6 +1936,10 @@ class RandomState:
         return RNDTABLE[self.index]
 
 
+# The sound-blocking linedef flag (doomdef.h's ML_SOUNDBLOCK).
+ML_SOUNDBLOCK = 64
+
+
 class SpecLevel:
     """One level's mutable sector state and thinker list."""
 
@@ -1956,6 +1962,16 @@ class SpecLevel:
         self.rng = rng
         self.total_secrets = 0
         self.leveltime = 0
+        # T15a: the per-sector sound flood state (upstream's sector_t
+        # soundtarget/soundtraversed/validcount) and the one epoch counter shared
+        # by every flood, exactly as p_sector_sound_t and
+        # p_mobj_context_t::soundValidCount hold them in the C.
+        self.sound = [{"target": None, "traversed": 0, "valid": 0}
+                      for _ in bsp.sectors]
+        self.sound_validcount = 0
+        # playeringame[]: single player is slot 0, which is what
+        # p_spawn_rules_default() leaves and what the C's P_LookForPlayers reads.
+        self.player_in_game = [True, False, False, False]
         self.stats = {
             "spawned": 0, "secrets": 0, "changeSector": 0,
             "unsupportedSector": 0, "unsupportedLine": 0,
@@ -4425,6 +4441,10 @@ DAMAGE_STATES = {
     177: (4, 178, "A_Chase", "POSS"),
     178: (4, 179, "A_Chase", "POSS"),
     179: (4, 180, "A_Chase", "POSS"),
+    180: (4, 181, "A_Chase", "POSS"),   # S_POSS_RUN5
+    181: (4, 182, "A_Chase", "POSS"),
+    182: (4, 183, "A_Chase", "POSS"),
+    183: (4, 176, "A_Chase", "POSS"),   # S_POSS_RUN8
     187: (3, 188, "NULL", "POSS"),      # S_POSS_PAIN
     188: (3, 176, "A_Pain", "POSS"),
     189: (5, 190, "NULL", "POSS"),      # S_POSS_DIE1
@@ -4531,7 +4551,7 @@ def damage_mobj(type_: int) -> dict:
 def damage_spawn(level: "SpecLevel", type_: int, x: int, y: int, z) -> dict:
     """P_SpawnMobj(): one lastlook draw, the states' spawn row, and z."""
     info = damage_mobj(type_)
-    level.rng.next()                                    # `lastlook`
+    lastlook = level.rng.next() % MAXPLAYERS           # `lastlook`
     subsector = point_in_subsector(level.bsp, x, y)
     sector = sector_of_subsector(level.bsp, subsector)
     floor = level.sectors[sector]["floor"]
@@ -4551,7 +4571,7 @@ def damage_spawn(level: "SpecLevel", type_: int, x: int, y: int, z) -> dict:
         "floorz": floor, "ceilingz": ceiling,
         "subsector": subsector, "sector": sector,
         "player": False, "target": None, "reactiontime": 0,
-        "threshold": 0, "removed": False,
+        "threshold": 0, "removed": False, "lastlook": lastlook,
     }
     level.mobjs.append(mo)
     return mo
@@ -4585,12 +4605,15 @@ def damage_set_state(level: "SpecLevel", mo: dict, state: int) -> bool:
         mo["state"] = state
         mo["tics"] = tics
         mo["sprite"] = sprite
-        # A_Fall is the only action here that changes the mobj. A_Scream,
-        # A_XScream, A_PlayerScream and A_Pain are sound only, A_Look and A_Chase
-        # are not implemented in the C (T15), and A_Explode is not implemented, so
-        # none of them has an observable effect on either side.
+        # A_Fall is the action here that changes the mobj. A_Look (T15a) reads
+        # the sector's sound target, scans for a visible player and enters the
+        # see state; A_Scream, A_XScream, A_PlayerScream and A_Pain are sound
+        # only, A_Chase is T15b's and is a no-op here, and A_Explode is not
+        # implemented, so none of those has an observable effect on either side.
         if action == "A_Fall":
             mo["flags"] &= ~MF_SOLID
+        elif action == "A_Look":
+            enemy_look(level, mo)
         state = nxt
         if tics != 0:
             break
@@ -5537,6 +5560,7 @@ def attack_fire_weapon(level: "SpecLevel", player: dict) -> None:
     attack_set_psprite(level, player, PS_WEAPON,
                        attack_weapon(player["readyweapon"])[4])
     player["noiseAlerts"] += 1
+    enemy_noise_alert(level, player["mo"], player["mo"])
 
 
 def attack_drop_weapon(level: "SpecLevel", player: dict) -> None:
@@ -6288,6 +6312,480 @@ def report_attack(lumps: list[Lump], map_name: str) -> None:
           f"target2Hp={target2['health']} mobjs={len(level.mobjs)} "
           f"ready={player['readyweapon']} snd={player['silentSounds']} "
           f"noise={player['noiseAlerts']} shots={level.stats['triggers']}")
+
+
+# --- Sight, sound and waking (T15a) ----------------------------------------
+
+
+ENEMY_SCRIPT = "sight-and-waking"
+ENEMY_TICS = 40
+ENEMY_FIRE_TIC = 20
+ENEMY_PAIR_MOD = 13
+ENEMY_MONSTER = 1                                     # MT_POSSESSED
+
+# The seesound numbers A_Look's switch draws for: sfx_posit1..3 (36..38) and
+# sfx_bgsit1..2 (39..40), from linuxdoom-1.10 sounds.h. The types that carry one
+# of them are the zombie and imp families; every other see sound takes the
+# default arm and consumes no random number.
+ENEMY_SEE_SOUND = {1: 36, 2: 37, 10: 37, 11: 39}
+
+
+def sight_divline_side(x: int, y: int, node: dict) -> int:
+    """P_DivlineSide(): 0 front, 1 back, 2 on. Keeps upstream's x==node->y typo."""
+    if node["dx"] == 0:
+        if x == node["x"]:
+            return 2
+        if x <= node["x"]:
+            return 1 if node["dy"] > 0 else 0
+        return 1 if node["dy"] < 0 else 0
+    if node["dy"] == 0:
+        if x == node["y"]:
+            return 2
+        if y <= node["y"]:
+            return 1 if node["dx"] < 0 else 0
+        return 1 if node["dx"] > 0 else 0
+
+    dx = i32(x - node["x"])
+    dy = i32(y - node["y"])
+    left = i32((node["dy"] >> FRACBITS) * (dx >> FRACBITS))
+    right = i32((dy >> FRACBITS) * (node["dx"] >> FRACBITS))
+
+    if right < left:
+        return 0
+    if left == right:
+        return 2
+    return 1
+
+
+def sight_intercept(trace: dict, line: dict) -> int:
+    """P_InterceptVector2(): the fractional intercept along the trace.
+
+    Upstream's signature is `P_InterceptVector2 (divline_t* v2, divline_t* v1)`
+    and it is called as `P_InterceptVector2 (&strace, &divl)`, so `v2` is the
+    trace and `v1` the line. Every factor in the numerator is the line's.
+    """
+    den = i32(fixed_mul(line["dy"] >> 8, trace["dx"]) -
+              fixed_mul(line["dx"] >> 8, trace["dy"]))
+    if den == 0:
+        return 0
+    num = i32(fixed_mul(i32(line["x"] - trace["x"]) >> 8, line["dy"]) +
+              fixed_mul(i32(trace["y"] - line["y"]) >> 8, line["dx"]))
+    return fixed_div(num, den)
+
+
+def sight_check(level: "SpecLevel", t1: dict, t2: dict) -> bool:
+    """P_CheckSight(): the REJECT pre-test, then the BSP walk."""
+    bsp = level.bsp
+    sectors = level.sectors
+    s1, s2 = t1["sector"], t2["sector"]
+    pnum = s1 * len(sectors) + s2
+    bytenum, bitnum = pnum >> 3, 1 << (pnum & 7)
+    if bytenum < len(bsp.reject) and (bsp.reject[bytenum] & bitnum):
+        return False
+
+    height1 = t1["height"]
+    sightzstart = i32(t1["z"] + height1 - (height1 >> 2))
+    topslope = i32(i32(t2["z"] + t2["height"]) - sightzstart)
+    bottomslope = i32(t2["z"] - sightzstart)
+
+    strace = {"x": t1["x"], "y": t1["y"],
+              "dx": i32(t2["x"] - t1["x"]), "dy": i32(t2["y"] - t1["y"])}
+    t2x, t2y = t2["x"], t2["y"]
+
+    def cross_subsector(num: int) -> bool:
+        nonlocal topslope, bottomslope
+        subsector = bsp.ssectors[num]
+        for seg in bsp.segs[subsector["firstseg"]:
+                           subsector["firstseg"] + subsector["numsegs"]]:
+            line = bsp.linedefs[seg["linedef"]]
+            v1 = bsp.vertexes[line["v1"]]
+            v2 = bsp.vertexes[line["v2"]]
+            if sight_divline_side(v1["x"], v1["y"], strace) == \
+                    sight_divline_side(v2["x"], v2["y"], strace):
+                continue
+            divl = {"x": v1["x"], "y": v1["y"],
+                    "dx": i32(v2["x"] - v1["x"]),
+                    "dy": i32(v2["y"] - v1["y"])}
+            if sight_divline_side(strace["x"], strace["y"], divl) == \
+                    sight_divline_side(t2x, t2y, divl):
+                continue
+            if not (line["flags"] & 4):
+                return False
+            if seg["side"] == 0:
+                front = bsp.sidedefs[line["side0"]]["sector"]
+                back = bsp.sidedefs[line["side1"]]["sector"]
+            else:
+                front = bsp.sidedefs[line["side1"]]["sector"]
+                back = bsp.sidedefs[line["side0"]]["sector"]
+            front_floor = sectors[front]["floor"]
+            front_ceiling = sectors[front]["ceiling"]
+            back_floor = sectors[back]["floor"]
+            back_ceiling = sectors[back]["ceiling"]
+            if front_floor == back_floor and front_ceiling == back_ceiling:
+                continue
+            opentop = min(front_ceiling, back_ceiling)
+            openbottom = max(front_floor, back_floor)
+            if openbottom >= opentop:
+                return False
+            frac = sight_intercept(strace, divl)
+            if front_floor != back_floor:
+                slope = fixed_div(i32(openbottom - sightzstart), frac)
+                if slope > bottomslope:
+                    bottomslope = slope
+            if front_ceiling != back_ceiling:
+                slope = fixed_div(i32(opentop - sightzstart), frac)
+                if slope < topslope:
+                    topslope = slope
+            if topslope <= bottomslope:
+                return False
+        return True
+
+    def cross_node(num: int) -> bool:
+        if num & 0x8000:
+            return cross_subsector(0 if num == 0xFFFF else (num & 0x7FFF))
+        node = bsp.nodes[num]
+        side = sight_divline_side(strace["x"], strace["y"], node)
+        if side == 2:
+            side = 0
+        if not cross_node(node["children"][side]):
+            return False
+        if side == sight_divline_side(t2x, t2y, node):
+            return True
+        return cross_node(node["children"][side ^ 1])
+
+    if not bsp.nodes:
+        return cross_subsector(0)
+    return cross_node(len(bsp.nodes) - 1)
+
+
+def enemy_sound_recursive(level: "SpecLevel", sector: int, soundblocks: int,
+                          target) -> None:
+    """P_RecursiveSound(): flood one sector and its open neighbours."""
+    state = level.sound[sector]
+    if state["valid"] == level.sound_validcount and \
+            state["traversed"] <= soundblocks + 1:
+        return
+    state["valid"] = level.sound_validcount
+    state["traversed"] = soundblocks + 1
+    state["target"] = target
+
+    for index, line in enumerate(level.bsp.linedefs):
+        if not (line["flags"] & 4):
+            continue
+        front = _front_sector(level, line)
+        back = _back_sector(level, line)
+        if front is None or back is None:
+            continue
+        if front != sector and back != sector:
+            continue
+        opening = movement_line_opening(level, index)
+        if opening["range"] <= 0:
+            continue                                    # closed door
+        other = back if front == sector else front
+        if line["flags"] & ML_SOUNDBLOCK:
+            if not soundblocks:
+                enemy_sound_recursive(level, other, 1, target)
+        else:
+            enemy_sound_recursive(level, other, soundblocks, target)
+
+
+def enemy_noise_alert(level: "SpecLevel", target, emitter) -> None:
+    """P_NoiseAlert(): `soundtarget = target; validcount++; flood(emitter)`."""
+    level.sound_validcount = (level.sound_validcount + 1) & 0xFFFFFFFF
+    enemy_sound_recursive(level, emitter["sector"], 0, target)
+
+
+def enemy_look_for_players(level: "SpecLevel", mo: dict, allaround: bool) -> bool:
+    """P_LookForPlayers(): upstream's four-slot scan over this port's one player."""
+    player = level.damage_player
+    if player is None:
+        return False
+
+    c = 0
+    stop = (mo["lastlook"] - 1) & 3
+    while True:
+        slot = mo["lastlook"]
+        if level.player_in_game[slot]:
+            if c == 2 or slot == stop:
+                return False
+            c += 1
+            if slot == 0:
+                if player["health"] > 0:
+                    pmo = player["mo"]
+                    if sight_check(level, mo, pmo):
+                        if not allaround:
+                            an = u32(point_to_angle(mo["x"], mo["y"],
+                                                    pmo["x"], pmo["y"]) -
+                                     mo["angle"])
+                            if ANG90 < an < ANG270:
+                                dist = movement_aprox_distance(
+                                    pmo["x"] - mo["x"], pmo["y"] - mo["y"])
+                                if dist > ATTACK_MELEERANGE:
+                                    mo["lastlook"] = (slot + 1) & 3
+                                    continue
+                        mo["target"] = pmo
+                        return True
+        mo["lastlook"] = (slot + 1) & 3
+
+
+def enemy_seeyou(level: "SpecLevel", mo: dict) -> None:
+    """A_Look's `seeyou:` label: the discarded sound draw, then the see state."""
+    if ENEMY_SEE_SOUND.get(mo["type"], 0):
+        level.rng.next()                                # sound discarded, draw kept
+    damage_set_state(level, mo, damage_mobj(mo["type"])["seestate"])
+
+
+def enemy_look(level: "SpecLevel", mo: dict) -> None:
+    """A_Look(): the sector's sound target first, then the sight scan."""
+    mo["threshold"] = 0
+    targ = level.sound[mo["sector"]]["target"]
+    if targ is not None and (targ["flags"] & MF_SHOOTABLE):
+        mo["target"] = targ
+        if mo["flags"] & MF_AMBUSH:
+            if sight_check(level, mo, targ):
+                enemy_seeyou(level, mo)
+            return
+        enemy_seeyou(level, mo)
+        return
+    if not enemy_look_for_players(level, mo, False):
+        return
+    enemy_seeyou(level, mo)
+
+
+# --- The --enemy fixtures ---------------------------------------------------
+
+
+def enemy_sector_at(bsp: BspMap, x: int, y: int) -> int:
+    return sector_of_subsector(bsp, point_in_subsector(bsp, x, y))
+
+
+def enemy_segments_cross(ax: int, ay: int, bx: int, by: int,
+                         cx: int, cy: int, dx: int, dy: int) -> bool:
+    """The fixture selector's strict straddle test, not the sight rule."""
+    def cross(ox, oy, px, py, qx, qy):
+        return (px - ox) * (qy - oy) - (py - oy) * (qx - ox)
+
+    d1 = cross(ax, ay, bx, by, cx, cy)
+    d2 = cross(ax, ay, bx, by, dx, dy)
+    d3 = cross(cx, cy, dx, dy, ax, ay)
+    d4 = cross(cx, cy, dx, dy, bx, by)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def enemy_crosses_wall(bsp: BspMap, ax: int, ay: int, bx: int, by: int) -> bool:
+    for line in bsp.linedefs:
+        if line["flags"] & 4:
+            continue
+        v1 = bsp.vertexes[line["v1"]]
+        v2 = bsp.vertexes[line["v2"]]
+        if enemy_segments_cross(ax, ay, bx, by, v1["x"], v1["y"],
+                                v2["x"], v2["y"]):
+            return True
+    return False
+
+
+def enemy_sound_reachable(bsp: BspMap, sectors, start: int, target: int) -> bool:
+    """The fixture selector's optimistic reachability (ignores ML_SOUNDBLOCK)."""
+    seen = {start}
+    stack = [start]
+    while stack:
+        sector = stack.pop()
+        if sector == target:
+            return True
+        for line in bsp.linedefs:
+            if not (line["flags"] & 4):
+                continue
+            front = bsp.sidedefs[line["side0"]]["sector"] if line["side0"] >= 0 else None
+            if not (line["flags"] & 4) or line["side1"] < 0:
+                continue
+            back = bsp.sidedefs[line["side1"]]["sector"]
+            if front is None or (front != sector and back != sector):
+                continue
+            other = back if front == sector else front
+            if other in seen:
+                continue
+            top = min(sectors[front]["ceiling"], sectors[back]["ceiling"])
+            bottom = max(sectors[front]["floor"], sectors[back]["floor"])
+            if top <= bottom:
+                continue
+            seen.add(other)
+            stack.append(other)
+    return False
+
+
+def enemy_find_door(bsp: BspMap, sectors, start: dict):
+    """door_check.c's nearest closed manual door, plus the sound-reach checks."""
+    best = None
+    for index, line in enumerate(bsp.linedefs):
+        if line["special"] != 1:
+            continue
+        front = bsp.sidedefs[line["side0"]]["sector"] if line["side0"] >= 0 else None
+        if not (line["flags"] & 4) or line["side1"] < 0:
+            continue
+        back = bsp.sidedefs[line["side1"]]["sector"]
+        if front is None:
+            continue
+        if sectors[back]["ceiling"] > sectors[back]["floor"] or \
+                sectors[front]["floor"] != sectors[back]["floor"]:
+            continue
+        if not enemy_sound_reachable(bsp, sectors, start["sector"], front) or \
+                enemy_sound_reachable(bsp, sectors, start["sector"], back):
+            continue
+        v1 = bsp.vertexes[line["v1"]]
+        v2 = bsp.vertexes[line["v2"]]
+        dx = v2["x"] - v1["x"]
+        dy = v2["y"] - v1["y"]
+        mx = v1["x"] + dx // 2
+        my = v1["y"] + dy // 2
+        distance = (mx - start["x"]) ** 2 + (my - start["y"]) ** 2
+        if best is not None and distance >= best[0]:
+            continue
+        nx, ny = -dy, dx
+        length = math.sqrt(nx * nx + ny * ny)
+        if length <= 0.0:
+            continue
+        point = None
+        for sign in (1, -1):
+            stepx = int(nx / length * 8.0 * FRACUNIT)
+            stepy = int(ny / length * 8.0 * FRACUNIT)
+            px = i32(mx + sign * stepx)
+            py = i32(my + sign * stepy)
+            if enemy_sector_at(bsp, px, py) == back:
+                point = (px, py)
+                break
+        if point is None:
+            continue
+        best = (distance, index, front, back, point[0], point[1])
+    return best
+
+
+def enemy_scene(bsp: BspMap, name: str, x: int, y: int, fire: bool) -> None:
+    """One scene: a fresh level, the avatar and one zombieman, ENEMY_TICS tics."""
+    things = run_things(bsp, 2)                 # the RNG position the load leaves
+    level = SpecLevel(bsp, RandomState(things.rng))
+    level.leveltime = 0
+    level.move_stats = {"checks": 0, "blocked": 0, "crossed": 0, "slides": 0}
+    level.pickups = True
+    level.damage_skill = 2
+    level.damage_netgame = False
+    level.crushed = 0
+    level.mobj_states = ATTACK_STATES
+    level.stats["triggers"] = 0
+
+    mo = movement_player(level, use_start_angle=True)
+    level.mobjs = [mo]
+    mo["threshold"] = 0
+    mo["sprite"] = "PLAY"
+    mo["lastlook"] = 0
+    player = player_record(mo)
+    player["ammo"] = [50, 0, 0, 0]
+    player["maxammo"] = list(DAMAGE_MAXAMMO)
+    player["weaponowned"] = [1, 1, 0, 0, 0, 0, 0, 0, 0]
+    player["cards"] = [0] * 6
+    player["powers"] = [0] * 6
+    player["readyweapon"] = 1
+    player["pendingweapon"] = 1
+    player["backpack"] = 0
+    player["psprites"] = [attack_new_psprite(), attack_new_psprite()]
+    player["pspritesStarted"] = 0
+    player["silentSounds"] = 0
+    player["noiseAlerts"] = 0
+    level.damage_player = player
+
+    monster = damage_spawn(level, ENEMY_MONSTER, x, y, "floor")
+    monster["angle"] = point_to_angle(monster["x"], monster["y"],
+                                      mo["x"], mo["y"])
+    spawn_state = damage_mobj(ENEMY_MONSTER)["spawnstate"]
+    alt_state = level_mobj_states(level)[spawn_state][1]
+
+    step = [0]
+    wake = -1
+    target = -1
+    stayed = 1
+    print(f"SCENE-BEGIN name={name}")
+    attack_emit(level, step, "setup")
+    for tic in range(ENEMY_TICS):
+        buttons = BT_ATTACK if (fire and tic == ENEMY_FIRE_TIC) else 0
+        cmd = {"forwardmove": 0, "sidemove": 0, "angleturn": 0,
+               "buttons": buttons}
+        attack_player_think(level, player, cmd)
+        damage_run_thinkers(level)
+        run_tic(level)
+        level.leveltime += 1
+        if wake < 0 and monster.get("target") is not None:
+            wake = tic
+            target = damage_slot_of(level, monster["target"])
+        if monster.get("target") is not None or \
+                monster["state"] not in (spawn_state, alt_state):
+            stayed = 0
+        attack_emit(level, step, "fire" if buttons else "tick")
+
+    if monster.get("target") is None:
+        target = -1
+    sound = level.sound[monster["sector"]]["target"]
+    print(f"SCENE-END name={name} tics={ENEMY_TICS} woketic={wake} "
+          f"target={target} state={monster['state']} stayed={stayed} "
+          f"sndtarget={damage_slot_of(level, sound)} rng={level.rng.index}")
+
+
+def report_enemy(lumps: list[Lump], map_name: str) -> None:
+    """The `--enemy` protocol: four waking scenes and the sight sweep."""
+    bsp = read_bsp_map(lumps, map_name)
+    things = run_things(bsp, 2)
+    player = things.mobjs[things.player_index]
+    player["height"] = 56 * FRACUNIT
+
+    print(f"ENEMY {map_name} script={ENEMY_SCRIPT}")
+
+    fine = player["angle"] >> ANGLETOFINESHIFT
+    sees_x = i32(player["x"] + 40 * FINE_SINE[fine + FINEANGLES // 4])
+    sees_y = i32(player["y"] + 40 * FINE_SINE[fine])
+    sees_sector = enemy_sector_at(bsp, sees_x, sees_y)
+    print(f"FIXTURE sees x={sees_x} y={sees_y} sector={sees_sector}")
+
+    wall = None
+    for index, candidate in enumerate(things.mobjs):
+        if index == things.player_index or candidate["sector"] == player["sector"]:
+            continue
+        if not enemy_crosses_wall(bsp, candidate["x"], candidate["y"],
+                                  player["x"], player["y"]):
+            continue
+        if not enemy_sound_reachable(bsp, bsp.sectors, player["sector"],
+                                     candidate["sector"]):
+            continue
+        wall = (index, candidate)
+        break
+    if wall is None:
+        raise InputError(f"{map_name}: no wall-separated, sound-reachable spot")
+    wall_index, wall_mobj = wall
+    print(f"FIXTURE wall x={wall_mobj['x']} y={wall_mobj['y']} "
+          f"sector={wall_mobj['sector']} from={wall_index}")
+
+    count = len(things.mobjs)
+    pairs = [(i, j) for i in range(count) for j in range(count)
+             if i != j and (i * 17 + j * 31) % ENEMY_PAIR_MOD == 0]
+    print(f"SWEEP {map_name} mobjs={count} pairs={len(pairs)}")
+
+    # The sweep's endpoints are the THINGS mobjs; P_CheckSight only reads each
+    # one's sector, z and height, and the oracle's records have all three.
+    sweep_level = SpecLevel(bsp, RandomState(things.rng))
+    sweep_level.sectors = [dict(sector) for sector in bsp.sectors]
+    for i, j in pairs:
+        visible = sight_check(sweep_level, things.mobjs[i], things.mobjs[j])
+        print(f"SIGHT {i} {j} v={1 if visible else 0} "
+              f"s1={things.mobjs[i]['sector']} s2={things.mobjs[j]['sector']}")
+
+    door = enemy_find_door(bsp, bsp.sectors, player)
+    if door is None:
+        raise InputError(f"{map_name}: no closed manual door fixture")
+    _, door_line, door_front, door_back, door_x, door_y = door
+    print(f"FIXTURE door x={door_x} y={door_y} sector={door_back} "
+          f"line={door_line} front={door_front} back={door_back}")
+
+    enemy_scene(bsp, "sees", sees_x, sees_y, False)
+    enemy_scene(bsp, "wall", wall_mobj["x"], wall_mobj["y"], False)
+    enemy_scene(bsp, "noise", wall_mobj["x"], wall_mobj["y"], True)
+    enemy_scene(bsp, "door", door_x, door_y, True)
 
 
 # --- BSP reporting ----------------------------------------------------------
@@ -7682,6 +8180,10 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
                              "switch) against the psprite and attack rules and "
                              "print both psprite layers, every mobj and the player "
                              "record each step (D4.2d2)")
+    parser.add_argument("--enemy", metavar="NAME",
+                        help="run the sight-and-waking protocol: four scenes "
+                             "(sees, wall, noise, door) over 40 tics each plus "
+                             "the P_CheckSight pair sweep (T15a)")
     parser.add_argument("--tics", type=int, default=420, metavar="N",
                         help="with --specials, --movement or --player: tics to run "
                              "(default: 420 for --specials; the movement gate "
@@ -7724,10 +8226,11 @@ def main(argv: list[str] | None = None) -> int:
             or arguments.stats or arguments.bsp or arguments.segs
             or arguments.things or arguments.specials or arguments.movement
             or arguments.player or arguments.door or arguments.damage
-            or arguments.attack):
+            or arguments.attack or arguments.enemy):
         parser.error("nothing to do: pass --patches, --textures, --flats, --all, "
                      "--map, --stats, --bsp, --segs, --things, --specials, "
-                     "--movement, --player, --door, --damage or --attack")
+                     "--movement, --player, --door, --damage, --attack or "
+                     "--enemy")
     if arguments.limit is not None and arguments.limit < 0:
         parser.error("--limit cannot be negative")
     if arguments.tics < 0:
@@ -7802,6 +8305,8 @@ def main(argv: list[str] | None = None) -> int:
             report_damage(lumps, arguments.damage.upper())
         if arguments.attack:
             report_attack(lumps, arguments.attack.upper())
+        if arguments.enemy:
+            report_enemy(lumps, arguments.enemy.upper())
     except FormatError as error:
         print(f"doom_ref: {error}", file=sys.stderr)
         return EXIT_INPUT

@@ -93,7 +93,8 @@ typedef struct p_level_stats {
  *   P_SETUP_ERR_MAP_NOT_OPEN the map was never accepted by doom_map_open()
  *   P_SETUP_ERR_NULL_ARENA no arena buffer was passed
  *   P_SETUP_ERR_ARENA     z_init() refused the arena
- *   P_SETUP_ERR_ALLOC     the arena refused the sector or line-special array
+ *   P_SETUP_ERR_ALLOC     the arena refused the sector, line-special or
+ *                         sector-sound array
  *
  * A refused init leaves the level zeroed (`open` 0), so a stale level can never
  * answer a later tick.
@@ -123,7 +124,12 @@ typedef enum p_setup_error {
  *   random          the P_Random() position this level has reached.
  *   rules           the filters and the spawn inputs, as loaded.
  *   context         the same four things plus the rules, in the shape the spawn
- *                   functions take.
+ *                   functions take. It also points at the level's per-sector
+ *                   sound state (`sectorSound`, p_spec.h) that P_RecursiveSound
+ *                   floods; that array is allocated from this arena, not stored
+ *                   in p_sector_t and not inline in the context, because the
+ *                   board's .bss has no room for it and a level change frees it
+ *                   with every other PU_LEVEL block.
  *   sectors         the level's mutable sector state (p_spec.h), copied from
  *                   SECTORS by p_level_init(). Every mover, light and
  *                   surrounding-sector query reads and writes this array; the

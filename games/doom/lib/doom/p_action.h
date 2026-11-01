@@ -25,14 +25,13 @@
  *      chase stands still and the counter says so, which is a visible defect
  *      instead of a silent one.
  *
- * WHAT D4.1a IMPLEMENTS
+ * WHAT IS IMPLEMENTED
  *
- * Only A_Look, and only as a deliberate stub: it is the action a monster's
- * standing state carries (`S_POSS_STND` -> A_Look), so a spawned monster
- * reaches it on its first state cycle. The stub is a *distinct outcome*
- * (`P_ACTION_STUB`), not "done": the counter separates "nothing to do yet"
- * from "implemented and ran", so D4.2 can watch the stub count fall to zero
- * action by action.
+ * A_Look (T15a, p_enemy.c) is the action a monster's standing state carries
+ * (`S_POSS_STND` -> A_Look). It reads the sector's sound target, scans for a
+ * visible player and enters the see state. Every other action is counted, so a
+ * monster that should chase stands still and the counter says so, which is a
+ * visible defect instead of a silent one.
  *
  * `ACT_NULL` is not an action. Upstream writes `{NULL}` in the table and skips
  * the call entirely (`if (st->action.acp1)`), which is what decorations and

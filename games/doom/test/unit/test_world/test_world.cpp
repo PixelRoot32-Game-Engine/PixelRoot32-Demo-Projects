@@ -814,10 +814,11 @@ void test_action_dispatch_counts_what_is_missing(void) {
     TEST_ASSERT_EQUAL_INT(P_ACTION_NONE, p_action_run(&world.context, mobj, ACT_NULL));
     TEST_ASSERT_EQUAL_UINT32(0u, world.actions.calls);
 
-    // A_Look is the one action D4.1a ships, as a deliberate stub.
-    TEST_ASSERT_EQUAL_INT(P_ACTION_STUB, p_action_run(&world.context, mobj, A_Look));
+    // A_Look is real (T15a). With no level and no sound array in this hand-built
+    // context it has nothing to look at, but it ran: DONE, not STUB.
+    TEST_ASSERT_EQUAL_INT(P_ACTION_DONE, p_action_run(&world.context, mobj, A_Look));
     TEST_ASSERT_EQUAL_UINT32(1u, world.actions.calls);
-    TEST_ASSERT_EQUAL_UINT32(1u, world.actions.stubs);
+    TEST_ASSERT_EQUAL_UINT32(1u, world.actions.done);
     TEST_ASSERT_EQUAL_UINT32(0u, world.actions.notImplemented);
 
     // Everything else is counted, never silently ignored.
@@ -847,12 +848,48 @@ void test_state_transition_dispatches_the_new_state_action(void) {
     r_mobj_t* mobj = p_spawn_mobj(&world.context, 0, 0, ONFLOORZ, MT_PLAYER, &error);
     TEST_ASSERT_NOT_NULL(mobj);
 
-    // S_POSS_STND's action is A_Look: setting the state must run it, and the
-    // dispatch must see it as the stub it is.
+    // S_POSS_STND's action is A_Look: setting the state must run it. The
+    // hand-built context has no level and no sound array, so it finds nothing,
+    // but the dispatch counts it as implemented.
     TEST_ASSERT_EQUAL_INT(A_Look, states[S_POSS_STND].action);
     TEST_ASSERT_EQUAL_INT(1, p_set_mobj_state(&world.context, mobj, S_POSS_STND, &error));
     TEST_ASSERT_EQUAL_UINT32(1u, world.actions.calls);
-    TEST_ASSERT_EQUAL_UINT32(1u, world.actions.stubs);
+    TEST_ASSERT_EQUAL_UINT32(1u, world.actions.done);
+}
+
+/*
+ * A_Look's sound path: a sector that heard the player wakes the monster on its
+ * next look, even without a line of sight, and the see-sound draw still advances
+ * the random sequence by exactly one (the draw is kept, the sound is discarded).
+ */
+void test_action_look_wakes_on_a_sound_target(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+    p_sector_sound_t sound[1]{};
+    r_mobj_t* player = nullptr;
+    r_mobj_t* monster = nullptr;
+
+    world.open();
+    player = p_spawn_mobj(&world.context, 0, 0, ONFLOORZ, MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(player);
+    monster = p_spawn_mobj(&world.context, 40 * kFrac, 0, ONFLOORZ,
+                           MT_POSSESSED, &error);
+    TEST_ASSERT_NOT_NULL(monster);
+    TEST_ASSERT_EQUAL_INT(0, monster->sector);
+
+    // The sector's sound target is the player, as P_NoiseAlert would leave it.
+    sound[0].soundTarget = player;
+    world.context.sectorSound = sound;
+    world.context.sectorSoundCount = 1;
+
+    const u8 before = world.random.index;
+    TEST_ASSERT_EQUAL_INT(P_ACTION_DONE,
+                          p_action_run(&world.context, monster, A_Look));
+    TEST_ASSERT_EQUAL_PTR(player, monster->target);
+    TEST_ASSERT_EQUAL_INT(mobjinfo[MT_POSSESSED].seestate, monster->state);
+    // sfx_posit1 (36): one draw for the discarded see sound.
+    TEST_ASSERT_EQUAL_UINT8(static_cast<u8>((before + 1) & 0xFFu),
+                            world.random.index);
 }
 
 // --- The mobj thinker -------------------------------------------------------
@@ -2645,6 +2682,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_level_medium_skill_drops_hard_only_monsters);
     RUN_TEST(test_action_dispatch_counts_what_is_missing);
     RUN_TEST(test_state_transition_dispatches_the_new_state_action);
+    RUN_TEST(test_action_look_wakes_on_a_sound_target);
     RUN_TEST(test_ticking_a_mobj_advances_its_state);
     RUN_TEST(test_specs_door_opens_to_its_top_and_stops);
     RUN_TEST(test_specs_door_waits_then_closes_and_removes_itself);

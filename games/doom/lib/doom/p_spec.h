@@ -95,8 +95,10 @@
  *
  * sizeof(p_sector_t) on the 32-bit target is the sector's mutable state plus
  * one pointer; E1M1's 85 sectors are about 3.4 KB. E1M1's 475 linedef specials
- * are 950 B. The level's arena pays for both, and p_level_init() reports an
- * allocation failure rather than loading a world without them.
+ * are 950 B. The sound flood adds one p_sector_sound_t per sector (12 B here:
+ * pointer, epoch, traversed int16 and padding), so E1M1's array is 1,020 B plus
+ * one zone header. The level's arena pays for all of it, and p_level_init()
+ * reports an allocation failure rather than loading a world without them.
  *
  * This is C99 only: <stddef.h> and <stdint.h>, no allocation, no globals, no
  * stdio, no floating point. The caller owns the level, its zone and every
@@ -148,6 +150,27 @@ struct p_action_stats;
 #define P_MAX_ADJOINING_SECTORS 20
 
 /* --- The mutable sector --------------------------------------------------- */
+
+/* Forward: the sound state points at a mobj, which p_mobj.h defines. */
+struct r_mobj;
+
+/*
+ * One sector's sound-flood state (upstream's sector_t fields soundtarget,
+ * soundtraversed and validcount). p_level_init() allocates and zeroes one per
+ * sector from the level arena; `p_mobj_context_t` points at the array and
+ * caches the level's flood epoch in `soundValidCount`.
+ *
+ *   soundTarget    who this sector last heard, or NULL.
+ *   validCount     the flood epoch that wrote the record, compared against
+ *                  p_mobj_context_t::soundValidCount.
+ *   soundTraversed how many sound-blocking lines the flood crossed to reach it
+ *                  (0 = direct), which is what bounds the recursion.
+ */
+typedef struct p_sector_sound {
+    struct r_mobj* soundTarget;
+    uint32_t validCount;
+    int16_t soundTraversed;
+} p_sector_sound_t;
 
 /*
  * One sector as the simulation sees it. This is upstream's sector_t reduced to

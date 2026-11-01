@@ -29,6 +29,7 @@
 #include "p_map.h"
 #include "p_mobj.h"
 #include "p_setup.h"
+#include "p_sight.h"
 #include "p_user.h"
 #include "r_tables.h"
 
@@ -660,9 +661,10 @@ void p_fire_weapon(p_mobj_context_t* world, p_player_t* player) {
     p_set_psprite(world, player, PS_WEAPON,
                   (statenum_t)weapon_row(player->readyweapon)->attackState);
 
-    /* `P_NoiseAlert (player->mo, player->mo);` -- it wakes monsters through
-     * P_CheckSight, which is T15's. Counted so a shot's "did anybody hear that"
-     * is a number instead of a missing statement. */
+    /* `P_NoiseAlert (player->mo, player->mo);` -- every shot wakes the monsters
+     * that can hear this sector (T15a). The counter still records the call, so
+     * "the shot happened" and "the shot was silent" are separately visible. */
+    p_noise_alert(world, player->mo, player->mo);
     player->noiseAlerts += 1u;
 }
 

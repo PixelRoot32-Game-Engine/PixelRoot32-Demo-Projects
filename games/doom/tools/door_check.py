@@ -86,7 +86,8 @@ EXIT_USAGE = 2
 
 SOURCES = (
     "p_setup.c", "p_mobj.c", "p_map.c", "p_user.c", "p_tick.c", "p_action.c",
-    "p_inter.c", "p_pspr.c", "m_random.c", "z_zone.c", "doom_map.c",
+    "p_inter.c", "p_pspr.c", "p_sight.c", "p_enemy.c", "m_random.c", "z_zone.c",
+    "doom_map.c",
     "r_segs.c", "r_light.c", "r_bsp.c", "r_plane.c", "r_tables.c", "r_data.c",
     "w_wad.c", "p_spec.c", "p_floor.c", "p_doors.c", "p_plats.c", "p_ceilng.c",
     "p_lights.c",

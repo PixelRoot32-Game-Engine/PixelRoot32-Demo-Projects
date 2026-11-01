@@ -78,7 +78,8 @@ try:
 except ImportError:  # pragma: no cover - only when run from another directory
     MOVEMENT_SOURCES = (
         "p_setup.c", "p_mobj.c", "p_map.c", "p_user.c", "p_tick.c", "p_action.c",
-        "p_inter.c", "p_pspr.c", "m_random.c", "z_zone.c", "doom_map.c", "r_bsp.c",
+        "p_inter.c", "p_pspr.c", "p_sight.c", "p_enemy.c", "m_random.c",
+        "z_zone.c", "doom_map.c", "r_bsp.c",
         "r_plane.c", "r_tables.c", "w_wad.c", "p_spec.c", "p_floor.c",
         "p_doors.c", "p_plats.c", "p_ceilng.c", "p_lights.c",
     )

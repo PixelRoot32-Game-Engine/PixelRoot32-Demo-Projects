@@ -163,6 +163,8 @@ struct p_action_stats;
  * header stays below p_map.h and p_setup.h in the include graph. */
 struct p_level;
 struct p_move_stats;
+struct p_attack_stats;
+struct p_sight_stats;
 
 /*
  * Everything a spawn needs that is not the spawn's own arguments.
@@ -210,6 +212,18 @@ typedef struct p_mobj_context {
      * one to read the intercept count and the sky refusals, and the firmware
      * leaves it NULL. */
     struct p_attack_stats* attackStats;
+    /* Optional sight counters (p_sight.h): how many checks the REJECT table
+     * answered and how many needed the BSP. NULL is legal and is what the
+     * firmware passes. */
+    struct p_sight_stats* sightStats;
+    /* T15a: the per-sector sound state p_level_init() allocates from the level
+     * arena (p_spec.h's p_sector_sound_t). `sectorSoundCount` is the number of
+     * entries and `soundValidCount` the flood epoch shared by every
+     * P_NoiseAlert. A hand-built test context leaves all three zero/NULL, which
+     * makes P_NoiseAlert a no-op rather than a write through a null pointer. */
+    p_sector_sound_t* sectorSound;
+    uint16_t sectorSoundCount;
+    uint32_t soundValidCount;
 } p_mobj_context_t;
 /*
  * One map object.
@@ -643,8 +657,8 @@ void p_thrust(p_mobj_context_t* world, r_mobj_t* mobj, angle_t angle,
  * The port has no player_t, so the two player-only branches upstream guards on
  * `mo->player` use the mobj's own `player` flag: the S_PLAY_RUN* to S_PLAY
  * state change is kept, and the CF_NOMOMENTUM cheat is absent because there
- * are no cheats (D5). `P_CheckSight`/`P_NoiseAlert` are not called; T15 owns
- * them.
+ * are no cheats (D5). P_CheckSight/P_NoiseAlert are not called here: T15a owns
+ * them, and P_FireWeapon is where the noise starts.
  */
 void p_xy_movement(p_mobj_context_t* world, r_mobj_t* mobj);
 

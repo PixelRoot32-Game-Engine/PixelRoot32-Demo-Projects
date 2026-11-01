@@ -95,6 +95,10 @@ def compile_harness(workdir: Path, compiler: str) -> Path:
         # p_pspr.c because p_inter.c drops a dying player's weapon.
         str(root / "lib" / "doom" / "p_inter.c"),
         str(root / "lib" / "doom" / "p_pspr.c"),
+        # T15a: A_Look is real and P_FireWeapon calls P_NoiseAlert, so the sight
+        # and enemy modules are part of the link closure.
+        str(root / "lib" / "doom" / "p_sight.c"),
+        str(root / "lib" / "doom" / "p_enemy.c"),
         str(root / "lib" / "doom" / "p_spec.c"),
         str(root / "lib" / "doom" / "p_floor.c"),
         str(root / "lib" / "doom" / "p_doors.c"),

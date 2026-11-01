@@ -914,8 +914,8 @@ void p_mobj_thinker(p_thinker_t* thinker, void* context) {
     }
 
     /* Upstream's two momenta tests and the `acv == -1` ("was I removed?")
-     * return after each. P_CheckSight/P_NoiseAlert are T15's and are not
-     * called here. */
+     * return after each. P_CheckSight/P_NoiseAlert live behind A_Look and
+     * P_FireWeapon (T15a), not in the mobj tick. */
     if (mobj->momx != 0 || mobj->momy != 0 ||
         (mobj->flags & MF_SKULLFLY) != 0u) {
         p_xy_movement(world, mobj);
