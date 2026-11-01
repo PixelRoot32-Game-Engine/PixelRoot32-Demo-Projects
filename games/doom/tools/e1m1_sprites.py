@@ -35,7 +35,8 @@ frames are all there when the state machine starts using them.
 ``RUNTIME_SPRITES`` is the other half of the list, and it is not a level
 transcription: those rows are the mobj types the simulation *creates* after the
 level is loaded, which no THINGS record can ever place (P_SpawnPuff,
-P_SpawnBlood, the player's own missiles). They are keyed by ``mobjtype_t``, not
+P_SpawnBlood, the player's own missiles, and the imp's fireball A_TroopAttack
+throws). They are keyed by ``mobjtype_t``, not
 by DoomEd number, and they carry one row per state of their own chain because
 this file is also the container's bake manifest
 (``whd_encode.py --sprite-list``): every frame a shot can be drawn in has to
@@ -213,6 +214,18 @@ RUNTIME_SPRITES: tuple[ThingSprite, ...] = (
     ThingSprite(33, "MT_ROCKET", "S_EXPLODE1", "MISL", 1, True, runtime=True),
     ThingSprite(33, "MT_ROCKET", "S_EXPLODE2", "MISL", 2, True, runtime=True),
     ThingSprite(33, "MT_ROCKET", "S_EXPLODE3", "MISL", 3, True, runtime=True),
+    # A_TroopAttack() (T15) hands MT_TROOPSHOT to P_SpawnMissile(), and E1M1
+    # places the imp (DoomEd 3001), so its fireball is reachable in the shipped
+    # level: five BAL1 frames, all full bright. S_TBALL1/S_TBALL2 are the flight
+    # and alternate with each other; the death state is S_TBALLX1 and the chain
+    # walks it to S_TBALLX3. Without these rows the projectile is a live mobj
+    # whose every frame falls back to the spawn row -- the *wrong* frame, not a
+    # missing lump -- so the bake is what makes the shot visible at all.
+    ThingSprite(31, "MT_TROOPSHOT", "S_TBALL1", "BAL1", 0, True, runtime=True),
+    ThingSprite(31, "MT_TROOPSHOT", "S_TBALL2", "BAL1", 1, True, runtime=True),
+    ThingSprite(31, "MT_TROOPSHOT", "S_TBALLX1", "BAL1", 2, True, runtime=True),
+    ThingSprite(31, "MT_TROOPSHOT", "S_TBALLX2", "BAL1", 3, True, runtime=True),
+    ThingSprite(31, "MT_TROOPSHOT", "S_TBALLX3", "BAL1", 4, True, runtime=True),
 )
 
 #: ``MT_PLASMA`` (34) and ``MT_BFG`` (35) are absent on purpose. A_FirePlasma()

@@ -26,7 +26,7 @@
                                them, so the shipped container does not carry
                                them.
       --bake E1M1..E1M9        the union bake: 100 textures + the sky, 50
-                               flats and 201 sprite lumps, 1,713,480 B.
+                               flats and 206 sprite lumps, 1,719,124 B.
       --drop-baked-sources     after the bake, remove the 156 wall-composition
                                patch lumps (155 names; SW18_7 appears twice).
                                Their bytes live on only as the dense width*128
@@ -37,13 +37,13 @@
                                ARE their manifest payloads and stay.
       (no --drop-unused-sprites)
                                every S_START..S_END lump stays in the container:
-                               483 sprite lumps, 611,686 B stored. The fixture
-                               names 201 of them for the bake -- the frames
+                               483 sprite lumps, 614,436 B stored. The fixture
+                               names 206 of them for the bake -- the frames
                                E1M1's THINGS can show plus every state chain the
-                               map's mobj types and the simulation's puff, blood
-                               and rocket can enter; the other 282 are
-                               compressed frames no E1M1 frame can name, which
-                               is the point of D3.11.
+                               map's mobj types and the simulation's puff, blood,
+                               rocket and imp fireball can enter; the other 277
+                               are compressed frames no E1M1 frame can name,
+                               which is the point of D3.11.
       --stats                  total, spare against the partitions_wad.csv `wad`
                                row, the dropped-by-kind trade, the sprite count
                                and what each level would cost baked alone.

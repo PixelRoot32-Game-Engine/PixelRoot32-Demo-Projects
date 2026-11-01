@@ -90,7 +90,7 @@ Then turn it into the container the firmware reads, from **`games/doom`**:
 .\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD
 ```
 
-It writes `tools/DOOM1.whd` -- 3,293,368 B of the `wad` partition's 3,342,336 --
+It writes `tools/DOOM1.whd` -- 3,296,220 B of the `wad` partition's 3,342,336 --
 and proves the result four ways: the WAD rebuilds byte for byte, the container
 parses, all nine levels open through `lib/doom/doom_map.c`, and every baked
 texture recomposes from the source WAD's patches. The encode also reads

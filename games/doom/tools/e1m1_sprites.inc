@@ -811,6 +811,21 @@ static const e1m1_sprite_rule_t kE1M1Sprites[] = {
     { 33, 3, 1, 0, "MISL", {
         { "MISLD0", 0 },
     } },
+    { 31, 0, 1, 0, "BAL1", {
+        { "BAL1A0", 0 },
+    } },
+    { 31, 1, 1, 0, "BAL1", {
+        { "BAL1B0", 0 },
+    } },
+    { 31, 2, 1, 0, "BAL1", {
+        { "BAL1C0", 0 },
+    } },
+    { 31, 3, 1, 0, "BAL1", {
+        { "BAL1D0", 0 },
+    } },
+    { 31, 4, 1, 0, "BAL1", {
+        { "BAL1E0", 0 },
+    } },
 };
 
 #define E1M1_SPRITE_RULE_COUNT \
