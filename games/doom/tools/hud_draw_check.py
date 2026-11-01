@@ -45,6 +45,9 @@ PROVING THE GATE CAN FAIL
 ``--perturb`` makes the oracle draw the status bar's health number one pixel to
 the left. The run must then exit 1; a comparison that cannot fail is not a gate.
 
+It ends with the HUD frame-00 hash: E1M1's frame 00 rendered by the oracle in a
+168-row window with the bar overlaid must equal the number the board printed.
+
 USAGE
 
     python tools/hud_draw_check.py --wad tools/DOOM1.WAD [--perturb] [--keep]
@@ -55,6 +58,7 @@ Standard library only (plus tools/doom_ref.py).
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import struct
 import subprocess
@@ -63,6 +67,10 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# This gate describes the DOOM_HUD configuration: a 168-row 3D window. doom_ref
+# reads the variable at import time; the status-bar oracle below never uses it.
+os.environ.setdefault("DOOM_REF_VIEW_HEIGHT", "168")
 
 import doom_ref  # noqa: E402
 
@@ -535,6 +543,45 @@ def parse_c(output: str) -> list[tuple[str, str, int, bytes]]:
     return frames
 
 
+# The viewpoint the board renders for frame 00: E1M1's player 1 start, eye 41
+# units above the floor, facing east. The same four numbers `SHOW,frame00` prints.
+FRAME00_VIEW = (69206016, -236978176, 2686976, 0)
+
+
+# The HUD frame-00 hash the board printed (`SHOW,frame00` in env
+# esp32dev_ILI9341_hud, COM4, CYD, 2026-11-01). The oracle rebuilds it from the
+# renderer oracle at a 168-row window plus the status-bar oracle; the view half
+# (8c5d2289...) and the bar half (5c8a45fb...) matched the board separately.
+# The 200-row `50fb3d9c...` is the `_show` environment's and is not this number.
+HUD_FRAME00 = "1d8b3849ab3f76750056937f2827bf2bcbb2b98e82976fb3a7ce263d5273c9d3"
+
+
+def frame00_hash(wad_path: Path, perturb: bool = False) -> str:
+    """The SHA-256 of E1M1's frame 00 as the HUD build draws it, from the oracle.
+
+    The renderer oracle is run with a 168-row window (``DOOM_REF_VIEW_HEIGHT``),
+    its 320x200 surface keeps rows 0..167 and the bottom 32 rows are replaced by
+    the status bar of a fresh player (ST_Start, no tic yet, so face 0 = STFST00).
+    The hash covers the 64,000 index bytes then the 320 column-coverage bytes,
+    as the driver's hashSurface() does. The board prints the same number as ``SHOW,frame00`` in the
+    ``esp32dev_ILI9341_hud`` environment; the 200-row ``50fb3d9c`` is the
+    ``_show`` environment's, untouched.
+    """
+    import hashlib
+
+    _identification, lumps = doom_ref.read_wad(wad_path)
+    pixels, covered = doom_ref.render_frame_pixels(lumps, "E1M1", view=FRAME00_VIEW)
+    surface = bytearray(pixels)
+    bar = Bar(Wad(wad_path), perturb)
+    bar.player.update({"health": 100, "armor": 0, "ammo": [50, 0, 0, 0],
+                       "maxammo": [200, 50, 300, 50], "weapons": [1, 1, 0, 0, 0, 0, 0, 0, 0],
+                       "ready": 1})
+    bar.start()
+    bar_rows = bar.draw(True)
+    surface[ST_Y * WIDTH:] = bar_rows[ST_Y * WIDTH:]
+    return hashlib.sha256(bytes(surface) + covered).hexdigest()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--wad", type=Path, required=True)
@@ -586,6 +633,12 @@ def main(argv: list[str] | None = None) -> int:
             if differing or missing:
                 failures += 1
         print(f"hud_draw_check: {len(expected)} states, {failures} failing")
+        digest = frame00_hash(arguments.wad, arguments.perturb)
+        if digest != HUD_FRAME00:
+            print(f"FAIL frame00 oracle={digest} pinned={HUD_FRAME00}")
+            failures += 1
+        else:
+            print(f"ok   frame00 (168-row view + bar) {digest}")
         return 1 if failures else 0
     finally:
         if arguments.keep:

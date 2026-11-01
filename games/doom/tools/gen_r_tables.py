@@ -342,7 +342,7 @@ def main() -> int:
     out.append("")
     out.append("/* R_ExecuteSetViewSize()'s yslope[]: map units of plane height per")
     out.append(" * screen row's ray (D3.3). */")
-    out.extend(format_array("const fixed_t r_plane_yslope[R_VIEW_HEIGHT] = {", yslope, 8))
+    out.extend(format_array("const fixed_t r_plane_yslope[R_SCREEN_HEIGHT] = {", yslope, 8))
     out.append("")
     out.append("/* R_ExecuteSetViewSize()'s distscale[]: the reciprocal cosine that")
     out.append(" * turns a row's perpendicular distance into a ray distance (D3.3). */")

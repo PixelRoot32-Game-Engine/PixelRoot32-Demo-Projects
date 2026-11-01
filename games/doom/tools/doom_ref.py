@@ -85,6 +85,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import math
+import os
 import struct
 import sys
 from dataclasses import dataclass, replace
@@ -458,6 +459,10 @@ FINEMASK = FINEANGLES - 1
 SLOPERANGE = 2048
 SCREEN_WIDTH = 320
 SCREEN_HEIGHT = 200
+# The 3D window's rows. 200 is the full surface (the host gates' frames); the
+# DOOM_HUD build (D5.1) renders DOOM's screen size 9, 168 rows above the status
+# bar. The environment variable is how a gate asks the oracle for that window.
+VIEW_HEIGHT = int(os.environ.get("DOOM_REF_VIEW_HEIGHT", SCREEN_HEIGHT))
 FIELDOFVIEW = 2048
 HEIGHTBITS = 12
 HEIGHTUNIT = 1 << HEIGHTBITS
@@ -911,7 +916,7 @@ class WalkState:
         self.extralight = 0
         self.sky = b"F_SKY1\x00\x00"
         self.projection = (SCREEN_WIDTH // 2) << FRACBITS
-        self.centerfrac = (SCREEN_HEIGHT // 2) << FRACBITS
+        self.centerfrac = (VIEW_HEIGHT // 2) << FRACBITS
         self.drawsegs: list[dict] = []
         self.drawseg_overflow = False
         self.planes: list[Visplane] = []
@@ -1295,7 +1300,7 @@ class WalkState:
                     self.floorplane.bottom[x] = bottom
 
             if self.wall_mid:
-                self.ceilingclip[x] = SCREEN_HEIGHT
+                self.ceilingclip[x] = VIEW_HEIGHT
                 self.floorclip[x] = -1
             else:
                 if self.wall_top:
@@ -1437,7 +1442,7 @@ class WalkState:
 
         self.clear_clip_segs()
         for column in range(SCREEN_WIDTH):
-            self.floorclip[column] = SCREEN_HEIGHT
+            self.floorclip[column] = VIEW_HEIGHT
             self.ceilingclip[column] = -1
 
         if not self.bsp.nodes:
@@ -8387,8 +8392,7 @@ MAXLIGHTSCALE_INDEX = MAXLIGHTSCALE - 1
 LIGHTSCALESHIFT = 12
 DISTMAP = 2
 LIGHTSEGSHIFT = 4
-VIEW_HEIGHT = SCREEN_HEIGHT
-CENTER_Y = SCREEN_HEIGHT // 2
+CENTER_Y = VIEW_HEIGHT // 2
 CENTER_Y_FRAC = CENTER_Y << FRACBITS
 UNCOVERED = 0xFF
 
@@ -8405,7 +8409,7 @@ LIGHTZSHIFT = 20
 MAXLIGHTZ = 128
 ANGLETOSKYSHIFT = 22
 SKY_ISCALE = FRACUNIT
-SKY_TEXTUREMID = CENTER_Y << FRACBITS
+SKY_TEXTUREMID = 100 << FRACBITS  # R_InitSkyMap's literal, not the horizon
 FLAT_SIZE = 64
 
 # The THINGS types that are a player or deathmatch start.
@@ -8446,8 +8450,8 @@ def _plane_light() -> tuple[tuple[int, ...], ...]:
 def _plane_yslope() -> tuple[int, ...]:
     """R_ExecuteSetViewSize()'s yslope[] (D3.3)."""
     table: list[int] = []
-    for i in range(SCREEN_HEIGHT):
-        dy = abs(((i - SCREEN_HEIGHT // 2) << FRACBITS) + FRACUNIT // 2)
+    for i in range(VIEW_HEIGHT):
+        dy = abs(((i - VIEW_HEIGHT // 2) << FRACBITS) + FRACUNIT // 2)
         table.append(fixed_div((SCREEN_WIDTH // 2) * FRACUNIT, dy))
     return tuple(table)
 
@@ -8859,7 +8863,7 @@ def emit_planes(planes: list[Visplane], params: dict, textures: TextureLibrary,
 
     def map_plane(y: int, x1: int, x2: int, planeheight: int, lightrow: int,
                   flat: Flat) -> None:
-        if y < 0 or y >= SCREEN_HEIGHT or x1 < 0 or x2 >= SCREEN_WIDTH or x1 > x2:
+        if y < 0 or y >= VIEW_HEIGHT or x1 < 0 or x2 >= SCREEN_WIDTH or x1 > x2:
             return
         distance = i32(fixed_mul(planeheight, YSLOPE[y]))
         xstep = i32(fixed_mul(distance, basexscale))
@@ -8921,8 +8925,8 @@ def emit_planes(planes: list[Visplane], params: dict, textures: TextureLibrary,
                     continue
                 if yl < 0:
                     yl = 0
-                if yh > SCREEN_HEIGHT - 1:
-                    yh = SCREEN_HEIGHT - 1
+                if yh > VIEW_HEIGHT - 1:
+                    yh = VIEW_HEIGHT - 1
                 if yl > yh:
                     continue
                 angle = u32(viewangle + X_TO_VIEW_ANGLE[x]) >> ANGLETOSKYSHIFT
@@ -9346,6 +9350,39 @@ def frame_views(bsp: BspMap) -> list[dict]:
             view["angle"] = u32(k * (1 << 32) // 5 & 0xFFFFFFFF)
             views.append(view)
     return views
+
+
+def render_frame_pixels(lumps: list[Lump], map_name: str, view_index: int = 0,
+                        drawsegs: int = 256, planes: int = 128,
+                        view: tuple[int, int, int, int] | None = None) -> tuple[bytes, bytes]:
+    """The finished index surface of one viewpoint, and its column coverage.
+
+    The same four passes report_segs() runs (walk, walls, planes, sprites):
+    SCREEN_WIDTH x SCREEN_HEIGHT pixel bytes (0xFF where nothing drew) and the
+    SCREEN_WIDTH `covered` bytes. The board's frame hash is SHA-256 over the
+    pixels followed by the coverage, so a gate rebuilding it needs both. D5.1's
+    HUD gate overlays the status bar on these pixels to rebuild the HUD frame-00
+    hash. `view` is (x, y, z, angle); omitted, the harness's view `view_index`.
+    """
+    bsp = read_bsp_map(lumps, map_name)
+    textures = TextureLibrary(lumps)
+    flats = FlatLibrary(lumps)
+    colormaps = lumps[first_index(lumps, "COLORMAP")].data
+    params = frame_views(bsp)[view_index]
+    if view is not None:
+        params = {"x": view[0], "y": view[1], "z": view[2],
+                  "angle": u32(view[3] & 0xFFFFFFFF), "extralight": 0,
+                  "sky": b"F_SKY1\x00\x00"}
+    tables = e1m1_sprites.build_sprite_tables(lump.name for lump in lumps)
+    state = WalkState(bsp, drawsegs, planes)
+    state.render(params)
+    wall = emit_walls(bsp, state.drawsegs, params, textures, colormaps)
+    plane = emit_planes(state.planes, params, textures, flats, colormaps,
+                        wall["pixels"], wall["covered"])
+    sprites = sprite_list(bsp, params, tables)
+    masked = emit_masked(bsp, state.drawsegs, wall, plane, params, textures,
+                         colormaps, sprites, tables)
+    return bytes(masked["pixels"]), bytes(masked["covered"])
 
 
 def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,

@@ -48,13 +48,19 @@ extern "C" {
  * Upstream they are `viewheight` and `viewheight/2`; the status bar steals rows
  * by shrinking the window, so both change together.
  *
- * This port draws a 200-row view with no status bar yet, so R_VIEW_HEIGHT is
- * the whole surface. A Phase-5 HUD that steals rows changes R_CENTER_Y (and
- * R_VIEW_HEIGHT, which is what a clip array starts at); nothing else in the
+ * Without DOOM_HUD this port draws a 200-row view: R_VIEW_HEIGHT is the whole
+ * surface (the host gates and their pinned hashes, frame 00 `50fb3d9c`). With
+ * DOOM_HUD (D5.1) the status bar owns the bottom 32 rows and the view is
+ * DOOM's screen size 9: viewheight 168, centery 84. Nothing else in the
  * renderer hard-codes either number. r_bsp.c and r_segs.c read these macros and
- * never a literal 100 or 200.
+ * never a literal 100 or 200; the two places whose TABLES depend on the window
+ * (yslope, the sky's texturemid) are written so both sizes are correct.
  */
+#ifdef DOOM_HUD
+#define R_VIEW_HEIGHT (R_SCREEN_HEIGHT - 32)
+#else
 #define R_VIEW_HEIGHT R_SCREEN_HEIGHT
+#endif
 #define R_CENTER_Y (R_VIEW_HEIGHT / 2)
 #define R_CENTER_Y_FRAC (((fixed_t)R_CENTER_Y) << FRACBITS)
 #define R_CENTER_X (R_SCREEN_WIDTH / 2)

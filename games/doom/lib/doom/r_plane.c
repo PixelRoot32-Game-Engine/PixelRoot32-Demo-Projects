@@ -287,7 +287,7 @@ static void map_plane(const r_view_state_t* state, r_draw_surface_t* surface,
         return;
     }
 
-    distance = fixed_mul(planeHeight, r_plane_yslope[y]);
+    distance = fixed_mul(planeHeight, r_plane_yslope[y + R_YSLOPE_BASE]);
     xstep = fixed_mul(distance, baseXScale);
     ystep = fixed_mul(distance, baseYScale);
     length = fixed_mul(distance, r_plane_dist_scale[x1]);

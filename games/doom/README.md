@@ -115,6 +115,19 @@ image built by an environment that selects `partitions_wad.csv` (the `_show` and
 `_frame` families do; the plain `esp32dev_ILI9341` does not). Flashing a new
 partition table erases NVS, which this demo does not use.
 
+### The status bar (D5.1)
+
+`esp32dev_ILI9341_hud` is `_show` plus `-D DOOM_HUD=1`: the 3D view shrinks to
+DOOM's screen size 9 (320x168, `centery` 84) and `lib/doom/st_stuff.c` repaints
+the bottom 32 rows every frame from the player the world already owns (ammo,
+health, armor, the arms digits, the three key boxes and the face). `_show` keeps
+the 200-row view whose frame-00 hash is `50fb3d9c...`; the HUD frame has its own,
+`1d8b3849...`. `esp32dev_ILI9341_hud_nofaces` is the CYD fall-back (the bar
+without the face widget), kept for the case the full bar misses its frame rate.
+Not drawn: the weapon in hand (psprites), the damage/bonus palette flashes and
+the deathmatch frags. `python tools/hud_draw_check.py --wad DOOM1.WAD` compares
+the bar with an independent oracle pixel by pixel.
+
 Neither `DOOM1.WAD` nor any `.whd` is committed: `tools/.gitignore` refuses both,
 because a container is a repacked copy of shareware data.
 

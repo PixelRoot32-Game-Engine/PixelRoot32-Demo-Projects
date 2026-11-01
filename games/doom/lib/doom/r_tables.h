@@ -175,7 +175,11 @@ extern const uint8_t r_light_level[R_LIGHT_LEVELS][R_LIGHT_SCALE_LEVELS];
 #define R_PLANE_LIGHT_Z_LEVELS 128 /* MAXLIGHTZ */
 
 extern const uint8_t r_plane_light[R_LIGHT_LEVELS][R_PLANE_LIGHT_Z_LEVELS];
-extern const fixed_t r_plane_yslope[R_VIEW_HEIGHT];
+/* Built for the full 200-row window (centery 100). A shorter view reads the same
+ * table at an offset: yslope[i] depends only on i - viewheight/2, so a 168-row
+ * view's row i is entry i + R_YSLOPE_BASE. */
+extern const fixed_t r_plane_yslope[R_SCREEN_HEIGHT];
+#define R_YSLOPE_BASE ((R_SCREEN_HEIGHT - R_VIEW_HEIGHT) / 2)
 extern const fixed_t r_plane_dist_scale[R_SCREEN_WIDTH];
 
 /* atan() table: slope_div() -> binary angle. */

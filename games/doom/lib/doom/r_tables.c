@@ -2634,7 +2634,7 @@ const uint8_t r_plane_light[R_LIGHT_LEVELS][R_PLANE_LIGHT_Z_LEVELS] = {
 
 /* R_ExecuteSetViewSize()'s yslope[]: map units of plane height per
  * screen row's ray (D3.3). */
-const fixed_t r_plane_yslope[R_VIEW_HEIGHT] = {
+const fixed_t r_plane_yslope[R_SCREEN_HEIGHT] = {
     105384, 106454, 107546, 108660, 109798, 110960, 112147, 113359,
     114598, 115864, 117159, 118483, 119837, 121222, 122640, 124091,
     125577, 127100, 128659, 130257, 131896, 133576, 135300, 137068,

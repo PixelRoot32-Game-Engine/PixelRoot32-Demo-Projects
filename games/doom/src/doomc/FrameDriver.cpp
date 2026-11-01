@@ -464,6 +464,9 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 #include "r_segs.h"
 #include "r_tables.h"
 #include "r_things.h"
+#if defined(DOOM_HUD)
+#include "st_stuff.h"
+#endif
 
 // The E1M1 sprite fixture: the DoomEd number -> frame-0 lump table
 // tools/gen_e1m1_sprites.py generates for the host harness. Fixture data, not
@@ -2418,6 +2421,115 @@ struct LevelWorld {
 
 LevelWorld gWorld;
 
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
+
+/*
+ * THE STATUS BAR (D5.1)
+ *
+ * With DOOM_HUD the view is 320x168 and the bottom 32 rows belong to
+ * lib/doom/st_stuff.c. The bar's state is the face machine's ~60 bytes; every
+ * number, weapon, key and the pain level are read from the player the world
+ * already owns, so nothing here duplicates game state.
+ *
+ * The patches are the raw, name-addressed lumps T36 baked (not manifest
+ * records). whd_lump_index_for_name() is a linear scan of the name table, which
+ * is flash-resident and about 2,000 entries long, so a frame that asks for forty
+ * names pays for it forty times; the cache below remembers each name's lump
+ * index by a 32-bit FNV-1a hash. 64 slots is 384 B of DRAM and covers every
+ * name a frame can draw at once (STBAR, STARMS, ten digits, the percent and
+ * minus signs, six arms digits, a face, up to three keys); a name that finds
+ * the table full is simply looked up each time, never dropped.
+ *
+ * DOOM_HUD_NOFACES is Option B, the CYD fall-back: the bar without the face
+ * widget (STBAR's empty face box stays), kept for the case the full bar misses
+ * its frame-rate bar on the 4 MB board.
+ */
+constexpr std::size_t kHudCacheSlots = 64u;
+st_state_t gStatus;
+std::uint32_t gStatusLastTime = 0u;
+std::uint32_t gHudHash[kHudCacheSlots];
+std::int16_t gHudLump[kHudCacheSlots];
+std::uint32_t gHudMicros = 0u;
+int gHudMissing = 0;
+bool gHudPartsDone = false;
+
+#if defined(DOOM_HUD_NOFACES)
+constexpr int kHudFaces = 0;
+#else
+constexpr int kHudFaces = 1;
+#endif
+
+const std::uint8_t* hudLump(void* /*context*/, const char* name, std::size_t* size) {
+    std::uint32_t hash = 2166136261u;
+    for (const char* c = name; *c != '\0'; ++c) {
+        hash = (hash ^ static_cast<std::uint8_t>(*c)) * 16777619u;
+    }
+    hash |= 1u;  // 0 marks an empty slot
+
+    int lump = -1;
+    std::size_t slot = hash % kHudCacheSlots;
+    std::size_t free = kHudCacheSlots;
+    for (std::size_t probe = 0u; probe < kHudCacheSlots; ++probe) {
+        const std::size_t at = (slot + probe) % kHudCacheSlots;
+        if (gHudHash[at] == hash) {
+            lump = gHudLump[at];
+            break;
+        }
+        if (gHudHash[at] == 0u) {
+            free = at;
+            break;
+        }
+    }
+    if (lump < 0) {
+        lump = doom_whd_source_lump_index(&gWhd, name);
+        if (lump < 0) {
+            return nullptr;
+        }
+        if (free < kHudCacheSlots) {
+            gHudHash[free] = hash;
+            gHudLump[free] = static_cast<std::int16_t>(lump);
+        }
+    }
+    const std::uint8_t* data = nullptr;
+    std::uint32_t bytes = 0u;
+    if (doom_whd_source_lump_view(&gWhd, lump, &data, &bytes) != DOOM_WHD_SOURCE_OK) {
+        return nullptr;
+    }
+    *size = static_cast<std::size_t>(bytes);
+    return data;
+}
+
+/// ST_Start(): the bar begins with the level.
+void hudStart() {
+    st_start(&gStatus, &gWorld.level.playerState);
+    gStatusLastTime = static_cast<std::uint32_t>(gWorld.level.leveltime);
+}
+
+/// ST_Ticker(): once per world tic, after p_level_tic(). A level time that went
+/// backwards is a level reload (G_DoReborn), which upstream answers with
+/// ST_Start().
+void hudTick() {
+    const std::uint32_t now = static_cast<std::uint32_t>(gWorld.level.leveltime);
+    if (now < gStatusLastTime) {
+        hudStart();
+    }
+    gStatusLastTime = now;
+    st_ticker(&gStatus, &gWorld.level.playerState);
+}
+
+/// ST_Drawer(): repaints the bottom 32 rows of the finished frame.
+void hudDraw(std::uint8_t* surface, int width) {
+    if (!gWorld.open) {
+        return;
+    }
+    const std::int64_t start = nowMicros();
+    gHudMissing = st_draw(&gStatus, &gWorld.level.playerState, hudLump, nullptr, surface,
+                          width, kHudFaces);
+    gHudMicros = elapsedMicros(start);
+}
+
+#endif  // SHOW && DOOM_HUD
+
 /*
  * The live seams (T26, T35): p_level_bind_render() installs three callbacks on
  * the map the renderer walks, so what the simulation wrote is what the frame
@@ -2659,6 +2771,9 @@ bool openWorldSession() {
     // loadPlaypal, so they never take this branch and keep rendering the
     // immutable map.
     p_level_bind_render(&gWorld.level, &gSession.driver->map);
+#if defined(DOOM_HUD)
+    hudStart();
+#endif
     std::snprintf(line, sizeof line,
                   "SHOW,arena,fit,status=ok,chosen=%u,peak=%u,used=%u,headroom=25,round=1024,"
                   "arena=%u,world_static=%u,heap_free=%u,heap_largest=%u\n",
@@ -3113,6 +3228,11 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
     if (!renderOnce(gSession.driver, view, surface, width, height, out)) {
         return false;
     }
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
+    // The bar is part of the frame and of its hash: the HUD frame-00 hash is a
+    // different number from the 200-row `50fb3d9c`, by construction.
+    hudDraw(surface, width);
+#endif
 
     if (hash != nullptr) {
         if (wantHash) {
@@ -3123,6 +3243,28 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
             if (hashMicros != nullptr) {
                 *hashMicros = elapsedMicros(hashStart);
             }
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
+            // One line per reported frame: what the bar cost and whether every patch
+            // drew. gSessionLine is the session's shared buffer; no setup runs now.
+            std::snprintf(gSessionLine, sizeof gSessionLine,
+                          "SHOW,hud,hud_us=%u,missing=%d,faces=%d,view_h=%d,face=%d,hash=%s\n",
+                          static_cast<unsigned>(gHudMicros), gHudMissing, kHudFaces,
+                          R_VIEW_HEIGHT, static_cast<int>(gStatus.faceIndex), hash);
+            writeLine(gSessionLine);
+            if (!gHudPartsDone) {
+                // The first reported frame also prints the view and the bar apart, so
+                // a host rebuild of the hash can be localised to one half.
+                gHudPartsDone = true;
+                char viewHash[65];
+                char barHash[65];
+                hashSurface(surface, static_cast<std::size_t>(width) * R_VIEW_HEIGHT, viewHash);
+                hashSurface(surface + static_cast<std::size_t>(width) * R_VIEW_HEIGHT,
+                            static_cast<std::size_t>(width) * (height - R_VIEW_HEIGHT), barHash);
+                std::snprintf(gSessionLine, sizeof gSessionLine,
+                              "SHOW,hudparts,view=%s,bar=%s\n", viewHash, barHash);
+                writeLine(gSessionLine);
+            }
+#endif
         } else {
             hash[0] = '\0';
         }
@@ -3237,6 +3379,9 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
         if (p_level_tic(&gWorld.level, &cmd, nullptr) != P_TICK_OK) {
             return false;
         }
+#if defined(DOOM_HUD)
+        hudTick();
+#endif
     }
     return true;
 }

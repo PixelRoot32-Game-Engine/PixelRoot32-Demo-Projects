@@ -195,18 +195,17 @@ extern "C" {
  *                            This port's view is the full 320 columns, so it is
  *                            FRACUNIT: one texel per screen row.
  *   R_PLANE_SKY_TEXTURE_MID  skytexturemid, which R_InitSkyMap() sets to
- *                            upstream's literal 100*FRACUNIT. This port's full
- *                            200-row view has R_CENTER_Y == 100, so the horizon
- *                            row shows texture row 100 and writing the constant
- *                            as R_CENTER_Y_FRAC keeps the two in step. Vanilla
- *                            keeps the literal 100 when it shrinks the view
- *                            window, so a future HUD that changes R_VIEW_HEIGHT
- *                            must decide whether to keep that literal or re-peg;
- *                            the full-frame harness does not reach the choice.
+ *                            upstream's literal 100*FRACUNIT, and is written
+ *                            as that literal. The full 200-row view has
+ *                            R_CENTER_Y == 100, so the horizon row shows texture
+ *                            row 100; the DOOM_HUD 168-row view has centery 84
+ *                            and keeps the literal, as vanilla does when it
+ *                            shrinks the window (D5.1).
  */
 #define R_PLANE_SKY_ANGLE_SHIFT 22
 #define R_PLANE_SKY_ISCALE FRACUNIT
-#define R_PLANE_SKY_TEXTURE_MID R_CENTER_Y_FRAC
+/* Upstream's literal, not the horizon: vanilla keeps 100 when the view shrinks. */
+#define R_PLANE_SKY_TEXTURE_MID (((fixed_t)100) << FRACBITS)
 
 /* The two types the emitter names but does not define. Keeping them incomplete
  * here is what lets r_plane.h stay independent of r_bsp.h and r_segs.h, both of
