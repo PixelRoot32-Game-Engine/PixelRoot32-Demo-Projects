@@ -2426,10 +2426,13 @@ LevelWorld gWorld;
  *   readSector     p_sector_t's mutable sector state (heights, flats, light).
  *                  Without it a door that opened in the simulation still drew
  *                  closed, and standing inside its 16-unit sector left the whole
- *                  320x200 surface at the 0xFF prefill.
+ *                  320x200 surface at the 0xFF prefill. A sector's flats arrive
+ *                  already carrying P_UpdateSpecials' animation frame.
  *   adjustSide     the scroll offset P_UpdateSpecials accumulates on a line
  *                  special 48's front side.
- *   translateName  the animation tables' frame for a flat or texture name.
+ *   translateName  the animation tables' frame for a *texture* name; installed
+ *                  only on a map whose SIDEDEFS name one (T35) -- the flat half
+ *                  rides with readSector.
  *
  * All three are p_spec.c's; this file only binds them, so the arithmetic the
  * board runs is the arithmetic tools/specials_check.c measures per tic and

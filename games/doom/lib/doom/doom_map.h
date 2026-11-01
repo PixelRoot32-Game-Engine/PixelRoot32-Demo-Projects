@@ -292,7 +292,10 @@ typedef r_name_t (*doom_name_translate_fn)(void* context, r_name_t name);
  *
  * `readSector` supplies: when set, every doom_map_get_sector() answers through
  * it, so a renderer bound to this map sees the level's live sector heights,
- * flats and light instead of the immutable SECTORS lump.
+ * flats and light instead of the immutable SECTORS lump. The reader's answer is
+ * final: it carries the animation frame of each flat (p_level_read_sector()
+ * does), so the accessor does not apply `translateName` to it -- translating a
+ * translated name is the wrong frame.
  *
  * `adjustSide` adjusts: when set, every doom_map_get_side() parses the immutable
  * record and then hands it to the callback, which may add the scroll offset the
@@ -300,10 +303,11 @@ typedef r_name_t (*doom_name_translate_fn)(void* context, r_name_t name);
  * renderer does not read). The parse happens first and once, so the callback
  * cannot recurse into the seam.
  *
- * `translateName` supplies: when set, every texture and flat name the two
- * accessors return is passed through it, which is where the animation tables
- * reach the picture. It is applied after `readSector`/`adjustSide`, so it also
- * sees a name that a live reader produced.
+ * `translateName` supplies: when set, every texture name doom_map_get_side()
+ * returns -- and every flat name the immutable SECTORS lump answers -- is
+ * passed through it, which is where the animation tables reach the picture. It
+ * is applied after `adjustSide`, so it also sees the scrolled record. A live
+ * reader's flats are already translated and are left alone (above).
  *
  * A host harness or probe that renders the static map leaves all three NULL,
  * which is also what doom_map_open() leaves behind.

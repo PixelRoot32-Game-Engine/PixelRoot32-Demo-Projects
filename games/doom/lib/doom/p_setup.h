@@ -163,6 +163,10 @@ typedef enum p_setup_error {
  *                   the picture translations were computed with. -1
  *                   (P_ANIM_BEFORE_FIRST) until the first one, which is
  *                   upstream's identity translation array.
+ *   animFrames      the translations themselves: each animated name mapped to
+ *                   this clock's frame (upstream's flattranslation[] and
+ *                   texturetranslation[]). p_level_read_sector() answers a
+ *                   sector's flats through the per-sector index into it.
  *   playerStarts    the four start records, verbatim (upstream playerstarts[]).
  *   playerStartSeen one flag per slot: the record was present in THINGS.
  *   deathmatchStarts the first ten type-11 records (upstream deathmatchstarts[]).
@@ -197,6 +201,16 @@ typedef struct p_level {
     p_scroll_t* scrolls;
     uint16_t scrollCount;
     int32_t animTime;
+    /* Upstream's `flattranslation[]`/`texturetranslation[]` for the clock above:
+     * every name of every animdefs[] family P_InitPicAnims kept, in family
+     * order, mapped to this tic's frame. Written by P_UpdateSpecials, read only
+     * by the renderer's seams. */
+    r_name_t animFrames[P_ANIM_PICTURES];
+    /* The same families' *source* names in RAM (p_anim_names()). The tables
+     * themselves live in flash, and the per-sector refresh below runs right
+     * after the thinker walk; comparing against flash there cost ~0.3 ms a
+     * frame on the board's cache, RAM costs a few microseconds. */
+    r_name_t animNames[P_ANIM_PICTURES];
 
     r_mobj_t* player;
     p_player_t playerState;

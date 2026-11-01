@@ -83,6 +83,26 @@ void putName(std::vector<u8>& out, const char* name) {
     }
 }
 
+/// Rewrites one eight-byte name field of an already-built lump.
+void replaceName(std::vector<u8>& lump, std::size_t at, const char* name) {
+    const std::size_t length = std::strlen(name);
+
+    for (std::size_t i = 0; i < 8u; ++i) {
+        lump[at + i] = i < length ? static_cast<u8>(name[i]) : 0u;
+    }
+}
+
+/// The packed name of a WAD name field, the way the accessors answer it.
+r_name_t packName(const char* name) {
+    u8 field[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    const std::size_t length = std::strlen(name);
+
+    for (std::size_t i = 0; i < 8u && i < length; ++i) {
+        field[i] = static_cast<u8>(name[i]);
+    }
+    return r_pack_name(field);
+}
+
 /*
  * One sector, one subsector and one seg: the smallest map the spawn path needs.
  * doom_map_open() accepts it because the five required lumps are non-empty and
@@ -975,6 +995,16 @@ struct SpecMapBuilder {
         putName(sidedefs, "STARTAN3");
         put16(sidedefs, sector);
         sideCount = static_cast<i16>(sideCount + 1);
+    }
+
+    /// Replaces one sector's floor flat in the SECTORS record it emitted.
+    void setFloorPic(std::size_t index, const char* name) {
+        replaceName(sectors, index * DOOM_SECTOR_SIZE + 4u, name);
+    }
+
+    /// Replaces one side's middle texture in the SIDEDEFS record it emitted.
+    void setSideMidTexture(std::size_t index, const char* name) {
+        replaceName(sidedefs, index * DOOM_SIDEDEF_SIZE + 20u, name);
     }
 
     /// One THINGS record: position in map units, angle in degrees, DoomEd type.
@@ -3498,6 +3528,147 @@ void test_attack_melee_puff_starts_at_the_third_frame(void) {
     TEST_FAIL_MESSAGE("the bullet's shot left no puff");
 }
 
+// --- T35: the animation reaches the renderer without costing a read ---------
+
+/*
+ * The animation seam has two halves, and both are about *when* the name is
+ * translated rather than whether:
+ *
+ *   flats    P_UpdateSpecials is upstream's flattranslation[] writer; the live
+ *            reader answers the frame that table selected, and the level's own
+ *            sector keeps the WAD's name because the simulation reads it.
+ *   sides    a map whose SIDEDEFS name no animated texture cannot have a
+ *            translated side, so the seam is not installed at all -- but the
+ *            scroll seam must still be, because a line special 48 also writes
+ *            a side.
+ *
+ * The cases below go through the map accessors only. The rendered bytes are the
+ * gate's job (sprite/door/rsegs and the demo pins); these pin the seam's answer
+ * so a double translation -- the one failure that would still hash and still
+ * animate, one frame off -- cannot pass.
+ */
+void test_live_reader_answers_the_animation_frame(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.setFloorPic(0, "NUKAGE3");
+    fixture.builder.addLine(1, 0, 0, 0, 0, false);
+    fixture.builder.addThing(-16, 16, 90, 1, 7);
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // Nothing is bound and no tic has run: the accessor answers the lump.
+    doom_sector_t sector{};
+    doom_map_get_sector(&fixture.map, 0, &sector);
+    TEST_ASSERT_EQUAL_UINT64(packName("NUKAGE3"), sector.floorPic);
+
+    p_level_bind_render(&fixture.level, &fixture.map);
+
+    // Bound but still before the first P_UpdateSpecials: upstream's identity
+    // translation array, which is what keeps frame 00 at its pinned hash.
+    doom_map_get_sector(&fixture.map, 0, &sector);
+    TEST_ASSERT_EQUAL_UINT64(packName("NUKAGE3"), sector.floorPic);
+
+    // animTime 8 is the family's first phase (pic = (8/8 + 51 + 2) % 3 == 0).
+    fixture.level.leveltime = 8;
+    fixture.tick();
+    doom_map_get_sector(&fixture.map, 0, &sector);
+    TEST_ASSERT_EQUAL_UINT64(packName("NUKAGE1"), sector.floorPic);
+    // Exactly one translation: p_anim_frame(8, NUKAGE1) is NUKAGE2, so a seam
+    // that ran twice answers the wrong frame here.
+    TEST_ASSERT_EQUAL_UINT64(p_anim_frame(8, packName("NUKAGE3")), sector.floorPic);
+    TEST_ASSERT_NOT_EQUAL(p_anim_frame(8, packName("NUKAGE1")), sector.floorPic);
+    // The simulation keeps the WAD's own name: the frame lives in the seam, not
+    // in the sector a mover or a stair chain reads.
+    TEST_ASSERT_EQUAL_UINT64(packName("NUKAGE3"), fixture.level.sectors[0].floorPic);
+
+    // The next phase moves with the clock.
+    fixture.level.leveltime = 16;
+    fixture.tick();
+    doom_map_get_sector(&fixture.map, 0, &sector);
+    TEST_ASSERT_EQUAL_UINT64(packName("NUKAGE2"), sector.floorPic);
+
+    p_level_unbind_render(&fixture.map);
+}
+
+void test_live_reader_leaves_a_static_flat_alone(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addLine(1, 0, 0, 0, 0, false);
+    fixture.builder.addThing(-16, 16, 90, 1, 7);
+    TEST_ASSERT_TRUE(fixture.open());
+
+    p_level_bind_render(&fixture.level, &fixture.map);
+    fixture.level.leveltime = 8;
+    fixture.tick();
+
+    doom_sector_t sector{};
+    doom_map_get_sector(&fixture.map, 0, &sector);
+    TEST_ASSERT_EQUAL_UINT64(packName("FLOOR4_8"), sector.floorPic);
+    TEST_ASSERT_EQUAL_UINT64(packName("CEIL3_5"), sector.ceilingPic);
+
+    p_level_unbind_render(&fixture.map);
+}
+
+void test_bind_installs_the_texture_seam_only_when_a_map_animates_one(void) {
+    // A map whose sides name no animated texture: the animation cannot change a
+    // side's picture, so the seam is not installed and the name comes back as
+    // the WAD stored it.
+    {
+        SpecFixture fixture({{0, 128, 160, 0, 0}});
+        fixture.builder.addLine(1, 0, 0, 0, 0, false);
+        fixture.builder.addThing(-16, 16, 90, 1, 7);
+        TEST_ASSERT_TRUE(fixture.open());
+
+        p_level_bind_render(&fixture.level, &fixture.map);
+        fixture.level.leveltime = 8;
+        fixture.tick();
+
+        doom_side_t side{};
+        doom_map_get_side(&fixture.map, 0, &side);
+        TEST_ASSERT_EQUAL_UINT64(packName("STARTAN3"), side.midTexture);
+
+        p_level_unbind_render(&fixture.map);
+    }
+
+    // A map that names SLADRIP1: animTime 8 selects (8/8 + 61 + 0) % 3 == 2.
+    {
+        SpecFixture fixture({{0, 128, 160, 0, 0}});
+        fixture.builder.addLine(1, 0, 0, 0, 0, false);
+        fixture.builder.setSideMidTexture(0, "SLADRIP1");
+        fixture.builder.addThing(-16, 16, 90, 1, 7);
+        TEST_ASSERT_TRUE(fixture.open());
+
+        p_level_bind_render(&fixture.level, &fixture.map);
+        fixture.level.leveltime = 8;
+        fixture.tick();
+
+        doom_side_t side{};
+        doom_map_get_side(&fixture.map, 0, &side);
+        TEST_ASSERT_EQUAL_UINT64(packName("SLADRIP3"), side.midTexture);
+        TEST_ASSERT_NOT_EQUAL(p_anim_frame(8, packName("SLADRIP3")), side.midTexture);
+
+        p_level_unbind_render(&fixture.map);
+    }
+}
+
+void test_bind_keeps_the_scroll_seam_without_a_texture_animation(void) {
+    // Line special 48 writes a side's texture offset. The scroll seam is a side
+    // seam too, so the texture-animation decision above must not remove it.
+    SpecFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addLine(1, 48, 0, 0, 0, false);
+    fixture.builder.addThing(-16, 16, 90, 1, 7);
+    TEST_ASSERT_TRUE(fixture.open());
+
+    p_level_bind_render(&fixture.level, &fixture.map);
+    fixture.tick(2);
+
+    doom_side_t side{};
+    doom_map_get_side(&fixture.map, 0, &side);
+    TEST_ASSERT_EQUAL_INT32(2 * P_SCROLL_STEP, side.textureOffset);
+    TEST_ASSERT_EQUAL_UINT64(packName("STARTAN3"), side.midTexture);
+
+    p_level_unbind_render(&fixture.map);
+    doom_map_get_side(&fixture.map, 0, &side);
+    TEST_ASSERT_EQUAL_INT32(0, side.textureOffset);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -3594,6 +3765,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_weapon_calc_swing_is_the_bob_projected_on_two_axes);
     RUN_TEST(test_attack_bullet_sprays_blood_and_spends_the_damage);
     RUN_TEST(test_attack_melee_puff_starts_at_the_third_frame);
+    RUN_TEST(test_live_reader_answers_the_animation_frame);
+    RUN_TEST(test_live_reader_leaves_a_static_flat_alone);
+    RUN_TEST(test_bind_installs_the_texture_seam_only_when_a_map_animates_one);
+    RUN_TEST(test_bind_keeps_the_scroll_seam_without_a_texture_animation);
 
     const int result = UNITY_END();
     test_teardown();

@@ -250,6 +250,13 @@ typedef struct p_sector_sound {
  * `doom_map`'s sector record remains the immutable source; p_level_init() is
  * the only writer of the initial values.
  */
+/*
+ * `p_sector_t`'s two frame fields: no frame index, i.e. upstream's identity
+ * translation. It is also the value a sector carries before the level's first
+ * P_UpdateSpecials().
+ */
+#define P_ANIM_IDENTITY 0xFF
+
 typedef struct p_sector {
     fixed_t floorHeight;
     fixed_t ceilingHeight;
@@ -258,6 +265,16 @@ typedef struct p_sector {
     int16_t lightLevel;
     int16_t special;
     int16_t tag;
+    /* The animation frame P_UpdateSpecials() selected for the flat above: an
+     * index into `p_level_t::animFrames`, or P_ANIM_IDENTITY when the name is
+     * outside every family. It lives here rather than in a second array because
+     * these two bytes are the struct's existing tail padding, so the record is
+     * the same size -- the demo gates' arena pins prove that. `floorPic` stays
+     * the WAD's own name: the simulation reads it (a stair chain compares two
+     * sectors' floor pictures), exactly as upstream keeps `flattranslation[]`
+     * beside `sector_t` instead of overwriting it. */
+    uint8_t floorFrame;
+    uint8_t ceilingFrame;
     p_thinker_t* specialdata;
 } p_sector_t;
 
@@ -869,20 +886,38 @@ r_name_t p_anim_frame(int32_t animTime, r_name_t name);
 int p_anim_is_animated(r_name_t name);
 
 /* The two families the shareware WAD has, and the widest family's picture
- * count. */
+ * count. The translation table P_UpdateSpecials() writes holds every name of
+ * every family, family by family. */
 #define P_ANIM_FAMILIES 2
 #define P_ANIM_MAXPICS 3
+#define P_ANIM_PICTURES (P_ANIM_FAMILIES * P_ANIM_MAXPICS)
+
+/**
+ * @brief Copies the animation families' source names into @p out, family by
+ *        family, for the per-sector refresh P_UpdateSpecials() runs.
+ *
+ * The families themselves are `static const` and live in flash on the board;
+ * that loop runs once per sector per tic, immediately after the thinker walk has
+ * thrashed the flash cache, so it compares against this RAM copy instead.
+ *
+ * @param out P_ANIM_PICTURES packed names.
+ */
+void p_anim_names(r_name_t out[P_ANIM_PICTURES]);
 
 /**
  * @brief Binds a level's live state to a map for rendering.
  *
- * Installs the three seams doom_map.h documents:
+ * Installs the seams doom_map.h documents:
  *
- *   readSector     the level's mutable `sectors[]` (heights, flats, light),
- *                  which is this port's replacement for upstream's live
- *                  `sector_t sectors[]` pointer;
+ *   readSector     the level's mutable `sectors[]` (heights, flats, light and
+ *                  the animation frame of each flat), which is this port's
+ *                  replacement for upstream's live `sector_t sectors[]` pointer;
  *   adjustSide     the scroll offsets (`p_scroll_adjust_side`);
- *   translateName  the animation tables (`p_anim_frame` at `animTime`).
+ *   translateName  the animation tables (`p_anim_frame` at `animTime`) -- only
+ *                  when the map's SIDEDEFS name a texture some family holds. A
+ *                  map that names none of them cannot have a translated side, so
+ *                  the seam stays uninstalled and the per-segment side read does
+ *                  not pay for a translation that can only be the identity.
  *
  * The caller owns both objects and must keep them alive while the map is used;
  * the map is the renderer's, and this is the only place a level writes into it.

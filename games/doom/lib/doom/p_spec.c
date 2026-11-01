@@ -1557,6 +1557,35 @@ static const p_anim_family_t kAnimFamilies[P_ANIM_FAMILIES] = {
     },
 };
 
+/// The family member @p name is, or -1 when no picture of that family holds it.
+static int anim_picture_index(int family, r_name_t name) {
+    const p_anim_family_t* anim = &kAnimFamilies[family];
+    int k;
+
+    for (k = 0; k < (int)anim->numpics; ++k) {
+        if (anim->frames[k] == name) {
+            return k;
+        }
+    }
+    return -1;
+}
+
+void p_anim_names(r_name_t out[P_ANIM_PICTURES]) {
+    int family;
+    int k;
+
+    if (out == NULL) {
+        return;
+    }
+    for (family = 0; family < P_ANIM_FAMILIES; ++family) {
+        const p_anim_family_t* anim = &kAnimFamilies[family];
+
+        for (k = 0; k < (int)anim->numpics; ++k) {
+            out[family * P_ANIM_MAXPICS + k] = anim->frames[k];
+        }
+    }
+}
+
 r_name_t p_anim_frame(int32_t animTime, r_name_t name) {
     int family;
     int k;
@@ -1567,18 +1596,19 @@ r_name_t p_anim_frame(int32_t animTime, r_name_t name) {
     for (family = 0; family < P_ANIM_FAMILIES; ++family) {
         const p_anim_family_t* anim = &kAnimFamilies[family];
 
-        for (k = 0; k < (int)anim->numpics; ++k) {
-            int32_t pic;
-
-            if (anim->frames[k] != name) {
-                continue;
-            }
+        k = anim_picture_index(family, name);
+        if (k < 0) {
+            continue;
+        }
+        {
             /* `pic = basepic + ((leveltime/speed + i) % numpics)` with i the
              * family member's absolute index, base + k. animTime is
              * non-negative and the sum is positive, so C's truncating % is
              * upstream's here. */
-            pic = ((animTime / (int32_t)anim->speed) + (int32_t)anim->base + k)
-                  % (int32_t)anim->numpics;
+            const int32_t pic =
+                ((animTime / (int32_t)anim->speed) + (int32_t)anim->base + k)
+                % (int32_t)anim->numpics;
+
             return anim->frames[pic];
         }
     }
@@ -1587,18 +1617,13 @@ r_name_t p_anim_frame(int32_t animTime, r_name_t name) {
 
 int p_anim_is_animated(r_name_t name) {
     int family;
-    int k;
 
     if (!r_has_name(name)) {
         return 0;
     }
     for (family = 0; family < P_ANIM_FAMILIES; ++family) {
-        const p_anim_family_t* anim = &kAnimFamilies[family];
-
-        for (k = 0; k < (int)anim->numpics; ++k) {
-            if (anim->frames[k] == name) {
-                return 1;
-            }
+        if (anim_picture_index(family, name) >= 0) {
+            return 1;
         }
     }
     return 0;
@@ -1606,6 +1631,8 @@ int p_anim_is_animated(r_name_t name) {
 
 void p_update_specials(p_level_t* level) {
     uint16_t i;
+    int family;
+    int k;
 
     if (level == NULL || !level->open) {
         return;
@@ -1625,11 +1652,59 @@ void p_update_specials(p_level_t* level) {
 
     /* "ANIMATE FLATS AND TEXTURES GLOBALLY": the translations are keyed by the
      * clock they were computed with, which is this tic's leveltime -- P_Ticker
-     * runs this before `leveltime++`, and p_anim_frame() reads what it stored. */
+     * runs this before `leveltime++`, and p_anim_frame() reads what it stored.
+     *
+     * Upstream writes `flattranslation[]`/`texturetranslation[]` here, once per
+     * tic, and every draw then looks a picture up through those arrays. This
+     * port has no picture numbers, so the same write is a six-name table plus
+     * each sector's index into it: the renderer's live reader answers from these
+     * two values, and a per-segment read no longer runs the animation at all. */
     level->animTime = level->leveltime;
+    for (family = 0; family < P_ANIM_FAMILIES; ++family) {
+        const p_anim_family_t* anim = &kAnimFamilies[family];
+
+        for (k = 0; k < (int)anim->numpics; ++k) {
+            level->animFrames[family * P_ANIM_MAXPICS + k] =
+                p_anim_frame(level->animTime, anim->frames[k]);
+        }
+    }
+    /* The source names come from the level's RAM copy (p_anim_names), not from
+     * kAnimFamilies: this loop is per sector per tic, right after the thinker
+     * walk, and the flash cache is cold there. Only a sector whose frame really
+     * changed is written, so the array is not dirtied every tic. */
+    for (i = 0; i < level->sectorCount; ++i) {
+        p_sector_t* sector = &level->sectors[i];
+        uint8_t floorFrame = P_ANIM_IDENTITY;
+        uint8_t ceilingFrame = P_ANIM_IDENTITY;
+
+        for (k = 0; k < P_ANIM_MAXPICS; ++k) {
+            if (level->animNames[k] == sector->floorPic) {
+                floorFrame = (uint8_t)k;
+            }
+            if (level->animNames[k] == sector->ceilingPic) {
+                ceilingFrame = (uint8_t)k;
+            }
+        }
+        if (sector->floorFrame != floorFrame) {
+            sector->floorFrame = floorFrame;
+        }
+        if (sector->ceilingFrame != ceilingFrame) {
+            sector->ceilingFrame = ceilingFrame;
+        }
+    }
 }
 
 /* --- The renderer's live seams -------------------------------------------- */
+
+/// One picture of the family @p family at the level's clock, resolved here so a
+/// sector read is two array lookups instead of two animation runs.
+static r_name_t sector_picture(const p_level_t* level, r_name_t raw,
+                               uint8_t frame) {
+    if (frame == P_ANIM_IDENTITY) {
+        return raw;
+    }
+    return level->animFrames[frame];
+}
 
 void p_level_read_sector(void* context, uint16_t index, doom_sector_t* out) {
     const p_level_t* level = (const p_level_t*)context;
@@ -1642,8 +1717,11 @@ void p_level_read_sector(void* context, uint16_t index, doom_sector_t* out) {
     sector = &level->sectors[index];
     out->floorHeight = sector->floorHeight;
     out->ceilingHeight = sector->ceilingHeight;
-    out->floorPic = sector->floorPic;
-    out->ceilingPic = sector->ceilingPic;
+    /* The WAD's name through P_UpdateSpecials' translation, which is what
+     * upstream's R_FlatNumForName(flattranslation[...]) resolves to. */
+    out->floorPic = sector_picture(level, sector->floorPic, sector->floorFrame);
+    out->ceilingPic =
+        sector_picture(level, sector->ceilingPic, sector->ceilingFrame);
     out->lightLevel = sector->lightLevel;
     out->special = sector->special;
     out->tag = sector->tag;
@@ -1667,16 +1745,49 @@ r_name_t p_level_translate_name(void* context, r_name_t name) {
     return p_anim_frame(level->animTime, name);
 }
 
+/// True when a side of @p map names a texture some family can animate.
+///
+/// A map that names none of them has no side a translation could change, which
+/// is E1M1's case (and every episode-1 map but E1M2 and E1M4, whose SLADRIP
+/// sides do animate). The scan runs once per bind, over the immutable records
+/// with no seam installed, so it cannot see a translated name.
+static int map_animates_texture(const doom_map_t* map) {
+    uint32_t index;
+
+    if (map == NULL) {
+        return 0;
+    }
+    for (index = 0; index < map->lumps[DOOM_MAP_SIDEDEFS].count; ++index) {
+        doom_side_t side;
+
+        doom_map_get_side(map, (uint16_t)index, &side);
+        if (anim_picture_index(1, side.topTexture) >= 0 ||
+            anim_picture_index(1, side.bottomTexture) >= 0 ||
+            anim_picture_index(1, side.midTexture) >= 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void p_level_bind_render(p_level_t* level, doom_map_t* map) {
     if (level == NULL || map == NULL) {
         return;
     }
+    /* Clear first: the scan below must read the immutable records even when the
+     * caller re-binds a map that is already bound. */
+    p_level_unbind_render(map);
     map->readSector = p_level_read_sector;
     map->readSectorContext = level;
     map->adjustSide = p_level_adjust_side;
     map->adjustSideContext = level;
-    map->translateName = p_level_translate_name;
-    map->translateNameContext = level;
+    /* The texture half of the animation is installed only where it can change a
+     * name (p_spec.h). The flat half needs no seam: p_level_read_sector answers
+     * the frame P_UpdateSpecials() selected. */
+    if (map_animates_texture(map)) {
+        map->translateName = p_level_translate_name;
+        map->translateNameContext = level;
+    }
 }
 
 void p_level_unbind_render(doom_map_t* map) {

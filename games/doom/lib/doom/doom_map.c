@@ -284,7 +284,16 @@ void doom_map_get_line(const doom_map_t* map, uint16_t index, doom_line_t* out) 
     out->sideNum[1] = side1 < 0 ? DOOM_NO_SIDE_INDEX : (uint16_t)side1;
 }
 
-void doom_map_get_side(const doom_map_t* map, uint16_t index, doom_side_t* out) {
+/*
+ * The record itself, with neither seam applied. doom_map_get_side() is the one
+ * public answer and adds both; the two accessors that only need a side's sector
+ * (doom_map_seg_sectors() and doom_map_subsector_sector()) call this instead, so
+ * a segment that is only asking "which sector is on the other side" does not pay
+ * for a scroll scan and three name translations per call. Neither seam can
+ * change `sector`, so the answer is the same one the public accessor gives.
+ */
+static void read_side_record(const doom_map_t* map, uint16_t index,
+                             doom_side_t* out) {
     const uint8_t* at = record_at(&map->lumps[DOOM_MAP_SIDEDEFS], index,
                                   DOOM_SIDEDEF_SIZE);
 
@@ -294,6 +303,10 @@ void doom_map_get_side(const doom_map_t* map, uint16_t index, doom_side_t* out) 
     out->bottomTexture = r_pack_name(at + 12);
     out->midTexture = r_pack_name(at + 20);
     out->sector = read_u16(at + 28);
+}
+
+void doom_map_get_side(const doom_map_t* map, uint16_t index, doom_side_t* out) {
+    read_side_record(map, index, out);
 
     /* The scroll the simulation accumulated, then the animation: both after the
      * parse, so the immutable record is the base and neither hook re-reads it
@@ -353,6 +366,11 @@ void doom_map_get_node(const doom_map_t* map, uint16_t index, doom_node_t* out) 
 void doom_map_get_sector(const doom_map_t* map, uint16_t index,
                          doom_sector_t* out) {
     if (map->readSector != NULL) {
+        /* A live reader answers the record the simulation owns, and it carries
+         * the animation frame itself (p_level_read_sector), so this accessor
+         * must not translate again: p_anim_frame() applied twice is a different
+         * frame -- one tick of animation off, with the right pixels and the
+         * right hash. The immutable branch below is the one the tables are for. */
         map->readSector(map->readSectorContext, index, out);
     } else {
         const uint8_t* at = record_at(&map->lumps[DOOM_MAP_SECTORS], index,
@@ -365,14 +383,13 @@ void doom_map_get_sector(const doom_map_t* map, uint16_t index,
         out->lightLevel = read_i16(at + 20);
         out->special = read_i16(at + 22);
         out->tag = read_i16(at + 24);
-    }
-    /* The animation tables, applied last so they also see a live reader's
-     * name (see doom_map.h). */
-    if (map->translateName != NULL) {
-        out->floorPic = map->translateName(map->translateNameContext,
-                                           out->floorPic);
-        out->ceilingPic = map->translateName(map->translateNameContext,
-                                             out->ceilingPic);
+        /* The animation tables, applied last (see doom_map.h). */
+        if (map->translateName != NULL) {
+            out->floorPic = map->translateName(map->translateNameContext,
+                                               out->floorPic);
+            out->ceilingPic = map->translateName(map->translateNameContext,
+                                                 out->ceilingPic);
+        }
     }
 }
 
@@ -384,7 +401,8 @@ uint16_t doom_map_subsector_sector(const doom_map_t* map,
 
     doom_map_get_seg(map, subsector->firstSeg, &seg);
     doom_map_get_line(map, seg.linedef, &line);
-    doom_map_get_side(map, seg.side != 0 ? line.sideNum[1] : line.sideNum[0], &side);
+    read_side_record(map, seg.side != 0 ? line.sideNum[1] : line.sideNum[0],
+                     &side);
     return side.sector;
 }
 
@@ -394,13 +412,15 @@ int doom_map_seg_sectors(const doom_map_t* map, const doom_seg_t* seg,
     doom_side_t side;
 
     doom_map_get_line(map, seg->linedef, &line);
-    doom_map_get_side(map, seg->side != 0 ? line.sideNum[1] : line.sideNum[0], &side);
+    read_side_record(map, seg->side != 0 ? line.sideNum[1] : line.sideNum[0],
+                     &side);
     *front = side.sector;
 
     if ((line.flags & DOOM_ML_TWOSIDED) == 0) {
         return 0;
     }
-    doom_map_get_side(map, seg->side != 0 ? line.sideNum[0] : line.sideNum[1], &side);
+    read_side_record(map, seg->side != 0 ? line.sideNum[0] : line.sideNum[1],
+                     &side);
     if (back != NULL) {
         *back = side.sector;
     }

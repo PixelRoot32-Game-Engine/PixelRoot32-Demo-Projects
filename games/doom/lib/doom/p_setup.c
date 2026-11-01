@@ -97,8 +97,15 @@ static p_setup_error_t load_mutable_map(p_level_t* level) {
         sectors[i].lightLevel = record.lightLevel;
         sectors[i].special = record.special;
         sectors[i].tag = record.tag;
+        /* P_InitPicAnims' identity: every flat is its own picture until the
+         * level's first P_UpdateSpecials() (p_spec.c). */
+        sectors[i].floorFrame = P_ANIM_IDENTITY;
+        sectors[i].ceilingFrame = P_ANIM_IDENTITY;
         sectors[i].specialdata = NULL;
     }
+
+    /* The animation tables' source names, in RAM for the per-sector refresh. */
+    p_anim_names(level->animNames);
 
     lineSpecial = (int16_t*)z_alloc(&level->zone,
                                     (size_t)lineCount * sizeof(int16_t),
