@@ -14,8 +14,8 @@ independently.
 The chain, and why it is not nine normal transitions
 ----------------------------------------------------
 
-Upstream's E1M8 has no exit line: its exit is sector special 11, which is
-``P_PlayerInSpecialSector``'s and is named as out of scope, and ``G_DoCompleted``
+Upstream's E1M8 has no exit line: its exit is sector special 11, the "exit super
+damage" floor that ``P_PlayerInSpecialSector`` reads, and ``G_DoCompleted``
 answers ``gamemap == 8`` with ``ga_victory`` before it looks at ``secretexit``.
 So there is no E1M8 -> E1M9 transition in linuxdoom-1.10. The faithful route
 visits all nine maps in eight transitions::
@@ -26,6 +26,13 @@ visits all nine maps in eight transitions::
 and the ninth level change is the separate secret exit E1M1 -> E1M9, through
 ``g_secret_exit_level()`` because E1M1 carries no 51/124 line. The gate says so
 rather than inventing a ninth map exit.
+
+E1M8's own ending is measured, not assumed: ``FINALE`` stands the player on the
+sector the WAD marks 11, sets 30 health (so the first 20-point hit lands exactly
+on the 10-point threshold), runs one tic through ``p_level_tic()`` and asserts
+the damage, the ``normal`` exit request, a live player, ``G_DoCompleted``'s
+victory, and that the victory loads no ninth map -- ``g_do_world_done`` refuses
+it and the world is still E1M8's, over a fresh load's arena.
 
 WHAT IS COMPARED
 
@@ -183,12 +190,22 @@ class Wad:
                                          linedefs[1] + 14 * index + 6)[0]
             if special in EXIT_SPECIALS:
                 exits[index] = special
+        # The sectors whose special the *player* effect can see: the shareware
+        # maps' raw specials, read here so the C's fixture is checked against the
+        # WAD and not against itself.
+        specials = {}
+        for index in range(sectors[2] // 26):
+            special = struct.unpack_from("<h", self.data,
+                                         sectors[1] + 26 * index + 22)[0]
+            if special:
+                specials[index] = special
         return {
             "things": things[2] // 10,
             "lines": linedefs[2] // 14,
             "sectors": sectors[2] // 26,
             "starts": starts,
             "exits": exits,
+            "specials": specials,
         }
 
 
@@ -450,6 +467,36 @@ def main(argv: list[str] | None = None) -> int:
         if (record.get("map") != "E1M8" or record.get("exitlines") != "0" or
                 record.get("victory") != "1" or record.get("next") != "0"):
             failures.append(f"FINALE: {record}")
+        # P_PlayerInSpecialSector's case 11 is the boss map's only ending, so the
+        # WAD's own sector table says which sector that has to be. E1M8 carries
+        # exactly one 11, at the pad behind the exit door.
+        eleven = sorted(index for index, special
+                        in facts["E1M8"]["specials"].items() if special == 11)
+        if len(eleven) != 1:
+            failures.append(f"WAD: E1M8 carries {len(eleven)} sector-11 floors")
+        elif record.get("sector") != str(eleven[0]):
+            failures.append(f"FINALE: sector {record.get('sector')} != the WAD's "
+                            f"{eleven[0]}")
+        if record.get("special") != "11":
+            failures.append(f"FINALE: the fixture sector's special is "
+                            f"{record.get('special')}")
+        # `if (!(leveltime&0x1f)) P_DamageMobj (player->mo, NULL, NULL, 20);` and
+        # then `if (player->health <= 10) G_ExitLevel();`, from 30 health on the
+        # first tic of the map.
+        if (record.get("before") != "30" or record.get("damage") != "20" or
+                record.get("health") != "10" or record.get("exit") != "normal"):
+            failures.append(f"FINALE: the exit is not 30 - 20 = 10 with a normal "
+                            f"request ({record})")
+        if record.get("alive") != "1":
+            failures.append("FINALE: E1M8's ending killed the player")
+        if record.get("leveltime") != "1":
+            failures.append(f"FINALE: leveltime {record.get('leveltime')}, "
+                            "expected 1")
+        if record.get("world") != "E1M8":
+            failures.append(f"FINALE: the world is on {record.get('world')}")
+        if record.get("arena") != record.get("ref"):
+            failures.append(f"FINALE: arena {record.get('arena')} != a fresh "
+                            f"E1M8 load's {record.get('ref')}")
     if facts["E1M8"]["exits"]:
         failures.append("WAD: E1M8 carries an exit line, contrary to the record")
 
@@ -479,6 +526,13 @@ def main(argv: list[str] | None = None) -> int:
               f"{record.get('exit')} arena={record.get('arena')} "
               f"ref={record.get('ref')} alive={record.get('alive')}")
     print(f"  chain {chain_text}")
+    for record in finale:
+        print(f"  finale {record.get('map')}: sector {record.get('sector')} "
+              f"special {record.get('special')}, {record.get('before')} -> "
+              f"{record.get('health')} health, exit={record.get('exit')}, "
+              f"alive={record.get('alive')}, victory={record.get('victory')}, "
+              f"next={record.get('next')}, world={record.get('world')}, "
+              f"arena={record.get('arena')} ref={record.get('ref')}")
     for failure in failures:
         print(f"level_check: assertion failed: {failure}", file=sys.stderr)
     if failures:

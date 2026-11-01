@@ -1483,7 +1483,7 @@ void test_specs_secret_sectors_and_unsupported_specials_are_counted(void) {
     SpecFixture fixture({{0, 128, 160, 9, 0},
                          {0, 128, 160, 9, 0},
                          {0, 128, 160, 9, 0},
-                         {0, 128, 160, 7, 0}});
+                         {0, 128, 160, 15, 0}});
     fixture.builder.addLine(4, 0, 0, 0, 1, true);
 
     TEST_ASSERT_EQUAL_INT(DOOM_MAP_OK, fixture.builder.open(&fixture.map));
@@ -1497,6 +1497,9 @@ void test_specs_secret_sectors_and_unsupported_specials_are_counted(void) {
     TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&fixture.level));
     TEST_ASSERT_EQUAL_INT32(3, fixture.level.totalSecrets);
     TEST_ASSERT_EQUAL_UINT32(3u, fixture.level.specStats.secrets);
+    // 15 is not a spawn case and not a player-in-sector case: upstream's
+    // P_PlayerInSpecialSector calls I_Error on it, so it stays the one number
+    // this port counts as a gap. 7 is now P_PlayerInSpecialSector's.
     TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.unsupportedSectorSpecial);
     TEST_ASSERT_EQUAL_UINT32(0u, fixture.level.specStats.spawned);
     TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_LIGHTFLASH));
@@ -2105,7 +2108,10 @@ struct PlayerFixture {
     alignas(8) u8 arena[32768]{};
     p_level_t level{};
 
-    PlayerFixture() : builder({{0, 128, 160, 0, 0}}) {
+    /// @p special is the one sector's special number: the player-in-sector
+    /// cases need a floor whose special survives P_SpawnSpecials.
+    PlayerFixture(i16 special = 0)
+        : builder({{0, 128, 160, special, 0}}) {
         builder.addRoom(0);
         builder.addThing(0, 0, 90, 1, 7);   // player 1, facing +y
     }
@@ -2118,8 +2124,26 @@ struct PlayerFixture {
                P_SETUP_OK;
     }
 
+    /// P_SetupLevel's order: the THINGS run, then P_SpawnSpecials. The second
+    /// half is what clears the light and door specials and restores sector 4.
+    bool openWithSpecials() {
+        return open() && p_spawn_specials(&level) == P_SPEC_OK;
+    }
+
     p_player_t& player() { return level.playerState; }
     r_mobj_t* mo() { return level.player; }
+
+    int count(i16 kind) const {
+        int found = 0;
+
+        for (const p_thinker_t* thinker = p_thinker_first(&level.thinkers);
+             thinker != nullptr; thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == kind) {
+                found += 1;
+            }
+        }
+        return found;
+    }
 };
 
 // A room with no THING: the caller spawns and wires its own avatar.
@@ -2153,6 +2177,144 @@ struct SpawnFixture {
         return found;
     }
 };
+
+// --- P_PlayerInSpecialSector ------------------------------------------------
+//
+// Upstream's P_PlayerThink asks the avatar's sector once per tic:
+// `if (player->mo->subsector->sector->special) P_PlayerInSpecialSector (player);`
+// The effect returns early unless the thing is *on* the floor, damages on
+// `!(leveltime&0x1f)`, and the four damage numbers are 5, 10, 20 and 20. These
+// cases drive the whole world tic (p_level_tic), so the hook is what is tested
+// and not just the function.
+
+void test_player_sector_7_damages_five_every_thirty_two_tics(void) {
+    PlayerFixture fixture(7);
+    TEST_ASSERT_TRUE(fixture.openWithSpecials());
+
+    p_ticcmd_t cmd{};
+    const i32 start = fixture.player().health;
+
+    // Tic 1 runs leveltime 0, so `!(leveltime&0x1f)` is true on the first think.
+    (void)p_level_tic(&fixture.level, &cmd, nullptr);
+    TEST_ASSERT_EQUAL_INT32(start - 5, fixture.player().health);
+    // P_DamageMobj mirrors the record onto the mobj it damages.
+    TEST_ASSERT_EQUAL_INT32(fixture.player().health, fixture.mo()->health);
+
+    for (int tic = 1; tic < 32; ++tic) {
+        (void)p_level_tic(&fixture.level, &cmd, nullptr);
+    }
+    TEST_ASSERT_EQUAL_INT32(start - 5, fixture.player().health);
+
+    (void)p_level_tic(&fixture.level, &cmd, nullptr);   // leveltime 32
+    TEST_ASSERT_EQUAL_INT32(start - 10, fixture.player().health);
+
+    // "Falling, not all the way down yet?" -- the same sector above the floor
+    // does nothing at all. The rule is the effect's, so it is asked directly:
+    // a whole tic would land the mobj again (P_ZMovement is a thinker).
+    fixture.mo()->z = fixture.level.sectors[0].floorHeight + 8 * kFrac;
+    p_player_in_special_sector(&fixture.level, &fixture.player());
+    TEST_ASSERT_EQUAL_INT32(start - 10, fixture.player().health);
+}
+
+void test_player_sector_4_and_16_damage_twenty_and_keep_their_special(void) {
+    // 16 is super hellslime, 4 is the fast strobe that also hurts. Upstream
+    // restores 4 after P_SpawnStrobeFlash clears the sector.
+    PlayerFixture slime(16);
+    PlayerFixture strobe(4);
+    p_ticcmd_t cmd{};
+
+    TEST_ASSERT_TRUE(slime.openWithSpecials());
+    TEST_ASSERT_TRUE(strobe.openWithSpecials());
+    TEST_ASSERT_EQUAL_INT16(16, slime.level.sectors[0].special);
+    TEST_ASSERT_EQUAL_INT16(4, strobe.level.sectors[0].special);
+    TEST_ASSERT_EQUAL_INT(1, strobe.count(P_THINKER_LIGHTFLASH));
+
+    (void)p_level_tic(&slime.level, &cmd, nullptr);
+    (void)p_level_tic(&strobe.level, &cmd, nullptr);
+    TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH - 20, slime.player().health);
+    TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH - 20, strobe.player().health);
+}
+
+void test_player_sector_11_exits_at_ten_percent_and_cannot_kill(void) {
+    PlayerFixture fixture(11);
+    TEST_ASSERT_TRUE(fixture.openWithSpecials());
+
+    p_ticcmd_t cmd{};
+    int tics = 0;
+
+    // Tics 1..97 are leveltime 0..96: a hit on 0, 32, 64 and 96.
+    while (tics < 97) {
+        (void)p_level_tic(&fixture.level, &cmd, nullptr);
+        tics += 1;
+    }
+    TEST_ASSERT_EQUAL_INT32(20, fixture.player().health);
+    // "END OF GAME HELL": at 20 health the next 20-point hit has not landed yet
+    // and the level is still running.
+    TEST_ASSERT_EQUAL_INT(P_EXIT_NONE, fixture.level.exitRequest);
+
+    // leveltime 97..128: the fifth hit is above the threshold, so
+    // P_DamageMobj clamps it to health-1 and the tic's own check fires.
+    while (tics < 129) {
+        (void)p_level_tic(&fixture.level, &cmd, nullptr);
+        tics += 1;
+    }
+    TEST_ASSERT_EQUAL_INT(129, tics);
+    TEST_ASSERT_EQUAL_INT32(1, fixture.player().health);
+    TEST_ASSERT_EQUAL_INT(P_PST_LIVE, fixture.player().playerstate);
+    TEST_ASSERT_EQUAL_INT(P_EXIT_NORMAL, fixture.level.exitRequest);
+
+    // P_DamageMobj's `sector->special == 11 && damage >= health` clamp is what
+    // makes this reachable: 20 damage cannot take the last point, so the boss
+    // map's own ending leaves the player alive at 1.
+    (void)p_level_tic(&fixture.level, &cmd, nullptr);   // leveltime 129: no hit
+    TEST_ASSERT_EQUAL_INT32(1, fixture.player().health);
+    TEST_ASSERT_EQUAL_INT(P_PST_LIVE, fixture.player().playerstate);
+    TEST_ASSERT_EQUAL_INT(P_EXIT_NORMAL, fixture.level.exitRequest);
+}
+
+void test_player_sector_damage_suit_blocks_five_and_seven_and_draws_for_sixteen(void) {
+    // `if (!player->powers[pw_ironfeet])` guards 5 and 7 completely; 4 and 16
+    // add `|| (P_Random()<5)`, which draws every tic the suit is on.
+    PlayerFixture nukage(7);
+    PlayerFixture slime(16);
+    p_ticcmd_t cmd{};
+
+    TEST_ASSERT_TRUE(nukage.openWithSpecials());
+    TEST_ASSERT_TRUE(slime.openWithSpecials());
+    nukage.player().powers[P_PW_IRONFEET] = 35 * 60;
+    slime.player().powers[P_PW_IRONFEET] = 35 * 60;
+
+    const u32 nukageRng = nukage.level.random.index;
+    const u32 slimeRng = slime.level.random.index;
+    for (int tic = 0; tic < 64; ++tic) {
+        (void)p_level_tic(&nukage.level, &cmd, nullptr);
+        (void)p_level_tic(&slime.level, &cmd, nullptr);
+    }
+
+    TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH, nukage.player().health);
+    // No draw at all in 5 and 7 ...
+    TEST_ASSERT_EQUAL_UINT32(nukageRng, nukage.level.random.index);
+    // ... while 16 draws one per tic even when the roll does not hurt.
+    TEST_ASSERT_EQUAL_UINT32(slimeRng + 64u, slime.level.random.index);
+}
+
+void test_player_sector_9_counts_one_secret_and_clears_itself(void) {
+    PlayerFixture fixture(9);
+    TEST_ASSERT_TRUE(fixture.openWithSpecials());
+    p_ticcmd_t cmd{};
+
+    // P_SpawnSpecials' totalsecret++ has already run; the player's own counter
+    // and the one-shot clear are P_PlayerInSpecialSector's.
+    TEST_ASSERT_EQUAL_INT32(1, fixture.level.totalSecrets);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.player().secretcount);
+
+    (void)p_level_tic(&fixture.level, &cmd, nullptr);
+    TEST_ASSERT_EQUAL_INT32(1, fixture.player().secretcount);
+    TEST_ASSERT_EQUAL_INT16(0, fixture.level.sectors[0].special);
+
+    (void)p_level_tic(&fixture.level, &cmd, nullptr);
+    TEST_ASSERT_EQUAL_INT32(1, fixture.player().secretcount);
+}
 
 void test_player_init_wires_the_avatar_and_reborn_defaults(void) {
     PlayerFixture fixture;
@@ -3161,6 +3323,11 @@ int main(int argc, char** argv) {
     RUN_TEST(test_specs_tag_door_twice_creates_one_thinker);
     RUN_TEST(test_specs_manual_door_twice_reverses_instead_of_duplicating);
     RUN_TEST(test_specs_secret_sectors_and_unsupported_specials_are_counted);
+    RUN_TEST(test_player_sector_7_damages_five_every_thirty_two_tics);
+    RUN_TEST(test_player_sector_4_and_16_damage_twenty_and_keep_their_special);
+    RUN_TEST(test_player_sector_11_exits_at_ten_percent_and_cannot_kill);
+    RUN_TEST(test_player_sector_damage_suit_blocks_five_and_seven_and_draws_for_sixteen);
+    RUN_TEST(test_player_sector_9_counts_one_secret_and_clears_itself);
     RUN_TEST(test_specs_ignored_trigger_is_not_a_missing_handler);
     RUN_TEST(test_specs_unhandled_upstream_special_is_counted_once_in_the_set);
     RUN_TEST(test_specs_spawn_order_is_sector_index_order);

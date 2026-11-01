@@ -2731,6 +2731,10 @@ def spawn_specials(level: SpecLevel) -> None:
         elif special == 17:
             if spawn_fire_flicker(level, index):
                 level.stats["spawned"] += 1
+        elif special in (5, 7, 11, 16):
+            # P_PlayerInSpecialSector's damage floors: they spawn nothing and
+            # keep their number, because the player effect reads it every tic.
+            pass
         else:
             level.stats["unsupportedSector"] += 1
 
@@ -3209,6 +3213,10 @@ def report_specials(lumps: list[Lump], map_name: str, tics: int) -> None:
           f"deferredLine={stats['deferredLine']} "
           f"lineScrolls={stats['lineScrolls']} triggers={stats['triggers']} "
           f"refused={stats['refused']}")
+
+    # The protocol continues with P_PlayerInSpecialSector's fixtures, which the
+    # C harness prints after its SUMMARY: they are part of the same report.
+    report_sector_damage(lumps, map_name)
 
 
 # --- Movement and collision (D4.2b) -----------------------------------------
@@ -5370,6 +5378,225 @@ def report_damage(lumps: list[Lump], map_name: str) -> None:
           f"crushed={level.crushed} kill={player['killcount']} "
           f"item={player['itemcount']} health={player['health']} "
           f"spawns={len(level.mobjs)}")
+
+
+# --- P_PlayerInSpecialSector ------------------------------------------------
+#
+# A second implementation of linuxdoom-1.10's P_PlayerInSpecialSector -- the
+# per-tic question P_PlayerThink asks about the sector the avatar stands in --
+# written from p_spec.c's switch and its two guards, and using this file's own
+# P_DamageMobj (``damage_damage``) for the damage it deals. It never calls the C.
+#
+# WHAT THE RULE IS
+#
+#   `if (player->mo->z != sector->floorheight) return;` -- a thing still falling
+#   through the sector is not on its floor yet and takes nothing.
+#
+#   `!(leveltime&0x1f)` is the cadence: the effect fires on tics 0, 32, 64, ...
+#
+#   5   HELLSLIME DAMAGE        10 points; nothing while `powers[pw_ironfeet]`
+#   7   NUKAGE DAMAGE            5 points; nothing while `powers[pw_ironfeet]`
+#   4   STROBE HURT             20 points
+#   16  SUPER HELLSLIME DAMAGE  20 points, both guarded by
+#                               `!powers[pw_ironfeet] || (P_Random()<5)` -- so the
+#                               suit still *draws* the number every tic and only
+#                               makes the hit rare
+#   9   SECRET SECTOR           `player->secretcount++` and `sector->special = 0`
+#   11  EXIT SUPER DAMAGE      20 points, never shielded (it clears god mode,
+#                               which this port has not got), and *after* the
+#                               damage `if (player->health <= 10) G_ExitLevel()`.
+#                               P_DamageMobj's own "end of game hell" clamp keeps
+#                               it from killing: `special == 11 && damage >=
+#                               health` becomes `damage = health - 1`.
+#
+# G_ExitLevel() is `secretexit = false; gameaction = ga_completed`, which this
+# file's level state carries as ``exit_request`` -- the same field the line
+# specials write.
+#
+# THE GATE'S FIXTURES
+#
+# The C harness (tools/specials_check.c) runs one fixture per (map, special,
+# suit, starting health) from a fresh load of the map, prints the state after
+# each tic and this file reproduces it. The fixture list, the two synthetic
+# cases (no episode-1 map carries sector 4 or 5) and the reporting order are
+# documented in the harness; both files must agree on them or the gate fails.
+#
+# `--perturb` on the gate moves one of the three constants below in *this*
+# implementation only, which is what makes the comparison able to fail:
+#
+#   damage     every damage number +1
+#   threshold  the exit threshold 10 -> 9
+#   ironfeet   the suit ignored, so 5 and 7 damage a suited player
+
+PLAYER_SPECIALS = (4, 5, 7, 9, 11, 16)
+SECTOR_DAMAGE_HELLSLIME = 10
+SECTOR_DAMAGE_NUKAGE = 5
+SECTOR_DAMAGE_STRONG = 20
+SECTOR_EXIT_THRESHOLD = 10
+SECTOR_DAMAGE_SUIT_ROLL = 5
+SECTOR_DAMAGE_MASK = 0x1F
+SECTOR_IRONFEET = 3
+
+# Filled in by the command line: the gate's `--perturb` names one of these.
+SECTOR_PERTURB = {"damage": 0, "threshold": 0, "ironfeet": 0}
+
+
+def sector_damage_amount(amount: int) -> int:
+    """The shipped number, or +1 when the gate perturbs every amount."""
+    return amount + SECTOR_PERTURB["damage"]
+
+
+def player_in_special_sector(level: SpecLevel, player: dict) -> None:
+    """P_PlayerInSpecialSector(): the player's tic in a special sector."""
+    mo = player["mo"]
+    sector_index = mo["sector"]
+    sector = level.sectors[sector_index]
+
+    # "Falling, not all the way down yet?"
+    if mo["z"] != sector["floor"]:
+        return
+
+    special = sector["special"]
+    suit = player["powers"][SECTOR_IRONFEET] != 0
+    if SECTOR_PERTURB["ironfeet"]:
+        suit = False
+
+    if special == 5:
+        if not suit and not (level.leveltime & SECTOR_DAMAGE_MASK):
+            damage_damage(level, mo, None, None,
+                          sector_damage_amount(SECTOR_DAMAGE_HELLSLIME))
+    elif special == 7:
+        if not suit and not (level.leveltime & SECTOR_DAMAGE_MASK):
+            damage_damage(level, mo, None, None,
+                          sector_damage_amount(SECTOR_DAMAGE_NUKAGE))
+    elif special in (4, 16):
+        # `!powers[pw_ironfeet] || (P_Random() < 5)`: short-circuit, so the draw
+        # happens only for a suited player -- and then on every tic.
+        if not suit or level.rng.next() < SECTOR_DAMAGE_SUIT_ROLL:
+            if not (level.leveltime & SECTOR_DAMAGE_MASK):
+                damage_damage(level, mo, None, None,
+                              sector_damage_amount(SECTOR_DAMAGE_STRONG))
+    elif special == 9:
+        player["secretcount"] += 1
+        sector["special"] = 0
+    elif special == 11:
+        if not (level.leveltime & SECTOR_DAMAGE_MASK):
+            damage_damage(level, mo, None, None,
+                          sector_damage_amount(SECTOR_DAMAGE_STRONG))
+        threshold = SECTOR_EXIT_THRESHOLD - (1 if SECTOR_PERTURB["threshold"] else 0)
+        if player["health"] <= threshold:
+            level.exit_request = "normal"
+    # Upstream's `I_Error("unknown special")` for every other number: nothing to
+    # do, because after P_SpawnSpecials the field can only hold one of the six.
+
+
+def sector_special_at(level: SpecLevel, special: int) -> int:
+    for index, sector in enumerate(level.sectors):
+        if sector["special"] == special:
+            return index
+    return -1
+
+
+def sector_damage_scenarios(level: SpecLevel) -> list[dict]:
+    """The fixture list, in the order the harness prints it."""
+    scenarios: list[dict] = []
+
+    def add(special: int, sector: int, synthetic: int, health: int, suit: int,
+            tics: int) -> None:
+        scenarios.append({"special": special, "sector": sector,
+                          "synthetic": synthetic, "health": health,
+                          "suit": suit, "tics": tics})
+
+    for special in PLAYER_SPECIALS:
+        sector = sector_special_at(level, special)
+        synthetic = 0
+        if sector < 0 and special in (4, 5):
+            sector = sector_special_at(level, 7)
+            synthetic = 1
+        if sector < 0:
+            continue
+        add(special, sector, synthetic, 100, 0, 96)
+        if special in (4, 16):
+            add(special, sector, synthetic, 100, 1, 96)
+        if special in (5, 7):
+            add(special, sector, synthetic, 100, 1, 64)
+        if special == 11:
+            add(special, sector, synthetic, 30, 0, 1)
+            add(special, sector, synthetic, 45, 1, 33)
+            add(special, sector, synthetic, 100, 0, 129)
+    return scenarios
+
+
+def sector_damage_player(level: SpecLevel, sector_index: int, health: int,
+                         suit: int) -> dict:
+    """A G_PlayerReborn record standing on @p sector_index's floor.
+
+    The C harness moves the avatar with P_CheckPosition and writes the sector's
+    own floor into `z`; the rule reads nothing else about the position, so this
+    side needs only the same three fields.
+    """
+    sector = level.sectors[sector_index]
+    mo = movement_player(level)
+    mo["sector"] = sector_index
+    mo["z"] = sector["floor"]
+    mo["floorz"] = sector["floor"]
+    mo["ceilingz"] = sector["ceiling"]
+    mo["health"] = health
+    mo["threshold"] = 0
+    mo["sprite"] = "PLAY"
+
+    level.mobjs = [mo]
+    player = player_record(mo)
+    player["health"] = health
+    player["powers"] = [0] * 6
+    player["ammo"] = [50, 0, 0, 0]
+    player["maxammo"] = list(DAMAGE_MAXAMMO)
+    player["weaponowned"] = [1, 1, 0, 0, 0, 0, 0, 0, 0]
+    player["cards"] = [0] * 6
+    player["pendingweapon"] = 1
+    player["backpack"] = 0
+    if suit:
+        player["powers"][SECTOR_IRONFEET] = 35 * 60
+
+    level.damage_player = player
+    level.damage_skill = 2          # sk_medium, p_spawn_rules_default
+    level.damage_netgame = False
+    level.crushed = 0
+    return player
+
+
+def report_sector_damage(lumps: list[Lump], map_name: str) -> None:
+    """The `--sector-damage` protocol: the fixtures the C harness runs."""
+    bsp = read_bsp_map(lumps, map_name)
+    things = run_things(bsp, 2)     # the RNG position the level load leaves
+
+    # The fixtures come from a pristine post-spawn load: the runs below move the
+    # clock and, for sector 9, clear the number they are about.
+    probe = SpecLevel(bsp, RandomState(things.rng))
+    spawn_specials(probe)
+    scenarios = sector_damage_scenarios(probe)
+
+    for scenario in scenarios:
+        level = SpecLevel(bsp, RandomState(things.rng))
+        level.move_stats = {"checks": 0, "blocked": 0, "crossed": 0, "slides": 0}
+        spawn_specials(level)
+        if scenario["synthetic"]:
+            level.sectors[scenario["sector"]]["special"] = scenario["special"]
+        player = sector_damage_player(level, scenario["sector"],
+                                      scenario["health"], scenario["suit"])
+
+        print(f"DAMAGE map={map_name} sector={scenario['sector']} "
+              f"special={scenario['special']} health0={scenario['health']} "
+              f"suit={scenario['suit']} tics={scenario['tics']} "
+              f"synthetic={scenario['synthetic']}")
+        for tic in range(scenario["tics"] + 1):
+            print(f"HEALTH {tic} health={player['health']} "
+                  f"exit={level.exit_request} secret={player['secretcount']} "
+                  f"special={level.sectors[scenario['sector']]['special']}")
+            if tic == scenario["tics"]:
+                break
+            player_in_special_sector(level, player)
+            level.leveltime += 1
 
 
 # --- Weapons and the attack path (D4.2d2) -----------------------------------
@@ -8754,6 +8981,15 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
                         help="run P_SpawnSpecials, trigger every special line at "
                              "tic 0 and dump the sectors and thinkers every tic "
                              "(D4.1b)")
+    parser.add_argument("--sector-damage", metavar="NAME",
+                        help="run the P_PlayerInSpecialSector fixtures (every "
+                             "sector special the map carries, both suits and the "
+                             "10% exit threshold) and print health per tic")
+    parser.add_argument("--sector-perturb",
+                        choices=("none", "damage", "threshold", "ironfeet"),
+                        default="none",
+                        help="with --sector-damage: move one constant in this "
+                             "implementation only, so the gate can prove it fails")
     parser.add_argument("--movement", metavar="NAME",
                         help="run the 160-tic movement script (thrust, wall, "
                              "slide, corner, friction, return) and print the mobj "
@@ -8820,13 +9056,14 @@ def main(argv: list[str] | None = None) -> int:
     flats_wanted = arguments.flats or arguments.all
     if not (patches_wanted or textures_wanted or flats_wanted or arguments.map
             or arguments.stats or arguments.bsp or arguments.segs
-            or arguments.things or arguments.specials or arguments.movement
+            or arguments.things or arguments.specials or arguments.sector_damage
+            or arguments.movement
             or arguments.player or arguments.door or arguments.damage
             or arguments.attack or arguments.enemy):
         parser.error("nothing to do: pass --patches, --textures, --flats, --all, "
                      "--map, --stats, --bsp, --segs, --things, --specials, "
-                     "--movement, --player, --door, --damage, --attack or "
-                     "--enemy")
+                     "--sector-damage, --movement, --player, --door, --damage, "
+                     "--attack or --enemy")
     if arguments.limit is not None and arguments.limit < 0:
         parser.error("--limit cannot be negative")
     if arguments.tics < 0:
@@ -8848,6 +9085,9 @@ def main(argv: list[str] | None = None) -> int:
             segs_column = (int(parts[0]), int(parts[1]))
         except ValueError:
             parser.error("--segs-column wants two integers")
+
+    if arguments.sector_perturb != "none":
+        SECTOR_PERTURB[arguments.sector_perturb] = 1
 
     try:
         identification, lumps = read_wad(arguments.wad)
@@ -8891,6 +9131,8 @@ def main(argv: list[str] | None = None) -> int:
             report_things(lumps, arguments.things.upper(), arguments.skill)
         if arguments.specials:
             report_specials(lumps, arguments.specials.upper(), arguments.tics)
+        if arguments.sector_damage:
+            report_sector_damage(lumps, arguments.sector_damage.upper())
         if arguments.movement:
             report_movement(lumps, arguments.movement.upper(), arguments.tics)
         if arguments.player:

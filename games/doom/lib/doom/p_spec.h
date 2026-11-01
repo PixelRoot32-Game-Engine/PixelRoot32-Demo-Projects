@@ -35,18 +35,32 @@
  *   1   flickering light        P_SpawnLightFlash          implemented
  *   2   fast strobe             P_SpawnStrobeFlash(FAST)   implemented
  *   3   slow strobe             P_SpawnStrobeFlash(SLOW)   implemented
- *   4   fast strobe + damage    strobe, special kept       implemented (the
- *                                                          damage half is D4.2)
+ *   4   fast strobe + damage    strobe, special kept       implemented
+ *   5   hellslime damage        P_PlayerInSpecialSector    implemented
+ *   7   nukage damage           P_PlayerInSpecialSector    implemented
  *   8   glowing light           P_SpawnGlowingLight        implemented
- *   9   secret sector           totalsecret++              implemented
+ *   9   secret sector           totalsecret++ at spawn,    implemented
+ *                               secretcount++ and the
+ *                               sector cleared by the player
  *   10  door closes in 30s      P_SpawnDoorCloseIn30       implemented
+ *   11  exit super damage       P_PlayerInSpecialSector    implemented
  *   12  slow strobe, synced     P_SpawnStrobeFlash(SLOW,1) implemented
  *   13  fast strobe, synced     P_SpawnStrobeFlash(FAST,1) implemented
  *   14  door raises in 5 min    P_SpawnDoorRaiseIn5Mins    implemented
+ *   16  super hellslime damage  P_PlayerInSpecialSector    implemented
  *   17  fire flicker            P_SpawnFireFlicker         implemented
- *   5,7,11,16  damage/exit floors, and every value not listed above
- *                              the player-in-sector effects, owned by D4.2;
- *                              counted as `unsupportedSectorSpecial`
+ *   6,15,18..  not named by either upstream function and not carried by any
+ *              episode-1 map: counted as `unsupportedSectorSpecial`
+ *
+ * WHY ONLY 4, 5, 7, 9, 11 AND 16 REACH THE PLAYER
+ *
+ * P_PlayerThink asks the avatar's sector once per tic and P_PlayerInSpecialSector
+ * switches on 4, 5, 7, 9, 11 and 16. Every other number in the list above is a
+ * *spawn* effect whose thinker writes `sector->special = 0`, so by the time a
+ * player can stand there the field is zero: 1, 2, 3, 8 and 12/13 in p_lights.c,
+ * 10 and 14 in p_doors.c, 17 again in p_lights.c. That is why the player effect
+ * and the spawn scan have disjoint number sets, and why any other number is
+ * either an authoring mistake or a mover's `newspecial` write.
  *
  * Line specials (P_CrossSpecialLine, P_UseSpecialLine, P_ShootSpecialLine):
  * every number whose EV function exists below is dispatched; stairs, teleports,
@@ -114,6 +128,9 @@
  *   - EV_BuildStairs, EV_Teleport, P_ChangeSwitchTexture, the level timer
  *     (-avg/-timer), texture animation and P_UpdateSpecials' scrolling.
  *   - EV_SlidingDoor (compiled out upstream too).
+ *   - P_PlayerInSpecialSector's `player->cheats &= ~CF_GODMODE` in case 11: this
+ *     port has no cheats (D5), so the clear is a no-op and is named, not faked.
+ *     The damage and the exit that the same case performs are real.
  *
  * P_ChangeSector's crush *damage* is no longer on this list: p_map.c's
  * p_change_sector() calls P_DamageMobj (p_inter.c) with T_MovePlane's own
@@ -154,6 +171,7 @@ extern "C" {
 struct p_level;
 struct p_mobj_context;
 struct p_action_stats;
+struct p_player;
 
 /* --- Upstream constants --------------------------------------------------- */
 
@@ -435,6 +453,67 @@ int p_spec_p_change_sector_is_stubbed(void);
  * is P_ZMovement, D4.2.
  */
 void p_spec_refresh_things(struct p_mobj_context* world, uint16_t sector);
+
+/* --- The player in a special sector --------------------------------------- */
+
+/*
+ * Upstream's four damage numbers, one constant each so the oracle and the gate
+ * can name them. `!(leveltime & 0x1f)` is the cadence every one of them shares:
+ * the effect fires on tics 0, 32, 64, ... of the level's clock.
+ *
+ *   5   HELLSLIME DAMAGE        10 points, unless `powers[pw_ironfeet]`
+ *   7   NUKAGE DAMAGE            5 points, unless `powers[pw_ironfeet]`
+ *   4   STROBE HURT             20 points; the suit only survives a
+ *   16  SUPER HELLSLIME DAMAGE  20 points   `P_Random()<5` roll
+ *   11  EXIT SUPER DAMAGE       20 points, never shielded; the level exits when
+ *                               `player->health <= 10`
+ */
+#define P_SECTOR_DAMAGE_HELLSLIME 10
+#define P_SECTOR_DAMAGE_NUKAGE 5
+#define P_SECTOR_DAMAGE_STRONG 20
+#define P_SECTOR_EXIT_THRESHOLD 10
+#define P_SECTOR_DAMAGE_SUIT_ROLL 5
+#define P_SECTOR_DAMAGE_MASK 0x1f
+
+/**
+ * @brief P_PlayerInSpecialSector(): the player's tic in a special sector.
+ *
+ * Upstream's body, with its order kept because two of its steps are observable:
+ *
+ *   1. `if (player->mo->z != sector->floorheight) return;` -- a thing still
+ *      falling through the sector takes nothing;
+ *   2. `if (player->powers[pw_ironfeet])` is a complete immunity for 5 and 7.
+ *      For 4 and 16 upstream writes
+ *      `!player->powers[pw_ironfeet] || (P_Random()<5)`, so the suit still
+ *      *draws* every tic and only reduces the odds -- the draw is part of the
+ *      random sequence and is reproduced;
+ *   3. the damage itself is P_DamageMobj (p_inter.c) with a NULL inflictor and
+ *      a NULL source, so it is never thrust and never credits an attacker.
+ *      P_DamageMobj's own "end of game hell" clamp is what keeps sector 11 from
+ *      killing: `sector->special == 11 && damage >= health` becomes
+ *      `damage = health - 1`;
+ *   4. 9 is the secret: `player->secretcount++` and the sector's special is
+ *      cleared, once, because that write is the one-shot;
+ *   5. 11 clears god mode (no cheats exist here), damages, and then
+ *      `if (player->health <= 10) G_ExitLevel();` -- the check is *after* the
+ *      damage, and it is the only way out of E1M8.
+ *
+ * G_ExitLevel() is not p_spec.c's to call (that file must link without
+ * g_game.c), so the exit is the same request p_exit_request_t records for the
+ * line specials; g_game.c's g_exit_from_level() turns it into the game state.
+ *
+ * A number outside 4/5/7/9/11/16 is upstream's `I_Error`, which a port cannot
+ * raise. It is left alone, and the level's counters are the only record: after
+ * P_SpawnSpecials the field can only hold one of these six (see the header's
+ * checklist), so a caller that finds another number has an authoring problem
+ * upstream would have aborted on.
+ *
+ * @param level  The level; it owns the sector array, the clock and the request.
+ * @param player The player record whose `mo` is standing in the sector. A
+ *               record with no avatar, or a sector index outside the level,
+ *               changes nothing.
+ */
+void p_player_in_special_sector(struct p_level* level, struct p_player* player);
 
 /* --- Surrounding-sector queries (upstream p_spec.c) ----------------------- */
 

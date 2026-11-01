@@ -46,11 +46,14 @@
  * PST_REBORN, and G_DoReborn answers it with `gameaction = ga_loadlevel` -- the
  * same level, reloaded, after which playback continues; G_CheckDemoStatus is
  * reached at the marker, never on a death. So the falsifiable statement is not
- * "the player never dies" (all three die) but "the corpse is never what the
- * stream is played on": a run whose player ends the stream not PST_LIVE, or
- * which never reloaded after its death, is not vanilla's. ALIVE reports whether
- * the player is live at the last command and how many reloads answered its
- * deaths, and VERDICT folds that together with the missing-action count
+ * "the player never dies" (all three die) and not "the player is alive at the
+ * end" (a recording whose last command kills it simply ends dead), but "the
+ * corpse is never what the stream is played on": every death the stream still
+ * had commands for must be answered by a reload, and a run that ends dead may
+ * only do so when its death landed at or after the last input, where no respawn
+ * was possible. ALIVE reports whether the player is live at the end, the last
+ * input tic and how many reloads answered its deaths; DEATH names every fall;
+ * VERDICT folds the ending rule together with the missing-action count
  * p_action.c keeps.
  *
  * THE PROTOCOL (tools/demo_check.py parses it; the order is part of the format)
@@ -83,7 +86,15 @@
  *   ANOM missing=<n> firsttic=<n> first=<action> last=<action>
  *   MISSING count=<n> overflow=<n> <id>@<tic>:<type> ...
  *   ALIVE alive=<0|1> lastinput=<n> deathtic=<n|-1> reborns=<n>
- *   VERDICT faithful=<0|1> reason=<none|action|death>
+ *   DEATH n=<tic> health=<h> sector=<i> special=<n> reborns=<n>
+ *                             one per death: where the player fell, and how many
+ *                             deaths had already been answered by a reload
+ *   VERDICT faithful=<0|1> reason=<none|endsdead|frozen|action|special>
+ *       `endsdead` is a run whose last command killed the player: permitted,
+ *       because G_CheckDemoStatus is reached at the marker and no respawn was
+ *       possible. `frozen` is the defect -- a death with commands still to play
+ *       and no reload answering it.
+
  *
  * `n` counts commands consumed, from 1, so `n=5026` is DEMO1's whole stream; a
  * RELOAD's `n` is the command whose tic set PST_REBORN, and a reload consumes no
@@ -621,6 +632,8 @@ typedef struct run_totals {
     int64_t hpGain;
     int32_t lastInputTic;
     int32_t deathTic;
+    int32_t lastDeathTic;
+    uint32_t deaths;
     char finalHash[65];
     char chainHash[65];
 } run_totals_t;
@@ -667,6 +680,7 @@ int main(int argc, char** argv) {
     int16_t prevReaction = 0;
     int32_t prevReady = 0;
     int32_t prevHealth = 0;
+    p_playerstate_t prevState = P_PST_LIVE;
     int32_t prevAmmo[P_NUMAMMO] = {0, 0, 0, 0};
     uint16_t prevSector = 0xFFFFu;
     uint8_t prevButtons = 0;
@@ -742,6 +756,8 @@ int main(int argc, char** argv) {
     totals.hpMax = 100;
     totals.lastInputTic = -1;
     totals.deathTic = -1;
+    totals.lastDeathTic = -1;
+    totals.deaths = 0u;
 
     /* The stream's own claims, read once before the world exists. The record is
      * a cursor over the caller's bytes, so a struct copy is a second reader over
@@ -897,6 +913,7 @@ int main(int argc, char** argv) {
     prevReaction = level.player->reactiontime;
     prevReady = level.playerState.readyweapon;
     prevHealth = level.playerState.health;
+    prevState = level.playerState.playerstate;
     prevSector = sectorAt(&map, prevX, prevY, &inside);
 
     for (tic = 0;; ++tic) {
@@ -1062,7 +1079,27 @@ int main(int argc, char** argv) {
             if (totals.deathTic < 0) {
                 totals.deathTic = (int32_t)tic;
             }
+            /* One line per death, with the sector that dealt it: a sector-damage
+             * death is the one a level's own floors can cause, and whether the
+             * stream answers it with a USE press is what decides `alive`. */
+            if (level.playerState.playerstate == P_PST_DEAD &&
+                prevState != P_PST_DEAD) {
+                const uint16_t deathSector = level.player->sector;
+                const int16_t deathSpecial =
+                    level.sectors != NULL && deathSector < level.sectorCount
+                        ? level.sectors[deathSector].special
+                        : 0;
+
+                totals.deaths += 1u;
+                totals.lastDeathTic = (int32_t)tic;
+                printf("DEATH n=%ld health=%ld sector=%u special=%d "
+                       "reborns=%u\n",
+                       (long)tic, (long)level.playerState.health,
+                       (unsigned)deathSector, (int)deathSpecial,
+                       (unsigned)run.reloads);
+            }
         }
+        prevState = level.playerState.playerstate;
         {
             const uint32_t mobjs = p_level_mobj_count(&level);
 
@@ -1337,23 +1374,37 @@ int main(int argc, char** argv) {
          * reference: every action the run reached is implemented, no trigger
          * reached a line special with no EV handler (a run that does is no
          * longer upstream's world after the first one, whatever its coherence
-         * counters say), and the stream is played on a live player -- which, for
-         * a demo that dies, means every death was answered by a reload
-         * (G_DoReborn -> ga_loadlevel) and the player is PST_LIVE at the last
-         * command. A run that ends DEAD or PST_REBORN is a frozen corpse with
-         * commands still arriving, and that is not what vanilla's
-         * G_CheckDemoStatus-less death does. */
+         * counters say), and the run's *ending* is one upstream can produce.
+         *
+         * Upstream ends a demo at the marker byte or at G_CheckDemoStatus, never
+         * on a death: a recording whose last command kills the player simply
+         * ends dead, and no respawn was possible. So a death is only a defect
+         * when the stream still had commands to play -- that is a frozen corpse,
+         * and it is what the old "PST_LIVE at the last command" test was
+         * reaching for. The arithmetic is the pairing of the DEATH and RELOAD
+         * lines: every death but the last is answered, and the last one may only
+         * stand if it landed at or after the last input.
+         */
         const int alive = level.playerState.playerstate == P_PST_LIVE;
         const int unsupported = totals.spec[1] != 0u;
+        const int endsDead = alive == 0;
+        const int answered = totals.deaths == totals.reloads;
+        const int endingOk =
+            answered ||
+            (endsDead && totals.deaths == totals.reloads + 1u &&
+             totals.lastDeathTic >= totals.lastInputTic);
 
         printf("ALIVE alive=%d lastinput=%ld deathtic=%ld reborns=%u\n", alive,
                (long)totals.lastInputTic, (long)totals.deathTic,
                (unsigned)totals.reloads);
         printf("VERDICT faithful=%d reason=%s\n",
-               totals.missing == 0u && alive != 0 && !unsupported ? 1 : 0,
-               totals.missing != 0u ? "action"
-                                    : (alive == 0 ? "death"
-                                                  : (unsupported ? "special" : "none")));
+               totals.missing == 0u && endingOk && !unsupported ? 1 : 0,
+               totals.missing != 0u
+                   ? "action"
+                   : (unsupported
+                          ? "special"
+                          : (endingOk ? (endsDead ? "endsdead" : "none")
+                                      : "frozen")));
     }
 
     p_level_shutdown(&level);

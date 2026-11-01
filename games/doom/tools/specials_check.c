@@ -16,6 +16,8 @@
  *   SECTOR <tic> <index> floor=<i32> ceil=<i32> light=<i32>
  *   THINKER <tic> <slot> kind=<ceiling|floor|plat|door|light> sector=<i32>
  *           type=<i32> dir=<i32> speed=<i32> count=<i32> a=<i32> b=<i32> c=<i32>
+ *   DAMAGE map=<map> sector=<i32> special=<n> health0=<n> suit=<0|1> tics=<n>
+ *   HEALTH <tic> health=<n> exit=<none|normal> secret=<n> special=<n>
  *   SUMMARY spawned=<n> secrets=<n> totalSecrets=<n> changeSector=<n>
  *           unsupportedSector=<n> unsupportedLine=<n> deferredLine=<n>
  *           lineScrolls=<n> triggers=<n> refused=<n>
@@ -43,6 +45,45 @@
  * p_level_tick(). The run is 420 tics, long enough for a door to open, wait 150
  * and close again.
  *
+ * THE SECTOR-DAMAGE SECTION (P_PlayerInSpecialSector)
+ *
+ * P_PlayerInSpecialSector is P_PlayerThink's per-tic question about the avatar's
+ * own sector, and its damage depends on the level clock (`!(leveltime&0x1f)`),
+ * the suit and the player's health. So it is measured on its own, once per
+ * (map, special, suit, starting health) fixture, from a *fresh load* of the map:
+ *
+ *   DAMAGE map=... sector=<i> special=<s> health0=<n> suit=<0|1> tics=<n>
+ *   HEALTH 0 health=<h0> exit=none secret=0 special=<s>      (before any tic)
+ *   HEALTH <k> health=... exit=... secret=... special=...    (after k tics)
+ *
+ * `HEALTH <k>` is the state after k applications of the effect, with the clock
+ * advanced one tic between them, which is P_Ticker's shape minus P_RunThinkers:
+ * the fixture is about one rule, and no monster may throw a claw into it. The
+ * unit tests in test/unit/test_world drive the same code through p_level_tic,
+ * so the hook itself is covered there.
+ *
+ * The fixture set, identical in the oracle:
+ *
+ *   4,5,7,9,11,16   the only numbers this effect can see after P_SpawnSpecials,
+ *                   ascending, one sector each: the lowest sector index whose
+ *                   post-spawn special is that number;
+ *   every case     suit=0, health0=100, tics=96   (four hit windows)
+ *   4 and 16       suit=1, health0=100, tics=96   (the roll is still drawn: 96
+ *                   draws, damage only when `P_Random()<5`)
+ *   5 and 7        suit=1, health0=100, tics=64   (no draw, no damage)
+ *   11             suit=0, health0=30,  tics=1    (10 <= the threshold: the tic
+ *                   damages to 10 and G_ExitLevel is asked for)
+ *                  suit=1, health0=45,  tics=33   (the suit does not shield 11;
+ *                   the tic at leveltime 32 lands 5 and exits)
+ *                  suit=0, health0=100, tics=129  (the whole run: 80, 60, 40,
+ *                   20, then P_DamageMobj's "end of game hell" clamps the fifth
+ *                   hit to 19 -> health 1, and the player is alive at the exit)
+ *
+ * The player is placed inside the fixture sector by scanning the map's bounds on
+ * a 16-unit grid for the first point whose subsector's sector is the target and
+ * where P_CheckPosition accepts the avatar. The point is not part of the
+ * protocol: the oracle re-derives the sector, and the rule needs nothing else.
+ *
  * Lines starting with `INFO ` are C-only measurements and are excluded from the
  * comparison.
  *
@@ -59,8 +100,12 @@
 #include "p_doors.h"
 #include "p_floor.h"
 #include "p_lights.h"
+#include "p_map.h"
+#include "p_mobj.h"
 #include "p_plats.h"
 #include "p_spec.h"
+#include "p_user.h"
+#include "r_bsp.h"
 #include "w_wad.h"
 
 #define SPECIALS_ARENA_BYTES (256u * 1024u)
@@ -245,6 +290,258 @@ static void dumpTic(const p_level_t* level, uint32_t tic) {
     }
 }
 
+/* --- The sector-damage section ------------------------------------------- */
+
+/*
+ * The six numbers P_PlayerInSpecialSector switches on. Every other sector
+ * special a map carries is cleared by its spawn effect before a player can
+ * stand in it, so this list is the whole set and the gate asserts that the
+ * spawn scan found nothing outside it (SUMMARY unsupportedSector=0).
+ */
+static const int16_t kPlayerSpecials[] = {4, 5, 7, 9, 11, 16};
+
+typedef struct damage_scenario {
+    int16_t special;
+    uint16_t sector;
+    int32_t health;
+    int suit;
+    int tics;
+    int synthetic; /* 1 when the number was written into a real sector */
+} damage_scenario_t;
+
+/* The scenario count is bounded: 6 specials, at most four fixtures each. */
+#define MAX_SCENARIOS 24
+
+/* A point inside @p target, on a 16-unit grid over the map's bounds, that
+ * P_CheckPosition accepts for the avatar. Row-major and deterministic. */
+static int findStandingPoint(p_level_t* level, uint16_t target, fixed_t* outX,
+                             fixed_t* outY) {
+    const doom_map_t* map = level->map;
+    const uint32_t vertexCount = map->lumps[DOOM_MAP_VERTEXES].count;
+    const fixed_t step = 16 * FRACUNIT;
+    doom_vertex_t vertex;
+    p_position_result_t position;
+    fixed_t minX;
+    fixed_t minY;
+    fixed_t maxX;
+    fixed_t maxY;
+    fixed_t x;
+    fixed_t y;
+    uint32_t i;
+
+    if (vertexCount == 0u || level->player == NULL) {
+        return 0;
+    }
+    doom_map_get_vertex(map, 0u, &vertex);
+    minX = maxX = vertex.x;
+    minY = maxY = vertex.y;
+    for (i = 1u; i < vertexCount; ++i) {
+        doom_map_get_vertex(map, (uint16_t)i, &vertex);
+        if (vertex.x < minX) { minX = vertex.x; }
+        if (vertex.x > maxX) { maxX = vertex.x; }
+        if (vertex.y < minY) { minY = vertex.y; }
+        if (vertex.y > maxY) { maxY = vertex.y; }
+    }
+
+    /* The grid is anchored on the bounds' floor multiples of 16 so a second
+     * run of the same map walks the same points. */
+    for (y = (fixed_t)(minY & ~(step - 1)); y <= maxY; y += step) {
+        for (x = (fixed_t)(minX & ~(step - 1)); x <= maxX; x += step) {
+            uint16_t subsector = 0;
+            doom_subsector_t record;
+
+            if (r_bsp_point_in_subsector(map, x, y, &subsector) != R_BSP_OK) {
+                continue;
+            }
+            doom_map_get_subsector(map, subsector, &record);
+            if (doom_map_subsector_sector(map, &record) != target) {
+                continue;
+            }
+            if (!p_check_position(&level->context, level->player, x, y,
+                                  &position) ||
+                position.sector != target ||
+                position.floorz != level->sectors[target].floorHeight) {
+                continue;
+            }
+            *outX = x;
+            *outY = y;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Stands the avatar in @p sector and writes @p health into both records.
+ *
+ * `z` is the *sector's own* floor, not P_CheckPosition's `floorz`: the latter is
+ * raised by a line's opening when the avatar's box reaches a step, and a thing
+ * 24 units above the floor is a thing still falling -- which
+ * P_PlayerInSpecialSector must, and does, ignore.
+ */
+static int placePlayer(p_level_t* level, uint16_t sector, int32_t health,
+                       int suit, fixed_t* outX, fixed_t* outY) {
+    r_mobj_t* mobj = level->player;
+    p_position_result_t position;
+    fixed_t x = 0;
+    fixed_t y = 0;
+
+    if (mobj == NULL) {
+        return 0;
+    }
+    if (!findStandingPoint(level, sector, &x, &y)) {
+        return 0;
+    }
+    if (!p_check_position(&level->context, mobj, x, y, &position)) {
+        return 0;
+    }
+    mobj->x = x;
+    mobj->y = y;
+    mobj->z = level->sectors[sector].floorHeight;
+    mobj->momx = 0;
+    mobj->momy = 0;
+    mobj->momz = 0;
+    mobj->floorz = position.floorz;
+    mobj->ceilingz = position.ceilingz;
+    mobj->subsector = position.subsector;
+    mobj->sector = position.sector;
+    mobj->health = health;
+    level->playerState.health = health;
+    level->playerState.powers[P_PW_IRONFEET] = suit ? 35 * 60 : 0;
+    *outX = x;
+    *outY = y;
+    return 1;
+}
+
+static const char* exit_name(uint8_t request) {
+    if (request == (uint8_t)P_EXIT_NORMAL) {
+        return "normal";
+    }
+    if (request == (uint8_t)P_EXIT_SECRET) {
+        return "secret";
+    }
+    return "none";
+}
+
+static void printHealth(const p_level_t* level, uint32_t tic, uint16_t sector) {
+    printf("HEALTH %u health=%ld exit=%s secret=%ld special=%d\n", (unsigned)tic,
+           (long)level->playerState.health, exit_name(level->exitRequest),
+           (long)level->playerState.secretcount,
+           (int)level->sectors[sector].special);
+}
+
+/* One fixture: fresh load, stand the avatar in @p sector, run @p tics effects. */
+static int runDamageScenario(const doom_map_t* map, p_level_t* level, void* arena,
+                             const p_spawn_rules_t* rules, const char* mapName,
+                             const damage_scenario_t* scenario) {
+    uint32_t tic;
+
+    if (p_level_init(level, map, arena, SPECIALS_ARENA_BYTES, rules) !=
+        P_SETUP_OK) {
+        return 0;
+    }
+    if (p_spawn_specials(level) != P_SPEC_OK || level->player == NULL) {
+        return 0;
+    }
+    if (scenario->synthetic) {
+        /* No episode-1 map carries sector 4 or 5, so the gate writes the number
+         * into a sector the map really has (the one its own 7 uses) instead of
+         * leaving two implemented branches unmeasured. Both sides do it. */
+        level->sectors[scenario->sector].special = scenario->special;
+    }
+    if (level->sectors[scenario->sector].special != scenario->special) {
+        return 0;
+    }
+    {
+        fixed_t x = 0;
+        fixed_t y = 0;
+
+        if (!placePlayer(level, scenario->sector, scenario->health,
+                         scenario->suit, &x, &y)) {
+            return 0;
+        }
+    }
+    printf("DAMAGE map=%s sector=%u special=%d health0=%ld suit=%d tics=%d "
+           "synthetic=%d\n",
+           mapName, (unsigned)scenario->sector, (int)scenario->special,
+           (long)scenario->health, scenario->suit, scenario->tics,
+           scenario->synthetic);
+    printHealth(level, 0u, scenario->sector);
+    for (tic = 1u; tic <= (uint32_t)scenario->tics; ++tic) {
+        p_player_in_special_sector(level, &level->playerState);
+        level->leveltime += 1;
+        printHealth(level, tic, scenario->sector);
+    }
+    return 1;
+}
+
+/*
+ * The fixture set, derived from the map's own post-spawn sectors: the lowest
+ * sector index carrying each of the six numbers, ascending, and then the
+ * (suit, health, tics) list documented in the header.
+ *
+ * No episode-1 map carries sector 4 or 5, so those two fixtures borrow the
+ * sector the map's own 7 uses and write the number into it (`synthetic=1`).
+ * Without that, two of upstream's six branches would be unreachable from the
+ * gate; with it, the report says which runs used a real sector and which did
+ * not.
+ */
+static int sectorCarrying(const p_level_t* level, int16_t special) {
+    uint32_t i;
+
+    for (i = 0u; i < level->sectorCount; ++i) {
+        if (level->sectors[i].special == special) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static void addScenario(damage_scenario_t* out, int* count, int16_t special,
+                        int sector, int synthetic, int32_t health, int suit,
+                        int tics) {
+    out[*count].special = special;
+    out[*count].sector = (uint16_t)sector;
+    out[*count].health = health;
+    out[*count].suit = suit;
+    out[*count].tics = tics;
+    out[*count].synthetic = synthetic;
+    *count += 1;
+}
+
+static int buildScenarios(const p_level_t* level, damage_scenario_t* out) {
+    int count = 0;
+    uint32_t s;
+
+    for (s = 0; s < (uint32_t)(sizeof kPlayerSpecials / sizeof kPlayerSpecials[0]);
+         ++s) {
+        const int16_t special = kPlayerSpecials[s];
+        int sector = sectorCarrying(level, special);
+        int synthetic = 0;
+
+        if (sector < 0 && (special == 4 || special == 5)) {
+            sector = sectorCarrying(level, 7);
+            synthetic = 1;
+        }
+        if (sector < 0) {
+            continue;
+        }
+        addScenario(out, &count, special, sector, synthetic, 100, 0, 96);
+
+        if (special == 4 || special == 16) {
+            addScenario(out, &count, special, sector, synthetic, 100, 1, 96);
+        }
+        if (special == 5 || special == 7) {
+            addScenario(out, &count, special, sector, synthetic, 100, 1, 64);
+        }
+        if (special == 11) {
+            addScenario(out, &count, special, sector, synthetic, 30, 0, 1);
+            addScenario(out, &count, special, sector, synthetic, 45, 1, 33);
+            addScenario(out, &count, special, sector, synthetic, 100, 0, 129);
+        }
+    }
+    return count;
+}
+
 int main(int argc, char** argv) {
     wad_state_t wad;
     doom_map_source_t source;
@@ -260,9 +557,13 @@ int main(int argc, char** argv) {
     int index;
     uint32_t tic;
     uint16_t line;
+    const char* mode = "full";
+    damage_scenario_t scenarios[MAX_SCENARIOS];
+    int scenarioCount = 0;
 
-    if (argc < 2 || argc > 4) {
-        fprintf(stderr, "usage: specials_check <path-to-WAD> [map] [tics]\n");
+    if (argc < 2 || argc > 5) {
+        fprintf(stderr,
+                "usage: specials_check <path-to-WAD> [map] [tics] [full|damage]\n");
         return 2;
     }
     if (argc >= 3) {
@@ -271,8 +572,15 @@ int main(int argc, char** argv) {
     if (argc >= 4) {
         tics = atoi(argv[3]);
     }
+    if (argc >= 5) {
+        mode = argv[4];
+    }
     if (tics < 0) {
         fprintf(stderr, "specials_check: tics cannot be negative\n");
+        return 2;
+    }
+    if (strcmp(mode, "full") != 0 && strcmp(mode, "damage") != 0) {
+        fprintf(stderr, "specials_check: mode is 'full' or 'damage'\n");
         return 2;
     }
 
@@ -328,6 +636,30 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    /* The sector-damage fixtures come from the pristine post-spawn state: the
+     * 420-tic run below moves floors and rewrites specials. */
+    scenarioCount = buildScenarios(&level, scenarios);
+
+    if (strcmp(mode, "damage") == 0) {
+        int damageIndex;
+        int damageFailed = 0;
+
+        for (damageIndex = 0; damageIndex < scenarioCount; ++damageIndex) {
+            if (!runDamageScenario(&map, &level, arena, &rules, mapName,
+                                   &scenarios[damageIndex])) {
+                fprintf(stderr,
+                        "specials_check: the sector-%d fixture did not load on %s\n",
+                        (int)scenarios[damageIndex].special, mapName);
+                damageFailed = 1;
+                break;
+            }
+        }
+        p_level_shutdown(&level);
+        free(arena);
+        free(bytes);
+        return damageFailed ? 2 : 0;
+    }
+
     printf("SPECIALS %s tics=%d sectors=%u lines=%u\n", mapName, tics,
            (unsigned)level.sectorCount, (unsigned)level.lineCount);
 
@@ -361,6 +693,27 @@ int main(int argc, char** argv) {
            level.specStats.unsupportedLineSpecial,
            level.specStats.deferredLineSpecial, level.specStats.lineScrolls,
            level.specStats.triggers, level.specStats.triggersRefused);
+
+    /* --- The sector-damage section: P_PlayerInSpecialSector ---------------- */
+    {
+        if (scenarioCount == 0) {
+            /* A map with none of the six numbers is legal (E1M1 has 7 and 9,
+             * so this is the fixture's own sanity check, not a map's). */
+            printf("DAMAGE map=%s count=0\n", mapName);
+        }
+        for (index = 0; index < scenarioCount; ++index) {
+            if (!runDamageScenario(&map, &level, arena, &rules, mapName,
+                                   &scenarios[index])) {
+                fprintf(stderr,
+                        "specials_check: the sector-%d fixture did not load on %s\n",
+                        (int)scenarios[index].special, mapName);
+                p_level_shutdown(&level);
+                free(arena);
+                free(bytes);
+                return 2;
+            }
+        }
+    }
 
     printf("INFO sizes sector=%u door=%u floor=%u plat=%u ceiling=%u light=%u "
            "level=%u specStats=%u\n",

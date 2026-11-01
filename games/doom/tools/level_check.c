@@ -42,11 +42,11 @@
  *
  * THE CHAIN, AND WHY IT IS NOT NINE NORMAL TRANSITIONS
  *
- * Upstream's E1M8 has no exit line: its exit is sector special 11 (the "EXIT
- * SUPER DAMAGE" floor), which is P_PlayerInSpecialSector's and is named as out
- * of scope. G_DoCompleted also answers gamemap 8 with ga_victory before looking
- * at `secretexit`, so no E1M8 -> E1M9 transition exists in linuxdoom-1.10. The
- * chain therefore visits all nine maps in eight transitions:
+ * Upstream's E1M8 has no exit line: its exit is sector special 11, the "EXIT
+ * SUPER DAMAGE" floor that P_PlayerInSpecialSector reads, and G_DoCompleted also
+ * answers gamemap 8 with ga_victory before looking at `secretexit`, so no
+ * E1M8 -> E1M9 transition exists in linuxdoom-1.10. The chain therefore visits
+ * all nine maps in eight transitions:
  *
  *   E1M1 -11-> E1M2 -11-> E1M3 -51-> E1M9 -11-> E1M4 -11-> E1M5
  *        -11-> E1M6 -11-> E1M7 -11-> E1M8 (victory)
@@ -57,6 +57,19 @@
  * the *literal* "E1M1 -> E1M2 -> ... -> E1M9 by normal exits" is not upstream's
  * world, and the gate says so rather than inventing it.
  *
+ * THE FINALE: E1M8's own ending, which is sector 11
+ *
+ * The chain stops on E1M8 because the map has no line to press, not because the
+ * map has no ending. P_PlayerInSpecialSector's case 11 is that ending: the floor
+ * takes 20 points on tics 0, 32, ..., it cannot take the last point
+ * (P_DamageMobj's "end of game hell" clamp turns `damage >= health` into
+ * `health - 1`), and `if (player->health <= 10) G_ExitLevel();` follows the
+ * damage. The gate stands the player on the WAD's one sector-11 floor with 30
+ * health, runs one tic through p_level_tic(), and asserts 30 -> 10, the normal
+ * exit request, a live player, G_DoCompleted's victory, and that the victory
+ * loads nothing: g_do_world_done refuses it with G_LEVEL_ERR_VICTORY and the
+ * world is still E1M8's, over the arena a fresh E1M8 load lays out.
+ *
  * OUTPUT
  *
  *   LEVEL map=E1M1 things=... spawned=... sectors=... lines=... playerstart=x,y
@@ -66,7 +79,9 @@
  *         playerstart=x,y worldstart=x,y alive=1 leveltime=0 arena=... ref=...
  *         consumed=1 ok=1
  *   CROSS special=52 ...      the synthetic walk-over fixture and its guard
- *   FINALE map=E1M8 victory=1 ...
+ *   FINALE map=E1M8 exitlines=0 sector=<i> special=11 health=<n> before=<n>
+ *         damage=<n> exit=normal alive=1 victory=1 next=0 world=E1M8
+ *         leveltime=1 arena=... ref=...
  *   SECRET from=E1M1 to=E1M9 ...   the ninth level change
  *   SUMMARY transitions=9 ... ok=1
  *
@@ -334,9 +349,91 @@ static int findExitLine(p_level_t* level, int16_t special,
     return 0;
 }
 
+/* --- The sector-11 fixture (E1M8's ending) ------------------------------- */
+
+/*
+ * A point inside @p sector, on a 16-unit grid over the map's bounds, where the
+ * avatar can stand on that sector's *own* floor. Deterministic: the grid's
+ * origin is the bounds' floor multiple of 16 and the scan is row-major.
+ *
+ * The floor test matters: P_CheckPosition raises `floorz` when the avatar's box
+ * reaches a step, and P_PlayerInSpecialSector ignores a thing whose `z` is not
+ * the sector's floor -- which is exactly the "still falling" rule. So the
+ * fixture writes the sector's floor into `z` and this scan only accepts points
+ * where the two agree.
+ */
+static int findSectorStand(p_level_t* level, uint16_t sector,
+                           exit_fixture_t* out) {
+    const doom_map_t* map = level->map;
+    const uint32_t vertexCount = map->lumps[DOOM_MAP_VERTEXES].count;
+    const fixed_t step = 16 * FRACUNIT;
+    doom_vertex_t vertex;
+    fixed_t minX;
+    fixed_t minY;
+    fixed_t maxX;
+    fixed_t maxY;
+    fixed_t x;
+    fixed_t y;
+    uint32_t i;
+
+    if (vertexCount == 0u || level->player == NULL) {
+        return 0;
+    }
+    doom_map_get_vertex(map, 0u, &vertex);
+    minX = maxX = vertex.x;
+    minY = maxY = vertex.y;
+    for (i = 1u; i < vertexCount; ++i) {
+        doom_map_get_vertex(map, (uint16_t)i, &vertex);
+        if (vertex.x < minX) { minX = vertex.x; }
+        if (vertex.x > maxX) { maxX = vertex.x; }
+        if (vertex.y < minY) { minY = vertex.y; }
+        if (vertex.y > maxY) { maxY = vertex.y; }
+    }
+    for (y = (fixed_t)(minY & ~(step - 1)); y <= maxY; y += step) {
+        for (x = (fixed_t)(minX & ~(step - 1)); x <= maxX; x += step) {
+            uint16_t found = 0;
+            p_position_result_t position;
+
+            if (!sectorAt(map, x, y, &found) || found != sector) {
+                continue;
+            }
+            if (!p_check_position(&level->context, level->player, x, y,
+                                  &position) ||
+                position.sector != sector ||
+                position.floorz != level->sectors[sector].floorHeight) {
+                continue;
+            }
+            out->line = 0u;
+            out->special = level->sectors[sector].special;
+            out->front = sector;
+            out->x = x;
+            out->y = y;
+            out->angle = 0u;
+            out->standoff = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The one sector whose special is @p special, or -1. */
+static int sectorWithSpecial(const p_level_t* level, int16_t special) {
+    uint32_t i;
+    int found = -1;
+
+    for (i = 0u; i < level->sectorCount; ++i) {
+        if (level->sectors[i].special == special) {
+            if (found >= 0) {
+                return -2;   /* more than one: not the fixture this gate wants */
+            }
+            found = (int)i;
+        }
+    }
+    return found;
+}
+
 /* Stands the player at the fixture and returns the position adopted. */
-static void standAt(p_level_t* level, const exit_fixture_t* fixture) {
-    r_mobj_t* mobj = level->player;
+static void standAt(p_level_t* level, const exit_fixture_t* fixture) {    r_mobj_t* mobj = level->player;
     p_position_result_t position;
 
     if (mobj == NULL) {
@@ -634,6 +731,11 @@ int main(int argc, char** argv) {
              * answer. Assert both, then stop the chain here. */
             int found = 0;
             uint32_t i;
+            int sector;
+            exit_fixture_t sectorFixture;
+            zone_stats_t zone;
+            int32_t before;
+            int32_t after;
 
             for (i = 0; i < level.lineCount; ++i) {
                 if (level.lineSpecial[i] == 11 || level.lineSpecial[i] == 51 ||
@@ -641,12 +743,68 @@ int main(int argc, char** argv) {
                     found = 1;
                 }
             }
-            nextKind = g_completed_next(&game, &next);
             expect(found == 0, "E1M8 carries an exit line after all");
-            expect(nextKind == 0 && next.victory == 1u,
-                   "E1M8 did not answer with G_DoCompleted's victory");
-            printf("FINALE map=%s exitlines=%d victory=%d next=%d\n", fromName,
-                   found, next.victory, nextKind);
+
+            /* P_PlayerInSpecialSector's case 11 is the boss map's only ending:
+             * the floor damages first, then `health <= 10` asks G_ExitLevel().
+             * The fixture starts at 30 health so the first hit (20) lands the
+             * player on the threshold with 10 left -- alive, which is what
+             * P_DamageMobj's "end of game hell" clamp guarantees. */
+            sector = sectorWithSpecial(&level, 11);
+            expect(sector >= 0, "E1M8 does not carry exactly one sector 11");
+            if (sector >= 0 &&
+                findSectorStand(&level, (uint16_t)sector, &sectorFixture)) {
+                standAt(&level, &sectorFixture);
+                level.leveltime = 0;
+                level.playerState.health = 30;
+                level.player->health = 30;
+                before = level.playerState.health;
+                if (!runTic(&level, 0u)) {
+                    printf("FAIL finale: E1M8 refused the damage tic\n");
+                    failures += 1;
+                }
+                after = level.playerState.health;
+                zone = z_stats(&level.zone);
+
+                expect(after == 10,
+                       "sector 11 did not take its 20 points from 30");
+                expect(level.exitRequest == (uint8_t)P_EXIT_NORMAL,
+                       "sector 11 did not ask G_ExitLevel at health 10");
+                expect(alive(&level),
+                       "sector 11 killed the player it was told to spare");
+
+                g_exit_from_level(&game, &level);
+                nextKind = g_completed_next(&game, &next);
+                expect(nextKind == 0 && next.victory == 1u,
+                       "E1M8 did not answer with G_DoCompleted's victory");
+                /* linuxdoom-1.10 has no E1M8 -> E1M9 step: `gamemap == 8`
+                 * returns ga_victory before `secretexit` is read. So the load
+                 * refuses the missing next map and the world stays where it is;
+                 * asserting that refusal is the faithful form of "the episode
+                 * ends here". */
+                expect(g_do_world_done(&level, &game, &next, &maps[7]) ==
+                           G_LEVEL_ERR_VICTORY,
+                       "the victory was followed by a level load");
+                expect(level.map == &maps[7] && game.map == 8u,
+                       "the world left E1M8 on a victory");
+                printf("FINALE map=%s exitlines=%d sector=%d special=11 "
+                       "health=%ld before=%ld damage=%ld exit=%s alive=%d "
+                       "victory=%d next=%d world=%s leveltime=%d arena=%u ref=%u\n",
+                       fromName, found, sector, (long)after, (long)before,
+                       (long)(before - after),
+                       level.exitRequest == (uint8_t)P_EXIT_NORMAL ? "normal" : "other",
+                       alive(&level), next.victory, nextKind,
+                       level.map == &maps[7] ? "E1M8" : "changed",
+                       (int)level.leveltime, (unsigned)zone.inUse,
+                       (unsigned)references[7].arena);
+                /* The world after its completion is still a fresh E1M8 load's:
+                 * one damage tic allocates nothing. */
+                expect(zone.inUse == references[7].arena,
+                       "the E1M8 completion changed the arena");
+            } else {
+                printf("FAIL finale: E1M8 has no standable sector-11 floor\n");
+                failures += 1;
+            }
             break;
         }
 

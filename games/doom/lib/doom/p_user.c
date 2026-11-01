@@ -27,6 +27,7 @@
 #include "p_map.h"
 #include "p_pspr.h"
 #include "p_setup.h"
+#include "p_spec.h"
 #include "r_tables.h"
 
 /* --- G_PlayerReborn ------------------------------------------------------ */
@@ -371,8 +372,14 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
      * momentum this tic's thrust just added. */
     p_calc_height(level, player);
 
-    /* `if (player->mo->subsector->sector->special) P_PlayerInSpecialSector`
-     * is sector damage and belongs to T15. */
+    /* `if (player->mo->subsector->sector->special) P_PlayerInSpecialSector
+     * (player);` -- damage, the secret count and E1M8's exit, on the sector the
+     * avatar's own mobj was last placed in. */
+    if (level->sectors != NULL &&
+        (uint32_t)player->mo->sector < (uint32_t)level->sectorCount &&
+        level->sectors[player->mo->sector].special != 0) {
+        p_player_in_special_sector(level, player);
+    }
 
     /* `if (cmd->buttons & BT_SPECIAL) cmd->buttons = 0;` -- "A special event
      * has no other buttons." The pause/save side of the word is G_Ticker's,

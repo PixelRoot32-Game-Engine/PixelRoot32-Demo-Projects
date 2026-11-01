@@ -45,8 +45,22 @@ WHAT THE STRICT VERDICT CHECKS
      and P_UseSpecialLine returns true without acting, so doing nothing is the
      faithful answer. Those events are reported as `IGNORED` evidence instead,
      which is what DEMO2's 27 and DEMO3's 1 turned out to be;
-  3. the player not being PST_LIVE when the stream ends, or a death no reload
-     answered (`ALIVE`);
+  3. the run's *ending* not being one upstream can produce. Upstream ends a demo
+     at the marker byte or at `G_CheckDemoStatus`, never on a death, so a
+     recording whose last command kills the player simply ends dead and no
+     respawn was possible. The conditions are therefore:
+       (a) every death the stream still had commands for was answered by a
+           reload inside the stream -- `DEATH` tics and `RELOAD` tics must pair
+           up, and a death with input still to come and no later reload is the
+           frozen corpse the old test was reaching for;
+       (b) a run may end dead only when its death landed at or after the last
+           input, and the message names that tic when this is how a run ends;
+       (c) `alive` stays inside the pin, so a change that flips a run from dead
+           to alive or back fails on the pin rather than on a rule upstream does
+           not have.
+     `deaths - reloads` is kept as the arithmetic behind (a) and (b): it is 0 for
+     a run that ends alive and 1 for one whose last death had no tic left to
+     answer it.
   4. a press whose 64-unit `P_UseLines` ray reached a special line that did not
      trigger, or a press that triggered where the independent walk finds no
      special line in reach. The walk below is re-derived from linuxdoom-1.10's
@@ -80,10 +94,12 @@ G_DoReborn answers it with `gameaction = ga_loadlevel` -- the same level,
 reloaded -- after which playback continues; G_CheckDemoStatus is reached at the
 marker, never on a death. Each demo's own lump agrees: all three die and then
 carry input for thousands of tics, with a USE hold just after the death. So the
-falsifiable statement is not "the player never dies" but "the corpse is never what
-the stream is played on": a run whose player ends the stream not PST_LIVE, or
-whose deaths were not answered by reloads, is not vanilla's. `ALIVE` reports the
-end state and the reload count, `VERDICT` folds it together with the
+falsifiable statement is not "the player never dies" and not "the player is alive
+at the end" -- a recording whose last command kills it simply ends dead -- but
+"the corpse is never what the stream is played on": every death the stream still
+had commands for was answered by a reload, and a run that ends dead may only do
+so when its death landed at or after the last input. `ALIVE` reports the end
+state, `DEATH` names every fall, `VERDICT` folds the ending rule together with the
 missing-action set, and `--strict` turns `faithful=0` into a failure.
 
 `RELOAD` and `ARENA` are this gate's evidence that the reload is the level reload
@@ -198,38 +214,47 @@ SOURCES = (
 # itself). `anom`, `missing`, `spec` and `alive` are the fidelity record:
 # `missing` is the distinct action set (empty since D4.4's A_SPosAttack,
 # A_SargAttack and the A_Scream sound draw landed), `spec` is the line-special
-# set the playback reached, and `alive` says the player was PST_LIVE at the end
-# and how many reloads answered its deaths. `arena` and `reload` are the reload's
+# set the playback reached, and `alive` is the end state -- PST_LIVE, or dead when
+# the last command killed the player -- with the last input tic and the number of
+# reloads that answered its deaths. `arena` and `reload` are the reload's
 # own evidence: the level's bytes in use, and the tic of every answered death.
 #
 # All three demos die. Before D4.4's reload step this gate recorded the frozen
 # corpse; every number below is from a run that answered each death with
-# G_DoReborn's `ga_loadlevel` -- the same level, reloaded -- and kept playing.
-# The pins are still a regression target, not a fidelity proof.
+# G_DoReborn's `ga_loadlevel` -- the same level, reloaded -- and kept playing,
+# with one exception: DEMO1's seventh death lands on its own last command, so
+# that run ends dead and its `alive` pin says so. The pins are still a regression
+# target, not a fidelity proof.
 #
 # A demo whose pins are absent is a demo this gate has not measured yet: it
 # reports the numbers and fails, which is how a new demo is added.
 PINS: dict[str, dict[str, object]] = {
     "DEMO1": {
         "map": "E1M5",
+        # Re-baselined once, for D4.5's sector damage: P_PlayerInSpecialSector
+        # made E1M5's nukage real (sector 59, 26 damage windows, 130 points), so
+        # the health track and every death after tic 1149 moved, and the seventh
+        # death now lands on the stream's own last command (tic 5025). The run
+        # ends dead, which is upstream's ending for this recording -- see the
+        # ending rules in check_run().
         "tics": 5026,
-        "final": "0a7a7d74861550ee71e27195f884d9b72dbf0d62904275ed17498685cb2f29da",
-        "chain": "c48dfb8f32e450384955042c55201594abac1bb473c97b8084f1608a8f25198f",
+        "final": "92ff2f08e0bc3616cd24d1b52afbee0e89ffc00ace14feb317ead37f5c981068",
+        "chain": "a3371434b6d01d6120f0fb8c5fe1a421849a759cb0ed34593202510526d663d4",
         "cohere": (
-            "COHERE wallcross=0 outside=0 angleskip=797 anglebad=0 anglepunch=0 "
-            "sectorchanges=35 sectors=3 doorpass=0 doorsopen=0 forward=4340 "
-            "netfwd=670728250 netback=-143253624 shots=125 ammo=125 "
+            "COHERE wallcross=0 outside=0 angleskip=1156 anglebad=0 anglepunch=0 "
+            "sectorchanges=37 sectors=4 doorpass=0 doorsopen=0 forward=4340 "
+            "netfwd=635719608 netback=-130104468 shots=119 ammo=119 "
             "attackticks=1463 useticks=49 useedges=32 usetriggers=0 hpmin=0 "
-            "hpmax=100 hploss=593 hpgain=0 deadtics=802 mobjmax=222"
+            "hpmax=100 hploss=720 hpgain=20 deadtics=1163 mobjmax=224"
         ),
         "spec": "SPEC triggers=0 unsupported=0 deferred=0 scrolls=0",
         "anom": "ANOM missing=0 firsttic=0 first=0 last=0",
         "missing": "MISSING count=0 overflow=0",
         "specunsup": "SPECUNSUP count=0 overflow=0",
-        "ignored": "IGNORED count=0",
-        "alive": "ALIVE alive=1 lastinput=5001 deathtic=1149 reborns=5",
+        "ignored": "IGNORED count=1 1@3521:476:shootx2",
+        "alive": "ALIVE alive=0 lastinput=5001 deathtic=1149 reborns=6",
         "arena": 43616,
-        "reload": [1424, 2331, 3164, 4019, 4363],
+        "reload": [1424, 2031, 2652, 3164, 4019, 4363],
     },
     "DEMO2": {
         "map": "E1M3",
@@ -566,6 +591,7 @@ def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
     cohere = record_of(text, "COHERE")
     arena = record_of(text, "ARENA")
     reloads = [record_of(line, "RELOAD") for line in lines_of(text, "RELOAD")]
+    deaths = [record_of(line, "DEATH") for line in lines_of(text, "DEATH")]
     anom = record_of(text, "ANOM")
     alive = record_of(text, "ALIVE")
     verdict = record_of(text, "VERDICT")
@@ -722,12 +748,57 @@ def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
                         f"    now:  {line_of(text, 'ALIVE')}\n"
                         f"    pin:  {pins['alive']}")
 
-    # 5. The fidelity verdict this harness can reach without a reference.
-    if verdict.get("faithful") != "1":
-        message = (f"{name}: the run is not faithful: reason={verdict.get('reason')} "
+    # 4a/5. The ending. Upstream ends a demo at the marker or at
+    # G_CheckDemoStatus, never on a death, so "the player is alive at the last
+    # command" is not an upstream requirement: a recording whose last command
+    # kills the player ends dead, and no respawn was possible. The conditions
+    # are (a) every death the stream still had commands for was answered by a
+    # reload inside it, (b) a run may end dead only when its death landed at or
+    # after the last input, and (c) `alive` is pinned, so a change that flips
+    # dead<->alive fails on the pin instead of on invented physics.
+    #
+    # The arithmetic behind (a) and (b): the harness prints one DEATH per fall
+    # and one RELOAD per PST_REBORN, so a run that ends alive must have as many
+    # reloads as deaths, and one that ends dead exactly one fewer.
+    alive_at_end = number(alive, "alive")
+    last_input = number(alive, "lastinput")
+    death_tics = [number(record, "n") for record in deaths]
+    reload_tics = [number(record, "n") for record in reloads]
+    unanswered = len(deaths) - len(reloads)
+    if unanswered != (0 if alive_at_end else 1):
+        failures.append(f"{name}: {len(deaths)} death(s) and {len(reloads)} "
+                        f"reload(s) with alive={alive_at_end}: {unanswered} "
+                        "unanswered")
+
+    for tic in death_tics:
+        if tic >= last_input:
+            # A death at or after the last input had no command left to answer
+            # it; (b) judges that one.
+            continue
+        if not any(reload_tic > tic for reload_tic in reload_tics):
+            failures.append(
+                f"{name}: the death at tic {tic} has no later reload, and the "
+                f"stream still had commands after it (last input tic "
+                f"{last_input}): the corpse was played on")
+    if alive_at_end == 0:
+        final_death = max(death_tics) if death_tics else -1
+        if final_death < last_input:
+            failures.append(
+                f"{name}: the run ends dead, but its last death is at tic "
+                f"{final_death}, before the last input tic {last_input}, so a "
+                "respawn was still possible")
+        else:
+            print(f"  ENDS-DEAD death N={final_death} at or after the last input "
+                  f"N={last_input}: no respawn was possible")
+
+    # The harness's own summary, for everything the ending rules do not cover:
+    # an unimplemented action (`action`) or a line special with no EV handler
+    # (`special`). `endsdead` is a permitted ending; `frozen` is (a) failing.
+    reason = verdict.get("reason")
+    if verdict.get("faithful") != "1" and reason not in ("endsdead",):
+        message = (f"{name}: the run is not faithful: reason={reason} "
                    f"missing={anom.get('missing')} (first {anom.get('first')} at tic "
-                   f"{anom.get('firsttic')}), player alive at the last input "
-                   f"tic={alive.get('alive')}")
+                   f"{anom.get('firsttic')}), player alive at the end={alive.get('alive')}")
         if strict:
             failures.append(message)
         else:
@@ -845,6 +916,8 @@ def main(argv: list[str] | None = None) -> int:
             if line:
                 print(f"  {line}")
         for line in lines_of(text, "RELOAD"):
+            print(f"  {line}")
+        for line in lines_of(text, "DEATH"):
             print(f"  {line}")
         final = record_of(text, "FINAL")
         chain = record_of(text, "CHAIN")

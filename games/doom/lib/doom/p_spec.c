@@ -24,10 +24,12 @@
 #include "p_ceilng.h"
 #include "p_doors.h"
 #include "p_floor.h"
+#include "p_inter.h"
 #include "p_lights.h"
 #include "p_mobj.h"
 #include "p_plats.h"
 #include "p_setup.h"
+#include "p_user.h"
 
 /* --- Line geometry ------------------------------------------------------- */
 
@@ -468,9 +470,14 @@ p_spec_error_t p_spawn_specials(struct p_level* level) {
                 break;
 
             default:
-                /* 5/7/11/16 are damage/exit floors (the player-in-sector
-                 * effect, D4.2); anything else is unknown to the port. */
-                level->specStats.unsupportedSectorSpecial += 1u;
+                /* 5/7/11/16 are the player-in-sector damage floors and 9 is the
+                 * secret: they spawn nothing and keep their number for
+                 * P_PlayerInSpecialSector, so they are not gaps. Everything
+                 * else is a number neither upstream function names. */
+                if (special != 5 && special != 7 && special != 11 &&
+                    special != 16) {
+                    level->specStats.unsupportedSectorSpecial += 1u;
+                }
                 break;
         }
     }
@@ -483,6 +490,103 @@ p_spec_error_t p_spawn_specials(struct p_level* level) {
     }
 
     return P_SPEC_OK;
+}
+
+/* --- P_PlayerInSpecialSector --------------------------------------------- */
+
+void p_player_in_special_sector(p_level_t* level, p_player_t* player) {
+    uint16_t index;
+    int16_t special;
+    r_mobj_t* mo;
+
+    if (level == NULL || player == NULL || level->sectors == NULL) {
+        return;
+    }
+    mo = player->mo;
+    if (mo == NULL) {
+        return;
+    }
+    index = mo->sector;
+    if ((uint32_t)index >= (uint32_t)level->sectorCount) {
+        return;
+    }
+
+    /* "Falling, not all the way down yet?" A thing still on its way to the
+     * floor takes nothing, however long the sector's special is on. */
+    if (mo->z != level->sectors[index].floorHeight) {
+        return;
+    }
+
+    special = level->sectors[index].special;
+    switch (special) {
+        case 5:
+            /* HELLSLIME DAMAGE */
+            if (player->powers[P_PW_IRONFEET] == 0 &&
+                (level->leveltime & P_SECTOR_DAMAGE_MASK) == 0) {
+                p_damage_mobj(&level->context, mo, NULL, NULL,
+                              P_SECTOR_DAMAGE_HELLSLIME);
+            }
+            break;
+
+        case 7:
+            /* NUKAGE DAMAGE */
+            if (player->powers[P_PW_IRONFEET] == 0 &&
+                (level->leveltime & P_SECTOR_DAMAGE_MASK) == 0) {
+                p_damage_mobj(&level->context, mo, NULL, NULL,
+                              P_SECTOR_DAMAGE_NUKAGE);
+            }
+            break;
+
+        case 16:
+        case 4:
+            /* SUPER HELLSLIME DAMAGE / STROBE HURT.
+             *
+             * `if (!player->powers[pw_ironfeet] || (P_Random()<5))`: the `||`
+             * short-circuits, so the draw happens only when the suit is on --
+             * and then it happens every tic, whether or not the roll hurts.
+             * Losing that draw would shift every later P_Random() in the level. */
+            if (player->powers[P_PW_IRONFEET] == 0 ||
+                p_random(level->context.random) < P_SECTOR_DAMAGE_SUIT_ROLL) {
+                if ((level->leveltime & P_SECTOR_DAMAGE_MASK) == 0) {
+                    p_damage_mobj(&level->context, mo, NULL, NULL,
+                                  P_SECTOR_DAMAGE_STRONG);
+                }
+            }
+            break;
+
+        case 9:
+            /* SECRET SECTOR: the count is the player's and the clear is the
+             * one-shot, so a second tic in the same sector does nothing. */
+            player->secretcount += 1;
+            level->sectors[index].special = 0;
+            break;
+
+        case 11:
+            /* EXIT SUPER DAMAGE! (for E1M8 finale)
+             *
+             * `player->cheats &= ~CF_GODMODE;` -- there are no cheats (D5), so
+             * there is nothing to clear. The order below is upstream's: the
+             * damage lands first and the threshold is read after it. */
+            if ((level->leveltime & P_SECTOR_DAMAGE_MASK) == 0) {
+                p_damage_mobj(&level->context, mo, NULL, NULL,
+                              P_SECTOR_DAMAGE_STRONG);
+            }
+            if (player->health <= P_SECTOR_EXIT_THRESHOLD) {
+                /* G_ExitLevel(): `secretexit = false; gameaction =
+                 * ga_completed`. p_spec.c cannot call g_game.c, so the request
+                 * is the level's (p_exit_request_t) and the game state machine
+                 * reads it -- the same path the exit line specials use. */
+                level->exitRequest = (uint8_t)P_EXIT_NORMAL;
+            }
+            break;
+
+        default:
+            /* Upstream's `I_Error ("P_PlayerInSpecialSector: unknown special
+             * %i")`. Nothing to do and nothing to fake: after
+             * P_SpawnSpecials the field holds 4, 5, 7, 9, 11 or 16, because
+             * every other spawn effect clears it. */
+            break;
+    }
 }
 
 /* --- Trigger dispatch ---------------------------------------------------- */

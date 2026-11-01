@@ -271,7 +271,8 @@ struct p_level;
  *                    P_PlayerThink; this bit makes it happen exactly once.
  *   killcount        intermission totals; P_KillMobj raises them (D4.2d1).
  *   itemcount        intermission totals; P_TouchSpecialThing raises them.
- *   secretcount      intermission totals; P_PlayerInSpecialSector (T15).
+ *   secretcount      intermission totals; P_PlayerInSpecialSector raises it for
+ *                    a sector special 9 (p_spec.c) and the sector is cleared.
  *   damagecount      the red screen-flash counter; P_DamageMobj raises it and
  *                    P_PlayerThink decrements it.
  *   bonuscount       the gold screen-flash counter; a pickup adds BONUSADD.
@@ -459,6 +460,8 @@ void p_player_init(struct p_level* level, r_mobj_t* mobj);
  *   1. copy the command into `player->cmd` (G_Ticker's memcpy);
  *   2. a live player runs the reactiontime gate and P_MovePlayer;
  *   3. P_CalcHeight() (P_DeathThink calls it too, when it lands);
+ *   3a. P_PlayerInSpecialSector() when the avatar's sector special is nonzero:
+ *      the damage floors, the secret sector and E1M8's exit;
  *   4. BT_SPECIAL is cleared: "a special event has no other buttons";
  *   5. BT_CHANGE selects a weapon when it is owned and not already in hand, and
  *      the change is *asked for* through `pendingweapon` -- the actual switch
@@ -476,9 +479,11 @@ void p_player_init(struct p_level* level, r_mobj_t* mobj);
  * g_demo_reborn() is that step here -- so a tic that reaches this layer in that
  * state stops instead of running the live body against a zero-health player.
  *
- * P_PlayerInSpecialSector() (sector damage) is T15's, and the power-up colormaps
- * are the HUD's (D5), so `fixedcolormap` stays 0 while the tic counters themselves
- * are real.
+ * P_PlayerInSpecialSector() is p_spec.c's and runs at step 3a: the avatar's own
+ * sector is asked once per tic when its special is nonzero, which is where the
+ * damage floors, the secret count and E1M8's sector-11 exit live. The power-up
+ * colormaps are the HUD's (D5), so `fixedcolormap` stays 0 while the tic counters
+ * themselves are real.
  *
  * @param level The level; its playerState record is the subject.
  * @param cmd   This tic's command. NULL is one tic of no input: the caller may
