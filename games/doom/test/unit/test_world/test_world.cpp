@@ -34,6 +34,7 @@
 
 #include <unity.h>
 
+#include "g_game.h"
 #include "p_action.h"
 #include "p_ceilng.h"
 #include "p_doors.h"
@@ -2385,6 +2386,184 @@ void test_level_tic_runs_the_player_then_the_thinkers(void) {
     TEST_ASSERT_EQUAL_INT32(viewz, fixture.player().viewz);
 }
 
+// --- D4.4: the death, the reload and the stream (g_game.c's G_DoReborn) -----
+
+/*
+ * A level with the player start and one sector special, so P_SpawnSpecials has
+ * a thinker to create and a P_Random() draw to make: without a draw, "the
+ * sequence was carried over" and "the sequence was reseeded" are the same
+ * observation.
+ */
+struct ReloadFixture {
+    MoveMapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[32768]{};
+    p_level_t level{};
+
+    // special 1 is FLICKERING LIGHTS, whose spawn draws P_Random().
+    ReloadFixture() : builder({{0, 128, 160, 1, 0}}) {
+        builder.addRoom(0);
+        builder.addThing(0, 0, 90, 1, 7);   // player 1, facing +y
+    }
+
+    bool open() {
+        if (builder.open(&map) != DOOM_MAP_OK) {
+            return false;
+        }
+        if (p_level_init(&level, &map, arena, sizeof arena, nullptr) !=
+            P_SETUP_OK) {
+            return false;
+        }
+        return p_spawn_specials(&level) == P_SPEC_OK;
+    }
+
+    int count(i16 kind) const {
+        int found = 0;
+
+        for (const p_thinker_t* thinker = p_thinker_first(&level.thinkers);
+             thinker != nullptr; thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == kind) {
+                found += 1;
+            }
+        }
+        return found;
+    }
+
+    p_player_t& player() { return level.playerState; }
+    r_mobj_t* mo() { return level.player; }
+};
+
+void test_level_reload_carries_the_random_position_and_restarts_the_clock(void) {
+    ReloadFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // G_InitNew's M_ClearRandom() then P_SetupLevel's specials: the first load
+    // starts the sequence at zero and leaves it after the draws it made (one for
+    // P_SpawnMobj's `lastlook`, one for P_SpawnLightFlash).
+    const u32 firstLoadDraws = fixture.level.random.index;
+    TEST_ASSERT_TRUE(firstLoadDraws > 0u);
+
+    // Move the clock and the sequence by hand: a light thinker's draw per tic
+    // depends on its own count, and this test is about what a reload preserves,
+    // not about how many draws a tic makes.
+    fixture.level.leveltime = 1149;
+    for (int draw = 0; draw < 7; ++draw) {
+        (void)p_random(&fixture.level.random);
+    }
+    const u32 carried = fixture.level.random.index;
+    TEST_ASSERT_EQUAL_UINT32(firstLoadDraws + 7u, carried);
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_reload(&fixture.level));
+
+    // M_ClearRandom() belongs to G_InitNew(), not to P_SetupLevel(): the reload
+    // drew from where the sequence already was. Its own draws are the THINGS
+    // run's -- one spawned thing, one `lastlook` draw -- taken from `carried`.
+    const u32 afterThings = fixture.level.random.index;
+    TEST_ASSERT_EQUAL_UINT32(carried + 1u, afterThings);
+    // P_SetupLevel's `leveltime = 0;`
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.leveltime);
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_spawn_specials(&fixture.level));
+    // A reload consumes exactly the draws a first load consumes, continuing from
+    // where the sequence was. A reseeded load would land on `firstLoadDraws`.
+    TEST_ASSERT_EQUAL_UINT32(carried + firstLoadDraws,
+                             fixture.level.random.index);
+    TEST_ASSERT_TRUE(fixture.level.random.index != firstLoadDraws);
+}
+
+void test_level_reload_three_times_leaves_the_arena_and_the_world_unchanged(void) {
+    ReloadFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    const zone_stats_t loaded = z_stats(&fixture.level.zone);
+    const u32 mobjs = p_level_mobj_count(&fixture.level);
+    const u32 spawned = fixture.level.stats.spawned;
+    const int lights = fixture.count(P_THINKER_LIGHTFLASH);
+    TEST_ASSERT_TRUE(loaded.inUse > 0u);
+    TEST_ASSERT_EQUAL_INT(1, lights);
+
+    for (int reload = 0; reload < 3; ++reload) {
+        TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_reload(&fixture.level));
+        TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_spawn_specials(&fixture.level));
+
+        // The reload re-lays the same arena: no block survives, none is added,
+        // and the peak cannot grow. This is the assertion a reload that
+        // allocated a level's worth of blocks per death fails on.
+        const zone_stats_t again = z_stats(&fixture.level.zone);
+        TEST_ASSERT_EQUAL_UINT32(loaded.inUse, again.inUse);
+        TEST_ASSERT_EQUAL_UINT32(loaded.freeBytes, again.freeBytes);
+        TEST_ASSERT_EQUAL_UINT32(loaded.overhead, again.overhead);
+        TEST_ASSERT_EQUAL_UINT32(loaded.peakInUse, again.peakInUse);
+
+        // The world is the first load's, not the previous tic's: the same mobjs,
+        // one light thinker (not two), and the player rewired to its new avatar.
+        TEST_ASSERT_EQUAL_UINT32(mobjs, p_level_mobj_count(&fixture.level));
+        TEST_ASSERT_EQUAL_UINT32(spawned, fixture.level.stats.spawned);
+        TEST_ASSERT_EQUAL_INT(lights, fixture.count(P_THINKER_LIGHTFLASH));
+        TEST_ASSERT_EQUAL_PTR(fixture.level.player, fixture.player().mo);
+        TEST_ASSERT_EQUAL_INT(P_PST_LIVE, fixture.player().playerstate);
+        TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH, fixture.player().health);
+        TEST_ASSERT_EQUAL_INT32(0, fixture.level.leveltime);
+    }
+}
+
+void test_demo_reborn_answers_a_dead_player_with_a_reload(void) {
+    ReloadFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    // Kill the avatar the way P_DamageMobj does, walk it away from the start and
+    // let P_DeathThink's USE press set the state G_Ticker answers.
+    fixture.mo()->x = 64 * kFrac;
+    fixture.mo()->y = 64 * kFrac;
+    player.health = 0;
+    player.playerstate = P_PST_DEAD;
+    player.ammo[P_AM_CLIP] = 3;
+    player.killcount = 9;
+    player.viewheight = 30 * kFrac;
+    p_ticcmd_t respawn{};
+    respawn.buttons = BT_USE;
+    p_player_think(&fixture.level, &respawn);
+    TEST_ASSERT_EQUAL_INT(P_PST_REBORN, player.playerstate);
+    fixture.level.leveltime = 1149;
+
+    // The harness hook is the caller's: p_level_init() cannot see it, so the
+    // reload has to reinstate it or the counters stop counting.
+    p_action_trace_t trace{};
+    fixture.level.context.actionTrace = &trace;
+
+    TEST_ASSERT_EQUAL_INT(G_DEMO_OK, g_demo_reborn(&fixture.level));
+
+    TEST_ASSERT_EQUAL_PTR(&trace, fixture.level.context.actionTrace);
+    TEST_ASSERT_EQUAL_INT(P_PST_LIVE, player.playerstate);
+    TEST_ASSERT_EQUAL_PTR(fixture.level.player, player.mo);
+    TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH, player.health);
+    // G_PlayerReborn(): "don't do anything immediately", and the opening kit.
+    TEST_ASSERT_EQUAL_INT32(1, player.usedown);
+    TEST_ASSERT_EQUAL_INT32(1, player.attackdown);
+    TEST_ASSERT_EQUAL_INT32(0, player.viewheight);
+    TEST_ASSERT_EQUAL_INT32(50, player.ammo[P_AM_CLIP]);
+    TEST_ASSERT_EQUAL_INT32(0, player.killcount);
+    // P_SetupLevel restarts the clock with the level, and the avatar is at the
+    // map's own start record: tl.x = 0, tl.y = 0, angle 90 in this fixture.
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.leveltime);
+    TEST_ASSERT_EQUAL_INT32(0, player.mo->x);
+    TEST_ASSERT_EQUAL_INT32(0, player.mo->y);
+    TEST_ASSERT_EQUAL_UINT32(ANG45 * 2u, player.mo->angle);
+    // The stream is not the clock: the demo layer counts commands, and a reload
+    // moves none of them.
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.stats.playerStarts);
+}
+
+void test_demo_reborn_refuses_a_level_that_is_not_loaded(void) {
+    p_level_t level{};
+
+    TEST_ASSERT_EQUAL_INT(G_DEMO_ERR_NULL_LEVEL, g_demo_reborn(nullptr));
+    TEST_ASSERT_EQUAL_INT(G_DEMO_ERR_NOT_OPEN, g_demo_reborn(&level));
+    TEST_ASSERT_EQUAL_INT(P_SETUP_ERR_NOT_OPEN, p_level_reload(&level));
+    TEST_ASSERT_EQUAL_INT(P_SETUP_ERR_NULL_LEVEL, p_level_reload(nullptr));
+}
+
 // --- Weapons and the attack path (D4.2d2) ----------------------------------
 
 // A 256 x 256 room with one extra one-sided line 48 units north of the centre:
@@ -2744,6 +2923,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_player_think_counts_the_deferred_buttons_and_death);
     RUN_TEST(test_player_calc_height_clamps_bob_and_ceiling);
     RUN_TEST(test_level_tic_runs_the_player_then_the_thinkers);
+    RUN_TEST(test_level_reload_carries_the_random_position_and_restarts_the_clock);
+    RUN_TEST(test_level_reload_three_times_leaves_the_arena_and_the_world_unchanged);
+    RUN_TEST(test_demo_reborn_answers_a_dead_player_with_a_reload);
+    RUN_TEST(test_demo_reborn_refuses_a_level_that_is_not_loaded);
     RUN_TEST(test_weapon_set_psprite_runs_the_entry_action_and_follows_the_chain);
     RUN_TEST(test_weapon_setup_raises_the_pistol_to_the_ready_state);
     RUN_TEST(test_weapon_fire_spends_one_round_and_refire_chains);

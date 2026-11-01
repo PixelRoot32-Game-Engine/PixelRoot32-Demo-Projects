@@ -40,15 +40,18 @@
  * hides a change.
  *
  * What a run *can* prove without a reference is falsification, and the demos
- * offer one check of that kind from their own data: a recorded stream whose
- * player is still issuing movement commands a few tics before its marker is a
- * recording of a live player. Vanilla's single-player death does not continue
- * like that -- P_DeathThink runs the view down and sets PST_REBORN, and
- * G_DoReborn reloads the level, which ends playback -- so a run that freezes the
- * corpse and keeps consuming commands for thousands of tics is not vanilla's,
- * whatever else it is. ALIVE reports whether this player is still live at the
- * last command that carries input, and VERDICT folds that together with the
- * missing-action count p_action.c keeps.
+ * offer one check of that kind from their own data. Every shareware demo dies
+ * and then carries input for thousands of tics more, including a USE hold just
+ * after the death. In linuxdoom-1.10 a single-player death runs P_DeathThink to
+ * PST_REBORN, and G_DoReborn answers it with `gameaction = ga_loadlevel` -- the
+ * same level, reloaded, after which playback continues; G_CheckDemoStatus is
+ * reached at the marker, never on a death. So the falsifiable statement is not
+ * "the player never dies" (all three die) but "the corpse is never what the
+ * stream is played on": a run whose player ends the stream not PST_LIVE, or
+ * which never reloaded after its death, is not vanilla's. ALIVE reports whether
+ * the player is live at the last command and how many reloads answered its
+ * deaths, and VERDICT folds that together with the missing-action count
+ * p_action.c keeps.
  *
  * THE PROTOCOL (tools/demo_check.py parses it; the order is part of the format)
  *
@@ -57,23 +60,37 @@
  *   CMD count=5026 lastinput=5001 digest=<sha256>
  *   WORLD map=E1M5 spawned=216 kills=91 items=29 secrets=9 mobjs=216 rng=120
  *       specials=14 triggers=0
+ *   ARENA load=<inUse> peak=<peak> free=<free> overhead=<overhead>
  *   CHECK n=100 hash=<sha256>            one line per CHECK_TICS commands, in order
+ *   RELOAD n=<tic> x=<x> y=<y> health=<h> mobjs=<c> leveltime=0 arena=<inUse>
  *   FINAL n=5026 hash=<sha256>
  *   CHAIN count=51 hash=<sha256>
  *   STATE n=5026 x=-14680064 y=-40894464 z=0 angle=0 health=0 armor=0
  *       ammo=0,0,0,0 kills=7 items=4 secrets=0 mobjs=208
- *   RUN tics=5026 stop=marker leveltime=5026 declared=5026
+ *   RUN tics=5026 stop=marker leveltime=<lt> declared=5026
+ *       `leveltime` is the world's clock when the stream ended, not the stream's
+ *       position: a reload restarts it at P_SetupLevel's `leveltime = 0;`, so a
+ *       run of 5,026 commands that reloaded ends with a smaller number.
  *   COHERE wallcross=0 outside=0 angleskip=<n> anglebad=0 anglepunch=<n>
  *       sectorchanges=<n> sectors=<n> doorpass=<n> doorsopen=<n> forward=<n>
  *       netfwd=<i64> netback=<i64> shots=<n> ammo=<n> attackticks=<n>
  *       useticks=<n> useedges=<n> usetriggers=<n> hpmin=<n> hpmax=<n>
  *       hploss=<n> hpgain=<n> deadtics=<n> mobjmax=<n>
+ *   SPEC triggers=<n> unsupported=<n> deferred=<n> scrolls=<n>
+ *       the line specials the playback reached, as run totals: the level's own
+ *       counters are zeroed by p_spawn_specials() (which a reload calls), so the
+ *       harness adds each tic's delta to its own totals.
  *   ANOM missing=<n> firsttic=<n> first=<action> last=<action>
  *   MISSING count=<n> overflow=<n> <id>@<tic>:<type> ...
- *   ALIVE alive=<0|1> lastinput=<n> deathtic=<n|-1>
+ *   ALIVE alive=<0|1> lastinput=<n> deathtic=<n|-1> reborns=<n>
  *   VERDICT faithful=<0|1> reason=<none|action|death>
  *
- * `n` counts commands consumed, from 1, so `n=5026` is DEMO1's whole stream.
+ * `n` counts commands consumed, from 1, so `n=5026` is DEMO1's whole stream; a
+ * RELOAD's `n` is the command whose tic set PST_REBORN, and a reload consumes no
+ * command of its own. ARENA and the RELOAD `arena=` field are z_stats().inUse,
+ * the payload capacity of the level's live blocks: a reload re-lays the same
+ * arena, so every one of them must equal ARENA's `load`.
+ *
  * `anglebad` counts commands whose recorded angleturn was not applied exactly;
  * only commands where P_MovePlayer ran are compared, and `angleskip` is the
  * rest, which are a dead player or a reaction time and are expected.
@@ -588,6 +605,10 @@ typedef struct run_totals {
     uint32_t deadTics;
     uint32_t mobjMax;
     uint32_t missing;
+    uint32_t reloads;
+    /* line specials the run's playback reached: triggers, unsupported,
+     * deferred, scrolls (p_spec.h's p_spec_stats_t order). */
+    uint32_t spec[4];
     uint32_t missingFirstTic;
     uint32_t missingFirstAction;
     uint32_t missingLastAction;
@@ -636,6 +657,7 @@ int main(int argc, char** argv) {
     uint8_t digest[32];
     uint32_t tic = 0;
     uint32_t missingBefore = 0;
+    uint32_t specBefore[4] = {0u, 0u, 0u, 0u};
     fixed_t prevX = 0;
     fixed_t prevY = 0;
     angle_t prevAngle = 0;
@@ -647,6 +669,7 @@ int main(int argc, char** argv) {
     uint8_t prevButtons = 0;
     int perturbSkip = 0;
     int argvIndex;
+    int pool;
     uint16_t sectorCount;
     uint16_t index16;
     int inside = 0;
@@ -820,6 +843,22 @@ int main(int argc, char** argv) {
            p_level_mobj_count(&level), level.random.index,
            (unsigned)level.specStats.spawned,
            (unsigned)level.specStats.triggers);
+    {
+        /* The level's arena, as the reload must leave it: `load` is what every
+         * reload's `arena=` must equal, so a reload that allocated a second
+         * level's worth of blocks fails here and not on the third death. */
+        const zone_stats_t arena = z_stats(&level.zone);
+
+        printf("ARENA load=%u peak=%u free=%u overhead=%u\n",
+               (unsigned)arena.inUse, (unsigned)arena.peakInUse,
+               (unsigned)arena.freeBytes, (unsigned)arena.overhead);
+    }
+    /* The load's own line-special counts are not the playback's: the run counts
+     * from here, and a reload re-baselines at p_spawn_specials' reset. */
+    specBefore[0] = level.specStats.triggers;
+    specBefore[1] = level.specStats.unsupportedLineSpecial;
+    specBefore[2] = level.specStats.deferredLineSpecial;
+    specBefore[3] = level.specStats.lineScrolls;
 
     /* One perturb, and it is the honest one: the stream is shifted by one tic
      * against the world, so every command lands on the wrong world state. If the
@@ -1020,6 +1059,24 @@ int main(int argc, char** argv) {
             totals.missingLastAction = level.actions.lastNotImplemented;
             missingBefore = level.actions.notImplemented;
         }
+        /* The special-line counters, accumulated the same way and for the same
+         * reason: p_spawn_specials() zeroes them, and a reload calls it. */
+        {
+            const uint32_t now[4] = {
+                level.specStats.triggers,
+                level.specStats.unsupportedLineSpecial,
+                level.specStats.deferredLineSpecial,
+                level.specStats.lineScrolls
+            };
+            uint32_t field;
+
+            for (field = 0u; field < 4u; ++field) {
+                if (now[field] > specBefore[field]) {
+                    totals.spec[field] += now[field] - specBefore[field];
+                }
+                specBefore[field] = now[field];
+            }
+        }
 
         prevX = level.player->x;
         prevY = level.player->y;
@@ -1027,6 +1084,64 @@ int main(int argc, char** argv) {
         prevReaction = level.player->reactiontime;
         prevReady = level.playerState.readyweapon;
         prevSector = sector;
+
+        /* --- G_Ticker's reborn step ---
+         *
+         * `if (playeringame[i] && players[i].playerstate == PST_REBORN)
+         *      G_DoReborn (i);` at the top of the *next* tic, which for a
+         * single-player game is `gameaction = ga_loadlevel` and therefore a
+         * reload of the same level before that tic's command is read. So the
+         * reload happens here, after this command's tic and before the next
+         * read, and it consumes no command. */
+        if (level.playerState.playerstate == P_PST_REBORN) {
+            const g_demo_error_t reborn = g_demo_reborn(&level);
+
+            if (reborn != G_DEMO_OK) {
+                fprintf(stderr, "demo_check: the reload at tic %u failed with "
+                                "g_demo error %d\n", tic, (int)reborn);
+                p_level_shutdown(&level);
+                free(initialCeiling);
+                free(visited);
+                free(arena);
+                free(bytes);
+                return 2;
+            }
+            /* One line per answered death: where the avatar reappeared, what it
+             * carries, and the arena's bytes in use. This is the evidence a
+             * reload is a reload and not a teleport or a leak. */
+            printf("RELOAD n=%u x=%ld y=%ld health=%ld mobjs=%u leveltime=%d "
+                   "arena=%u\n",
+                   tic, (long)level.player->x, (long)level.player->y,
+                   (long)level.playerState.health,
+                   (unsigned)p_level_mobj_count(&level), level.leveltime,
+                   (unsigned)z_stats(&level.zone).inUse);
+            totals.reloads += 1u;
+            /* p_level_init() zeroes the level's action counters with the rest of
+             * the state, so the running "how many are new" baseline restarts;
+             * p_spawn_specials() does the same to the special-line counters. */
+            missingBefore = 0u;
+            specBefore[0] = level.specStats.triggers;
+            specBefore[1] = level.specStats.unsupportedLineSpecial;
+            specBefore[2] = level.specStats.deferredLineSpecial;
+            specBefore[3] = level.specStats.lineScrolls;
+            /* The avatar is a different mobj at the map's start: the step this
+             * tic did not make is the level change, not a teleport, and the next
+             * tic compares against the respawned player. */
+            prevX = level.player->x;
+            prevY = level.player->y;
+            prevAngle = level.player->angle;
+            prevReaction = level.player->reactiontime;
+            prevReady = level.playerState.readyweapon;
+            prevHealth = level.playerState.health;
+            for (pool = 0; pool < P_NUMAMMO; ++pool) {
+                prevAmmo[pool] = level.playerState.ammo[pool];
+            }
+            prevSector = sectorAt(&map, prevX, prevY, &inside);
+            if (prevSector != 0xFFFFu && visited[prevSector] == 0u) {
+                visited[prevSector] = 1u;
+                totals.sectorsVisited += 1u;
+            }
+        }
 
         /* --- the chain --- */
         if ((tic + 1u) % CHECK_TICS == 0u) {
@@ -1089,6 +1204,9 @@ int main(int argc, char** argv) {
            totals.useEdges, totals.useTriggers, (long)totals.hpMin,
            (long)totals.hpMax, (long)totals.hpLoss, (long)totals.hpGain,
            totals.deadTics, totals.mobjMax);
+    printf("SPEC triggers=%u unsupported=%u deferred=%u scrolls=%u\n",
+           (unsigned)totals.spec[0], (unsigned)totals.spec[1],
+           (unsigned)totals.spec[2], (unsigned)totals.spec[3]);
     printf("ANOM missing=%u firsttic=%u first=%u last=%u\n",
            totals.missing, totals.missingFirstTic, totals.missingFirstAction,
            totals.missingLastAction);
@@ -1115,15 +1233,17 @@ int main(int argc, char** argv) {
 
     {
         /* "Faithful" in the only sense this harness can assert without a
-         * reference: every action the run reached is implemented, and the player
-         * is still alive at the last command that carried input (a recording
-         * does not continue past its player's death). */
-        const int alive =
-            level.playerState.playerstate == P_PST_LIVE &&
-            (totals.deathTic < 0 || totals.lastInputTic < totals.deathTic);
+         * reference: every action the run reached is implemented, and the stream
+         * is played on a live player -- which, for a demo that dies, means every
+         * death was answered by a reload (G_DoReborn -> ga_loadlevel) and the
+         * player is PST_LIVE at the last command. A run that ends DEAD or
+         * PST_REBORN is a frozen corpse with commands still arriving, and that is
+         * not what vanilla's G_CheckDemoStatus-less death does. */
+        const int alive = level.playerState.playerstate == P_PST_LIVE;
 
-        printf("ALIVE alive=%d lastinput=%ld deathtic=%ld\n", alive,
-               (long)totals.lastInputTic, (long)totals.deathTic);
+        printf("ALIVE alive=%d lastinput=%ld deathtic=%ld reborns=%u\n", alive,
+               (long)totals.lastInputTic, (long)totals.deathTic,
+               (unsigned)totals.reloads);
         printf("VERDICT faithful=%d reason=%s\n",
                totals.missing == 0u && alive != 0 ? 1 : 0,
                totals.missing != 0u ? "action" : (alive != 0 ? "none" : "death"));

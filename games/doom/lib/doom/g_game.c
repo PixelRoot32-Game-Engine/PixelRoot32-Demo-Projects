@@ -20,9 +20,11 @@
  * Upstream's demo path is entangled with the game state machine: a marker calls
  * G_ExitLevel(), G_DoPlayDemo sets gameaction, and the level, intermission and
  * menu are all reachable from the same switch. D4.4 is playback only, so this
- * file has no gameaction, no gamemap, no globals at all: the header is data, the
- * cursor is data, and the world is the caller's. That also keeps it linkable by
- * a host harness that has no engine, no display and no .bss to spend.
+ * file carries one game action and no more: G_DoReborn's single-player branch,
+ * which is `gameaction = ga_loadlevel` -- a reload of the level the header
+ * named, never a transition. There are no globals at all: the header is data,
+ * the cursor is data, and the world is the caller's. That also keeps it linkable
+ * by a host harness that has no engine, no display and no .bss to spend.
  *
  * This is C99 only: <stddef.h>, <stdint.h>, no allocation, no globals, no stdio,
  * no floating point.
@@ -200,6 +202,39 @@ void g_demo_rules(const g_demo_t* demo, p_spawn_rules_t* rules) {
     rules->nomonsters = demo->header.nomonsters;
 }
 
+/* --- G_DoReborn ---------------------------------------------------------- */
+
+g_demo_error_t g_demo_reborn(p_level_t* level) {
+    if (level == NULL) {
+        return G_DEMO_ERR_NULL_LEVEL;
+    }
+    if (!level->open) {
+        return G_DEMO_ERR_NOT_OPEN;
+    }
+
+    /* G_DoReborn's `if (!netgame) { gameaction = ga_loadlevel; }`, and the
+     * G_DoLoadLevel() the action loop runs next: the map `gamemap` still names,
+     * loaded from scratch. */
+    if (p_level_reload(level) != P_SETUP_OK) {
+        return G_DEMO_ERR_RELOAD;
+    }
+    /* P_SetupLevel's following step, and the only one p_level_init() leaves out
+     * on purpose: the movers, the light thinkers and the sector sound state. It
+     * draws P_Random() from the position the reload carried over, which is where
+     * upstream's P_SpawnSpecials draws too. */
+    if (p_spawn_specials(level) != P_SPEC_OK) {
+        return G_DEMO_ERR_RELOAD;
+    }
+    /* G_DoLoadLevel's `for (i...) if (playeringame[i]) G_PlayerReborn (i);`
+     * happens inside p_level_init()'s THINGS run, which wires the player record
+     * to the avatar P_SpawnPlayer() made. Both halves must have happened: a
+     * reloaded level with no player is one the driver cannot tick. */
+    if (level->player == NULL || level->playerState.mo != level->player) {
+        return G_DEMO_ERR_NO_PLAYER;
+    }
+    return G_DEMO_OK;
+}
+
 /* --- Playback ------------------------------------------------------------ */
 
 g_demo_error_t g_demo_play(g_demo_t* demo, p_level_t* level, g_demo_run_t* run) {
@@ -239,6 +274,18 @@ g_demo_error_t g_demo_play(g_demo_t* demo, p_level_t* level, g_demo_run_t* run) 
             return G_DEMO_ERR_TICK;
         }
         local.tics += 1u;
+        /* G_Ticker's first statement on the next tic. P_DeathThink sets
+         * PST_REBORN when the corpse's command holds USE; G_DoReborn answers it
+         * with a reload of the same level, and playback continues on the stream
+         * as if nothing had happened -- which is what the recorded demo does. */
+        if (level->playerState.playerstate == P_PST_REBORN) {
+            const g_demo_error_t reborn = g_demo_reborn(level);
+
+            if (reborn != G_DEMO_OK) {
+                return reborn;
+            }
+            local.reloads += 1u;
+        }
     }
     local.leveltime = level->leveltime;
     if (run != NULL) {

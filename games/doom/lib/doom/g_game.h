@@ -12,10 +12,10 @@
  *
  * linuxdoom-1.10 g_game.c: G_DoPlayDemo() reads the header, and
  * G_ReadDemoTiccmd() decodes one four-byte command. d_ticcmd.h's ticcmd_t is
- * what they fill. This file is that pair, with the game-state machine around
- * them removed: no level transitions, no intermission, no menus, no save
- * events. A demo is a level, a header that says which level, and a stream of
- * commands.
+ * what they fill. This file is that pair, plus the one game-action step a
+ * recorded demo forces: G_DoReborn()'s single-player branch, which is
+ * `gameaction = ga_loadlevel` and therefore a reload of the same level. There is
+ * still no level transition, no intermission, no menu and no save event.
  *
  * THE FORMAT (shareware WAD, version 109)
  *
@@ -140,6 +140,8 @@ typedef struct g_demo_header {
  *   G_DEMO_ERR_NOT_OPEN    g_demo_play() was given a level that is not loaded
  *   G_DEMO_ERR_TICK        the world refused a tic (p_level_tic's code)
  *   G_DEMO_ERR_NULL_CMD    g_demo_read() was given nowhere to put the command
+ *   G_DEMO_ERR_RELOAD      the level refused to reload, or its specials did
+ *   G_DEMO_ERR_NO_PLAYER   a reloaded level produced no live player to drive
  */
 typedef enum g_demo_error {
     G_DEMO_OK = 0,
@@ -156,7 +158,9 @@ typedef enum g_demo_error {
     G_DEMO_ERR_NULL_LEVEL = 11,
     G_DEMO_ERR_NOT_OPEN = 12,
     G_DEMO_ERR_TICK = 13,
-    G_DEMO_ERR_NULL_CMD = 14
+    G_DEMO_ERR_NULL_CMD = 14,
+    G_DEMO_ERR_RELOAD = 15,
+    G_DEMO_ERR_NO_PLAYER = 16
 } g_demo_error_t;
 
 /* --- One playback -------------------------------------------------------- */
@@ -190,13 +194,19 @@ typedef enum g_demo_stop {
 
 /*
  * What g_demo_play() did: how many commands it fed the world, why it stopped,
- * and the leveltime the world had reached. `tics` equals the demo's command
- * count for a full playback from a rewound record, which is the number the
- * acceptance compares -- a driver that stops early reports a smaller one rather
- * than the lump's.
+ * the leveltime the world had reached, and how many times a death was answered
+ * by a reload. `tics` equals the demo's command count for a full playback from
+ * a rewound record, which is the number the acceptance compares -- a driver that
+ * stops early reports a smaller one rather than the lump's.
+ *
+ * `leveltime` is the world's clock at the end, not the stream's position: a
+ * reload restarts it (P_SetupLevel's `leveltime = 0;`), so a run of 5,026
+ * commands can end with a leveltime in the hundreds. `tics` is the only number
+ * that describes the stream.
  */
 typedef struct g_demo_run {
     uint32_t tics;
+    uint32_t reloads;
     uint8_t stop;
     int32_t leveltime;
 } g_demo_run_t;
@@ -300,6 +310,62 @@ g_demo_error_t g_demo_read(g_demo_t* demo, p_ticcmd_t* cmd);
 void g_demo_rules(const g_demo_t* demo, p_spawn_rules_t* rules);
 
 /**
+ * @brief G_DoReborn()'s single-player branch: reload the level, keep playing.
+ *
+ * Upstream's G_Ticker begins every tic with
+ *
+ *   for (i = 0; i < MAXPLAYERS; i++)
+ *       if (playeringame[i] && players[i].playerstate == PST_REBORN)
+ *           G_DoReborn (i);
+ *
+ * and G_DoReborn, when `!netgame`, does one thing:
+ *
+ *   // reload the level from scratch
+ *   gameaction = ga_loadlevel;
+ *
+ * The game-action loop then runs G_DoLoadLevel() -- the same `gamemap`, not a
+ * transition -- before the tic reads its command. That is what a recorded demo
+ * depends on: all three shareware demos die, hold USE, and carry commands for
+ * thousands of tics after the death, so a port that freezes the corpse is the
+ * one that is wrong. G_CheckDemoStatus is reached at the marker, on recording
+ * 'q' and on a full buffer, never on a death.
+ *
+ * The composition, in this order:
+ *
+ *   1. p_level_reload(): the level's arena is re-laid over the same buffer, the
+ *      THINGS run again from the map's own records, leveltime returns to 0, the
+ *      player record is G_PlayerReborn's, and the P_Random() position and the
+ *      caller's hooks are carried over;
+ *   2. p_spawn_specials(): P_SetupLevel's next step, so the doors, lifts, lights
+ *      and the sector's sound state a reloaded level needs exist again -- and so
+ *      its random draws are taken from the carried position, exactly where
+ *      upstream's P_SpawnSpecials takes them.
+ *
+ * WHY THE RANDOM POSITION IS NOT RESET, IN ONE SENTENCE
+ *
+ * M_ClearRandom() is called by G_InitNew(), not by P_SetupLevel(): a reload
+ * continues the sequence, and reseeding it would desynchronise every monster
+ * pain chance and every pellet of the rest of the demo.
+ *
+ * WHEN TO CALL IT. After the tic whose P_DeathThink set PST_REBORN, and before
+ * the next command is read -- G_Ticker's order. A caller that keeps reading
+ * commands at a PST_REBORN player would freeze it, which is the defect this
+ * function exists to remove.
+ *
+ * A reload is the same map only: no level transition, no intermission, no menu,
+ * no `gamemap` change and no `nextmap` special line. Those are D4.5's.
+ *
+ * @param level A loaded level whose player is PST_REBORN (any player state is
+ *              accepted; the reload itself is unconditional, as G_DoLoadLevel's
+ *              is).
+ * @return G_DEMO_OK, G_DEMO_ERR_NULL_LEVEL, G_DEMO_ERR_NOT_OPEN,
+ *         G_DEMO_ERR_RELOAD if the level or its specials refused, or
+ *         G_DEMO_ERR_NO_PLAYER if the reloaded level has no live console player
+ *         to drive (a map with no type-1 THING).
+ */
+g_demo_error_t g_demo_reborn(p_level_t* level);
+
+/**
  * @brief Plays the record to its end through the world's own tic.
  *
  * The loop, exactly:
@@ -307,12 +373,16 @@ void g_demo_rules(const g_demo_t* demo, p_spawn_rules_t* rules);
  *   while g_demo_read(demo, &cmd) == G_DEMO_OK:
  *       p_level_tic(level, &cmd, NULL)
  *       run->tics++
+ *       if level->playerState.playerstate == PST_REBORN:
+ *           g_demo_reborn(level);  run->reloads++
  *   run->stop = MARKER or END
  *
  * so the player's commands come from the stream and from nothing else: no input
  * device, no G_BuildTiccmd, no per-tic callback. p_level_tic() is P_Ticker's
  * order (player think, thinkers, leveltime++), which is what makes the playback a
- * game tic rather than a world-only tick.
+ * game tic rather than a world-only tick. The reborn step is G_Ticker's and lands
+ * between the tic that died and the command that follows it; `run->tics` counts
+ * commands, so a reload never moves it.
  *
  * The world must already be loaded at the level the header names: a map is
  * doom_map_open()'s and an arena is the caller's, so loading it is not this
@@ -324,7 +394,8 @@ void g_demo_rules(const g_demo_t* demo, p_spawn_rules_t* rules);
  * @param level A loaded level (p_level_init).
  * @param run   Receives the counts; untouched on refusal.
  * @return G_DEMO_OK, G_DEMO_ERR_NULL_DEMO, G_DEMO_ERR_NULL_LEVEL,
- *         G_DEMO_ERR_NOT_OPEN, or G_DEMO_ERR_TICK if the world refused a tic.
+ *         G_DEMO_ERR_NOT_OPEN, G_DEMO_ERR_TICK if the world refused a tic, or
+ *         g_demo_reborn()'s code if a death could not be answered.
  */
 g_demo_error_t g_demo_play(g_demo_t* demo, p_level_t* level, g_demo_run_t* run);
 

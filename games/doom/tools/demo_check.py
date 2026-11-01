@@ -42,18 +42,22 @@ They catch any later change; they do not certify the past. The commit that
 recorded them says so in its body, and a later commit that moves them must say
 what moved and why.
 
-What the data itself can falsify is the ALIVE check, and the reference needs
-care. In linuxdoom-1.10 a single-player death runs P_DeathThink to PST_REBORN,
-and G_DoReborn answers it with `gameaction = ga_loadlevel` -- a level reload,
-after which playback continues. The demos' own streams are consistent with that:
-each dies and then carries a USE press, which is the respawn. This port has no
-G_Ticker/G_DoReborn step (playback is g_game.c's, not the game-state machine's),
-so a dead player stays frozen for the rest of the stream. `ALIVE` records that
-gap (`alive=0` when the player is dead at the last input tic) and `--strict`
-turns it into a failure. It does not by itself prove the death tic is wrong.
-`MISSING` is the distinct unimplemented-action set; it is empty since
-A_SPosAttack, A_SargAttack and the A_Scream sound draw landed, and the ANOM line
-stays as the count/first/last summary of the same fact.
+What the data itself can falsify is the ALIVE check, and the reference matters.
+In linuxdoom-1.10 a single-player death runs P_DeathThink to PST_REBORN, and
+G_DoReborn answers it with `gameaction = ga_loadlevel` -- the same level,
+reloaded -- after which playback continues; G_CheckDemoStatus is reached at the
+marker, never on a death. Each demo's own lump agrees: all three die and then
+carry input for thousands of tics, with a USE hold just after the death. So the
+falsifiable statement is not "the player never dies" but "the corpse is never what
+the stream is played on": a run whose player ends the stream not PST_LIVE, or
+whose deaths were not answered by reloads, is not vanilla's. `ALIVE` reports the
+end state and the reload count, `VERDICT` folds it together with the
+missing-action set, and `--strict` turns `faithful=0` into a failure.
+
+`RELOAD` and `ARENA` are this gate's evidence that the reload is the level reload
+and not a teleport or a leak: every RELOAD line reports where the player
+reappeared and how many bytes the level's arena holds, and the two checks below
+compare them against the WAD's own THINGS record and against the first load.
 
 THE COHERENCE NUMBERS
 
@@ -73,6 +77,20 @@ THE COHERENCE NUMBERS
     hpmin/hpmax/hploss/hpgain       the health envelope and its changes
     deadtics    tics the player spent not PST_LIVE
     mobjmax     the peak live mobj count
+
+THE RELOAD EVIDENCE
+
+    ARENA       the level's z_stats().inUse after the load; `peak` must equal it,
+                because the reload re-lays one free block over the same arena
+    RELOAD      one line per answered death: the tic whose P_DeathThink set
+                PST_REBORN, the avatar's position after the reload, its health,
+                the live mobj count, leveltime (0) and the arena's bytes in use
+    SPEC        the line specials the playback reached, as run totals
+
+Every RELOAD's `arena` must equal ARENA's `load` (a reload that allocated a level
+per death fails here), and its `x`/`y` must equal the map's own player-1 THING --
+which this script reads from the WAD itself, so "the player respawned at the
+map's start" is the map's record against the simulation's state.
 
 PROVING THE GATE CAN FAIL
 
@@ -118,6 +136,7 @@ import tempfile
 from pathlib import Path
 
 FRACUNIT = 1 << 16
+MAXHEALTH = 100
 EXIT_OK = 0
 EXIT_MISMATCH = 1
 EXIT_USAGE = 2
@@ -134,67 +153,80 @@ SOURCES = (
 #
 # One entry per shareware demo. Each was recorded from the run this port produces
 # today, with the command `python tools/demo_check.py --wad <wad> --demo <name>`
-# and nothing else. The three fields a reader should look at first are `tics`
-# (the lump's own count, which must also equal the independent decode below),
-# `final` and `cohere` (the whole coherence line, verbatim, so any number that
-# moves names itself). `anom`, `missing` and `alive` are the fidelity verdict:
+# and nothing else. The fields a reader should look at first are `tics` (the
+# lump's own count, which must also equal the independent decode below), `final`
+# and `cohere` (the whole coherence line, verbatim, so any number that moves names
+# itself). `anom`, `missing`, `spec` and `alive` are the fidelity record:
 # `missing` is the distinct action set (empty since D4.4's A_SPosAttack,
-# A_SargAttack and the A_Scream sound draw landed), and `alive` says whether the
-# player was still live at the last command that carried input. It is not: all
-# three demos die, and this layer has no G_DoReborn to reload the level, so the
-# stream after the death runs against a frozen corpse. The pins record that run
-# as a regression target, not as a fidelity proof.
+# A_SargAttack and the A_Scream sound draw landed), `spec` is the line-special
+# set the playback reached, and `alive` says the player was PST_LIVE at the end
+# and how many reloads answered its deaths. `arena` and `reload` are the reload's
+# own evidence: the level's bytes in use, and the tic of every answered death.
+#
+# All three demos die. Before D4.4's reload step this gate recorded the frozen
+# corpse; every number below is from a run that answered each death with
+# G_DoReborn's `ga_loadlevel` -- the same level, reloaded -- and kept playing.
+# The pins are still a regression target, not a fidelity proof.
 #
 # A demo whose pins are absent is a demo this gate has not measured yet: it
 # reports the numbers and fails, which is how a new demo is added.
-PINS: dict[str, dict[str, str | int]] = {
+PINS: dict[str, dict[str, object]] = {
     "DEMO1": {
         "map": "E1M5",
         "tics": 5026,
-        "final": "69b9eb23b466c5652528f52aa27e4761546f48ea3c267d1e929a7557a308894b",
-        "chain": "d579a6b857059fc7aa7fda3f79ea2a9ec1d018a8ea189be16dabbf3b06e92c97",
+        "final": "0a7a7d74861550ee71e27195f884d9b72dbf0d62904275ed17498685cb2f29da",
+        "chain": "c48dfb8f32e450384955042c55201594abac1bb473c97b8084f1608a8f25198f",
         "cohere": (
-            "COHERE wallcross=0 outside=0 angleskip=3876 anglebad=0 anglepunch=0 "
-            "sectorchanges=2 sectors=3 doorpass=0 doorsopen=0 forward=4340 "
-            "netfwd=195921591 netback=-15616926 shots=34 ammo=34 attackticks=1463 "
-            "useticks=49 useedges=32 usetriggers=0 hpmin=0 hpmax=100 hploss=100 "
-            "hpgain=0 deadtics=3877 mobjmax=219"
+            "COHERE wallcross=0 outside=0 angleskip=797 anglebad=0 anglepunch=0 "
+            "sectorchanges=35 sectors=3 doorpass=0 doorsopen=0 forward=4340 "
+            "netfwd=670728250 netback=-143253624 shots=125 ammo=125 "
+            "attackticks=1463 useticks=49 useedges=32 usetriggers=0 hpmin=0 "
+            "hpmax=100 hploss=593 hpgain=0 deadtics=802 mobjmax=222"
         ),
+        "spec": "SPEC triggers=0 unsupported=0 deferred=0 scrolls=0",
         "anom": "ANOM missing=0 firsttic=0 first=0 last=0",
         "missing": "MISSING count=0 overflow=0",
-        "alive": "ALIVE alive=0 lastinput=5001 deathtic=1149",
+        "alive": "ALIVE alive=1 lastinput=5001 deathtic=1149 reborns=5",
+        "arena": 43616,
+        "reload": [1424, 2331, 3164, 4019, 4363],
     },
     "DEMO2": {
         "map": "E1M3",
         "tics": 3836,
-        "final": "e8bfecf524c5ece99c7ec772c06d0537d383ff0410207d17523869961cb05f77",
-        "chain": "ee4892a6da58968cf5f392879dc5d3557c5e1c5d68814ea590e59620852d4944",
+        "final": "88b719b0d04dbf0229956fce96aa5613b31ff4f1e5b64701d04607854bfee4f3",
+        "chain": "3c78712732ad61c3bf6e5fa8320c7e432d383eea60c51ec9943db143241326f5",
         "cohere": (
-            "COHERE wallcross=0 outside=0 angleskip=3284 anglebad=0 anglepunch=0 "
-            "sectorchanges=8 sectors=7 doorpass=2 doorsopen=2 forward=3485 "
-            "netfwd=119298357 netback=-3572193 shots=12 ammo=12 attackticks=461 "
+            "COHERE wallcross=0 outside=0 angleskip=108 anglebad=0 anglepunch=0 "
+            "sectorchanges=30 sectors=7 doorpass=2 doorsopen=0 forward=3485 "
+            "netfwd=447647551 netback=-59094240 shots=53 ammo=53 attackticks=461 "
             "useticks=62 useedges=23 usetriggers=2 hpmin=0 hpmax=100 hploss=100 "
-            "hpgain=0 deadtics=3285 mobjmax=318"
+            "hpgain=0 deadtics=109 mobjmax=318"
         ),
+        "spec": "SPEC triggers=2 unsupported=27 deferred=0 scrolls=0",
         "anom": "ANOM missing=0 firsttic=0 first=0 last=0",
         "missing": "MISSING count=0 overflow=0",
-        "alive": "ALIVE alive=0 lastinput=3807 deathtic=551",
+        "alive": "ALIVE alive=1 lastinput=3807 deathtic=551 reborns=1",
+        "arena": 60048,
+        "reload": [659],
     },
     "DEMO3": {
         "map": "E1M7",
         "tics": 2134,
-        "final": "a200976c72757b2469d18f696c71cbe71dbb0bc0025396fd91a6e758a3efe21d",
-        "chain": "5dc62ad9fe4725cd72d6464193d1cdbc60d8ef82e2a67d05bfdedc12d1c44df4",
+        "final": "f1f9ae17b59eac07bc325bbedaef00c9b8b9e368292ab33e468a1f6a5727fcdc",
+        "chain": "2dd5791136f6f53e973f4397a39bc751b53f03e16a6e130d220962b230d297c8",
         "cohere": (
-            "COHERE wallcross=0 outside=0 angleskip=1633 anglebad=0 anglepunch=0 "
-            "sectorchanges=5 sectors=6 doorpass=1 doorsopen=1 forward=1776 "
-            "netfwd=70909570 netback=-6862772 shots=9 ammo=9 attackticks=273 "
+            "COHERE wallcross=0 outside=0 angleskip=111 anglebad=0 anglepunch=0 "
+            "sectorchanges=5 sectors=6 doorpass=1 doorsopen=0 forward=1776 "
+            "netfwd=167641847 netback=-33826979 shots=25 ammo=25 attackticks=273 "
             "useticks=27 useedges=10 usetriggers=1 hpmin=0 hpmax=100 hploss=100 "
-            "hpgain=0 deadtics=1634 mobjmax=274"
+            "hpgain=0 deadtics=112 mobjmax=274"
         ),
+        "spec": "SPEC triggers=1 unsupported=1 deferred=0 scrolls=0",
         "anom": "ANOM missing=0 firsttic=0 first=0 last=0",
         "missing": "MISSING count=0 overflow=0",
-        "alive": "ALIVE alive=0 lastinput=2104 deathtic=500",
+        "alive": "ALIVE alive=1 lastinput=2104 deathtic=500 reborns=1",
+        "arena": 53304,
+        "reload": [611],
     },
 }
 
@@ -249,6 +281,42 @@ def read_wad_lump(wad: Path, name: str) -> bytes:
         if raw_name.split(b"\0")[0].decode("ascii", "replace") == name:
             return data[position:position + size]
     raise ValueError(f"{wad} carries no {name} lump")
+
+
+def read_wad_map_things(wad: Path, map_name: str) -> bytes:
+    """A map's THINGS lump: the entry after the `<map_name>` marker.
+
+    A map in the 1993 directory is a zero-length marker lump followed by its
+    eleven lumps in DoomEd order, THINGS first, which is the order this script's
+    own directory walk relies on rather than any lump name (a map's THINGS is a
+    zero-length lump in some editors' output, so the marker is the only anchor).
+    """
+    data = wad.read_bytes()
+    if data[:4] not in (b"IWAD", b"PWAD"):
+        raise ValueError(f"{wad} is not a WAD")
+    count, offset = struct.unpack_from("<II", data, 4)
+    entries: list[tuple[int, int, str]] = []
+    for index in range(count):
+        position, size, raw_name = struct.unpack_from("<II8s", data, offset + index * 16)
+        entries.append((position, size, raw_name.split(b"\0")[0].decode("ascii", "replace")))
+    for index, (_position, _size, name) in enumerate(entries):
+        if name == map_name and index + 1 < len(entries):
+            position, size, _next = entries[index + 1]
+            return data[position:position + size]
+    raise ValueError(f"{wad} carries no {map_name} map")
+
+
+def player_start(things: bytes) -> tuple[int, int]:
+    """The map's player-1 start, as P_SpawnMapThing reads it: the first type-1
+    THING record, five little-endian shorts per record."""
+    starts = []
+    for index in range(len(things) // 10):
+        x, y, _angle, kind, _options = struct.unpack_from("<hhhhh", things, index * 10)
+        if kind == 1:
+            starts.append((x, y))
+    if len(starts) != 1:
+        raise ValueError(f"the map carries {len(starts)} player-1 starts, expected 1")
+    return starts[0]
 
 
 def decode_stream(data: bytes) -> tuple[list[tuple[int, int, int, int]], int]:
@@ -342,6 +410,12 @@ def line_of(text: str, kind: str) -> str:
     return ""
 
 
+def lines_of(text: str, kind: str) -> list[str]:
+    """Every line of a kind, in output order. RELOAD is one line per answered
+    death, so `line_of` would only ever report the first."""
+    return [line for line in text.splitlines() if fields_of(line)[0] == kind]
+
+
 def number(record: dict[str, str], key: str, default: int = 0) -> int:
     value = record.get(key)
     if value is None:
@@ -356,7 +430,8 @@ def number(record: dict[str, str], key: str, default: int = 0) -> int:
 
 
 def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
-              header: DemoHeader, strict: bool) -> list[str]:
+              header: DemoHeader, start: tuple[int, int],
+              strict: bool) -> list[str]:
     """Every failure, each named independently, so one run reports them all."""
     failures: list[str] = []
     pins = PINS.get(name)
@@ -366,6 +441,8 @@ def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
     run = record_of(text, "RUN")
     state = record_of(text, "STATE")
     cohere = record_of(text, "COHERE")
+    arena = record_of(text, "ARENA")
+    reloads = [record_of(line, "RELOAD") for line in lines_of(text, "RELOAD")]
     anom = record_of(text, "ANOM")
     alive = record_of(text, "ALIVE")
     verdict = record_of(text, "VERDICT")
@@ -434,6 +511,39 @@ def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
     if number(cohere, "hpmin") < 0:
         failures.append(f"{name}: the player's health went negative")
 
+    # 3b. The reload. These are assertions, not pins: a reload that teleported the
+    # player, restarted the clock, left the world dead, or leaked an arena would
+    # be wrong in a way a re-baseline cannot excuse. The comparison is against
+    # the WAD's own player-1 THING and against the first load's arena, both read
+    # here rather than taken from the C side's report of itself.
+    for record in reloads:
+        where = f"the reload at tic {record.get('n')}"
+        # The THING record is in map units; the harness reports 16.16 fixed point.
+        if (number(record, "x"), number(record, "y")) != (start[0] * FRACUNIT,
+                                                         start[1] * FRACUNIT):
+            failures.append(f"{name}: {where} put the player at "
+                            f"({record.get('x')}, {record.get('y')}), not at the "
+                            f"map's start {start}")
+        if number(record, "leveltime") != 0:
+            failures.append(f"{name}: {where} left leveltime at "
+                            f"{record.get('leveltime')}, not P_SetupLevel's 0")
+        if number(record, "health") != MAXHEALTH:
+            failures.append(f"{name}: {where} did not respawn the player at "
+                            f"{MAXHEALTH} health ({record.get('health')})")
+        if number(record, "arena") != number(arena, "load"):
+            failures.append(f"{name}: {where} left the arena at "
+                            f"{record.get('arena')} B, not the load's "
+                            f"{arena.get('load')} B: the reload is not reusing it")
+    if number(arena, "peak") > number(arena, "load"):
+        failures.append(f"{name}: the level's arena peaked at {arena.get('peak')} B "
+                        f"over a {arena.get('load')} B load, so a reload added a block")
+    if number(alive, "reborns") != len(reloads):
+        failures.append(f"{name}: {alive.get('reborns')} reloads reported but "
+                        f"{len(reloads)} RELOAD lines printed")
+    if number(alive, "deathtic") >= 0 and number(alive, "reborns") == 0:
+        failures.append(f"{name}: the player died at tic {alive.get('deathtic')} and "
+                        "no reload answered it")
+
     # 4. The pins.
     if pins is None:
         failures.append(f"{name}: this gate has no pin for it yet; record the "
@@ -462,6 +572,18 @@ def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
         failures.append(f"{name}: the distinct missing-action set moved.\n"
                         f"    now:  {line_of(text, 'MISSING')}\n"
                         f"    pin:  {pins['missing']}")
+    if "spec" in pins and line_of(text, "SPEC") != pins["spec"]:
+        failures.append(f"{name}: the line-special set moved.\n"
+                        f"    now:  {line_of(text, 'SPEC')}\n"
+                        f"    pin:  {pins['spec']}")
+    if "arena" in pins and number(arena, "load") != pins["arena"]:
+        failures.append(f"{name}: the level's arena load is {arena.get('load')} B, "
+                        f"pinned {pins['arena']} B")
+    if "reload" in pins:
+        tics = [number(record, "n") for record in reloads]
+        if tics != pins["reload"]:
+            failures.append(f"{name}: the reload tics are {tics}, pinned "
+                            f"{pins['reload']}")
     if line_of(text, "ALIVE") != pins["alive"]:
         failures.append(f"{name}: the alive line moved.\n"
                         f"    now:  {line_of(text, 'ALIVE')}\n"
@@ -477,16 +599,18 @@ def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
             failures.append(message)
         else:
             print(f"  UNFAITHFUL {message}")
-        # The door evidence is part of the fidelity claim, not of the format: a
-        # demo presses USE at things it can use, so a faithful run must trigger
-        # lines and pass through at least one door. Today's runs diverge before
-        # DEMO1's first press, which is exactly why this is checked here.
-        if strict and number(cohere, "useticks") > 0:
-            if number(cohere, "usetriggers") == 0:
-                failures.append(f"{name}: {cohere.get('useticks')} USE tics "
-                                "triggered no line, so the demo never used a door")
-            if number(cohere, "doorpass") == 0:
-                failures.append(f"{name}: the player never passed a moved door")
+
+    # 5b. The door evidence is part of the fidelity claim, not of the format: a
+    # demo presses USE at things it can use, so a faithful run must trigger lines
+    # and pass through at least one door. This block used to live *inside* the
+    # verdict branch above, which meant that the day a run became faithful the
+    # checks silently stopped running; --strict must evaluate them either way.
+    if strict and number(cohere, "useticks") > 0:
+        if number(cohere, "usetriggers") == 0:
+            failures.append(f"{name}: {cohere.get('useticks')} USE tics "
+                            "triggered no line, so the demo never used a door")
+        if number(cohere, "doorpass") == 0:
+            failures.append(f"{name}: the player never passed a moved door")
     return failures
 
 
@@ -524,6 +648,8 @@ def main(argv: list[str] | None = None) -> int:
         lump = read_wad_lump(arguments.wad, arguments.demo)
         header = DemoHeader(lump)
         commands, marker = decode_stream(lump)
+        start = player_start(read_wad_map_things(
+            arguments.wad, f"E{header.episode}M{header.map}"))
     except (OSError, ValueError) as error:
         print(f"demo_check: {arguments.demo}: {error}", file=sys.stderr)
         return EXIT_USAGE
@@ -544,11 +670,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{arguments.demo}: {len(commands)} recorded commands, "
               f"{marker - DEMO_HEADER_SIZE} bytes of stream + 1 marker byte, "
               f"{len(lump)} bytes of lump")
-        for kind in ("DEMO", "WORLD", "CMD", "STATE", "RUN", "COHERE", "ANOM",
-                     "MISSING", "ALIVE", "VERDICT"):
+        for kind in ("DEMO", "WORLD", "ARENA", "CMD", "STATE", "RUN", "COHERE",
+                     "SPEC", "ANOM", "MISSING", "ALIVE", "VERDICT"):
             line = line_of(text, kind)
             if line:
                 print(f"  {line}")
+        for line in lines_of(text, "RELOAD"):
+            print(f"  {line}")
         final = record_of(text, "FINAL")
         chain = record_of(text, "CHAIN")
         print(f"  FINAL n={final.get('n')} hash={final.get('hash')}")
@@ -574,7 +702,7 @@ def main(argv: list[str] | None = None) -> int:
                 return EXIT_MISMATCH
             return EXIT_OK
 
-        failures = check_run(text, arguments.demo, commands, header,
+        failures = check_run(text, arguments.demo, commands, header, start,
                              arguments.strict)
         for failure in failures:
             print(f"demo_check: {failure}", file=sys.stderr)

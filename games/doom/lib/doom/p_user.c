@@ -192,10 +192,11 @@ static void p_calc_height(p_level_t* level, p_player_t* player) {
  *   5. `if (player->cmd.buttons & BT_USE) player->playerstate = PST_REBORN;`.
  *
  * Step 5 is where vanilla leaves this layer: G_Ticker sees PST_REBORN at the
- * start of the next tic and calls G_DoReborn, which reloads the level. This
- * port's game-state machine is deliberately absent (g_game.h), so
- * p_player_think() stops at the REBORN state rather than simulating a live
- * player whose health is zero. The tic P_DeathThink itself runs is upstream's.
+ * start of the next tic and calls G_DoReborn, which reloads the level. That step
+ * is g_game.c's g_demo_reborn(), because it is the game loop's and not the
+ * player's; p_player_think() stops at the REBORN state rather than simulating a
+ * live player whose health is zero, and the state is the driver's cue to reload
+ * before the next command. The tic P_DeathThink itself runs is upstream's.
  *
  * `player->cmd` is this tic's command, copied by p_player_think before the
  * branch, which is what makes the BT_USE test read the recorded stream.
@@ -242,7 +243,8 @@ static void p_death_think(p_level_t* level, p_player_t* player) {
         player->damagecount--;
     }
 
-    /* death animation is complete: G_Ticker's G_DoReborn owns the next step. */
+    /* death animation is complete: g_demo_reborn() owns the next step, which is
+     * G_Ticker's G_DoReborn and lands before the next command. */
     if ((player->cmd.buttons & BT_USE) != 0u) {
         player->playerstate = P_PST_REBORN;
     }
@@ -344,9 +346,10 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
     /* `if (player->playerstate == PST_DEAD) { P_DeathThink (player); return; }`
      * P_DeathThink is upstream's (see p_death_think above). PST_REBORN is
      * G_Ticker's state -- G_DoReborn reloads the level before P_Ticker runs, so
-     * upstream's P_PlayerThink never sees it. This layer has no game-state
-     * machine, so the tic stops rather than running the live body against a
-     * player whose health is zero. */
+     * upstream's P_PlayerThink never sees it. g_game.c's g_demo_reborn() is that
+     * reload and runs between the tics; a caller that ticks a level without that
+     * driver (a unit test, a probe) stops here instead of running the live body
+     * against a player whose health is zero. */
     if (player->playerstate == P_PST_DEAD) {
         p_death_think(level, player);
         return;

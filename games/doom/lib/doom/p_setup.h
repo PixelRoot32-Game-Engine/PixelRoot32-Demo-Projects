@@ -95,9 +95,12 @@ typedef struct p_level_stats {
  *   P_SETUP_ERR_ARENA     z_init() refused the arena
  *   P_SETUP_ERR_ALLOC     the arena refused the sector, line-special or
  *                         sector-sound array
+ *   P_SETUP_ERR_NOT_OPEN  p_level_reload() was given a level that is not loaded
  *
  * A refused init leaves the level zeroed (`open` 0), so a stale level can never
- * answer a later tick.
+ * answer a later tick. A refused reload leaves the same way: p_level_init()
+ * zeroes the state before it validates anything, and the caller's map and arena
+ * are still the caller's.
  */
 typedef enum p_setup_error {
     P_SETUP_OK = 0,
@@ -106,7 +109,8 @@ typedef enum p_setup_error {
     P_SETUP_ERR_MAP_NOT_OPEN = 3,
     P_SETUP_ERR_NULL_ARENA = 4,
     P_SETUP_ERR_ARENA = 5,
-    P_SETUP_ERR_ALLOC = 6
+    P_SETUP_ERR_ALLOC = 6,
+    P_SETUP_ERR_NOT_OPEN = 7
 } p_setup_error_t;
 
 /*
@@ -121,7 +125,9 @@ typedef enum p_setup_error {
  *   zone            the level's arena, initialised over the caller's buffer.
  *   thinkers        every simulated object, in insertion order.
  *   actions         the state-action counters (see p_action.h).
- *   random          the P_Random() position this level has reached.
+ *   random          the P_Random() position this level has reached. A reload
+ *                   carries it over (p_level_reload), because upstream seeds the
+ *                   sequence in G_InitNew and not in a level load.
  *   rules           the filters and the spawn inputs, as loaded.
  *   context         the same four things plus the rules, in the shape the spawn
  *                   functions take. It also points at the level's per-sector
@@ -233,6 +239,57 @@ typedef struct p_level {
  */
 p_setup_error_t p_level_init(p_level_t* level, const doom_map_t* map, void* arena,
                              size_t size, const p_spawn_rules_t* rules);
+
+/**
+ * @brief Loads the same level again, over the same arena: a level reload.
+ *
+ * This is the half of P_SetupLevel() that a single-player death needs. Upstream
+ * answers a PST_REBORN player with `gameaction = ga_loadlevel`, and
+ * G_DoLoadLevel reloads the level `gamemap` still names -- the same map, not a
+ * transition. This function is that reload for a caller that already owns the
+ * map, the arena and the rules:
+ *
+ *   1. read the map, the rules, the random position and the arena (base and
+ *      size) out of @p level;
+ *   2. load over the same arena, which discards every PU_LEVEL block and re-runs
+ *      THINGS, with the carried random position already in place;
+ *   3. reinstate the caller's hooks.
+ *
+ * WHAT IS DELIBERATELY NOT RESET, AND WHY
+ *
+ * THE RANDOM POSITION. linuxdoom-1.10 seeds the sequence in M_ClearRandom(),
+ * which is G_InitNew()'s -- a new game, not a level load. P_SetupLevel() draws
+ * from wherever `rndindex` already is: P_LoadThings() consumes one draw per
+ * spawned thing for `lastlook` (P_SpawnMobj) and P_SpawnMapThing's tic jitter,
+ * then P_SpawnSpecials draws for the lights. p_level_init() reseeds because it
+ * is also the first load of a level, where G_InitNew() did; a reload hands the
+ * carried position to the load itself, so those draws read the same numbers
+ * upstream's would. A demo that reloaded after a death would otherwise
+ * desynchronise on the first monster's `lastlook`.
+ *
+ * THE CALLER'S HOOKS. `p_mobj_context_t`'s moveStats, attackStats, sightStats
+ * and actionTrace belong to the caller (a harness, p_mobj.h), not to the level,
+ * and p_level_init() cannot see them; they are reinstated after the load so a
+ * counter kept across a death keeps counting.
+ *
+ * NOT DONE HERE, AND WHY: p_spawn_specials(). p_level_init() leaves it out for
+ * the same reason it always does (see above: it consumes the random sequence,
+ * and the THINGS-only gates must not), so a caller composing P_SetupLevel's
+ * order calls it after this function -- which is exactly what G_DoLoadLevel's
+ * caller does. g_game.c's g_demo_reborn() is that caller.
+ *
+ * The arena is not grown: z_init() re-lays one free block over the caller's
+ * buffer, so the bytes in use after the load are the bytes in use after any
+ * number of reloads. That is an invariant a host test pins, because a reload
+ * that allocated a second arena would look correct for one death and fail on
+ * the board at the second.
+ *
+ * @param level The level to reload; it must be open.
+ * @return P_SETUP_OK, P_SETUP_ERR_NULL_LEVEL, P_SETUP_ERR_NOT_OPEN, or any
+ *         p_level_init() code (after which the level is zeroed, as a refused
+ *         load always leaves it).
+ */
+p_setup_error_t p_level_reload(p_level_t* level);
 
 /**
  * @brief Frees every PU_LEVEL block and zeroes the level.

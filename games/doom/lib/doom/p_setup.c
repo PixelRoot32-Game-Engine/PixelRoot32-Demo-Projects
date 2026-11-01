@@ -39,6 +39,9 @@
 
 #include <string.h>
 
+#include "p_map.h"
+#include "p_sight.h"
+
 /* --- The release callback ------------------------------------------------ */
 
 void p_level_release_thinker(void* context, p_thinker_t* thinker) {
@@ -210,8 +213,21 @@ static void account(p_level_t* level, const p_mapthing_t* thing,
     }
 }
 
-p_setup_error_t p_level_init(p_level_t* level, const doom_map_t* map, void* arena,
-                             size_t size, const p_spawn_rules_t* rules) {
+/*
+ * P_SetupLevel's body, with the random position as an input.
+ *
+ * `carried` is NULL for a first load, which is where upstream's G_InitNew() has
+ * already called M_ClearRandom(): the sequence starts at zero. A reload passes
+ * the position the world had reached, because P_SetupLevel does not seed
+ * anything and its very first draw is P_LoadThings' -- every P_SpawnMapThing
+ * draws once for `lastlook` in P_SpawnMobj -- so the carried position has to be
+ * in place *before* the THINGS run, not restored after it. Restoring it after
+ * would leave the same final index and the wrong `lastlook` and spawn `tics`.
+ */
+static p_setup_error_t level_load(p_level_t* level, const doom_map_t* map,
+                                  void* arena, size_t size,
+                                  const p_spawn_rules_t* rules,
+                                  const m_random_t* carried) {
     uint32_t index;
     uint32_t things;
 
@@ -246,7 +262,11 @@ p_setup_error_t p_level_init(p_level_t* level, const doom_map_t* map, void* aren
     level->rules = rules != NULL ? *rules : p_spawn_rules_default();
     (void)p_thinker_list_init(&level->thinkers);
     p_action_init(&level->actions);
-    m_random_init(&level->random);
+    if (carried != NULL) {
+        level->random = *carried;
+    } else {
+        m_random_init(&level->random);
+    }
 
     /* The context points at this struct's own fields; see the header's note
      * about copying the level. */
@@ -299,6 +319,68 @@ p_setup_error_t p_level_init(p_level_t* level, const doom_map_t* map, void* aren
     }
 
     level->error = P_SETUP_OK;
+    return P_SETUP_OK;
+}
+
+p_setup_error_t p_level_init(p_level_t* level, const doom_map_t* map, void* arena,
+                             size_t size, const p_spawn_rules_t* rules) {
+    /* G_InitNew() has already run M_ClearRandom() for a first load, so the
+     * sequence starts at zero: no carried position. */
+    return level_load(level, map, arena, size, rules, NULL);
+}
+
+/* --- Reload -------------------------------------------------------------- */
+
+/*
+ * The second load of a level: same map, same arena, same rules, and the same
+ * random position the world had reached. p_setup.h carries the reasoning.
+ *
+ * Everything the caller owns has to be read before the load, because it memsets
+ * the level state -- including the zone struct that holds the arena this
+ * function passes back in.
+ */
+p_setup_error_t p_level_reload(p_level_t* level) {
+    const doom_map_t* map;
+    p_spawn_rules_t rules;
+    m_random_t random;
+    p_move_stats_t* moveStats;
+    p_attack_stats_t* attackStats;
+    p_sight_stats_t* sightStats;
+    p_action_trace_t* actionTrace;
+    void* arena;
+    size_t size;
+    p_setup_error_t loaded;
+
+    if (level == NULL) {
+        return P_SETUP_ERR_NULL_LEVEL;
+    }
+    if (!level->open || level->map == NULL || level->zone.base == NULL) {
+        return P_SETUP_ERR_NOT_OPEN;
+    }
+
+    map = level->map;
+    rules = level->rules;
+    random = level->random;
+    arena = level->zone.base;
+    size = (size_t)level->zone.arenaSize;
+    moveStats = level->context.moveStats;
+    attackStats = level->context.attackStats;
+    sightStats = level->context.sightStats;
+    actionTrace = level->context.actionTrace;
+
+    /* The carried position goes *into* the load, not back on top of it: the
+     * THINGS run draws (P_SpawnMobj's `lastlook`, P_SpawnMapThing's tic jitter)
+     * and upstream's P_LoadThings draws from wherever the sequence already is. */
+    loaded = level_load(level, map, arena, size, &rules, &random);
+    if (loaded != P_SETUP_OK) {
+        return loaded;
+    }
+
+    /* The harness hooks are the caller's, and the load cannot see them. */
+    level->context.moveStats = moveStats;
+    level->context.attackStats = attackStats;
+    level->context.sightStats = sightStats;
+    level->context.actionTrace = actionTrace;
     return P_SETUP_OK;
 }
 

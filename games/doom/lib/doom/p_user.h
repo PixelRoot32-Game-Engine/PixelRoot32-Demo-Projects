@@ -465,9 +465,9 @@ void p_player_init(struct p_level* level, r_mobj_t* mobj);
  * A PST_DEAD player runs P_DeathThink() and returns: the view falls to six map
  * units, turns toward `attacker` in ANG5 steps, fades `damagecount`, advances the
  * weapon psprite and sets PST_REBORN on BT_USE. PST_REBORN is G_Ticker's state --
- * G_DoReborn reloads the level before P_Ticker runs in vanilla -- and this layer
- * has no game-state machine, so such a tic stops instead of running the live
- * body against a zero-health player.
+ * G_DoReborn reloads the level before P_Ticker runs in vanilla, and g_game.c's
+ * g_demo_reborn() is that step here -- so a tic that reaches this layer in that
+ * state stops instead of running the live body against a zero-health player.
  *
  * P_PlayerInSpecialSector() (sector damage) is T15's, and the power-up colormaps
  * are the HUD's (D5), so `fixedcolormap` stays 0 while the tic counters themselves
