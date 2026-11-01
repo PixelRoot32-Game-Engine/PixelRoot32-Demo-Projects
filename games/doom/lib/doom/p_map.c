@@ -26,6 +26,7 @@
 
 #include "p_inter.h"
 #include "p_setup.h"
+#include "p_sight.h"
 #include "p_spec.h"
 #include "r_bsp.h"
 #include "r_tables.h"
@@ -2105,3 +2106,69 @@ void p_shoot_special_line(p_mobj_context_t* world, r_mobj_t* shooter,
 }
 
 
+
+/*
+ * P_RadiusAttack(): everything MF_SHOOTABLE within `damage` map units of the
+ * spot takes `damage - distance` through P_DamageMobj, and only with sight.
+ *
+ * Upstream's PIT_RadiusAttack, per thing: skip anything not MF_SHOOTABLE, skip
+ * the boss spider and cyborg ("take no damage from concussion"), take the larger
+ * of |dx| and |dy|, subtract the thing's radius, clamp at zero, refuse when the
+ * result is at least the damage, and then require P_CheckSight(thing, spot)
+ * before applying `damage - dist`.
+ *
+ * The blockmap walk becomes a thinker-list walk. The set differs only in that a
+ * thing whose origin is outside the box but whose radius reaches into it is
+ * visited here and might not be in a block upstream would have looked at; the
+ * distance test above is what decides, and it is the same test. A thing spawned
+ * by the damage (a dying monster's dropped clip) is not visited: the next node is
+ * taken before the damage, which is the order upstream's unlink/relink implies.
+ */
+void p_radius_attack(p_mobj_context_t* world, r_mobj_t* spot,
+                     r_mobj_t* source, int damage) {
+    const r_mobj_t* thing;
+    const r_mobj_t* next;
+
+    if (world == NULL || spot == NULL || world->level == NULL) {
+        return;
+    }
+    for (thing = p_level_first_mobj(world->level); thing != NULL;
+         thing = next) {
+        int64_t dx;
+        int64_t dy;
+        int64_t dist;
+
+        next = p_level_next_mobj(thing);
+        if ((thing->flags & MF_SHOOTABLE) == 0u) {
+            continue;
+        }
+        /* Boss spider and cyborg take no damage from concussion. */
+        if (thing->type == MT_CYBORG || thing->type == MT_SPIDER) {
+            continue;
+        }
+        if (thing->thinker.removed != 0u) {
+            continue;
+        }
+        dx = (int64_t)thing->x - (int64_t)spot->x;
+        dy = (int64_t)thing->y - (int64_t)spot->y;
+        if (dx < 0) {
+            dx = -dx;
+        }
+        if (dy < 0) {
+            dy = -dy;
+        }
+        dist = dx > dy ? dx : dy;
+        dist = (dist - (int64_t)thing->radius) >> FRACBITS;
+        if (dist < 0) {
+            dist = 0;
+        }
+        if (dist >= damage) {
+            continue; /* out of range */
+        }
+        if (p_check_sight(world, thing, spot)) {
+            /* must be in direct path */
+            p_damage_mobj(world, (r_mobj_t*)thing, spot, source,
+                          damage - (int)dist);
+        }
+    }
+}

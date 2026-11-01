@@ -257,6 +257,20 @@ static int run_attack(p_level_t* level, const char* mapName) {
     }
     aim_at(avatar, target);
 
+    /*
+     * The weapon gate needs a stationary damage sink, and T15b's A_Chase is now
+     * real: a monster that acquires the avatar walks at it and shoots back, so
+     * every scripted shot would miss a target that has stepped aside. Clearing
+     * MF_SHOOTABLE on the avatar is exactly the test A_Chase makes first
+     * ("!actor->target || !(actor->target->flags & MF_SHOOTABLE)"), so the
+     * monster spends every run state re-acquiring an invalid target and never
+     * steps or fires -- it stays the same stationary, damageable, killable
+     * target T14 wrote its script against. The avatar is never damaged in this
+     * script, so no rule depends on the flag being set. enemy_check is the gate
+     * that exercises a monster that does chase.
+     */
+    avatar->flags &= ~MF_SHOOTABLE;
+
     /* The weapons P_GiveWeapon would hand over, then the ammo forced to the
      * script's numbers so a change in the give rules cannot move the baseline. */
     (void)p_give_weapon(&level->context, player, P_WP_SHOTGUN, 0);

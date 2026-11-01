@@ -5,14 +5,14 @@
  */
 
 /*
- * A_Look() and P_LookForPlayers(): the half of monster AI that decides the
- * monster has seen (or heard) the player. A_Chase() is T15b's and stays a counted
- * gap in p_action.c, which is why a woken monster animates its run frames in
- * place instead of moving.
+ * Monster AI: A_Look/P_LookForPlayers (T15a) and the chase and attack half
+ * (T15b) -- A_Chase, P_Move/P_TryWalk/P_NewChaseDir, P_CheckMeleeRange,
+ * P_CheckMissileRange, A_FaceTarget, A_PosAttack, A_TroopAttack and A_Explode.
  *
  * See p_enemy.h for the upstream order, the one-slot reduction of the player
- * scan, and the see-sound draw that is performed for the random sequence and
- * discarded for the missing audio layer.
+ * scan, the see-sound draw that is performed for the random sequence and
+ * discarded for the missing audio layer, and the deliberate gaps in the chase
+ * (a monster cannot open a door it bumps).
  *
  * This is C99 only: <stdint.h>, no allocation, no globals, no stdio, no floating
  * point.
@@ -20,9 +20,41 @@
 #include "p_enemy.h"
 
 #include "m_random.h"
+#include "p_inter.h"
 #include "p_map.h"
 #include "p_setup.h"
 #include "p_sight.h"
+
+/* --- The direction table P_NewChaseDir walks ------------------------------ */
+
+typedef enum p_dirtype {
+    P_DI_EAST = 0,
+    P_DI_NORTHEAST,
+    P_DI_NORTH,
+    P_DI_NORTHWEST,
+    P_DI_WEST,
+    P_DI_SOUTHWEST,
+    P_DI_SOUTH,
+    P_DI_SOUTHEAST,
+    P_DI_NODIR,
+    P_NUMDIRS
+} p_dirtype_t;
+
+static const p_dirtype_t p_opposite[P_NUMDIRS] = {
+    P_DI_WEST,      P_DI_SOUTHWEST, P_DI_SOUTH, P_DI_SOUTHEAST,
+    P_DI_EAST,      P_DI_NORTHEAST, P_DI_NORTH, P_DI_NORTHWEST,
+    P_DI_NODIR
+};
+
+/* Indexed by `((deltay<0)<<1) + (deltax>0)`. */
+static const p_dirtype_t p_diags[4] = {
+    P_DI_NORTHWEST, P_DI_NORTHEAST, P_DI_SOUTHWEST, P_DI_SOUTHEAST
+};
+
+static const fixed_t p_xspeed[8] = {FRACUNIT, 47000,    0,       -47000,
+                                    -FRACUNIT, -47000,  0,       47000};
+static const fixed_t p_yspeed[8] = {0,       47000,    FRACUNIT, 47000,
+                                    0,       -47000,   -FRACUNIT, -47000};
 
 /* --- P_LookForPlayers ------------------------------------------------------ */
 
@@ -149,3 +181,401 @@ seeyou:
     see_sound_draw(world, info->seesound);
     (void)p_set_mobj_state(world, actor, (statenum_t)info->seestate, NULL);
 }
+
+/* --- Range tests ---------------------------------------------------------- */
+
+int p_check_melee_range(p_mobj_context_t* world, r_mobj_t* actor) {
+    fixed_t dist;
+    const r_mobj_t* target;
+
+    if (world == NULL || actor == NULL || actor->target == NULL) {
+        return 0;
+    }
+    target = actor->target;
+    dist = p_aprox_distance(target->x - actor->x, target->y - actor->y);
+    if (dist >= P_MELEERANGE - 20 * FRACUNIT + target->radius) {
+        return 0;
+    }
+    return p_check_sight(world, actor, target);
+}
+
+/*
+ * P_CheckMissileRange(). Upstream's four type-specific arms (MT_VILE's 14*64
+ * cap, MT_UNDEAD's 196 floor and halving, the cyborg/spider/skull halving and
+ * the cyborg's 160 cap) name types this port does not simulate; the two E1M1
+ * enemies -- the zombieman and the imp -- take only the generic path, and that
+ * is all that is written.
+ *
+ * The draw happens after `dist` is clamped, so its position in the sequence
+ * depends on the distance, exactly as upstream's does.
+ */
+int p_check_missile_range(p_mobj_context_t* world, r_mobj_t* actor) {
+    const doom_mobjinfo_t* info;
+    fixed_t dist;
+
+    if (world == NULL || actor == NULL || actor->target == NULL) {
+        return 0;
+    }
+    info = &mobjinfo[actor->type];
+    if (!p_check_sight(world, actor, actor->target)) {
+        return 0;
+    }
+    if ((actor->flags & MF_JUSTHIT) != 0u) {
+        /* the target just hit the enemy, so fight back! */
+        actor->flags &= ~MF_JUSTHIT;
+        return 1;
+    }
+    if (actor->reactiontime) {
+        return 0; /* do not attack yet */
+    }
+    dist = p_aprox_distance(actor->x - actor->target->x,
+                            actor->y - actor->target->y) -
+           64 * FRACUNIT;
+    if (info->meleestate == 0) {
+        dist -= 128 * FRACUNIT; /* no melee attack, so fire more */
+    }
+    dist >>= 16;
+    if (dist > 200) {
+        dist = 200;
+    }
+    if (p_random(world->random) < dist) {
+        return 0;
+    }
+    return 1;
+}
+
+/* --- P_Move, P_TryWalk, P_NewChaseDir ------------------------------------ */
+
+/*
+ * P_Move(): one eight-map-unit step in `movedir`, through P_TryMove.
+ *
+ * A walker's mobjinfo `speed` is 8 map units, not 8*FRACUNIT, and upstream
+ * multiplies it by the 16.16 xspeed[] table with a plain integer product; that
+ * is kept. A missile's speed is 16.16 and P_SpawnMissile uses FixedMul; the two
+ * shapes are upstream's and both are needed.
+ *
+ * THE DOOR BRANCH IS A DECLARED GAP. When P_TryMove refuses, upstream opens any
+ * special line the move touched and returns "moved" if one opened. This port's
+ * p_try_move() consumes that list itself (P_CrossSpecialLine) and does not hand
+ * it back, so a monster that bumps a closed door stops instead of opening it.
+ * The two E1M1 enemies reach the player through their own room's opening, and
+ * no scene here needs a monster to open a door; making it work would mean a new
+ * out-parameter on p_try_move, which is a wider seam than this task's.
+ *
+ * The MF_FLOAT `floatok` branch is absent for the same reason: it needs the
+ * position check's `floatok`, and no E1M1 monster floats (the lost soul is out of
+ * scope). A floater would stop instead of hovering.
+ */
+static int p_move(p_mobj_context_t* world, r_mobj_t* actor) {
+    fixed_t tryx;
+    fixed_t tryy;
+    int32_t speed;
+
+    if (actor->movedir == (int16_t)P_DI_NODIR) {
+        return 0;
+    }
+    if (actor->movedir < 0 || actor->movedir >= 8) {
+        actor->movedir = (int16_t)P_DI_NODIR;
+        return 0;
+    }
+    speed = mobjinfo[actor->type].speed;
+    tryx = actor->x + speed * p_xspeed[actor->movedir];
+    tryy = actor->y + speed * p_yspeed[actor->movedir];
+
+    if (!p_try_move(world, actor, tryx, tryy)) {
+        return 0;
+    }
+    if ((actor->flags & MF_FLOAT) == 0u) {
+        actor->z = actor->floorz;
+    }
+    return 1;
+}
+
+static int p_try_walk(p_mobj_context_t* world, r_mobj_t* actor) {
+    if (!p_move(world, actor)) {
+        return 0;
+    }
+    actor->movecount = (int16_t)(p_random(world->random) & 15);
+    return 1;
+}
+
+void p_new_chase_dir(p_mobj_context_t* world, r_mobj_t* actor) {
+    fixed_t deltax;
+    fixed_t deltay;
+    p_dirtype_t d[3];
+    int tdir;
+    p_dirtype_t olddir;
+    p_dirtype_t turnaround;
+
+    if (actor == NULL || actor->target == NULL) {
+        return;
+    }
+    olddir = (p_dirtype_t)actor->movedir;
+    turnaround = p_opposite[(int)olddir];
+
+    deltax = actor->target->x - actor->x;
+    deltay = actor->target->y - actor->y;
+
+    if (deltax > 10 * FRACUNIT) {
+        d[1] = P_DI_EAST;
+    } else if (deltax < -10 * FRACUNIT) {
+        d[1] = P_DI_WEST;
+    } else {
+        d[1] = P_DI_NODIR;
+    }
+
+    if (deltay < -10 * FRACUNIT) {
+        d[2] = P_DI_SOUTH;
+    } else if (deltay > 10 * FRACUNIT) {
+        d[2] = P_DI_NORTH;
+    } else {
+        d[2] = P_DI_NODIR;
+    }
+
+    /* try direct route */
+    if (d[1] != P_DI_NODIR && d[2] != P_DI_NODIR) {
+        actor->movedir = (int16_t)
+            p_diags[((deltay < 0 ? 1 : 0) << 1) + (deltax > 0 ? 1 : 0)];
+        if (actor->movedir != (int16_t)turnaround &&
+            p_try_walk(world, actor)) {
+            return;
+        }
+    }
+
+    /* try other directions */
+    if (p_random(world->random) > 200 ||
+        (deltay < 0 ? -deltay : deltay) > (deltax < 0 ? -deltax : deltax)) {
+        tdir = (int)d[1];
+        d[1] = d[2];
+        d[2] = (p_dirtype_t)tdir;
+    }
+
+    if (d[1] == turnaround) {
+        d[1] = P_DI_NODIR;
+    }
+    if (d[2] == turnaround) {
+        d[2] = P_DI_NODIR;
+    }
+
+    if (d[1] != P_DI_NODIR) {
+        actor->movedir = (int16_t)d[1];
+        if (p_try_walk(world, actor)) {
+            return;
+        }
+    }
+    if (d[2] != P_DI_NODIR) {
+        actor->movedir = (int16_t)d[2];
+        if (p_try_walk(world, actor)) {
+            return;
+        }
+    }
+
+    /* there is no direct path to the player, so pick another direction */
+    if (olddir != P_DI_NODIR) {
+        actor->movedir = (int16_t)olddir;
+        if (p_try_walk(world, actor)) {
+            return;
+        }
+    }
+
+    /* randomly determine direction of search */
+    if ((p_random(world->random) & 1) != 0) {
+        for (tdir = (int)P_DI_EAST; tdir <= (int)P_DI_SOUTHEAST; ++tdir) {
+            if ((p_dirtype_t)tdir != turnaround) {
+                actor->movedir = (int16_t)tdir;
+                if (p_try_walk(world, actor)) {
+                    return;
+                }
+            }
+        }
+    } else {
+        for (tdir = (int)P_DI_SOUTHEAST; tdir != (int)P_DI_EAST - 1; --tdir) {
+            if ((p_dirtype_t)tdir != turnaround) {
+                actor->movedir = (int16_t)tdir;
+                if (p_try_walk(world, actor)) {
+                    return;
+                }
+            }
+        }
+    }
+
+    if (turnaround != P_DI_NODIR) {
+        actor->movedir = (int16_t)turnaround;
+        if (p_try_walk(world, actor)) {
+            return;
+        }
+    }
+    actor->movedir = (int16_t)P_DI_NODIR; /* can not move */
+}
+
+/* --- A_Chase ------------------------------------------------------------- */
+
+void p_enemy_chase(p_mobj_context_t* world, r_mobj_t* actor) {
+    const doom_mobjinfo_t* info;
+    int32_t delta;
+    int nightmare;
+
+    if (world == NULL || actor == NULL) {
+        return;
+    }
+    if ((uint32_t)actor->type >= NUM_MOBJ_TYPES) {
+        return;
+    }
+    info = &mobjinfo[actor->type];
+    nightmare = (world->rules.skill == P_SKILL_NIGHTMARE);
+
+    if (actor->reactiontime) {
+        actor->reactiontime = (int16_t)(actor->reactiontime - 1);
+    }
+
+    /* modify target threshold */
+    if (actor->threshold) {
+        if (actor->target == NULL || actor->target->health <= 0) {
+            actor->threshold = 0;
+        } else {
+            actor->threshold = (int16_t)(actor->threshold - 1);
+        }
+    }
+
+    /* turn towards movement direction if not there yet */
+    if (actor->movedir < 8) {
+        actor->angle &= (angle_t)(7u << 29);
+        delta = (int32_t)(actor->angle - ((angle_t)actor->movedir << 29));
+        if (delta > 0) {
+            actor->angle -= ANG90 / 2;
+        } else if (delta < 0) {
+            actor->angle += ANG90 / 2;
+        }
+    }
+
+    if (actor->target == NULL ||
+        (actor->target->flags & MF_SHOOTABLE) == 0u) {
+        if (p_look_for_players(world, actor, 1)) {
+            return; /* got a new target */
+        }
+        (void)p_set_mobj_state(world, actor,
+                               (statenum_t)info->spawnstate, NULL);
+        return;
+    }
+
+    /* do not attack twice in a row */
+    if ((actor->flags & MF_JUSTATTACKED) != 0u) {
+        actor->flags &= ~MF_JUSTATTACKED;
+        if (!nightmare) {
+            p_new_chase_dir(world, actor);
+        }
+        return;
+    }
+
+    /* check for melee attack */
+    if (info->meleestate != 0 && p_check_melee_range(world, actor)) {
+        (void)p_set_mobj_state(world, actor, (statenum_t)info->meleestate,
+                               NULL);
+        return;
+    }
+
+    /* check for missile attack */
+    if (info->missilestate != 0) {
+        if (nightmare || actor->movecount == 0) {
+            if (p_check_missile_range(world, actor)) {
+                (void)p_set_mobj_state(world, actor,
+                                       (statenum_t)info->missilestate, NULL);
+                actor->flags |= MF_JUSTATTACKED;
+                return;
+            }
+        }
+    }
+
+    /* possibly choose another target */
+    if (world->rules.netgame != 0u && actor->threshold == 0 &&
+        !p_check_sight(world, actor, actor->target)) {
+        if (p_look_for_players(world, actor, 1)) {
+            return; /* got a new target */
+        }
+    }
+
+    /* chase towards player */
+    actor->movecount = (int16_t)(actor->movecount - 1);
+    if (actor->movecount < 0 || !p_move(world, actor)) {
+        p_new_chase_dir(world, actor);
+    }
+
+    /* make active sound: the draw is kept, the sound is S2's */
+    if (info->activesound != 0 && world->random != NULL) {
+        (void)p_random(world->random);
+    }
+}
+
+/* --- The attack actions --------------------------------------------------- */
+
+void p_enemy_face_target(p_mobj_context_t* world, r_mobj_t* actor) {
+    if (actor == NULL || actor->target == NULL) {
+        return;
+    }
+    actor->flags &= ~MF_AMBUSH;
+    actor->angle = p_point_to_angle(actor->target->x - actor->x,
+                                    actor->target->y - actor->y);
+    if ((actor->target->flags & MF_SHADOW) != 0u &&
+        world != NULL && world->random != NULL) {
+        actor->angle +=
+            (angle_t)((p_random(world->random) - p_random(world->random)) << 21);
+    }
+}
+
+/*
+ * A_PosAttack(): the zombieman's pistol. Aim along the exact bearing, then
+ * drift the shot by one random pair and roll 3..15 points. The sfx_pistol the
+ * original plays is the audio layer's (S2).
+ */
+void p_enemy_pos_attack(p_mobj_context_t* world, r_mobj_t* actor) {
+    angle_t angle;
+    fixed_t slope;
+    int damage;
+
+    if (world == NULL || actor == NULL || actor->target == NULL) {
+        return;
+    }
+    p_enemy_face_target(world, actor);
+    angle = actor->angle;
+    slope = p_aim_line_attack(world, actor, angle, P_MISSILERANGE, NULL);
+
+    angle +=
+        (angle_t)((p_random(world->random) - p_random(world->random)) << 20);
+    damage = ((int)p_random(world->random) % 5 + 1) * 3;
+    p_line_attack(world, actor, angle, P_MISSILERANGE, slope, damage);
+}
+
+/*
+ * A_TroopAttack(): the imp decides at the moment the state runs -- claw if the
+ * player is inside P_CheckMeleeRange, fireball otherwise. Both E1M1 enemies'
+ * meleestate and missilestate point at this one state for the imp, which is why
+ * the decision cannot live in A_Chase.
+ */
+void p_enemy_troop_attack(p_mobj_context_t* world, r_mobj_t* actor) {
+    int damage;
+
+    if (world == NULL || actor == NULL || actor->target == NULL) {
+        return;
+    }
+    p_enemy_face_target(world, actor);
+    if (p_check_melee_range(world, actor)) {
+        damage = ((int)p_random(world->random) % 8 + 1) * 3;
+        p_damage_mobj(world, actor->target, actor, actor, damage);
+        return;
+    }
+    (void)p_spawn_missile(world, actor, actor->target, MT_TROOPSHOT);
+}
+
+/*
+ * A_Explode(): `P_RadiusAttack (thingy, thingy->target, 128)`. The imp's
+ * fireball does *not* carry it -- its burst rows are inert and its damage is the
+ * direct missile hit in PIT_CheckThing -- but the barrel's S_BEXP chain and a
+ * rocket's S_EXPLODE1 do, and a fireball that hits a barrel reaches them.
+ */
+void p_enemy_explode(p_mobj_context_t* world, r_mobj_t* actor) {
+    if (world == NULL || actor == NULL) {
+        return;
+    }
+    p_radius_attack(world, actor, actor->target, 128);
+}
+

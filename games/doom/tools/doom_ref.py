@@ -3249,6 +3249,17 @@ MT_PLAYER = 0
 MT_BRUISER = 15
 MT_KNIGHT = 17
 
+# p_mobj.c's missile branch reads `tmthing->info->damage`: a second reading of
+# info.c's rows for the four missile types this port can spawn (the imp's
+# fireball and the player's three). Movement and the player gate spawn no
+# missile, so only the fireball is reached today.
+MOVEMENT_MISSILE_DAMAGE = {
+    31: 3,      # MT_TROOPSHOT
+    33: 20,     # MT_ROCKET
+    34: 5,      # MT_PLASMA
+    35: 100,    # MT_BFG
+}
+
 
 def movement_abs(value: int) -> int:
     return -value if value < 0 else value
@@ -3459,6 +3470,12 @@ def movement_check_thing(level: "SpecLevel", mo: dict, other: dict,
                 return False
         if not (other["flags"] & MF_SHOOTABLE):
             return not (other["flags"] & MF_SOLID)
+        # `damage = ((P_Random()%8)+1)*tmthing->info->damage;` then
+        # `P_DamageMobj (thing, tmthing, tmthing->target, damage);` -- the draw
+        # is part of the sequence and happens before the call.
+        damage = MOVEMENT_MISSILE_DAMAGE.get(mo["type"], 0)
+        damage_damage(level, other, mo, mo.get("target"),
+                      (level.rng.next() % 8 + 1) * damage)
         return False
 
     if other["flags"] & MF_SPECIAL:
@@ -3694,9 +3711,13 @@ def movement_slide_move(level: "SpecLevel", mo: dict) -> None:
 
 
 def movement_explode_missile(level: "SpecLevel", mo: dict) -> None:
+    """P_ExplodeMissile(): stop, enter the death state, drop MF_MISSILE."""
     mo["momx"] = mo["momy"] = mo["momz"] = 0
-    # The state change, tics draw and MF_MISSILE clear are p_mobj.c's; the
-    # movement gate never spawns a missile, so only the momentum matters here.
+    damage_set_state(level, mo, damage_mobj(mo["type"])["deathstate"])
+    mo["tics"] -= level.rng.next() & 3
+    if mo["tics"] < 1:
+        mo["tics"] = 1
+    mo["flags"] &= ~MF_MISSILE
 
 
 def movement_xy_movement(level: "SpecLevel", mo: dict) -> None:
@@ -4359,6 +4380,7 @@ DAMAGE_CRUSH_DAMAGE = 10
 DAMAGE_BLOOD_Z_SHIFT = 10
 
 MF_JUSTHIT = 0x00000040
+MF_JUSTATTACKED = 0x00000080
 MF_PICKUP = 0x00000800
 MF_DROPPED = 0x00020000
 MF_SHADOW = 0x00040000
@@ -4387,6 +4409,13 @@ DAMAGE_MOBJINFO = {
         149, 156, 158, 165, 150),          # MT_PLAYER
     1: (0x00400006, 20 * FRACUNIT, 56 * FRACUNIT, 100, 20, 200,
         174, 187, 189, 194, 176),          # MT_POSSESSED
+    # T15b's imp. meleestate and missilestate are the same state (S_TROO_ATK1):
+    # A_TroopAttack decides between the claw and the fireball when it runs.
+    11: (0x00400006, 20 * FRACUNIT, 56 * FRACUNIT, 100, 60, 200,
+         442, 455, 457, 462, 444),         # MT_TROOP
+    # The imp's fireball, spawned by P_SpawnMissile rather than placed by the map.
+    31: (0x00010610, 6 * FRACUNIT, 8 * FRACUNIT, 100, 1000, 0,
+         97, 0, 99, 0, 0),                 # MT_TROOPSHOT
     30: (0x00080006, 10 * FRACUNIT, 42 * FRACUNIT, 100, 20, 0,
          806, 0, 808, 0, 0),               # MT_BARREL
     37: (0x00000210, 20 * FRACUNIT, 16 * FRACUNIT, 100, 1000, 0,
@@ -4423,6 +4452,14 @@ DAMAGE_STATES = {
     94: (4, 95, "NULL", "PUFF"),        # S_PUFF2
     95: (4, 96, "NULL", "PUFF"),        # S_PUFF3
     96: (4, 0, "NULL", "PUFF"),         # S_PUFF4
+    # T15b: the imp's fireball. S_TBALL1/S_TBALL2 are the flight frames and
+    # S_TBALLX1..X3 the burst; the burst rows take no action, because the damage
+    # is the direct missile hit in PIT_CheckThing, not A_Explode.
+    97: (4, 98, "NULL", "BAL1"),        # S_TBALL1
+    98: (4, 97, "NULL", "BAL1"),        # S_TBALL2
+    99: (6, 100, "NULL", "BAL1"),       # S_TBALLX1
+    100: (6, 101, "NULL", "BAL1"),      # S_TBALLX2
+    101: (6, 0, "NULL", "BAL1"),        # S_TBALLX3
     149: (-1, 0, "NULL", "PLAY"),       # S_PLAY
     156: (4, 157, "NULL", "PLAY"),      # S_PLAY_PAIN
     157: (4, 149, "A_Pain", "PLAY"),    # S_PLAY_PAIN2
@@ -4445,6 +4482,9 @@ DAMAGE_STATES = {
     181: (4, 182, "A_Chase", "POSS"),
     182: (4, 183, "A_Chase", "POSS"),
     183: (4, 176, "A_Chase", "POSS"),   # S_POSS_RUN8
+    184: (10, 185, "A_FaceTarget", "POSS"),  # S_POSS_ATK1
+    185: (8, 186, "A_PosAttack", "POSS"),    # S_POSS_ATK2
+    186: (8, 176, "NULL", "POSS"),      # S_POSS_ATK3
     187: (3, 188, "NULL", "POSS"),      # S_POSS_PAIN
     188: (3, 176, "A_Pain", "POSS"),
     189: (5, 190, "NULL", "POSS"),      # S_POSS_DIE1
@@ -4461,6 +4501,37 @@ DAMAGE_STATES = {
     200: (5, 201, "NULL", "POSS"),
     201: (5, 202, "NULL", "POSS"),
     202: (-1, 0, "NULL", "POSS"),       # S_POSS_XDIE9
+    # T15b: the imp's own chain. Its run frames are three tics, so A_Chase is
+    # reached every third tic rather than every fourth.
+    442: (10, 443, "A_Look", "TROO"),    # S_TROO_STND
+    443: (10, 442, "A_Look", "TROO"),
+    444: (3, 445, "A_Chase", "TROO"),    # S_TROO_RUN1
+    445: (3, 446, "A_Chase", "TROO"),
+    446: (3, 447, "A_Chase", "TROO"),
+    447: (3, 448, "A_Chase", "TROO"),
+    448: (3, 449, "A_Chase", "TROO"),
+    449: (3, 450, "A_Chase", "TROO"),
+    450: (3, 451, "A_Chase", "TROO"),
+    451: (3, 444, "A_Chase", "TROO"),
+    452: (8, 453, "A_FaceTarget", "TROO"),   # S_TROO_ATK1
+    453: (8, 454, "A_FaceTarget", "TROO"),
+    454: (6, 444, "A_TroopAttack", "TROO"),
+    455: (2, 456, "NULL", "TROO"),       # S_TROO_PAIN
+    456: (2, 444, "A_Pain", "TROO"),
+    457: (8, 458, "NULL", "TROO"),       # S_TROO_DIE1
+    458: (8, 459, "A_Scream", "TROO"),
+    459: (6, 460, "NULL", "TROO"),
+    460: (6, 461, "A_Fall", "TROO"),
+    461: (-1, 0, "NULL", "TROO"),        # S_TROO_DIE5
+    462: (5, 463, "NULL", "TROO"),       # S_TROO_XDIE1
+    463: (5, 464, "A_XScream", "TROO"),
+    464: (5, 465, "NULL", "TROO"),
+    465: (5, 466, "A_Fall", "TROO"),
+    466: (5, 467, "NULL", "TROO"),
+    467: (5, 468, "NULL", "TROO"),
+    468: (5, 469, "NULL", "TROO"),
+    469: (5, 470, "NULL", "TROO"),
+    470: (-1, 0, "NULL", "TROO"),        # S_TROO_XDIE8
     802: (6, 803, "NULL", "ARM1"),      # S_ARM1
     803: (7, 802, "NULL", "ARM1"),      # S_ARM1A
     806: (6, 807, "NULL", "BAR1"),      # S_BAR1
@@ -4572,6 +4643,7 @@ def damage_spawn(level: "SpecLevel", type_: int, x: int, y: int, z) -> dict:
         "subsector": subsector, "sector": sector,
         "player": False, "target": None, "reactiontime": 0,
         "threshold": 0, "removed": False, "lastlook": lastlook,
+        "movedir": 0, "movecount": 0,
     }
     level.mobjs.append(mo)
     return mo
@@ -4605,15 +4677,24 @@ def damage_set_state(level: "SpecLevel", mo: dict, state: int) -> bool:
         mo["state"] = state
         mo["tics"] = tics
         mo["sprite"] = sprite
-        # A_Fall is the action here that changes the mobj. A_Look (T15a) reads
-        # the sector's sound target, scans for a visible player and enters the
-        # see state; A_Scream, A_XScream, A_PlayerScream and A_Pain are sound
-        # only, A_Chase is T15b's and is a no-op here, and A_Explode is not
-        # implemented, so none of those has an observable effect on either side.
+        # A_Fall is the action here that changes the mobj's flags outright. A_Look
+        # (T15a) wakes and enters the see state; A_Chase and the four attack
+        # actions (T15b) move, face, shoot and burst. A_Scream, A_XScream,
+        # A_PlayerScream and A_Pain are sound only and change nothing.
         if action == "A_Fall":
             mo["flags"] &= ~MF_SOLID
         elif action == "A_Look":
             enemy_look(level, mo)
+        elif action == "A_Chase":
+            enemy_chase(level, mo)
+        elif action == "A_FaceTarget":
+            enemy_face_target(level, mo)
+        elif action == "A_PosAttack":
+            enemy_pos_attack(level, mo)
+        elif action == "A_TroopAttack":
+            enemy_troop_attack(level, mo)
+        elif action == "A_Explode":
+            enemy_explode(level, mo)
         state = nxt
         if tics != 0:
             break
@@ -5025,14 +5106,24 @@ def damage_think(level: "SpecLevel", mo: dict) -> None:
 
 
 def damage_run_thinkers(level: "SpecLevel") -> None:
-    """P_RunThinkers(): every node once, in insertion order, drops included."""
+    """P_RunThinkers(): every node once, in insertion order.
+
+    The C's walk captures `next` before calling a node and appends new nodes at
+    the tail, so a mobj spawned during the walk is visited on that tic only when
+    the node that spawned it was not the tail when it ran. Both cases happen:
+    a monster that spawns a missile while another mobj is still ahead is
+    followed by that missile in the same tic, while the last mobj in the list
+    spawning a puff leaves the puff for the next tic. `was_tail` reproduces it.
+    """
     index = 0
     while index < len(level.mobjs):
+        was_tail = index == len(level.mobjs) - 1
         mo = level.mobjs[index]
         index += 1
-        if mo.get("removed"):
-            continue
-        damage_think(level, mo)
+        if not mo.get("removed"):
+            damage_think(level, mo)
+        if was_tail:
+            break
     level.mobjs = [mo for mo in level.mobjs if not mo.get("removed")]
 
 
@@ -6199,6 +6290,13 @@ def report_attack(lumps: list[Lump], map_name: str) -> None:
     level.mobjs = [mo]
     mo["threshold"] = 0
     mo["sprite"] = "PLAY"
+    # T14's weapon script needs a stationary damage sink, and T15b makes A_Chase
+    # real: its first test is `!(actor->target->flags & MF_SHOOTABLE)`. An avatar
+    # without the bit leaves the monster re-acquiring an invalid target on every
+    # run state, so it never steps out from under a shot aimed at where it stood
+    # and never fires back. The avatar is never damaged in this script;
+    # enemy_check is the gate whose monster does chase.
+    mo["flags"] &= ~MF_SHOOTABLE
     player = player_record(mo)
     # G_PlayerReborn's item state (p_player_wire): 50 bullets, the fists and the
     # pistol, the ammo ceilings, and the pistol in both weapon slots.
@@ -6317,7 +6415,7 @@ def report_attack(lumps: list[Lump], map_name: str) -> None:
 # --- Sight, sound and waking (T15a) ----------------------------------------
 
 
-ENEMY_SCRIPT = "sight-and-waking"
+ENEMY_SCRIPT = "chase-and-attack"
 ENEMY_TICS = 40
 ENEMY_FIRE_TIC = 20
 ENEMY_PAIR_MOD = 13
@@ -6552,6 +6650,355 @@ def enemy_look(level: "SpecLevel", mo: dict) -> None:
     enemy_seeyou(level, mo)
 
 
+# --- Chase and attack (T15b) -------------------------------------------------
+#
+# A_Chase, P_Move/P_TryWalk/P_NewChaseDir, P_CheckMeleeRange/P_CheckMissileRange,
+# A_FaceTarget, A_PosAttack, A_TroopAttack, P_SpawnMissile/P_CheckMissileSpawn,
+# A_Explode and P_RadiusAttack. A second reading of linuxdoom-1.10's p_enemy.c,
+# p_mobj.c and p_map.c, written from upstream rather than from the C.
+#
+# THE WALK SPEED IS AN INTEGER
+#
+# A monster's mobjinfo `speed` is 8 map units, not 8*FRACUNIT: upstream's P_Move
+# multiplies it by the 16.16 xspeed[] table with a plain integer product. A
+# missile's speed is 16.16 and P_SpawnMissile uses FixedMul. The two shapes are
+# upstream's and both are kept.
+
+ENEMY_CHASE_TICS = 60
+ENEMY_COMBAT_TICS = 96
+# The zombieman's first shot needs its reactiontime to run out and a chase window
+# to land on movecount == 0; from 224 units that is not guaranteed inside 96
+# tics, so this one scene runs longer.
+ENEMY_HITSCAN_TICS = 160
+ENEMY_KILL_TIC = 20
+ENEMY_IMP = 11
+ENEMY_TROOPSHOT = 31
+
+# A_Chase's one-step turn: upstream subtracts or adds `ANG90/2` (45 degrees)
+# until the facing lands on the 45-degree grid `angle &= 7<<29` keeps.
+ENEMY_TURN = 0x20000000
+
+# dirtype_t, upstream's order.
+ENEMY_EAST = 0
+ENEMY_NORTHEAST = 1
+ENEMY_NORTH = 2
+ENEMY_NORTHWEST = 3
+ENEMY_WEST = 4
+ENEMY_SOUTHWEST = 5
+ENEMY_SOUTH = 6
+ENEMY_SOUTHEAST = 7
+ENEMY_NODIR = 8
+
+ENEMY_OPPOSITE = (ENEMY_WEST, ENEMY_SOUTHWEST, ENEMY_SOUTH, ENEMY_SOUTHEAST,
+                  ENEMY_EAST, ENEMY_NORTHEAST, ENEMY_NORTH, ENEMY_NORTHWEST,
+                  ENEMY_NODIR)
+ENEMY_DIAGS = (ENEMY_NORTHWEST, ENEMY_NORTHEAST, ENEMY_SOUTHWEST,
+               ENEMY_SOUTHEAST)
+ENEMY_XSPEED = (FRACUNIT, 47000, 0, -47000, -FRACUNIT, -47000, 0, 47000)
+ENEMY_YSPEED = (0, 47000, FRACUNIT, 47000, 0, -47000, -FRACUNIT, -47000)
+
+# mobjtype: (speed, reactiontime, meleestate, missilestate, activesound,
+#            damage). MT_POSSESSED and MT_TROOP walk at 8; the fireball flies at
+#            10*FRACUNIT. The two attack states are the same number for the imp.
+ENEMY_MOBJINFO = {
+    1: (8, 8, 0, 184, 75, 0),                   # MT_POSSESSED
+    11: (8, 8, 452, 452, 76, 0),                # MT_TROOP
+    31: (10 * FRACUNIT, 8, 0, 0, 0, 3),         # MT_TROOPSHOT
+}
+
+
+def enemy_check_melee_range(level: "SpecLevel", actor: dict) -> bool:
+    """P_CheckMeleeRange(): 64 units less 20, widened by the target's radius."""
+    if actor.get("target") is None:
+        return False
+    target = actor["target"]
+    dist = movement_aprox_distance(target["x"] - actor["x"],
+                                   target["y"] - actor["y"])
+    if dist >= ATTACK_MELEERANGE - 20 * FRACUNIT + target["radius"]:
+        return False
+    return sight_check(level, actor, target)
+
+
+def enemy_check_missile_range(level: "SpecLevel", actor: dict) -> bool:
+    """P_CheckMissileRange(): sight, then the walk distance's random gate.
+
+    The four type-specific arms upstream carries (MT_VILE's 14*64 cap,
+    MT_UNDEAD's 196 floor and halving, the cyborg/spider/skull halving and the
+    cyborg's 160 cap) name types this port does not simulate; the two E1M1
+    enemies take only the generic path.
+    """
+    if actor.get("target") is None:
+        return False
+    if not sight_check(level, actor, actor["target"]):
+        return False
+    if actor["flags"] & MF_JUSTHIT:
+        actor["flags"] &= ~MF_JUSTHIT
+        return True
+    if actor["reactiontime"]:
+        return False
+    dist = movement_aprox_distance(actor["x"] - actor["target"]["x"],
+                                   actor["y"] - actor["target"]["y"])
+    dist -= 64 * FRACUNIT
+    if not ENEMY_MOBJINFO[actor["type"]][2]:
+        dist -= 128 * FRACUNIT
+    dist >>= 16
+    if dist > 200:
+        dist = 200
+    if level.rng.next() < dist:
+        return False
+    return True
+
+
+def enemy_move(level: "SpecLevel", actor: dict) -> bool:
+    """P_Move(): one eight-unit step in `movedir` through P_TryMove."""
+    if actor["movedir"] == ENEMY_NODIR:
+        return False
+    if actor["movedir"] < 0 or actor["movedir"] >= 8:
+        actor["movedir"] = ENEMY_NODIR
+        return False
+    speed = ENEMY_MOBJINFO[actor["type"]][0]
+    tryx = i32(actor["x"] + speed * ENEMY_XSPEED[actor["movedir"]])
+    tryy = i32(actor["y"] + speed * ENEMY_YSPEED[actor["movedir"]])
+    if not movement_try_move(level, actor, tryx, tryy):
+        # Upstream opens a door it bumps and returns true; this port has no
+        # spechit list exposed by P_TryMove, so a blocked monster stays blocked.
+        return False
+    if not (actor["flags"] & MF_FLOAT):
+        actor["z"] = actor["floorz"]
+    return True
+
+
+def enemy_try_walk(level: "SpecLevel", actor: dict) -> bool:
+    """P_TryWalk(): move, then re-arm the zig-zag counter."""
+    if not enemy_move(level, actor):
+        return False
+    actor["movecount"] = level.rng.next() & 15
+    return True
+
+
+def enemy_new_chase_dir(level: "SpecLevel", actor: dict) -> None:
+    """P_NewChaseDir(): the direct diagonal, the two axes, then a hunt."""
+    if actor.get("target") is None:
+        return
+    olddir = actor["movedir"]
+    turnaround = ENEMY_OPPOSITE[olddir]
+    deltax = i32(actor["target"]["x"] - actor["x"])
+    deltay = i32(actor["target"]["y"] - actor["y"])
+
+    d = [ENEMY_NODIR, ENEMY_NODIR, ENEMY_NODIR]
+    if deltax > 10 * FRACUNIT:
+        d[1] = ENEMY_EAST
+    elif deltax < -10 * FRACUNIT:
+        d[1] = ENEMY_WEST
+    else:
+        d[1] = ENEMY_NODIR
+    if deltay < -10 * FRACUNIT:
+        d[2] = ENEMY_SOUTH
+    elif deltay > 10 * FRACUNIT:
+        d[2] = ENEMY_NORTH
+    else:
+        d[2] = ENEMY_NODIR
+
+    if d[1] != ENEMY_NODIR and d[2] != ENEMY_NODIR:
+        actor["movedir"] = ENEMY_DIAGS[((1 if deltay < 0 else 0) << 1) +
+                                        (1 if deltax > 0 else 0)]
+        if actor["movedir"] != turnaround and enemy_try_walk(level, actor):
+            return
+
+    if level.rng.next() > 200 or abs(deltay) > abs(deltax):
+        d[1], d[2] = d[2], d[1]
+    if d[1] == turnaround:
+        d[1] = ENEMY_NODIR
+    if d[2] == turnaround:
+        d[2] = ENEMY_NODIR
+    if d[1] != ENEMY_NODIR:
+        actor["movedir"] = d[1]
+        if enemy_try_walk(level, actor):
+            return
+    if d[2] != ENEMY_NODIR:
+        actor["movedir"] = d[2]
+        if enemy_try_walk(level, actor):
+            return
+    if olddir != ENEMY_NODIR:
+        actor["movedir"] = olddir
+        if enemy_try_walk(level, actor):
+            return
+
+    if level.rng.next() & 1:
+        for tdir in range(ENEMY_EAST, ENEMY_SOUTHEAST + 1):
+            if tdir != turnaround:
+                actor["movedir"] = tdir
+                if enemy_try_walk(level, actor):
+                    return
+    else:
+        for tdir in range(ENEMY_SOUTHEAST, ENEMY_EAST - 1, -1):
+            if tdir != turnaround:
+                actor["movedir"] = tdir
+                if enemy_try_walk(level, actor):
+                    return
+
+    if turnaround != ENEMY_NODIR:
+        actor["movedir"] = turnaround
+        if enemy_try_walk(level, actor):
+            return
+    actor["movedir"] = ENEMY_NODIR
+
+
+def enemy_face_target(level: "SpecLevel", actor: dict) -> None:
+    """A_FaceTarget(): exact bearing, and the fuzzy-target jitter."""
+    if actor.get("target") is None:
+        return
+    actor["flags"] &= ~MF_AMBUSH
+    actor["angle"] = point_to_angle(actor["x"], actor["y"],
+                                    actor["target"]["x"],
+                                   actor["target"]["y"])
+    if actor["target"]["flags"] & MF_SHADOW:
+        actor["angle"] = u32(actor["angle"] +
+                             ((level.rng.next() - level.rng.next()) << 21))
+
+
+def enemy_chase(level: "SpecLevel", actor: dict) -> None:
+    """A_Chase(): reaction time, the 45-degree turn, melee, missile, walk."""
+    info = ENEMY_MOBJINFO[actor["type"]]
+    if actor["reactiontime"]:
+        actor["reactiontime"] -= 1
+    if actor["threshold"]:
+        if actor.get("target") is None or actor["target"]["health"] <= 0:
+            actor["threshold"] = 0
+        else:
+            actor["threshold"] -= 1
+
+    if actor["movedir"] < 8:
+        actor["angle"] &= 7 << 29
+        delta = i32(actor["angle"] - (actor["movedir"] << 29))
+        if delta > 0:
+            actor["angle"] = u32(actor["angle"] - ENEMY_TURN)
+        elif delta < 0:
+            actor["angle"] = u32(actor["angle"] + ENEMY_TURN)
+
+    if actor.get("target") is None or \
+            not (actor["target"]["flags"] & MF_SHOOTABLE):
+        if enemy_look_for_players(level, actor, True):
+            return
+        damage_set_state(level, actor, damage_mobj(actor["type"])["spawnstate"])
+        return
+
+    if actor["flags"] & MF_JUSTATTACKED:
+        actor["flags"] &= ~MF_JUSTATTACKED
+        enemy_new_chase_dir(level, actor)
+        return
+
+    if info[2] and enemy_check_melee_range(level, actor):
+        damage_set_state(level, actor, info[2])
+        return
+
+    if info[3]:
+        if not actor["movecount"] and enemy_check_missile_range(level, actor):
+            damage_set_state(level, actor, info[3])
+            actor["flags"] |= MF_JUSTATTACKED
+            return
+
+    if level.damage_netgame and not actor["threshold"] and \
+            not sight_check(level, actor, actor["target"]):
+        if enemy_look_for_players(level, actor, True):
+            return
+
+    actor["movecount"] -= 1
+    if actor["movecount"] < 0 or not enemy_move(level, actor):
+        enemy_new_chase_dir(level, actor)
+
+    # The active sound's draw: both E1M1 enemies name one, so every A_Chase
+    # consumes a number even though no audio exists (S2).
+    if info[4]:
+        level.rng.next()
+
+
+def enemy_pos_attack(level: "SpecLevel", actor: dict) -> None:
+    """A_PosAttack(): the zombieman's pistol -- aim, drift, 3..15 points."""
+    if actor.get("target") is None:
+        return
+    enemy_face_target(level, actor)
+    angle = actor["angle"]
+    slope, _target = attack_aim_line_attack(level, actor, angle,
+                                            ATTACK_MISSILERANGE)
+    angle = u32(angle + ((level.rng.next() - level.rng.next()) << 20))
+    damage = ((level.rng.next() % 5) + 1) * 3
+    attack_line_attack(level, actor, angle, ATTACK_MISSILERANGE, slope, damage)
+
+
+def enemy_troop_attack(level: "SpecLevel", actor: dict) -> None:
+    """A_TroopAttack(): the claw within range, else the fireball."""
+    if actor.get("target") is None:
+        return
+    enemy_face_target(level, actor)
+    if enemy_check_melee_range(level, actor):
+        damage = (level.rng.next() % 8 + 1) * 3
+        damage_damage(level, actor["target"], actor, actor, damage)
+        return
+    enemy_spawn_missile(level, actor, actor["target"], ENEMY_TROOPSHOT)
+
+
+def enemy_check_missile_spawn(level: "SpecLevel", th: dict) -> bool:
+    """P_CheckMissileSpawn(): jitter, half a step forward, maybe explode."""
+    th["tics"] -= level.rng.next() & 3
+    if th["tics"] < 1:
+        th["tics"] = 1
+    th["x"] = i32(th["x"] + (th["momx"] >> 1))
+    th["y"] = i32(th["y"] + (th["momy"] >> 1))
+    th["z"] = i32(th["z"] + (th["momz"] >> 1))
+    if not movement_try_move(level, th, th["x"], th["y"]):
+        movement_explode_missile(level, th)
+        return False
+    return True
+
+
+def enemy_spawn_missile(level: "SpecLevel", source: dict, dest: dict,
+                        type_: int) -> dict:
+    """P_SpawnMissile(): spawn 32 units up, aim at the target, check the spawn."""
+    info = ENEMY_MOBJINFO[type_]
+    th = damage_spawn(level, type_, source["x"], source["y"],
+                      source["z"] + 32 * FRACUNIT)
+    th["target"] = source
+    an = point_to_angle(source["x"], source["y"], dest["x"], dest["y"])
+    if dest["flags"] & MF_SHADOW:
+        an = u32(an + ((level.rng.next() - level.rng.next()) << 20))
+    th["angle"] = an
+    an >>= ANGLETOFINESHIFT
+    th["momx"] = fixed_mul(info[0], FINE_SINE[an + FINEANGLES // 4])
+    th["momy"] = fixed_mul(info[0], FINE_SINE[an])
+    dist = trunc_div(movement_aprox_distance(dest["x"] - source["x"],
+                                             dest["y"] - source["y"]), info[0])
+    if dist < 1:
+        dist = 1
+    th["momz"] = trunc_div(dest["z"] - source["z"], dist)
+    enemy_check_missile_spawn(level, th)
+    return th
+
+
+def enemy_radius_attack(level: "SpecLevel", spot: dict, source, damage: int) -> None:
+    """P_RadiusAttack(): the box test, then sight, then damage minus distance."""
+    for thing in list(level.mobjs):
+        if not (thing["flags"] & MF_SHOOTABLE):
+            continue
+        if thing["type"] in (7, 16):                    # MT_SPIDER, MT_CYBORG
+            continue
+        dx = abs(thing["x"] - spot["x"])
+        dy = abs(thing["y"] - spot["y"])
+        dist = dx if dx > dy else dy
+        dist = (dist - thing["radius"]) >> FRACBITS
+        if dist < 0:
+            dist = 0
+        if dist >= damage:
+            continue
+        if sight_check(level, thing, spot):
+            damage_damage(level, thing, spot, source, damage - dist)
+
+
+def enemy_explode(level: "SpecLevel", thingy: dict) -> None:
+    """A_Explode(): `P_RadiusAttack (thingy, thingy->target, 128)`."""
+    enemy_radius_attack(level, thingy, thingy.get("target"), 128)
+
+
 # --- The --enemy fixtures ---------------------------------------------------
 
 
@@ -6659,8 +7106,34 @@ def enemy_find_door(bsp: BspMap, sectors, start: dict):
     return best
 
 
-def enemy_scene(bsp: BspMap, name: str, x: int, y: int, fire: bool) -> None:
-    """One scene: a fresh level, the avatar and one zombieman, ENEMY_TICS tics."""
+def enemy_print_mobj(level: "SpecLevel", slot: int, mo: dict) -> None:
+    """One MOBJ line, with the live sector and facing T15b's assertions read."""
+    line = (f"MOBJ {slot} type={mo['type']} x={mo['x']} y={mo['y']} "
+            f"z={mo['z']} health={mo['health']} "
+            f"flags=0x{mo['flags'] & 0xFFFFFFFF:08x} "
+            f"state={mo['state']} tics={mo['tics']} "
+            f"tgt={damage_slot_of(level, mo.get('target'))} "
+            f"momx={mo['momx']} momy={mo['momy']} "
+            f"sec={mo['sector']} sub={mo['subsector']} ang={u32(mo['angle'])}")
+    if mo["type"] in (ENEMY_MONSTER, ENEMY_IMP):
+        player = level.damage_player["mo"]
+        line += f" see={1 if sight_check(level, mo, player) else 0}"
+    print(line)
+
+
+def enemy_emit(level: "SpecLevel", step: list[int], op: str) -> None:
+    print(f"STEP {step[0]} op={op} rng={level.rng.index}")
+    attack_print_psprites(level.damage_player)
+    for slot, mo in enumerate(level.mobjs):
+        enemy_print_mobj(level, slot, mo)
+    attack_print_player(level)
+    step[0] += 1
+
+
+def enemy_scene(bsp: BspMap, name: str, x: int, y: int, fire: bool = False,
+                monster_type: int = ENEMY_MONSTER, tics: int = ENEMY_TICS,
+                fire_tic: int = ENEMY_FIRE_TIC, kill_tic: int = -1) -> None:
+    """One scene: a fresh level, the avatar and one monster, `tics` tics."""
     things = run_things(bsp, 2)                 # the RNG position the load leaves
     level = SpecLevel(bsp, RandomState(things.rng))
     level.leveltime = 0
@@ -6692,40 +7165,60 @@ def enemy_scene(bsp: BspMap, name: str, x: int, y: int, fire: bool) -> None:
     player["noiseAlerts"] = 0
     level.damage_player = player
 
-    monster = damage_spawn(level, ENEMY_MONSTER, x, y, "floor")
+    monster = damage_spawn(level, monster_type, x, y, "floor")
+    # P_SpawnMobj's reactiontime: `mobjinfo[type].reactiontime` unless the skill
+    # is nightmare. This scene's level is medium, so the row's value stands.
+    monster["reactiontime"] = ENEMY_MOBJINFO[monster_type][1]
     monster["angle"] = point_to_angle(monster["x"], monster["y"],
                                       mo["x"], mo["y"])
-    spawn_state = damage_mobj(ENEMY_MONSTER)["spawnstate"]
+    spawn_state = damage_mobj(monster_type)["spawnstate"]
     alt_state = level_mobj_states(level)[spawn_state][1]
 
     step = [0]
     wake = -1
     target = -1
     stayed = 1
+    wall_cross = 0
+    previous = (monster["x"], monster["y"])
     print(f"SCENE-BEGIN name={name}")
-    attack_emit(level, step, "setup")
-    for tic in range(ENEMY_TICS):
-        buttons = BT_ATTACK if (fire and tic == ENEMY_FIRE_TIC) else 0
+    enemy_emit(level, step, "setup")
+    for tic in range(tics):
+        if tic == kill_tic:
+            damage_damage(level, monster, None, None, 30)
+        buttons = BT_ATTACK if (fire and tic == fire_tic) else 0
         cmd = {"forwardmove": 0, "sidemove": 0, "angleturn": 0,
                "buttons": buttons}
         attack_player_think(level, player, cmd)
         damage_run_thinkers(level)
         run_tic(level)
         level.leveltime += 1
+        if not monster.get("removed"):
+            position = (monster["x"], monster["y"])
+            if enemy_crosses_wall(bsp, previous[0], previous[1],
+                                  position[0], position[1]):
+                wall_cross += 1
+            previous = position
         if wake < 0 and monster.get("target") is not None:
             wake = tic
             target = damage_slot_of(level, monster["target"])
         if monster.get("target") is not None or \
                 monster["state"] not in (spawn_state, alt_state):
             stayed = 0
-        attack_emit(level, step, "fire" if buttons else "tick")
+        if tic == kill_tic:
+            op = "kill"
+        elif buttons:
+            op = "fire"
+        else:
+            op = "tick"
+        enemy_emit(level, step, op)
 
     if monster.get("target") is None:
         target = -1
     sound = level.sound[monster["sector"]]["target"]
-    print(f"SCENE-END name={name} tics={ENEMY_TICS} woketic={wake} "
+    print(f"SCENE-END name={name} tics={tics} woketic={wake} "
           f"target={target} state={monster['state']} stayed={stayed} "
-          f"sndtarget={damage_slot_of(level, sound)} rng={level.rng.index}")
+          f"sndtarget={damage_slot_of(level, sound)} rng={level.rng.index} "
+          f"wallcross={wall_cross} hp={player['health']}")
 
 
 def report_enemy(lumps: list[Lump], map_name: str) -> None:
@@ -6782,10 +7275,50 @@ def report_enemy(lumps: list[Lump], map_name: str) -> None:
     print(f"FIXTURE door x={door_x} y={door_y} sector={door_back} "
           f"line={door_line} front={door_front} back={door_back}")
 
+    # The corridor fixture: the farthest point along the avatar's spawn facing,
+    # at or below 240 map units, that is in the same sector and whose straight
+    # segment crosses no one-sided linedef. On E1M1 that is 224 units, in the
+    # start room; the two 8-unit steps beyond it fall into the next sectors.
+    corridor_x = 0
+    corridor_y = 0
+    corridor_sector = -1
+    distance = 240
+    while distance >= 40:
+        candidate_x = i32(player["x"] +
+                          distance * FINE_SINE[fine + FINEANGLES // 4])
+        candidate_y = i32(player["y"] + distance * FINE_SINE[fine])
+        sector = enemy_sector_at(bsp, candidate_x, candidate_y)
+        if sector == player["sector"] and \
+                not enemy_crosses_wall(bsp, player["x"], player["y"],
+                                       candidate_x, candidate_y):
+            corridor_x, corridor_y, corridor_sector = (candidate_x, candidate_y,
+                                                       sector)
+            break
+        distance -= 8
+    if corridor_sector < 0:
+        raise InputError(f"{map_name}: no clear corridor spot along the facing")
+    print(f"FIXTURE corridor x={corridor_x} y={corridor_y} "
+          f"sector={corridor_sector}")
+
     enemy_scene(bsp, "sees", sees_x, sees_y, False)
     enemy_scene(bsp, "wall", wall_mobj["x"], wall_mobj["y"], False)
     enemy_scene(bsp, "noise", wall_mobj["x"], wall_mobj["y"], True)
     enemy_scene(bsp, "door", door_x, door_y, True)
+    # T15b: it turns and walks, stops to maul, shoots at range, throws the
+    # baked fireball, and stops dead when killed.
+    enemy_scene(bsp, "chase", corridor_x, corridor_y,
+                tics=ENEMY_CHASE_TICS)
+    enemy_scene(bsp, "melee", sees_x, sees_y, monster_type=ENEMY_IMP,
+                tics=ENEMY_CHASE_TICS)
+    enemy_scene(bsp, "hitscan", corridor_x, corridor_y,
+                tics=ENEMY_HITSCAN_TICS)
+    enemy_scene(bsp, "wallshot", wall_mobj["x"], wall_mobj["y"], True,
+                tics=ENEMY_COMBAT_TICS, fire_tic=ENEMY_FIRE_TIC)
+    enemy_scene(bsp, "fireball", corridor_x, corridor_y,
+                monster_type=ENEMY_IMP, tics=ENEMY_COMBAT_TICS)
+    enemy_scene(bsp, "death", sees_x, sees_y, tics=ENEMY_CHASE_TICS,
+                kill_tic=ENEMY_KILL_TIC)
+
 
 
 # --- BSP reporting ----------------------------------------------------------

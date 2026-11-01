@@ -1,8 +1,8 @@
 /*
- * Host harness for sight and waking (T15a).
+ * Host harness for monster AI: sight and waking (T15a), chase and attack (T15b).
  *
- * It loads E1M1 through lib/doom/p_setup.c and runs four short scenes, each one
- * a fresh level with the avatar and one zombieman:
+ * It loads E1M1 through lib/doom/p_setup.c and runs scenes, each one a fresh
+ * level with the avatar and one monster:
  *
  *   sees    the monster 40 map units along the player's spawn facing, in the
  *           same room: its first state cycle must set `target` and enter the see
@@ -17,6 +17,19 @@
  *   door    a monster standing inside the nearest closed manual door's sector,
  *           the player fires: a closed door's opening is zero, so the flood must
  *           not cross it and the monster must not wake.
+ *   chase   a zombieman 224 units down the start room's clear corridor: it must
+ *           turn toward the player and close the distance without crossing a
+ *           wall.
+ *   melee   an imp 40 units away: it must stop at P_CheckMeleeRange's distance
+ *           and land its claw.
+ *   hitscan a zombieman in the same corridor: A_PosAttack must lower the
+ *           player's health, and only while the monster can see it.
+ *   wallshot the zombieman behind a wall, woken by the player's shot at tic 5: it
+ *           may hunt, but it may not hurt the player from behind the wall.
+ *   fireball an imp in the corridor: it must throw MT_TROOPSHOT, whose live
+ *           states advance through the baked BAL1 rows, and the burst must hurt.
+ *   death   a zombieman killed at tic 20: its death chain must play out and it
+ *           must never chase or attack again.
  *
  * Then it compares P_CheckSight against the oracle for a deterministic sweep of
  * mobj pairs from E1M1's own THINGS population, so both the REJECT pre-test and
@@ -24,10 +37,11 @@
  *
  * THE PROTOCOL
  *
- *   ENEMY <map> script=sight-and-waking
+ *   ENEMY <map> script=chase-and-attack
  *   FIXTURE sees   x=<i32> y=<i32> sector=<n>
  *   FIXTURE wall   x=<i32> y=<i32> sector=<n> from=<slot>
  *   FIXTURE door   x=<i32> y=<i32> sector=<n> line=<n> front=<n> back=<n>
+ *   FIXTURE corridor x=<i32> y=<i32> sector=<n>
  *   SWEEP <map> mobjs=<n> pairs=<n>
  *   SIGHT <i> <j> v=<0|1> s1=<n> s2=<n>
  *   SCENE-BEGIN name=<name>
@@ -35,12 +49,20 @@
  *   PSP <0|1> state=<s> tics=<t> sx=<i32> sy=<i32>
  *   MOBJ <slot> type=<t> x=<i32> y=<i32> z=<i32> health=<i32> flags=0x<8x>
  *       state=<s> tics=<t> tgt=<slot|-1> momx=<i32> momy=<i32>
+ *       sec=<n> sub=<n> ang=<u32> [see=<0|1>]
  *   PLAYER hp=<i32> ammo=<4> w=<mask> pend=<n> ready=<n> refire=<n> atk=<n>
  *       lite=<n> snd=<n> noise=<n>
  *   SCENE-END name=<name> tics=<n> woketic=<n|-1> target=<slot|-1>
- *       state=<s> stayed=<0|1> sndtarget=<slot|-1> rng=<n>
+ *       state=<s> stayed=<0|1> sndtarget=<slot|-1> rng=<n> wallcross=<n>
+ *       hp=<i32>
  *   CSTAT sight_checks=<n> reject=<n> reject_missing=<n> bsp=<n>
  *       bsp_blocked=<n> accepted=<n>
+ *
+ * `see=` is present only on the two monster types this task reaches
+ * (MT_POSSESSED, MT_TROOP): it is P_CheckSight(monster, player) at emit time, so
+ * the gate can ask whether a hit landed while the shooter was blind. `wallcross`
+ * counts the tics whose step from the previous position crosses a one-sided
+ * linedef, so the walk assertion is about the whole path, not its endpoint.
  *
  * CSTAT is a C-only measurement of which paths P_CheckSight took; the Python
  * gate asserts that all three (REJECT, BSP accept, BSP block) were exercised.
@@ -96,10 +118,21 @@ r_mobj_t* p_sector_sound_target(const p_mobj_context_t* world,
 #endif
 
 #define ENEMY_ARENA_BYTES (256u * 1024u)
-#define ENEMY_SCRIPT "sight-and-waking"
+#define ENEMY_SCRIPT "chase-and-attack"
 #define ENEMY_TICS 40
 #define ENEMY_FIRE_TIC 20
+#define ENEMY_CHASE_TICS 60
+#define ENEMY_COMBAT_TICS 96
+/* The zombieman's first shot needs its reactiontime to run out and a chase
+ * window to land on movecount == 0; from 224 units that is not guaranteed inside
+ * 96 tics, so this one scene runs longer. */
+#define ENEMY_HITSCAN_TICS 160
+#define ENEMY_KILL_TIC 20
 #define ENEMY_MONSTER MT_POSSESSED
+#define ENEMY_IMP MT_TROOP
+#define ENEMY_CORRIDOR_MAX 240
+#define ENEMY_CORRIDOR_MIN 40
+#define ENEMY_CORRIDOR_STEP 8
 
 /* The sweep's pair rule: every ordered pair (i, j) with i != j and
  * (17i + 31j) % 13 == 0. Deterministic, independent of the map, and 644 pairs on
@@ -160,13 +193,24 @@ static int slot_of(const p_level_t* level, const r_mobj_t* mobj) {
     return -1;
 }
 
-static void print_mobj(const p_level_t* level, int slot, const r_mobj_t* mobj) {
+static int monster_type(int type) {
+    return type == (int)ENEMY_MONSTER || type == (int)ENEMY_IMP;
+}
+
+static void print_mobj(p_level_t* level, int slot, const r_mobj_t* mobj) {
     printf("MOBJ %d type=%d x=%ld y=%ld z=%ld health=%ld flags=0x%08lx "
-           "state=%d tics=%d tgt=%d momx=%ld momy=%ld\n",
+           "state=%d tics=%d tgt=%d momx=%ld momy=%ld sec=%u sub=%u ang=%lu",
            slot, (int)mobj->type, (long)mobj->x, (long)mobj->y, (long)mobj->z,
            (long)mobj->health, (unsigned long)mobj->flags, (int)mobj->state,
            (int)mobj->tics, slot_of(level, mobj->target), (long)mobj->momx,
-           (long)mobj->momy);
+           (long)mobj->momy, (unsigned)mobj->sector,
+           (unsigned)mobj->subsector, (unsigned long)mobj->angle);
+    /* The two monsters this task reaches carry whether they can see the player
+     * on the tic the line is printed, so a hit can be tied to line of sight. */
+    if (monster_type((int)mobj->type) && level->player != NULL) {
+        printf(" see=%d", p_check_sight(&level->context, mobj, level->player));
+    }
+    printf("\n");
 }
 
 static void print_psprites(const p_player_t* player) {
@@ -442,9 +486,23 @@ typedef struct scene_result {
     int stayed;
 } scene_result_t;
 
+/*
+ * One scene's script. The four waking scenes fill only the first five fields;
+ * the T15b scenes also name the monster, the length, the shot tic and the kill
+ * tic. `fireTic < 0` means the player never fires.
+ */
+typedef struct scene_spec {
+    const char* name;
+    int type;
+    fixed_t x;
+    fixed_t y;
+    int tics;
+    int fireTic;
+    int killTic;
+} scene_spec_t;
+
 static int run_scene(const doom_map_t* map, uint8_t* arena, size_t arenaBytes,
-                     const char* name, fixed_t monsterX, fixed_t monsterY,
-                     int fire, scene_result_t* result) {
+                     const scene_spec_t* spec, scene_result_t* result) {
     p_level_t level;
     p_spawn_rules_t rules;
     r_mobj_t* player;
@@ -454,6 +512,10 @@ static int run_scene(const doom_map_t* map, uint8_t* arena, size_t arenaBytes,
     int altState;
     int step = 0;
     int tic;
+    int wallCross = 0;
+    fixed_t previousX = 0;
+    fixed_t previousY = 0;
+    int removed = 0;
 
     memset(result, 0, sizeof *result);
     result->wakeTic = -1;
@@ -464,12 +526,12 @@ static int run_scene(const doom_map_t* map, uint8_t* arena, size_t arenaBytes,
     rules = p_spawn_rules_default();
     if (p_level_init(&level, map, arena, arenaBytes, &rules) != P_SETUP_OK) {
         fprintf(stderr, "enemy_check: %s: level load failed with code %d\n",
-                name, (int)level.error);
+                spec->name, (int)level.error);
         return 2;
     }
     player = level.player;
     if (player == NULL) {
-        fprintf(stderr, "enemy_check: %s: no single-player start\n", name);
+        fprintf(stderr, "enemy_check: %s: no single-player start\n", spec->name);
         p_level_shutdown(&level);
         return 2;
     }
@@ -486,54 +548,132 @@ static int run_scene(const doom_map_t* map, uint8_t* arena, size_t arenaBytes,
     (void)p_run_thinkers(&level.thinkers, &p_level_release_thinker,
                          &level.context, NULL);
 
-    monster = p_spawn_mobj(&level.context, monsterX, monsterY, ONFLOORZ,
-                           ENEMY_MONSTER, NULL);
+    monster = p_spawn_mobj(&level.context, spec->x, spec->y, ONFLOORZ,
+                           (mobjtype_t)spec->type, NULL);
     if (monster == NULL) {
-        fprintf(stderr, "enemy_check: %s: the zone refused the monster\n", name);
+        fprintf(stderr, "enemy_check: %s: the zone refused the monster\n",
+                spec->name);
         p_level_shutdown(&level);
         return 2;
     }
     monster->angle = p_point_to_angle(player->x - monster->x,
                                       player->y - monster->y);
+    previousX = monster->x;
+    previousY = monster->y;
 
-    spawnState = mobjinfo[ENEMY_MONSTER].spawnstate;
+    spawnState = mobjinfo[spec->type].spawnstate;
     altState = states[spawnState].nextstate;
 
-    printf("SCENE-BEGIN name=%s\n", name);
+    printf("SCENE-BEGIN name=%s\n", spec->name);
     emit(&level, &step, "setup");
 
-    for (tic = 0; tic < ENEMY_TICS; ++tic) {
+    for (tic = 0; tic < spec->tics; ++tic) {
         p_ticcmd_t cmd;
 
+        if (tic == spec->killTic) {
+            p_damage_mobj(&level.context, monster, NULL, NULL, 30);
+        }
+
         memset(&cmd, 0, sizeof cmd);
-        cmd.buttons = (uint8_t)((fire && tic == ENEMY_FIRE_TIC) ? BT_ATTACK : 0);
+        cmd.buttons =
+            (uint8_t)((spec->fireTic >= 0 && tic == spec->fireTic) ? BT_ATTACK
+                                                                   : 0);
         (void)p_level_tic(&level, &cmd, NULL);
 
-        if (result->wakeTic < 0 && monster->target != NULL) {
-            result->wakeTic = tic;
-            result->targetSlot = slot_of(&level, monster->target);
+        if (!removed) {
+            if (monster->thinker.removed != 0u) {
+                removed = 1;
+            } else {
+                const fixed_t dx = monster->x - previousX;
+                const fixed_t dy = monster->y - previousY;
+
+                if (dx != 0 || dy != 0) {
+                    if (segmentCrossesWall(map, previousX, previousY, monster->x,
+                                           monster->y)) {
+                        wallCross += 1;
+                    }
+                    previousX = monster->x;
+                    previousY = monster->y;
+                }
+            }
         }
-        if (monster->target != NULL ||
-            (monster->state != spawnState && monster->state != altState)) {
-            result->stayed = 0;
+        if (!removed) {
+            if (result->wakeTic < 0 && monster->target != NULL) {
+                result->wakeTic = tic;
+                result->targetSlot = slot_of(&level, monster->target);
+            }
+            if (monster->target != NULL ||
+                (monster->state != spawnState && monster->state != altState)) {
+                result->stayed = 0;
+            }
         }
-        emit(&level, &step, (fire && tic == ENEMY_FIRE_TIC) ? "fire" : "tick");
+        emit(&level, &step,
+             (tic == spec->killTic) ? "kill"
+                                    : ((spec->fireTic >= 0 &&
+                                        tic == spec->fireTic)
+                                           ? "fire"
+                                           : "tick"));
     }
 
-    if (monster->target == NULL) {
+    if (!removed) {
+        if (monster->target == NULL) {
+            result->targetSlot = -1;
+        }
+        result->soundSlot = slot_of(
+            &level, p_sector_sound_target(&level.context, monster->sector));
+        result->finalState = monster->state;
+    } else {
         result->targetSlot = -1;
+        result->soundSlot = -1;
+        result->finalState = S_NULL;
     }
-    result->soundSlot = slot_of(
-        &level, p_sector_sound_target(&level.context, monster->sector));
-    result->finalState = monster->state;
 
     printf("SCENE-END name=%s tics=%d woketic=%d target=%d state=%d stayed=%d "
-           "sndtarget=%d rng=%u\n",
-           name, ENEMY_TICS, result->wakeTic, result->targetSlot,
+           "sndtarget=%d rng=%u wallcross=%d hp=%ld\n",
+           spec->name, spec->tics, result->wakeTic, result->targetSlot,
            result->finalState, result->stayed, result->soundSlot,
-           (unsigned)level.random.index);
+           (unsigned)level.random.index, wallCross,
+           (long)level.playerState.health);
 
     p_level_shutdown(&level);
+    return 0;
+}
+
+/*
+ * The corridor fixture: the farthest point along the avatar's spawn facing, at
+ * or below 240 map units, that is in the player's own sector and whose straight
+ * segment crosses no one-sided linedef. The T15b scenes that need room between
+ * the two use it, and the oracle computes the same point with the same rule.
+ */
+static int findCorridor(const doom_map_t* map, const r_mobj_t* start, fixed_t* x,
+                        fixed_t* y, uint16_t* sector) {
+    const uint32_t fine = start->angle >> ANGLETOFINESHIFT;
+    fixed_t distance;
+
+    for (distance = ENEMY_CORRIDOR_MAX * FRACUNIT;
+         distance >= ENEMY_CORRIDOR_MIN * FRACUNIT;
+         distance -= ENEMY_CORRIDOR_STEP * FRACUNIT) {
+        const fixed_t px =
+            start->x + (distance >> FRACBITS) *
+                           r_fine_sine[fine + (uint32_t)(FINEANGLES / 4)];
+        const fixed_t py =
+            start->y + (distance >> FRACBITS) * r_fine_sine[fine];
+        uint16_t found = 0;
+
+        if (!sectorAt(map, px, py, &found)) {
+            continue;
+        }
+        if (found != start->sector) {
+            continue;
+        }
+        if (segmentCrossesWall(map, start->x, start->y, px, py)) {
+            continue;
+        }
+        *x = px;
+        *y = py;
+        *sector = found;
+        return 1;
+    }
     return 0;
 }
 
@@ -691,6 +831,11 @@ int main(int argc, char** argv) {
     int wallFrom = -1;
     door_fixture_t door;
     scene_result_t scene;
+    fixed_t corridorX = 0;
+    fixed_t corridorY = 0;
+    uint16_t corridorSector = 0;
+    scene_spec_t scenes[10];
+    size_t sceneIndex;
 
     if (argc < 2 || argc > 3) {
         fprintf(stderr, "usage: enemy_check <path-to-WAD> [map]\n");
@@ -769,36 +914,49 @@ int main(int argc, char** argv) {
         printf("FIXTURE door x=%ld y=%ld sector=%u line=%u front=%u back=%u\n",
                (long)door.x, (long)door.y, (unsigned)door.back,
                (unsigned)door.line, (unsigned)door.front, (unsigned)door.back);
+        if (!findCorridor(&map, level.player, &corridorX, &corridorY,
+                          &corridorSector)) {
+            fprintf(stderr, "enemy_check: no clear corridor spot\n");
+            p_level_shutdown(&level);
+            free(arena);
+            free(bytes);
+            return 2;
+        }
+        printf("FIXTURE corridor x=%ld y=%ld sector=%u\n", (long)corridorX,
+               (long)corridorY, (unsigned)corridorSector);
         p_level_shutdown(&level);
     }
 
-    result = run_scene(&map, arena, ENEMY_ARENA_BYTES, "sees", seesX, seesY, 0,
-                       &scene);
-    if (result != 0) {
-        free(arena);
-        free(bytes);
-        return result;
-    }
-    result = run_scene(&map, arena, ENEMY_ARENA_BYTES, "wall", wallX, wallY, 0,
-                       &scene);
-    if (result != 0) {
-        free(arena);
-        free(bytes);
-        return result;
-    }
-    result = run_scene(&map, arena, ENEMY_ARENA_BYTES, "noise", wallX, wallY, 1,
-                       &scene);
-    if (result != 0) {
-        free(arena);
-        free(bytes);
-        return result;
-    }
-    result = run_scene(&map, arena, ENEMY_ARENA_BYTES, "door", door.x, door.y, 1,
-                       &scene);
-    if (result != 0) {
-        free(arena);
-        free(bytes);
-        return result;
+    scenes[0] = (scene_spec_t){"sees", (int)ENEMY_MONSTER, seesX, seesY,
+                               ENEMY_TICS, -1, -1};
+    scenes[1] = (scene_spec_t){"wall", (int)ENEMY_MONSTER, wallX, wallY,
+                               ENEMY_TICS, -1, -1};
+    scenes[2] = (scene_spec_t){"noise", (int)ENEMY_MONSTER, wallX, wallY,
+                               ENEMY_TICS, ENEMY_FIRE_TIC, -1};
+    scenes[3] = (scene_spec_t){"door", (int)ENEMY_MONSTER, door.x, door.y,
+                               ENEMY_TICS, ENEMY_FIRE_TIC, -1};
+    scenes[4] = (scene_spec_t){"chase", (int)ENEMY_MONSTER, corridorX,
+                               corridorY, ENEMY_CHASE_TICS, -1, -1};
+    scenes[5] = (scene_spec_t){"melee", (int)ENEMY_IMP, seesX, seesY,
+                               ENEMY_CHASE_TICS, -1, -1};
+    scenes[6] = (scene_spec_t){"hitscan", (int)ENEMY_MONSTER, corridorX,
+                               corridorY, ENEMY_HITSCAN_TICS, -1, -1};
+    scenes[7] = (scene_spec_t){"wallshot", (int)ENEMY_MONSTER, wallX, wallY,
+                               ENEMY_COMBAT_TICS, ENEMY_FIRE_TIC, -1};
+    scenes[8] = (scene_spec_t){"fireball", (int)ENEMY_IMP, corridorX,
+                               corridorY, ENEMY_COMBAT_TICS, -1, -1};
+    scenes[9] = (scene_spec_t){"death", (int)ENEMY_MONSTER, seesX, seesY,
+                               ENEMY_CHASE_TICS, -1, ENEMY_KILL_TIC};
+
+    for (sceneIndex = 0; sceneIndex < sizeof scenes / sizeof scenes[0];
+         ++sceneIndex) {
+        result = run_scene(&map, arena, ENEMY_ARENA_BYTES, &scenes[sceneIndex],
+                           &scene);
+        if (result != 0) {
+            free(arena);
+            free(bytes);
+            return result;
+        }
     }
 
     free(arena);

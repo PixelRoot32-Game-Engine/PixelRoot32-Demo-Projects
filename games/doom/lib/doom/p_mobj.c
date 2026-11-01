@@ -903,6 +903,60 @@ void p_spawn_player_missile(p_mobj_context_t* world, r_mobj_t* source,
     (void)p_check_missile_spawn(world, th);
 }
 
+/*
+ * P_SpawnMissile (p_mobj.c): a monster's projectile, aimed at its target.
+ *
+ * Upstream's body, and every step of it is part of the sequence: spawn 32 units
+ * above the source, `target = source`, the exact bearing to `dest` (with the two
+ * MF_SHADOW draws a fuzzy target costs), the two fixed-point momentum words from
+ * `info->speed`, and `momz = (dest->z - source->z) / dist` where
+ * `dist = P_AproxDistance(...) / info->speed` -- an integer division, so a
+ * projectile's climb is a whole number of 16.16 units per unit of distance and
+ * a stationary or very close target uses the `dist < 1` clamp. Then
+ * P_CheckMissileSpawn's tic jitter and half-step.
+ *
+ * The missile's `seesound` is the audio layer's (S2).
+ */
+r_mobj_t* p_spawn_missile(p_mobj_context_t* world, r_mobj_t* source,
+                          r_mobj_t* dest, mobjtype_t type) {
+    r_mobj_t* th;
+    angle_t an;
+    fixed_t dist;
+
+    if (world == NULL || source == NULL || dest == NULL) {
+        return NULL;
+    }
+    th = p_spawn_mobj(world, source->x, source->y, source->z + 32 * FRACUNIT,
+                      type, NULL);
+    if (th == NULL) {
+        return NULL;
+    }
+    th->target = source; /* where it came from */
+    an = p_point_to_angle(dest->x - source->x, dest->y - source->y);
+
+    /* fuzzy player */
+    if ((dest->flags & MF_SHADOW) != 0u) {
+        an += (angle_t)((p_random(world->random) - p_random(world->random))
+                        << 20);
+    }
+
+    th->angle = an;
+    an >>= ANGLETOFINESHIFT;
+    th->momx = fixed_mul(mobjinfo[type].speed,
+                         r_fine_sine[an + (FINEANGLES / 4)]);
+    th->momy = fixed_mul(mobjinfo[type].speed, r_fine_sine[an]);
+
+    dist = p_aprox_distance(dest->x - source->x, dest->y - source->y);
+    dist = dist / mobjinfo[type].speed;
+    if (dist < 1) {
+        dist = 1;
+    }
+    th->momz = (dest->z - source->z) / dist;
+
+    (void)p_check_missile_spawn(world, th);
+    return th;
+}
+
 /* --- P_MobjThinker ------------------------------------------------------ */
 
 void p_mobj_thinker(p_thinker_t* thinker, void* context) {

@@ -16,18 +16,20 @@
  *
  *   A_Look       real (T15a): upstream's A_Look (p_enemy.c) reads the sector's
  *                sound target, falls back to a visible-player scan, discards the
- *                see sound's P_Random draw and enters the run state. A_Chase,
- *                the run state's action, is still T15b's and is counted by the
- *                default branch.
+ *                see sound's P_Random draw and enters the run state.
+ *   A_Chase, A_FaceTarget, A_PosAttack, A_TroopAttack, A_Explode
+ *                real (T15b): the monster's chase, its octant turn, the
+ *                zombieman's hitscan, the imp's claw-or-fireball and the
+ *                explosion's radius damage. See p_enemy.h.
  *   A_Fall       real, and the smallest real action in the game:
  *                `actor->flags &= ~MF_SOLID;` -- a corpse stops blocking. This
  *                is the action the player's death chain carries (S_PLAY_DIE3) and
  *                every monster's death chain too.
  *   A_Scream, A_XScream, A_PlayerScream, A_Pain
  *                sound only, so they are stubs until the APU layer exists (S2).
- *                They are counted rather than skipped for the same reason
- *                A_Chase is: "the death played its sound" and "the death was
- *                silent" must not look the same from a counter.
+ *                They are counted rather than skipped for the same reason every
+ *                unwritten action is: "the death played its sound" and "the
+ *                death was silent" must not look the same from a counter.
  *
  * This is C99 only: no allocation, no globals, no stdio, no floating point.
  */
@@ -78,8 +80,50 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
         case A_Look:
             /* A_Look (p_enemy.c, T15a): read the sector's sound target, scan for
              * a visible player, discard the see sound's draw and enter the see
-             * state. A_Chase, the state's next action, is T15b's. */
+             * state. */
             p_enemy_look(world, mobj);
+            if (stats != NULL) {
+                stats->calls += 1u;
+                stats->done += 1u;
+            }
+            return P_ACTION_DONE;
+
+        case A_Chase:
+            /* A_Chase (p_enemy.c, T15b): reaction time, the octant turn, melee
+             * or missile, one step, and the active sound's discarded draw. */
+            p_enemy_chase(world, mobj);
+            if (stats != NULL) {
+                stats->calls += 1u;
+                stats->done += 1u;
+            }
+            return P_ACTION_DONE;
+
+        case A_FaceTarget:
+            p_enemy_face_target(world, mobj);
+            if (stats != NULL) {
+                stats->calls += 1u;
+                stats->done += 1u;
+            }
+            return P_ACTION_DONE;
+
+        case A_PosAttack:
+            p_enemy_pos_attack(world, mobj);
+            if (stats != NULL) {
+                stats->calls += 1u;
+                stats->done += 1u;
+            }
+            return P_ACTION_DONE;
+
+        case A_TroopAttack:
+            p_enemy_troop_attack(world, mobj);
+            if (stats != NULL) {
+                stats->calls += 1u;
+                stats->done += 1u;
+            }
+            return P_ACTION_DONE;
+
+        case A_Explode:
+            p_enemy_explode(world, mobj);
             if (stats != NULL) {
                 stats->calls += 1u;
                 stats->done += 1u;

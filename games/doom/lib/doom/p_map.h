@@ -482,6 +482,26 @@ void p_line_attack(p_mobj_context_t* world, r_mobj_t* shooter, angle_t angle,
 void p_shoot_special_line(p_mobj_context_t* world, r_mobj_t* shooter,
                           uint16_t lineIndex);
 
+/**
+ * @brief P_RadiusAttack(): damage everything shootable within @p damage units.
+ *
+ * Upstream's PIT_RadiusAttack, per thing: MF_SHOOTABLE only, no damage for the
+ * boss spider or cyborg, `dist = max(|dx|, |dy|) - thing->radius` shifted to map
+ * units and clamped at zero, refuse when `dist >= damage`, then require
+ * P_CheckSight(thing, spot) before `P_DamageMobj(thing, spot, source,
+ * damage - dist)`.
+ *
+ * The blockmap walk is a thinker-list walk here; the distance test decides, not
+ * the box, so the set of victims is the same. A NULL spot or world does nothing.
+ *
+ * @param world  The level's context.
+ * @param spot   The explosion's centre (the exploding mobj).
+ * @param source Whoever the explosion is credited to, or NULL.
+ * @param damage The blast's strength in points of damage at zero distance.
+ */
+void p_radius_attack(p_mobj_context_t* world, r_mobj_t* spot,
+                     r_mobj_t* source, int damage);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

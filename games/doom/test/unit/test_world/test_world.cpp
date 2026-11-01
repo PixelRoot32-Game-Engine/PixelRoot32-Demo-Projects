@@ -821,19 +821,27 @@ void test_action_dispatch_counts_what_is_missing(void) {
     TEST_ASSERT_EQUAL_UINT32(1u, world.actions.done);
     TEST_ASSERT_EQUAL_UINT32(0u, world.actions.notImplemented);
 
-    // Everything else is counted, never silently ignored.
-    TEST_ASSERT_EQUAL_INT(P_ACTION_NOT_IMPLEMENTED,
-                          p_action_run(&world.context, mobj, A_Chase));
+    // A_Chase is real too (T15b). With no target and no level it falls back to
+    // the spawn state, but it ran: DONE, not STUB.
+    TEST_ASSERT_EQUAL_INT(P_ACTION_DONE, p_action_run(&world.context, mobj, A_Chase));
     TEST_ASSERT_EQUAL_UINT32(2u, world.actions.calls);
+    TEST_ASSERT_EQUAL_UINT32(2u, world.actions.done);
+    TEST_ASSERT_EQUAL_UINT32(0u, world.actions.notImplemented);
+
+    // Everything else is still counted, never silently ignored. A_BossDeath is
+    // boss-level behaviour no task has written.
+    TEST_ASSERT_EQUAL_INT(P_ACTION_NOT_IMPLEMENTED,
+                          p_action_run(&world.context, mobj, A_BossDeath));
+    TEST_ASSERT_EQUAL_UINT32(3u, world.actions.calls);
     TEST_ASSERT_EQUAL_UINT32(1u, world.actions.notImplemented);
-    TEST_ASSERT_EQUAL_UINT32(static_cast<u32>(A_Chase),
+    TEST_ASSERT_EQUAL_UINT32(static_cast<u32>(A_BossDeath),
                              world.actions.lastNotImplemented);
 
     TEST_ASSERT_EQUAL_INT(P_ACTION_UNKNOWN,
                           p_action_run(&world.context, mobj,
                                        static_cast<action_t>(NUM_ACTIONS + 3)));
     TEST_ASSERT_EQUAL_UINT32(1u, world.actions.unknown);
-    TEST_ASSERT_EQUAL_UINT32(3u, world.actions.calls);
+    TEST_ASSERT_EQUAL_UINT32(4u, world.actions.calls);
 
     TEST_ASSERT_EQUAL_INT(P_ACTION_NULL_MOBJ,
                           p_action_run(&world.context, nullptr, A_Look));
@@ -887,8 +895,11 @@ void test_action_look_wakes_on_a_sound_target(void) {
                           p_action_run(&world.context, monster, A_Look));
     TEST_ASSERT_EQUAL_PTR(player, monster->target);
     TEST_ASSERT_EQUAL_INT(mobjinfo[MT_POSSESSED].seestate, monster->state);
-    // sfx_posit1 (36): one draw for the discarded see sound.
-    TEST_ASSERT_EQUAL_UINT8(static_cast<u8>((before + 1) & 0xFFu),
+    // Four draws now: the discarded see sound (sfx_posit1, 36), then the three
+    // A_Chase makes on the see state T15b's P_SetMobjState runs immediately --
+    // P_NewChaseDir's direction draw, its P_TryWalk `movecount` draw, and the
+    // active sound's draw.
+    TEST_ASSERT_EQUAL_UINT8(static_cast<u8>((before + 4) & 0xFFu),
                             world.random.index);
 }
 

@@ -556,6 +556,25 @@ void p_spawn_player_missile(p_mobj_context_t* world, r_mobj_t* source,
                             mobjtype_t type);
 
 /**
+ * @brief P_SpawnMissile(): a monster's projectile, aimed at its target.
+ *
+ * Spawns @p type 32 map units above @p source, sets `target = source`, and aims
+ * the exact bearing to @p dest (two P_Random() draws of jitter when the target
+ * is MF_SHADOW). The two momentum words are `FixedMul(info->speed, cosine/sine)`
+ * and `momz = (dest->z - source->z) / dist`, where
+ * `dist = P_AproxDistance(...) / info->speed` -- an integer division clamped to
+ * one. Then p_check_missile_spawn().
+ *
+ * @param world  The level's context.
+ * @param source The actor firing; NULL is refused.
+ * @param dest   The actor aimed at; NULL is refused.
+ * @param type   The missile type, e.g. MT_TROOPSHOT.
+ * @return The missile, or NULL when the zone refused the spawn.
+ */
+r_mobj_t* p_spawn_missile(p_mobj_context_t* world, r_mobj_t* source,
+                          r_mobj_t* dest, mobjtype_t type);
+
+/**
  * @brief P_CheckMissileSpawn(): jitter the tics, nudge forward, and explode if
  *        the spawn point is already solid.
  *

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Compare lib/doom's sight and waking rules against the Python oracle (T15a).
+"""Compare lib/doom's monster AI against the Python oracle (T15a + T15b).
 
 WHAT THIS PROVES
 
-Monster AI starts with two questions: can this monster see the player, and did it
-hear anything? This gate answers both with the real code and a 40-tic script, so
-each half can fail on its own:
+Monster AI is three questions: can this monster see or hear the player, does it
+close the distance and attack, and does it stop when it dies? This gate answers
+them with the real code and per-tic scripts, so each half can fail on its own:
 
     1. SEES AND WAKES. A zombieman 40 map units from the player, in the same room,
        must set `target` on its first state cycle and enter its see state. Before
@@ -26,16 +26,44 @@ each half can fail on its own:
        population (644 ordered pairs, both directions). The sweep exercises the
        REJECT pre-test and the BSP walk; CSTAT asserts that all three answers
        (reject, accept, blocked) occurred.
+    5. TURNS AND WALKS. A zombieman 224 units down the start room's clear
+       corridor must close at least 32 map units of the gap, must end facing the
+       player to within one 45-degree octant (A_Chase turns in 22.5-degree steps,
+       so the exact bearing is not a thing it can hold), and must never step
+       across a one-sided linedef on the way (SCENE-END's `wallcross`).
+    6. STOPS AT MELEE RANGE. An imp 40 units away must enter S_TROO_ATK1 at a
+       separation below P_CheckMeleeRange's 64 - 20 + player radius, never close
+       inside the two radii, and its claw must lower the player's health.
+    7. HITSCAN LANDS AT RANGE. In the corridor the zombieman's A_PosAttack must
+       lower the player's health, and every A_PosAttack tic must be a tic it can
+       see the player. Behind a wall, woken by the player's shot, no tic may
+       lower the player's health while `see=0`: a monster cannot shoot through a
+       wall even though it can hunt.
+    8. THE FIREBALL IS REAL. The imp must throw MT_TROOPSHOT; the mobj must
+       exist, advance its live states through S_TBALL1/S_TBALL2 (the flight rows,
+       not a frozen spawn row), burst through S_TBALLX1, and lower the player's
+       health. The container's baked manifest must carry BAL1A0..BAL1E0, which is
+       what makes those rows drawable at all (T15's prerequisite).
+    9. DEATH STOPS IT. A zombieman killed at tic 20 must enter S_POSS_DIE1, walk
+       the death chain to its permanent S_POSS_DIE5 frame, and never re-enter a
+       run or attack state.
 
 The per-tic lines are the same shape tools/attack_check.py uses: the step and RNG
 position, both psprite layers, every mobj's state/position/target, and the player
-record. The oracle runs the identical four scenes on its own state table, and the
-comparison is per line -- a single divergent tic fails the gate.
+record, plus the live sector, subsector and facing each mobj stands in. MOBJ lines
+of the two monster types also carry `see=`, P_CheckSight(monster, player) at emit
+time, which is how a hit is tied to line of sight.
 
 THE SCRIPT (identical in both implementations, documented in enemy_check.c)
 
-    every scene:  40 tics, no movement input
-    noise, door:  tic 20 sets BT_ATTACK, which is one pistol shot
+    sees, wall, noise, door:  40 tics, no movement input; noise and door fire
+                              once at tic 20
+    chase, melee:             60 tics
+    death:                    60 tics, killed at tic 20
+    hitscan, fireball:        96 tics (the first possible monster shot needs the
+                              reaction time and a walk window, and the fireball
+                              then has to fly)
+    wallshot:                 96 tics, the player fires once at tic 5
 
 PROVING THE GATE CAN FAIL
 
@@ -47,11 +75,12 @@ must diverge. A comparison that cannot fail is not a gate.
 
 USAGE
 
-    python tools/enemy_check.py --wad path/to/DOOM1.WAD
+    python tools/enemy_check.py --wad path/to/DOOM1.WAD [--container PATH]
 
 The WAD is copyrighted shareware data and is never committed; point this tool at
 a file outside the repository. The harness is compiled into a temporary directory
-that is removed before the script returns.
+that is removed before the script returns. `--container` defaults to the
+repository's tools/DOOM1.whd, the bake the firmware reads.
 
 EXIT CODES
 
@@ -65,7 +94,9 @@ Standard library only.
 from __future__ import annotations
 
 import argparse
+import math
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -94,6 +125,47 @@ PERTURBATIONS = {
 }
 
 MIN_PAIRS = 400
+
+# --- The five T15b numbers the assertions read ------------------------------
+
+FRACUNIT = 1 << 16
+ANG45 = 0x20000000
+ANGLE_MASK = 0xFFFFFFFF
+
+MELEE_REACH = 64 * FRACUNIT - 20 * FRACUNIT + 16 * FRACUNIT   # 60 units
+PLAYER_RADIUS = 16 * FRACUNIT
+MONSTER_RADIUS = 20 * FRACUNIT
+MIN_SEPARATION = PLAYER_RADIUS + MONSTER_RADIUS - 8 * FRACUNIT
+
+CHASE_CLOSES = 32 * FRACUNIT
+
+MT_PLAYER = 0
+MT_POSSESSED = 1
+MT_TROOP = 11
+MT_TROOPSHOT = 31
+
+S_POSS_RUN1 = 176
+S_POSS_ATK1 = 184
+S_POSS_ATK2 = 185
+S_POSS_DEATH = range(189, 194)          # S_POSS_DIE1..DIE5
+S_TROO_RUN1 = 444
+S_TROO_ATK1 = 452
+S_TBALL1 = 97
+S_TBALL2 = 98
+S_TBALLX1 = 99
+
+# The fireball's states and the sprite patch rows they name. A second reading of
+# info.c's S_TBALL rows, asserted against the live states and the baked manifest:
+# a state whose row is missing from the bake is a fireball that cannot be drawn.
+ENEMY_FIREBALL_FRAMES = {
+    S_TBALL1: "BAL1A0",
+    S_TBALL2: "BAL1B0",
+    S_TBALLX1: "BAL1C0",
+    100: "BAL1D0",
+    101: "BAL1E0",
+}
+
+MANIFEST_NAME = "~PWBAKE~"
 
 
 def project_root() -> Path:
@@ -171,6 +243,37 @@ def parse_scenes(text: str) -> dict[str, dict[str, str]]:
     return scenes
 
 
+def parse_scene_steps(text: str) -> dict[str, dict]:
+    """Per scene: its STEP records, each with the MOBJ lines and PLAYER line."""
+    scenes: dict[str, dict] = {}
+    current: dict | None = None
+    step: dict | None = None
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        kind = parts[0]
+        if kind == "SCENE-BEGIN":
+            _, values = fields_of(line)
+            current = {"name": values.get("name"), "steps": []}
+            scenes[current["name"]] = current
+            step = None
+        elif kind == "SCENE-END":
+            current = None
+            step = None
+        elif kind == "STEP" and current is not None:
+            _, values = fields_of(line)
+            step = {"op": values.get("op", ""), "mobjs": [], "player": {}}
+            current["steps"].append(step)
+        elif kind == "MOBJ" and step is not None:
+            _, values = fields_of(line)
+            step["mobjs"].append(values)
+        elif kind == "PLAYER" and step is not None:
+            _, values = fields_of(line)
+            step["player"] = values
+    return scenes
+
+
 def parse_cstat(text: str) -> dict[str, str]:
     for line in text.splitlines():
         if line.startswith("CSTAT "):
@@ -191,16 +294,97 @@ def sweep_counts(text: str) -> tuple[int, int, int, int]:
     return declared, len(lines), visible, hidden
 
 
-def check_assertions(text: str) -> list[str]:
+# --- The T15b measurements ---------------------------------------------------
+
+
+def number(record: dict, key: str, default: int = 0) -> int:
+    value = record.get(key)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def monster_steps(steps: list[dict], type_: int) -> list[tuple[int, dict]]:
+    """Every (step index, MOBJ record) whose type is @p type_."""
+    found = []
+    for index, step in enumerate(steps):
+        for mobj in step["mobjs"]:
+            if mobj.get("type") == str(type_):
+                found.append((index, mobj))
+    return found
+
+
+def player_mobj(step: dict) -> dict | None:
+    for mobj in step["mobjs"]:
+        if mobj.get("type") == str(MT_PLAYER):
+            return mobj
+    return None
+
+
+def separation(left: dict, right: dict) -> float:
+    return math.hypot(number(left, "x") - number(right, "x"),
+                      number(left, "y") - number(right, "y"))
+
+
+def bearing_error(monster: dict, target: dict) -> int:
+    """|bearing - facing| in binary angle units, wrapped to [0, 2^31]."""
+    dx = number(target, "x") - number(monster, "x")
+    dy = number(target, "y") - number(monster, "y")
+    if dx == 0 and dy == 0:
+        return 0
+    bearing = int(math.atan2(dy, dx) / (2.0 * math.pi) * 4294967296.0)
+    bearing &= ANGLE_MASK
+    difference = (bearing - (number(monster, "ang") & ANGLE_MASK)) & ANGLE_MASK
+    return min(difference, ANGLE_MASK + 1 - difference)
+
+
+def baked_names(container: Path) -> set[str]:
+    """The manifest's packed names, read out of the built container."""
+    data = container.read_bytes()
+    if data[:4] != b"PWHD":
+        raise RuntimeError(f"{container} is not a PWHD container")
+    dir_offset = struct.unpack_from("<I", data, 16)[0]
+    name_offset = struct.unpack_from("<I", data, 20)[0]
+    data_offset = struct.unpack_from("<I", data, 24)[0]
+    name_count = struct.unpack_from("<I", data, 12)[0]
+    for index in range(name_count):
+        entry = name_offset + index * 12
+        name = data[entry:entry + 8].split(b"\0")[0].decode("ascii")
+        if name != MANIFEST_NAME:
+            continue
+        lump = struct.unpack_from("<I", data, entry + 8)[0]
+        payload = struct.unpack_from("<I", data, dir_offset + lump * 16)[0]
+        manifest = data_offset + payload
+        count = struct.unpack_from("<I", data, manifest + 8)[0]
+        names = set()
+        for record in range(count):
+            start = manifest + 16 + record * 20
+            names.add(data[start:start + 8].split(b"\0")[0].decode("ascii"))
+        return names
+    raise RuntimeError(f"{container} carries no {MANIFEST_NAME} lump")
+
+
+def check_assertions(text: str, container: Path) -> list[str]:
     """Each returned string is one failed assertion, named independently."""
     failures: list[str] = []
     scenes = parse_scenes(text)
+    scene_steps = parse_scene_steps(text)
 
     def scene(name: str) -> dict[str, str] | None:
         if name not in scenes:
             failures.append(f"scene {name}: no SCENE-END line")
             return None
         return scenes[name]
+
+    def steps_of(name: str) -> list[dict]:
+        record = scene_steps.get(name)
+        if record is None or not record["steps"]:
+            failures.append(f"scene {name}: no STEP records")
+            return []
+        return record["steps"]
 
     # 1. Sees and wakes: target set, wake tic recorded, left the spawn pair.
     sees = scene("sees")
@@ -263,21 +447,208 @@ def check_assertions(text: str) -> list[str]:
         failures.append("sight: the BSP walk never accepted a line")
     if int(cstat.get("bsp_blocked", "0")) == 0:
         failures.append("sight: the BSP walk never blocked a line")
+
+    # 5. It turns and walks.
+    chase = scene("chase")
+    chase_steps = steps_of("chase")
+    if chase is not None:
+        if chase.get("woketic", "-1") == "-1":
+            failures.append("chase: the monster never woke")
+        if chase.get("wallcross") != "0":
+            failures.append(f"chase: it stepped across a wall on "
+                            f"{chase.get('wallcross')} tics")
+    if chase_steps:
+        monster = monster_steps(chase_steps, MT_POSSESSED)
+        if len(monster) < 2:
+            failures.append("chase: too few monster states to measure a walk")
+        else:
+            first_index, first = monster[0]
+            last_index, last = monster[-1]
+            first_player = player_mobj(chase_steps[first_index])
+            last_player = player_mobj(chase_steps[last_index])
+            if first_player is None or last_player is None:
+                failures.append("chase: the player mobj is missing")
+            else:
+                start = separation(first, first_player)
+                end = separation(last, last_player)
+                if end > start - CHASE_CLOSES:
+                    failures.append(f"chase: the gap only closed from {start:.0f} "
+                                    f"to {end:.0f} (want at least "
+                                    f"{CHASE_CLOSES} units)")
+                error = bearing_error(last, last_player)
+                if error > ANG45 // 2:
+                    failures.append(f"chase: final facing is {error} BAM off the "
+                                    f"bearing, more than one {ANG45 // 2}-BAM "
+                                    "octant")
+
+    # 6. It stops at melee range.
+    melee = scene("melee")
+    melee_steps = steps_of("melee")
+    if melee is not None:
+        if melee.get("woketic", "-1") == "-1":
+            failures.append("melee: the imp never woke")
+        if number(melee, "hp", 100) >= 100:
+            failures.append("melee: the imp's claw never landed")
+        if melee.get("wallcross") != "0":
+            failures.append("melee: the imp walked through a wall")
+    if melee_steps:
+        first_attack = None
+        closest = None
+        for index, mobj in monster_steps(melee_steps, MT_TROOP):
+            player = player_mobj(melee_steps[index])
+            if player is None:
+                continue
+            gap = separation(mobj, player)
+            closest = gap if closest is None else min(closest, gap)
+            if first_attack is None and number(mobj, "state") == S_TROO_ATK1:
+                first_attack = gap
+        if first_attack is None:
+            failures.append("melee: the imp never entered S_TROO_ATK1")
+        elif first_attack >= MELEE_REACH:
+            failures.append(f"melee: the claw fired at {first_attack:.0f} units, "
+                            f"outside P_CheckMeleeRange's {MELEE_REACH // FRACUNIT}")
+        if closest is not None and closest < MIN_SEPARATION:
+            failures.append(f"melee: the imp closed to {closest:.0f} units, "
+                            f"inside the two radii minus a step")
+
+    # 7a. Hitscan lands at range, and only with sight.
+    hitscan = scene("hitscan")
+    hitscan_steps = steps_of("hitscan")
+    if hitscan is not None:
+        if number(hitscan, "hp", 100) >= 100:
+            failures.append("hitscan: A_PosAttack never lowered the player's "
+                            "health")
+    if hitscan_steps:
+        attacks = [(index, mobj) for index, mobj in
+                   monster_steps(hitscan_steps, MT_POSSESSED)
+                   if number(mobj, "state") == S_POSS_ATK2]
+        if not attacks:
+            failures.append("hitscan: the zombieman never entered S_POSS_ATK2")
+        for index, mobj in attacks:
+            if mobj.get("see") != "1":
+                failures.append(f"hitscan: A_PosAttack ran on step {index} "
+                                "without line of sight")
+
+    # 7b. Nothing hurts the player from behind a wall.
+    wallshot = scene("wallshot")
+    wallshot_steps = steps_of("wallshot")
+    if wallshot is not None and number(wallshot, "hp", 100) >= 100:
+        pass                                   # allowed: it never got a shot
+    if wallshot_steps:
+        previous_health = 100
+        for index, step in enumerate(wallshot_steps):
+            health = number(step["player"], "hp", previous_health)
+            for mobj in step["mobjs"]:
+                if mobj.get("type") != str(MT_POSSESSED):
+                    continue
+                if mobj.get("see") == "0":
+                    if health < previous_health:
+                        failures.append(
+                            f"wallshot: the player lost {previous_health - health} "
+                            f"health on step {index} while the monster could not "
+                            "see it")
+                    if number(mobj, "state") in (S_POSS_ATK1, S_POSS_ATK2):
+                        failures.append(
+                            f"wallshot: the monster attacked on step {index} "
+                            "without line of sight")
+            previous_health = health
+
+    # 8. The fireball is real: it exists, its live rows advance, it bursts, it
+    #    hurts, and the bake carries every frame it names.
+    fireball = scene("fireball")
+    fireball_steps = steps_of("fireball")
+    if fireball is not None and number(fireball, "hp", 100) >= 100:
+        failures.append("fireball: the burst never lowered the player's health")
+    if fireball_steps:
+        shots = monster_steps(fireball_steps, MT_TROOPSHOT)
+        if not shots:
+            failures.append("fireball: the imp never spawned MT_TROOPSHOT")
+        else:
+            states = [(index, number(mobj, "state")) for index, mobj in shots]
+            live = [state for _index, state in states]
+            if S_TBALL1 not in live:
+                failures.append("fireball: S_TBALL1 (the spawn row) never showed")
+            if S_TBALL2 not in live:
+                failures.append("fireball: S_TBALL2 never showed, so the row did "
+                                "not advance past the spawn frame")
+            if S_TBALLX1 not in live:
+                failures.append("fireball: S_TBALLX1 never showed, so it never "
+                                "burst")
+            travelled = any(
+                separation(mobj, shots[0][1]) > 32 * FRACUNIT
+                for _index, mobj in shots
+                if number(mobj, "state") in (S_TBALL1, S_TBALL2))
+            if not travelled:
+                failures.append("fireball: the fireball never moved")
+        try:
+            names = baked_names(container)
+            missing = sorted(name for name in ENEMY_FIREBALL_FRAMES.values()
+                             if name not in names)
+            if missing:
+                failures.append("fireball: the bake has no " + ", ".join(missing))
+        except (OSError, RuntimeError) as error:
+            failures.append(f"fireball: the bake witness could not run: {error}")
+
+    # 9. Death stops it.
+    death = scene("death")
+    death_steps = steps_of("death")
+    if death is not None:
+        if death.get("state") != "193":
+            failures.append(f"death: the corpse ended in state "
+                            f"{death.get('state')!r}, not S_POSS_DIE5 (193)")
+        if death.get("wallcross") != "0":
+            failures.append("death: the monster walked through a wall")
+    if death_steps:
+        kill_step = None
+        for index, step in enumerate(death_steps):
+            if step["op"] == "kill":
+                kill_step = index
+                break
+        if kill_step is None:
+            failures.append("death: no kill step was recorded")
+        else:
+            killed = [mobj for _index, mobj in
+                      monster_steps(death_steps, MT_POSSESSED)
+                      if _index >= kill_step]
+            if not killed:
+                failures.append("death: the corpse vanished instead of dying")
+            else:
+                if number(killed[0], "state") not in S_POSS_DEATH:
+                    failures.append(f"death: the kill left state "
+                                    f"{killed[0].get('state')!r}, not a death row")
+                for index, mobj in monster_steps(death_steps, MT_POSSESSED):
+                    if index < kill_step:
+                        continue
+                    state = number(mobj, "state")
+                    if state < 189 or state > 193:
+                        failures.append(f"death: step {index} ran state {state} "
+                                        "after the kill")
+                        break
+                if number(killed[-1], "state") != 193:
+                    failures.append("death: the death chain never reached "
+                                    "S_POSS_DIE5")
+                if number(killed[-1], "tics") != -1:
+                    failures.append("death: S_POSS_DIE5 is not the permanent frame")
+
     return failures
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="enemy_check.py",
-        description="Compare lib/doom's P_CheckSight/P_NoiseAlert/A_Look "
-                    "against tools/doom_ref.py --enemy, and assert the four "
-                    "waking behaviours.",
+        description="Compare lib/doom's monster AI -- P_CheckSight/P_NoiseAlert/"
+                    "A_Look/A_Chase/the attack actions -- against "
+                    "tools/doom_ref.py --enemy, and assert the waking, chase, "
+                    "melee, hitscan, fireball and death behaviours.",
         epilog="The harness is built in a temporary directory and nothing is "
                "written into the worktree.\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--wad", type=Path, required=True, metavar="PATH",
                         help="the IWAD or PWAD to read; keep it outside the repository")
+    parser.add_argument("--container", type=Path, default=None, metavar="PATH",
+                        help="the built container whose bake the fireball's rows "
+                             "are read from (default: tools/DOOM1.whd)")
     parser.add_argument("--cc", default="gcc", metavar="NAME",
                         help="C compiler to build the harness with (default: gcc)")
     parser.add_argument("--map", default=MAP_NAME, metavar="NAME",
@@ -293,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
 
     root = project_root()
     oracle_script = root / "tools" / "doom_ref.py"
+    container = arguments.container or root / "tools" / "DOOM1.whd"
     workdir = Path(tempfile.mkdtemp(prefix="enemy_check_"))
 
     try:
@@ -343,7 +715,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"enemy_check: {mismatches} divergent line(s); first: {first}",
                   file=sys.stderr)
 
-        failures = check_assertions(c_result.stdout)
+        failures = check_assertions(c_result.stdout, container)
         for failure in failures:
             print(f"enemy_check: assertion failed: {failure}", file=sys.stderr)
 
@@ -359,10 +731,9 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
-    print("enemy_check: C and the oracle agree, and all four waking assertions hold")
+    print("enemy_check: C and the oracle agree, and all nine assertions hold")
     return EXIT_OK
 
 
 if __name__ == "__main__":
     sys.exit(main())
-
