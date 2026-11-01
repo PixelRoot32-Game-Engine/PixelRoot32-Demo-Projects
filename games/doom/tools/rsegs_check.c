@@ -93,6 +93,7 @@
 #include <string.h>
 
 #include "doom_map.h"
+#include "p_spec.h"
 #include "r_bsp.h"
 #include "r_data.h"
 #include "r_defs.h"
@@ -875,6 +876,26 @@ static uint8_t* readFile(const char* path, size_t* size) {
     return data;
 }
 
+/* --- The scroll proof (T35) ---------------------------------------------- */
+
+/*
+ * The renderer-side half of the scroll. `doom_map_get_side()` parses the
+ * immutable SIDEDEFS record and hands it here; `p_scroll_adjust_side()` adds
+ * what P_UpdateSpecials accumulated. That function is the library's own
+ * (declared inline in p_spec.h), so the number this harness proves the renderer
+ * reads is the number the firmware's map seam adds -- the test is of the seam,
+ * not of a second implementation of it.
+ *
+ * The gate takes the side from the WAD (the front side of a line special 48) and
+ * the delta from the gate's own tic count, so neither is this file's assumption.
+ */
+static p_scroll_t g_scrolls[1];
+
+static void adjustScrolledSide(void* context, uint16_t index, doom_side_t* side) {
+    (void)context;
+    p_scroll_adjust_side(g_scrolls, 1u, index, side);
+}
+
 int main(int argc, char** argv) {
     wad_state_t wad;
     doom_map_source_t source;
@@ -900,6 +921,14 @@ int main(int argc, char** argv) {
     int detail = -1;
     int detailFrame = -1;
     int detailColumn = -1;
+    int scrollSide = -1;
+    int scrollDelta = 0;
+    int viewX = 0;
+    int viewY = 0;
+    int viewZ = 0;
+    unsigned int viewAngle = 0u;
+    int viewGiven = 0;
+    int viewCount = FRAME_COUNT;
     int frame;
     char combined[65];
     char pixelHash[65];
@@ -930,7 +959,8 @@ int main(int argc, char** argv) {
 
     if (argc < 2) {
         fprintf(stderr, "usage: rsegs_check <path-to-WAD> [--detail N] "
-                        "[--column N,X]\n");
+                        "[--column N,X] [--scroll SIDE,DX] "
+                        "[--view X,Y,Z,ANGLE]\n");
         return 2;
     }
     for (index = 2; index < argc; ++index) {
@@ -941,6 +971,19 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "rsegs_check: --column wants FRAME,COLUMN\n");
                 return 2;
             }
+        } else if (strcmp(argv[index], "--scroll") == 0 && index + 1 < argc) {
+            if (sscanf(argv[++index], "%d,%d", &scrollSide, &scrollDelta) != 2 ||
+                scrollSide < 0) {
+                fprintf(stderr, "rsegs_check: --scroll wants SIDE,DX\n");
+                return 2;
+            }
+        } else if (strcmp(argv[index], "--view") == 0 && index + 1 < argc) {
+            if (sscanf(argv[++index], "%d,%d,%d,%u", &viewX, &viewY, &viewZ,
+                       &viewAngle) != 4) {
+                fprintf(stderr, "rsegs_check: --view wants X,Y,Z,ANGLE\n");
+                return 2;
+            }
+            viewGiven = 1;
         } else {
             fprintf(stderr, "rsegs_check: unknown argument %s\n", argv[index]);
             return 2;
@@ -1029,6 +1072,26 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    if (viewGiven) {
+        /* One viewpoint, given by the gate: the scroll proof renders a camera
+         * that sees the scrolling wall, which none of the 20 sampled views
+         * does. Both implementations receive the same four numbers. */
+        frames[0].x = (fixed_t)viewX;
+        frames[0].y = (fixed_t)viewY;
+        frames[0].z = (fixed_t)viewZ;
+        frames[0].angle = (angle_t)viewAngle;
+        viewCount = 1;
+    }
+
+    if (scrollSide >= 0) {
+        g_scrolls[0].line = 0u;
+        g_scrolls[0].side = (uint16_t)scrollSide;
+        g_scrolls[0].dx = (fixed_t)scrollDelta;
+        g_scrolls[0].dy = 0;
+        map.adjustSide = adjustScrolledSide;
+        map.adjustSideContext = NULL;
+    }
+
     texSource.resolve = resolveTexture;
     texSource.context = &cache;
     memset(&flatCache, 0, sizeof flatCache);
@@ -1053,8 +1116,8 @@ int main(int argc, char** argv) {
     surface.planeSpans = 0u;
     surface.spritePixels = 0u;
 
-    printf("SEGS E1M1 frames=%d\n", FRAME_COUNT);
-    for (frame = 0; frame < FRAME_COUNT; ++frame) {
+    printf("SEGS E1M1 frames=%d\n", viewCount);
+    for (frame = 0; frame < viewCount; ++frame) {
         r_view_params_t params;
         r_segs_error_t result;
         uint32_t columns = 0u;
@@ -1251,16 +1314,16 @@ int main(int argc, char** argv) {
 
     printf("SEGS-SUMMARY frames=%d drawsegs=%u columns=%u pixels=%u mid=%u top=%u "
            "bottom=%u\n",
-           FRAME_COUNT, (unsigned)totalDrawsegs, (unsigned)totalColumns,
+           viewCount, (unsigned)totalDrawsegs, (unsigned)totalColumns,
            (unsigned)totalPixels, (unsigned)totalMid, (unsigned)totalTop,
            (unsigned)totalBottom);
     printf("PLANE-SUMMARY frames=%d planes=%u spans=%u plane_pixels=%u\n",
-           FRAME_COUNT, (unsigned)totalPlanes, (unsigned)totalSpans,
+           viewCount, (unsigned)totalPlanes, (unsigned)totalSpans,
            (unsigned)totalPlanePixels);
     printf("SPR-SUMMARY frames=%d sprites=%u drawn=%u backface=%u frustum=%u "
            "zerospan=%u sprite_pixels=%u clip_blocks_peak=%u "
            "opening_blocks_peak=%u\n",
-           FRAME_COUNT, (unsigned)totalSprites, (unsigned)totalDrawn,
+           viewCount, (unsigned)totalSprites, (unsigned)totalDrawn,
            (unsigned)totalBackface, (unsigned)totalFrustum,
            (unsigned)totalZerospan, (unsigned)totalSpritePixels,
            (unsigned)peakClipBlocks, (unsigned)peakOpeningBlocks);

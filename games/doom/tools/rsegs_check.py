@@ -43,6 +43,28 @@ pass's mask, so the report can name the first divergent pixel and say which pass
 wrote it. Those two extra passes print decoded palette indices for one column;
 they are diagnostics of record and must not be committed.
 
+THE SECOND STAGE: THE SCROLL, IN PIXELS (T35)
+
+The 20 sampled viewpoints do not look at E1M1's scrolling wall -- line special
+48's eight lines there are the lower tier of the nukage ring -- so a scroll probe
+built on them would pass while proving nothing. This stage therefore points a
+camera at the wall from numbers it derives from the map itself (the line's
+midpoint, 48 map units along the front side's normal, the front floor + 41, and
+the angle back at the midpoint) and hands the same four numbers to both
+implementations with ``--view`` / ``--segs-view``.
+
+Three claims, each able to fail:
+
+  1. the *unscrolled* frame agrees  -- the camera and the static render;
+  2. the *scrolled* frame agrees    -- the C harness adds the delta through
+     p_scroll_adjust_side(), the function the firmware's map seam runs, and the
+     oracle adds it to the sidedef's textureoffset before rendering; equal
+     hashes mean the renderer read the number the simulation wrote;
+  3. the two frames differ          -- the pixels really moved.
+
+``--perturb scroll`` moves the oracle's delta by one map unit and requires the
+comparison to fail.
+
 USAGE
 
     python tools/rsegs_check.py --wad path/to/DOOM1.WAD
@@ -64,13 +86,37 @@ Standard library only.
 from __future__ import annotations
 
 import argparse
+import math
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import doom_ref  # noqa: E402  (path-dependent by design)
+
 MAP_NAME = "E1M1"
+
+# --- T35: the scroll proof ---------------------------------------------------
+#
+# The scrolling wall is line special 48's front side, and it is *not* in any of
+# the 20 sampled views: E1M1's eight scrolling lines (352..359) are the lower
+# tier of the nukage ring, and no sampled camera looks along it. So this stage
+# points a camera at it, from numbers the gate derives from the map and hands to
+# both implementations:
+#
+#   position  the line's midpoint, moved SCROLL_CAMERA_DISTANCE map units along
+#             the front side's outward normal (dy, -dx of the v1->v2 direction);
+#   height    the front sector's floor + 41 map units (P_SpawnPlayer's view);
+#   angle     atan2 back to the midpoint, in binary angles.
+#
+# The camera's z is above the front floor and below the back floor, which is
+# where a lower tier exists at all.
+SCROLL_CAMERA_DISTANCE = 48.0
+SCROLL_VIEW_HEIGHT = 41
+SCROLL_TICS = 8            # 8 map units: one eighth of a 64-wide texture
+SCROLL_PERTURBATIONS = ("none", "scroll")
 
 EXIT_OK = 0
 EXIT_MISMATCH = 1
@@ -162,6 +208,121 @@ def by_key(lines: list[str], prefix: str, key_at: int) -> dict[str, str]:
     return found
 
 
+# --- T35: the scroll proof --------------------------------------------------
+
+def trunc_div(value: int, divisor: int) -> int:
+    """C's integer division: truncate toward zero, whatever the sign."""
+    quotient = abs(value) // abs(divisor)
+    if (value < 0) != (divisor < 0):
+        return -quotient
+    return quotient
+
+
+def scroll_camera(wad: Path) -> tuple[str, int, int, int, int, int, int, int]:
+    """(map, line, side, x, y, z, angle, dx) for the scroll proof.
+
+    The line is the lowest-indexed one special 48 whose front side really draws a
+    lower tier -- back floor above front floor and a bottom texture -- because a
+    two-sided line with no tier height has nothing for a scroll to move.
+    """
+    _identification, lumps = doom_ref.read_wad(wad)
+    for number in range(1, 10):
+        map_name = f"E1M{number}"
+        bsp = doom_ref.read_bsp_map(lumps, map_name)
+        for index, line in enumerate(bsp.linedefs):
+            if line["special"] != 48 or line["side0"] < 0 or line["side1"] < 0:
+                continue
+            side = bsp.sidedefs[line["side0"]]
+            front = bsp.sectors[side["sector"]]
+            back = bsp.sectors[bsp.sidedefs[line["side1"]]["sector"]]
+            if back["floor"] <= front["floor"]:
+                continue
+            if not doom_ref.has_texture(side["bottom"]):
+                continue
+
+            v1 = bsp.vertexes[line["v1"]]
+            v2 = bsp.vertexes[line["v2"]]
+            dx = v2["x"] - v1["x"]
+            dy = v2["y"] - v1["y"]
+            length = math.hypot(dx, dy)
+            if length == 0.0:
+                continue
+            mid_x = trunc_div(v1["x"] + v2["x"], 2)
+            mid_y = trunc_div(v1["y"] + v2["y"], 2)
+            # The front side of a linedef is its right side looked down v1->v2.
+            camera_x = mid_x + int(round(dy / length * SCROLL_CAMERA_DISTANCE
+                                         * doom_ref.FRACUNIT))
+            camera_y = mid_y + int(round(-dx / length * SCROLL_CAMERA_DISTANCE
+                                         * doom_ref.FRACUNIT))
+            angle = int(round(math.atan2(mid_y - camera_y, mid_x - camera_x)
+                              / (2.0 * math.pi) * (1 << 32))) & 0xFFFFFFFF
+            z = front["floor"] + SCROLL_VIEW_HEIGHT * doom_ref.FRACUNIT
+            return (map_name, index, line["side0"], camera_x, camera_y, z,
+                    angle, SCROLL_TICS * doom_ref.FRACUNIT)
+    raise RuntimeError("no episode-1 map carries a scrolling line with a drawn tier")
+
+
+def frame_hashes(lines: list[str]) -> dict[int, str]:
+    """frame index -> the frame line's hash, from a SEGS protocol."""
+    found: dict[int, str] = {}
+    for line in lines:
+        if line.startswith("frame "):
+            index = int(line.split()[1].rstrip(":"))
+            found[index] = line
+    return found
+
+
+class ScrollError(Exception):
+    """The scroll proof's own failure: a mismatch, or no pixel moved."""
+
+
+def run_scroll_stage(executable: Path, oracle: Path, wad: Path,
+                     perturb: str) -> str:
+    """The scroll proof: one camera, two offsets, both implementations.
+
+    Returns a one-line report; raises RuntimeError when a comparison fails. The
+    three claims, in order:
+
+      1. the *unscrolled* frame agrees  -- the camera and the static render;
+      2. the *scrolled* frame agrees    -- the renderer reads the offset the
+         simulation writes, and the oracle predicts the same pixels;
+      3. the two frames differ          -- the pixels really moved.
+    """
+    map_name, line, side, x, y, z, angle, delta = scroll_camera(wad)
+    view = f"{x},{y},{z},{angle}"
+    oracle_delta = delta + (doom_ref.FRACUNIT if perturb == "scroll" else 0)
+
+    base_c = protocol_lines(run_c(executable, wad, ["--view", view]))
+    base_o = protocol_lines(run_oracle(oracle, wad, [f"--segs-view={view}"]))
+    mismatch = first_difference(base_c, base_o)
+    if mismatch is not None:
+        index, left, right = mismatch
+        raise ScrollError(f"the unscrolled frame differs at line {index + 1}:\n"
+                           f"  C      {left!r}\n  oracle {right!r}")
+
+    scroll_c = protocol_lines(run_c(executable, wad,
+                                    ["--view", view, "--scroll",
+                                     f"{side},{delta}"]))
+    scroll_o = protocol_lines(run_oracle(oracle, wad,
+                                         [f"--segs-view={view}", "--segs-scroll",
+                                          f"{side},{oracle_delta}"]))
+    mismatch = first_difference(scroll_c, scroll_o)
+    if mismatch is not None:
+        index, left, right = mismatch
+        raise ScrollError(f"the scrolled frame differs at line {index + 1}:\n"
+                           f"  C      {left!r}\n  oracle {right!r}\n"
+                           f"  (line {line}, side {side}, dx {delta})")
+
+    moved = [index for index, base in frame_hashes(base_c).items()
+             if frame_hashes(scroll_c).get(index) != base]
+    if not moved:
+        raise ScrollError(f"the scroll of side {side} by {delta} changed no "
+                           "pixel: the renderer is not reading the offset")
+    return (f"{map_name} line {line} side {side} at ({x},{y},{z},{angle}): "
+            f"{len(moved)} of {len(frame_hashes(base_c))} frame(s) moved by "
+            f"dx={delta}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="rsegs_check.py",
@@ -176,6 +337,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="the IWAD or PWAD to read; keep it outside the repository")
     parser.add_argument("--cc", default="gcc", metavar="NAME",
                         help="C compiler to build the harness with (default: gcc)")
+    parser.add_argument("--perturb", choices=SCROLL_PERTURBATIONS, default="none",
+                        help="move the oracle's scroll delta by one map unit, so "
+                             "the scroll stage is shown to be able to fail")
     arguments = parser.parse_args(argv)
 
     if not arguments.wad.is_file():
@@ -260,6 +424,24 @@ def main(argv: list[str] | None = None) -> int:
                         diagnostics.append(
                             f"frame {frame}: column {column} first diverges in the "
                             f"coverage byte, not in the pixels")
+
+        # --- T35: the scroll proof -----------------------------------------
+        # Inside the try, because it runs the harness the temporary directory
+        # holds; and only when the 20-frame comparison agreed, because a
+        # divergent renderer has nothing to prove about one more frame.
+        if mismatch is None:
+            try:
+                scroll_report = run_scroll_stage(executable, oracle_script,
+                                                 arguments.wad, arguments.perturb)
+            except ScrollError as error:
+                if arguments.perturb != "none":
+                    scroll_report = (f"--perturb {arguments.perturb} moved the "
+                                     f"comparison: {error}")
+                else:
+                    print(f"rsegs_check: {error}", file=sys.stderr)
+                    return EXIT_MISMATCH
+        else:
+            scroll_report = "not run: the 20-frame comparison diverged"
     except RuntimeError as error:
         print(f"rsegs_check: {error}", file=sys.stderr)
         return EXIT_USAGE
@@ -285,6 +467,15 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_MISMATCH
 
     print(f"rsegs_check: C and the oracle agree on all {len(c_lines)} lines")
+    print(f"scroll: {scroll_report}")
+
+    if arguments.perturb != "none":
+        # The perturbed delta is expected to have been caught above. Reaching
+        # here without a divergence means a one-map-unit scroll is invisible to
+        # this comparison, which is the failure the switch exists to rule out.
+        # Either way the switch exits 1, as every other gate's does.
+        print(f"rsegs_check: --perturb {arguments.perturb}", file=sys.stderr)
+        return EXIT_MISMATCH
     return EXIT_OK
 
 

@@ -21,6 +21,17 @@
  *   SUMMARY spawned=<n> secrets=<n> totalSecrets=<n> changeSector=<n>
  *           unsupportedSector=<n> unsupportedLine=<n> deferredLine=<n>
  *           lineScrolls=<n> triggers=<n> refused=<n>
+ *   SCROLLS <map> tics=<N> scrolls=<n>                      (T35, mode `scrolls`)
+ *   SCROLL <tic> line=<i> side=<s> dx=<i32> dy=<i32> offset=<i32>
+ *   ANIM <tic> sector=<i> field=<floor|ceiling> name=<base> frame=<frame>
+ *   ANIM <tic> side=<s> field=<top|bottom|mid> name=<base> frame=<frame>
+ *   SUMMARY scrolls=<n> animated=<n>
+ *
+ * `scrolls` is the P_UpdateSpecials stage (T35): every episode-1 map, the scroll
+ * offsets of its line special 48s, and every animated flat and texture it names,
+ * each tic. The number is not on every map -- measured, E1M1 carries eight such
+ * lines and E1M7 four, and the other seven maps none -- so the stage runs all
+ * nine and reports what it found before comparing anything.
  *
  * `<slot>` counts sector thinkers in thinker-list order from zero; mobjs are
  * skipped, because the THINGS run is tools/things_check.py's protocol and a
@@ -542,6 +553,213 @@ static int buildScenarios(const p_level_t* level, damage_scenario_t* out) {
     return count;
 }
 
+/* --- The scroll/animation section (T35) ---------------------------------- */
+
+/*
+ * P_UpdateSpecials(), on every episode-1 map.
+ *
+ * PROTOCOL (identical in doom_ref.py)
+ *
+ *   SCROLLS <map> tics=<N> scrolls=<n>
+ *   SCROLL <tic> line=<i> side=<s> dx=<i32> dy=<i32> offset=<i32>
+ *   ANIM <tic> sector=<i> field=<floor|ceiling> name=<base> frame=<frame>
+ *   ANIM <tic> side=<s> field=<top|bottom|mid> name=<base> frame=<frame>
+ *   SUMMARY scrolls=<n> animated=<n>
+ *
+ * `SCROLL` carries both what the *simulation* holds (`level->scrolls[i]`'s
+ * dx/dy) and what the *renderer* reads for that side
+ * (`doom_map_get_side(...).textureOffset`, the number r_bsp.c stores into the
+ * wall fragment). Printing both in one record is the point: dx can advance
+ * while offset stands still, and that is the bug class this stage exists for.
+ *
+ * `ANIM` is the renderer's own answer, not the table's: `name` is the immutable
+ * picture the map carries and `frame` is what `doom_map_get_sector()` /
+ * `doom_map_get_side()` returned for it while the level was bound. Both ends
+ * are therefore covered -- the base record and the name the pass resolves.
+ *
+ * The clock: p_level_tick() is P_RunThinkers plus P_UpdateSpecials, and
+ * P_Ticker's last statement (`leveltime++`) is done here, because p_level_tic()
+ * owns it and this stage has no player to think. That keeps upstream's order:
+ * P_UpdateSpecials sees the tic's own clock, and the frame drawn after the tic
+ * uses the translation it wrote with that clock.
+ */
+
+typedef struct animated_texture {
+    uint16_t side;
+    int field; /* 0 top, 1 bottom, 2 mid */
+    r_name_t base;
+} animated_texture_t;
+
+static r_name_t side_field(const doom_side_t* side, int field) {
+    switch (field) {
+        case 0:
+            return side->topTexture;
+        case 1:
+            return side->bottomTexture;
+        default:
+            return side->midTexture;
+    }
+}
+
+static const char* side_field_name(int field) {
+    switch (field) {
+        case 0:
+            return "top";
+        case 1:
+            return "bottom";
+        default:
+            return "mid";
+    }
+}
+
+static void print_name(r_name_t name) {
+    char text[9];
+
+    r_unpack_name(name, text);
+    printf("%s", text);
+}
+
+/* The sidedefs whose pictures animate, measured before anything is bound: after
+ * p_level_bind_render() the map answers with the translated name and the base
+ * would be lost. */
+static int collect_animated_textures(const doom_map_t* map,
+                                     animated_texture_t** out) {
+    uint32_t sideCount = map->lumps[DOOM_MAP_SIDEDEFS].count;
+    uint32_t sideIndex;
+    int count = 0;
+    int capacity = 4;
+    animated_texture_t* entries =
+        (animated_texture_t*)malloc((size_t)capacity * sizeof *entries);
+
+    *out = NULL;
+    if (entries == NULL) {
+        return 0;
+    }
+    for (sideIndex = 0; sideIndex < sideCount; ++sideIndex) {
+        doom_side_t side;
+        int field;
+
+        doom_map_get_side(map, (uint16_t)sideIndex, &side);
+        for (field = 0; field < 3; ++field) {
+            const r_name_t base = side_field(&side, field);
+
+            if (!p_anim_is_animated(base)) {
+                continue;
+            }
+            if (count == capacity) {
+                animated_texture_t* grown = (animated_texture_t*)realloc(
+                    entries, (size_t)capacity * 2u * sizeof *entries);
+
+                if (grown == NULL) {
+                    free(entries);
+                    return -2;
+                }
+                entries = grown;
+                capacity *= 2;
+            }
+            entries[count].side = (uint16_t)sideIndex;
+            entries[count].field = field;
+            entries[count].base = base;
+            count += 1;
+        }
+    }
+    *out = entries;
+    return count;
+}
+
+static void dump_scrolls(const p_level_t* level, const doom_map_t* map,
+                         uint32_t tic, const animated_texture_t* textures,
+                         int textureCount) {
+    uint16_t i;
+    int at;
+
+    for (i = 0; i < level->scrollCount; ++i) {
+        doom_side_t side;
+
+        doom_map_get_side(map, level->scrolls[i].side, &side);
+        printf("SCROLL %u line=%u side=%u dx=%ld dy=%ld offset=%ld\n",
+               (unsigned)tic, (unsigned)level->scrolls[i].line,
+               (unsigned)level->scrolls[i].side, (long)level->scrolls[i].dx,
+               (long)level->scrolls[i].dy, (long)side.textureOffset);
+    }
+
+    for (i = 0; i < level->sectorCount; ++i) {
+        doom_sector_t sector;
+
+        doom_map_get_sector(map, i, &sector);
+        if (p_anim_is_animated(level->sectors[i].floorPic)) {
+            printf("ANIM %u sector=%u field=floor name=", (unsigned)tic,
+                   (unsigned)i);
+            print_name(level->sectors[i].floorPic);
+            printf(" frame=");
+            print_name(sector.floorPic);
+            printf("\n");
+        }
+        if (p_anim_is_animated(level->sectors[i].ceilingPic)) {
+            printf("ANIM %u sector=%u field=ceiling name=", (unsigned)tic,
+                   (unsigned)i);
+            print_name(level->sectors[i].ceilingPic);
+            printf(" frame=");
+            print_name(sector.ceilingPic);
+            printf("\n");
+        }
+    }
+
+    for (at = 0; at < textureCount; ++at) {
+        doom_side_t side;
+
+        doom_map_get_side(map, textures[at].side, &side);
+        printf("ANIM %u side=%u field=%s name=", (unsigned)tic,
+               (unsigned)textures[at].side,
+               side_field_name(textures[at].field));
+        print_name(textures[at].base);
+        printf(" frame=");
+        print_name(side_field(&side, textures[at].field));
+        printf("\n");
+    }
+}
+
+static int runScrollsMode(p_level_t* level, doom_map_t* map,
+                          const char* mapName, int tics) {
+    animated_texture_t* textures = NULL;
+    int textureCount;
+    uint32_t animated = 0u;
+    uint32_t tic;
+    uint16_t i;
+
+    printf("SCROLLS %s tics=%d scrolls=%u\n", mapName, tics,
+           (unsigned)level->scrollCount);
+
+    textureCount = collect_animated_textures(map, &textures);
+    if (textureCount < 0) {
+        fprintf(stderr, "specials_check: no memory for the animated sidedefs\n");
+        return 0;
+    }
+    for (i = 0; i < level->sectorCount; ++i) {
+        if (p_anim_is_animated(level->sectors[i].floorPic)) {
+            animated += 1u;
+        }
+        if (p_anim_is_animated(level->sectors[i].ceilingPic)) {
+            animated += 1u;
+        }
+    }
+    animated += (uint32_t)textureCount;
+
+    p_level_bind_render(level, map);
+    dump_scrolls(level, map, 0u, textures, textureCount);
+    for (tic = 1; tic <= (uint32_t)tics; ++tic) {
+        (void)p_level_tick(level, NULL);
+        level->leveltime += 1; /* P_Ticker's last statement */
+        dump_scrolls(level, map, tic, textures, textureCount);
+    }
+    p_level_unbind_render(map);
+    free(textures);
+
+    printf("SUMMARY scrolls=%u animated=%u\n",
+           (unsigned)level->scrollCount, (unsigned)animated);
+    return 1;
+}
+
 /* --- The stair/teleport section (T34) ------------------------------------ */
 
 /*
@@ -696,7 +914,7 @@ int main(int argc, char** argv) {
     if (argc < 2 || argc > 8) {
         fprintf(stderr,
                 "usage: specials_check <path-to-WAD> [map] [tics] "
-                "[full|damage|stairs]\n"
+                "[full|damage|stairs|scrolls]\n"
                 "       specials_check <wad> <map> <tics> stairs "
                 "<line> <special> <side>\n");
         return 2;
@@ -724,8 +942,9 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (strcmp(mode, "full") != 0 && strcmp(mode, "damage") != 0 &&
-        strcmp(mode, "stairs") != 0) {
-        fprintf(stderr, "specials_check: mode is 'full', 'damage' or 'stairs'\n");
+        strcmp(mode, "stairs") != 0 && strcmp(mode, "scrolls") != 0) {
+        fprintf(stderr,
+                "specials_check: mode is 'full', 'damage', 'stairs' or 'scrolls'\n");
         return 2;
     }
 
@@ -788,6 +1007,15 @@ int main(int argc, char** argv) {
     if (strcmp(mode, "stairs") == 0) {
         const int ok = runStairFixture(&level, mapName, stairLine, stairSpecial,
                                        stairSide, tics);
+
+        p_level_shutdown(&level);
+        free(arena);
+        free(bytes);
+        return ok ? 0 : 2;
+    }
+
+    if (strcmp(mode, "scrolls") == 0) {
+        const int ok = runScrollsMode(&level, &map, mapName, tics);
 
         p_level_shutdown(&level);
         free(arena);

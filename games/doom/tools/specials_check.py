@@ -53,6 +53,27 @@ tic and prints the state. The ``--perturb`` switch moves one constant in the
 immunity -- so the comparison is shown to be able to fail rather than assumed to
 be able to.
 
+THE LAST STAGE: P_UpdateSpecials, ON EVERY EPISODE-1 MAP
+
+Line special 48 is the scroll effect, and the animation tables are a second,
+independent thing P_UpdateSpecials advances. The stage loads each of the nine
+maps, prints the scroll offsets of every special-48 line and the frame of every
+animated flat and texture it names, for 40 tics, and compares that against
+``doom_ref.py --scrolls``, which derives the animdefs families and their base
+indices from the WAD it is given. 40 tics cross every speed-8 boundary twice and
+wrap the frame index.
+
+The measured set (printed by the stage before it compares):
+
+  E1M1 lines 352..359   8 scrolling lines (the nukage ring's TEKWALL1 tier)
+  E1M7 lines 925..928   4 scrolling lines
+  the other seven maps  none
+  flat    NUKAGE1..3    base 51, speed 8   used by all nine maps
+  texture SLADRIP1..3   base 61, speed 8   used by E1M2 and E1M4
+
+``--perturb-scroll`` moves one constant in the *oracle* only -- the step, the
+speed, or the family's base phase -- and requires the comparison to fail.
+
 USAGE
 
     python tools/specials_check.py --wad path/to/DOOM1.WAD
@@ -129,6 +150,17 @@ SYNTHETIC_FIXTURES = (
 )
 
 STAIR_PERTURBATIONS = ("none", "stairs", "teleport")
+
+# --- T35: scrolling walls and animated pictures -----------------------------
+#
+# The stage runs P_UpdateSpecials on every episode-1 map, because the number is
+# not on every map: measured from DOOM1.WAD, special 48 is carried by E1M1 lines
+# 352..359 (eight) and E1M7 lines 925..928 (four), and by no other episode-1
+# map. Forty tics cross every speed-8 boundary of an animation family twice
+# (8, 16, 24, 32) and wrap the frame index at 24.
+SCROLL_MAPS = tuple(f"E1M{i}" for i in range(1, 10))
+SCROLL_TICS = 40
+SCROLL_PERTURBATIONS = ("none", "step", "speed", "phase")
 
 EXIT_OK = 0
 EXIT_MISMATCH = 1
@@ -337,6 +369,96 @@ def run_stair_fixture(executable: Path, oracle: Path, wad: Path,
     return len(protocol_lines(result.stdout)), first, mismatches
 
 
+# --- T35: the scroll/animation stage ----------------------------------------
+
+def scroll_census(wad: Path) -> tuple[dict[str, list[int]], dict[str, list[str]]]:
+    """What the WAD carries: line special 48 per map, and the animated pictures.
+
+    The measurement the stage is built on, printed before any comparison: a
+    stage that assumed which maps scroll would pass while measuring nothing.
+    """
+    _identification, lumps = doom_ref.read_wad(wad)
+    scrolls: dict[str, list[int]] = {}
+    for number in range(1, 10):
+        map_name = f"E1M{number}"
+        bsp = doom_ref.read_bsp_map(lumps, map_name)
+        lines = [index for index, line in enumerate(bsp.linedefs)
+                 if line["special"] == 48]
+        if lines:
+            scrolls[map_name] = lines
+
+    families = doom_ref.animation_families(lumps)
+    animated: dict[str, list[str]] = {}
+    for number in range(1, 10):
+        map_name = f"E1M{number}"
+        bsp = doom_ref.read_bsp_map(lumps, map_name)
+        used: list[str] = []
+        for sector in bsp.sectors:
+            for key in ("floorpic", "ceilingpic"):
+                name = doom_ref.name_text(sector[key])
+                if doom_ref.animated(name, families) and name not in used:
+                    used.append(name)
+        for side in bsp.sidedefs:
+            for key in ("top", "bottom", "mid"):
+                name = doom_ref.name_text(side[key])
+                if doom_ref.animated(name, families) and name not in used:
+                    used.append(name)
+        if used:
+            animated[map_name] = used
+    return scrolls, {"families": [(family.is_texture, family.frames[0],
+                                   family.frames[-1], family.speed, family.base)
+                                  for family in families],
+                     "maps": animated}
+
+
+def report_scroll_census(census: tuple[dict[str, list[int]], dict[str, list[str]]]) -> None:
+    scrolls, animated = census
+    print("scrolls carried by the nine maps (line special 48):")
+    for map_name in sorted(scrolls):
+        lines = scrolls[map_name]
+        print(f"  {map_name}: {len(lines)} line(s) "
+              + " ".join(str(line) for line in lines))
+    absent = [f"E1M{n}" for n in range(1, 10) if f"E1M{n}" not in scrolls]
+    print("  absent: " + (" ".join(absent) if absent else "none"))
+    print("animation families present in this WAD (start..end, speed, base):")
+    for is_texture, start, end, speed, base in animated["families"]:
+        kind = "texture" if is_texture else "flat"
+        print(f"  {kind:7s} {start}..{end} speed={speed} base={base}")
+    for map_name in sorted(animated["maps"]):
+        print(f"  {map_name} uses " + " ".join(animated["maps"][map_name]))
+
+
+def run_scroll_stage(executable: Path, oracle: Path, wad: Path,
+                     perturb: str) -> tuple[int, int, int]:
+    """Every map, printed as it is measured: (lines, mismatches, diverged)."""
+    lines = 0
+    mismatches_total = 0
+    diverged = 0
+    for map_name in SCROLL_MAPS:
+        result = subprocess.run(
+            [str(executable), str(wad), map_name, str(SCROLL_TICS), "scrolls"],
+            capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"the C harness failed on {map_name} scrolls:\n"
+                               + (result.stderr or result.stdout))
+        ref_lines = run_oracle(oracle, wad,
+                               ["--scrolls", map_name,
+                                "--tics", str(SCROLL_TICS),
+                                "--scrolls-perturb", perturb])
+        mismatches, first = compare(result.stdout.splitlines(), ref_lines)
+        count = len(protocol_lines(result.stdout))
+        lines += count
+        mismatches_total += mismatches
+        if mismatches:
+            diverged += 1
+            print(f"specials_check: {mismatches} divergent line(s) on {map_name} "
+                  f"scrolls; first: {first}", file=sys.stderr)
+        summary = next((line for line in result.stdout.splitlines()
+                        if line.startswith("SUMMARY ")), "")
+        print(f"{map_name}: {count} compared lines, {mismatches} divergent  {summary}")
+    return lines, mismatches_total, diverged
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="specials_check.py",
@@ -363,6 +485,10 @@ def main(argv: list[str] | None = None) -> int:
                         default="none",
                         help="move one stair/teleport constant in the oracle only, "
                              "and require the stair stage to fail")
+    parser.add_argument("--perturb-scroll", choices=SCROLL_PERTURBATIONS,
+                        default="none",
+                        help="move one scroll/animation constant in the oracle only, "
+                             "and require the scroll stage to fail")
     arguments = parser.parse_args(argv)
 
     if not arguments.wad.is_file():
@@ -468,6 +594,28 @@ def main(argv: list[str] | None = None) -> int:
             # cannot be run from CI.
             return EXIT_MISMATCH
         if stair_mismatches:
+            return EXIT_MISMATCH
+
+        # --- Stage 4: P_UpdateSpecials -----------------------------------
+        census = scroll_census(arguments.wad)
+        report_scroll_census(census)
+        scroll_lines, scroll_mismatches, scroll_diverged = run_scroll_stage(
+            executable, oracle_script, arguments.wad, arguments.perturb_scroll)
+        print(f"scrolls: {len(SCROLL_MAPS)} maps, {scroll_lines} compared lines, "
+              f"{scroll_mismatches} divergent "
+              f"(perturb={arguments.perturb_scroll})")
+        if arguments.perturb_scroll != "none":
+            if not scroll_diverged:
+                print(f"specials_check: --perturb-scroll "
+                      f"{arguments.perturb_scroll} did not diverge, so the "
+                      "scroll/animation comparison cannot fail", file=sys.stderr)
+                return EXIT_MISMATCH
+            print(f"scrolls: --perturb-scroll {arguments.perturb_scroll} moved "
+                  f"{scroll_diverged} of {len(SCROLL_MAPS)} maps")
+            # Exit 1: the perturbed run is *expected* to fail. Same rule as the
+            # stairs and sector-damage perturbations above.
+            return EXIT_MISMATCH
+        if scroll_mismatches:
             return EXIT_MISMATCH
     except RuntimeError as error:
         print(f"specials_check: {error}", file=sys.stderr)

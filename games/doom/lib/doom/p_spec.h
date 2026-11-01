@@ -62,6 +62,11 @@
  * and the spawn scan have disjoint number sets, and why any other number is
  * either an authoring mistake or a mover's `newspecial` write.
  *
+ * Line special 48 is not a trigger at all: it is the scroll effect
+ * P_SpawnSpecials collects and P_UpdateSpecials advances (see
+ * p_update_specials() below), so neither trigger function names it and it is
+ * not counted as unsupported.
+ *
  * Line specials (P_CrossSpecialLine, P_UseSpecialLine, P_ShootSpecialLine):
  * every number whose EV function exists below is dispatched; texture scrolling
  * (48) and the remaining switch numbers are counted as
@@ -82,7 +87,10 @@
  *     82,83,84,91..94,98,128,129 floors;
  *     87,88,89 plats; 79,80,81 lights implemented
  *     97,126 teleport                 implemented (EV_Teleport, the line stays)
- *     48 scroll                       unsupported by this layer
+ *     48 scroll                       implemented (T35): P_SpawnSpecials records
+ *                                     the line, P_UpdateSpecials adds
+ *                                     FRACUNIT to its front side's texture
+ *                                     offset every tic (see below)
  *     52,124 exit                     implemented (D4.5): the level's exit
  *                                     request is set, the line is not cleared
  *                                     (upstream's G_ExitLevel/G_SecretExitLevel
@@ -387,8 +395,9 @@ typedef enum p_spec_error {
  *      special: 1 flash, 2 fast strobe, 3 slow strobe, 4 fast strobe (special
  *      kept as 4), 8 glow, 9 secret, 10 close-in-30, 12 slow sync strobe,
  *      13 fast sync strobe, 14 raise-in-5-min, 17 fire flicker;
- *   3. for line 0..numlines-1: special 48 is a scrolling effect, counted here
- *      and left to P_UpdateSpecials (D4.x).
+ *   3. for line 0..numlines-1: special 48 is a scrolling effect, recorded in
+ *      `level->scrolls` (one entry per line, in line order) for
+ *      p_update_specials() to advance.
  *
  * The random sequence position matters: a non-synced strobe draws
  * `P_Random()&7` and a light flash draws `P_Random()&maxtime`, in sector order.
@@ -712,6 +721,206 @@ int p_do_teleport(struct p_level* level, uint16_t lineIndex,
 int p_trigger_special_line(struct p_level* level, uint16_t lineIndex,
                            p_trigger_kind_t kind, struct r_mobj* thing,
                            int side);
+
+/* --- P_UpdateSpecials: scrolling walls and animated pictures -------------- */
+
+/*
+ * linuxdoom-1.10's P_UpdateSpecials(), and what each half costs.
+ *
+ * THE SCROLL (line special 48)
+ *
+ * There is no table in this upstream. P_UpdateSpecials' "ANIMATE LINE SPECIALS"
+ * loop walks `linespeciallist[]` (filled by P_SpawnSpecials with every line
+ * whose special is 48) and, for each, runs
+ *
+ *     case 48:
+ *       // EFFECT FIRSTCOL SCROLL +
+ *       sides[line->sidenum[0]].textureoffset += FRACUNIT;
+ *
+ * so the step is one map unit horizontally on the *front* side, there is no
+ * vertical component, and the line's number is re-tested every tic (a number
+ * cleared by a trigger stops scrolling). Measured from DOOM1.WAD, the shareware
+ * episode carries the number on twelve lines of two maps: E1M1 lines 352..359
+ * (eight two-sided lines whose top and bottom tiers are both TEKWALL1, side 0
+ * already at offset 8) and E1M7 lines 925..928 (four, side 0 at offset 0).
+ * E1M2..E1M6, E1M8 and E1M9 carry none. `scrollers[]` with a per-entry
+ * `dx`/`dy` is a later source's (BOOM's) table and is not what this port's
+ * reference has; the measured step is P_SCROLL_STEP on x and 0 on y.
+ *
+ * The array is sized to the map rather than to upstream's MAXLINEANIMS (64).
+ * That slice is an array bound, not a rule: upstream writes past it when a map
+ * carries more than 64, and no shareware map carries more than eight. Sizing to
+ * the count reproduces the rule exactly and cannot overflow.
+ *
+ * THE ANIMATION (animdefs[])
+ *
+ * P_InitPicAnims() turns the animdefs[] table into `anims[]`, skipping an entry
+ * whose start name the WAD does not have, with `numpics = end - start + 1` over
+ * the *lump indices* and `speed` from the table. P_UpdateSpecials then writes,
+ * for every family and every index `i` in it,
+ *
+ *     pic = basepic + ((leveltime / speed + i) % numpics)
+ *
+ * into texturetranslation[] or flattranslation[]. Note `i` is the absolute
+ * index, so the family's own base index is part of the phase.
+ *
+ * MEASURED FROM DOOM1.WAD: of the 22 animdefs entries, exactly two exist in the
+ * shareware WAD; the other 20 are skipped by that presence test.
+ *
+ *   flat    NUKAGE1..NUKAGE3   base 51, 3 pics, speed 8   (51 % 3 == 0)
+ *   texture SLADRIP1..SLADRIP3 base 61, 3 pics, speed 8   (61 % 3 == 1)
+ *
+ * The tables are keyed by name here because this port has no picture numbers.
+ * P_ANIM_FAMILIES carries those two, with the base indices the WAD gives them,
+ * so the phase is upstream's and not "frame 0 first".
+ *
+ * TIMING, AND THE ONE-TIC TRAP
+ *
+ * P_Ticker runs P_UpdateSpecials *before* `leveltime++`, and the frame is
+ * rendered after it. So the picture a frame uses was selected with the clock at
+ * `leveltime - 1`. `p_level_t::animTime` is that clock: the leveltime of the
+ * last p_update_specials() call, -1 before the first one (upstream's
+ * translation arrays are the identity until then). Reading `leveltime` at draw
+ * time instead would show every animation one tic early.
+ */
+
+/* `textureoffset += FRACUNIT`: one map unit, horizontally. */
+#define P_SCROLL_STEP FRACUNIT
+
+/* `animTime` before any P_UpdateSpecials(): the identity translation. */
+#define P_ANIM_BEFORE_FIRST (-1)
+
+/* One scrolling line: the line, its front side, and what has accumulated. */
+typedef struct p_scroll {
+    uint16_t line;
+    uint16_t side; /* line->sidenum[0]: the only side upstream scrolls */
+    fixed_t dx;
+    fixed_t dy;    /* always 0 for special 48 in this upstream */
+} p_scroll_t;
+
+/**
+ * @brief Adds @p scrolls' accumulation to one parsed sidedef record.
+ *
+ * This is the arithmetic the renderer's side seam runs, kept here (and only
+ * here) so the firmware, the host harnesses and the pixel gate all add the same
+ * numbers. Header-only on purpose: a gate that proves the renderer reads the
+ * offset does not need the whole world linked to get this function.
+ *
+ * @param scrolls The level's scrolling lines, or NULL.
+ * @param count   How many entries @p scrolls holds.
+ * @param index   The sidedef index the renderer just asked for.
+ * @param side    The parsed record; its offsets are raised in place.
+ */
+static inline void p_scroll_adjust_side(const p_scroll_t* scrolls,
+                                        uint16_t count, uint16_t index,
+                                        doom_side_t* side) {
+    uint16_t i;
+
+    if (scrolls == NULL || side == NULL) {
+        return;
+    }
+    for (i = 0; i < count; ++i) {
+        if (scrolls[i].side == index) {
+            side->textureOffset += scrolls[i].dx;
+            side->rowOffset += scrolls[i].dy;
+        }
+    }
+}
+
+/**
+ * @brief P_UpdateSpecials(): advances the scrolls and the picture clock.
+ *
+ * Called once per world tic, after the thinkers and before `leveltime++`
+ * (p_level_tick() is that call site, so a game tic reaches it through
+ * p_level_tic() and a thinker-only tic still runs it, which is what upstream's
+ * P_Ticker does).
+ *
+ * `levelTimer` (-timer/-avg, a deathmatch option this port has no parser for)
+ * is not implemented: G_ExitLevel() is not p_spec.c's to call and no shipped
+ * build sets it.
+ *
+ * @param level The level; NULL or a closed level changes nothing.
+ */
+void p_update_specials(struct p_level* level);
+
+/**
+ * @brief The picture the animation tables select for @p name at @p animTime.
+ *
+ * Upstream's `texturetranslation[i]`/`flattranslation[i]` lookup, with the
+ * measured families above. A name outside every family, or @p animTime of
+ * P_ANIM_BEFORE_FIRST, is returned unchanged (the identity table).
+ *
+ * @param animTime The leveltime of the last p_update_specials(), or -1.
+ * @param name     The packed picture name a sidedef or a sector carries.
+ * @return The frame's packed name.
+ */
+r_name_t p_anim_frame(int32_t animTime, r_name_t name);
+
+/**
+ * @brief True when the animation tables name @p name as one of their frames.
+ *
+ * The predicate the bake and the gate use to ask "does this picture animate at
+ * all", which `p_anim_frame()` cannot answer at a phase that happens to be the
+ * identity.
+ *
+ * @param name A packed picture name.
+ * @return 1 when some family holds it, 0 otherwise.
+ */
+int p_anim_is_animated(r_name_t name);
+
+/* The two families the shareware WAD has, and the widest family's picture
+ * count. */
+#define P_ANIM_FAMILIES 2
+#define P_ANIM_MAXPICS 3
+
+/**
+ * @brief Binds a level's live state to a map for rendering.
+ *
+ * Installs the three seams doom_map.h documents:
+ *
+ *   readSector     the level's mutable `sectors[]` (heights, flats, light),
+ *                  which is this port's replacement for upstream's live
+ *                  `sector_t sectors[]` pointer;
+ *   adjustSide     the scroll offsets (`p_scroll_adjust_side`);
+ *   translateName  the animation tables (`p_anim_frame` at `animTime`).
+ *
+ * The caller owns both objects and must keep them alive while the map is used;
+ * the map is the renderer's, and this is the only place a level writes into it.
+ * tools/ and the firmware call this, and a probe that renders the static map
+ * simply never does.
+ *
+ * @param level The open level whose state the renderer must see.
+ * @param map   The map the walk will be given; must outlive the binding.
+ */
+void p_level_bind_render(struct p_level* level, doom_map_t* map);
+
+/**
+ * @brief Clears the three seams p_level_bind_render() installed.
+ *
+ * Leaves the map valid for the immutable view again; it does not touch the
+ * level. Safe on a NULL map or one that was never bound.
+ */
+void p_level_unbind_render(doom_map_t* map);
+
+/**
+ * @brief doom_sector_read_fn over a level: the live sector record.
+ *
+ * This is what p_level_bind_render() installs, exported because the gate
+ * harnesses bind the same seam explicitly, and a second implementation of "copy
+ * the seven map-facing fields" is exactly the drift this port has paid for
+ * before.
+ */
+void p_level_read_sector(void* context, uint16_t index, doom_sector_t* out);
+
+/**
+ * @brief doom_side_adjust_fn over a level: the accumulated scroll.
+ */
+void p_level_adjust_side(void* context, uint16_t index, doom_side_t* side);
+
+/**
+ * @brief doom_name_translate_fn over a level: the animation tables.
+ */
+r_name_t p_level_translate_name(void* context, r_name_t name);
 
 #ifdef __cplusplus
 } /* extern "C" */

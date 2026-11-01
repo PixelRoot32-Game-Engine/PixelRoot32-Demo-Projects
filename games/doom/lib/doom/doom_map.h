@@ -255,21 +255,67 @@ typedef void (*doom_sector_read_fn)(void* context, uint16_t index,
                                     doom_sector_t* out);
 
 /**
+ * One live sidedef adjustment, as the level keeps it.
+ *
+ * Upstream's P_UpdateSpecials() writes `sides[line->sidenum[0]].textureoffset`
+ * in place, and R_StoreWallRange() then reads the mutated record. This port's
+ * SIDEDEFS lump is immutable (on the board it is a mapped flash page), so the
+ * accumulated offset cannot live in the record. A reader binds @c adjustSide on
+ * the map it hands the walk and adds whatever the simulation has accumulated to
+ * the record doom_map_get_side() just parsed.
+ *
+ * The record arrives already filled from the lump, so an implementation adds to
+ * it and never has to parse the record itself (which is also what keeps the
+ * callback from recursing back into the seam).
+ */
+typedef void (*doom_side_adjust_fn)(void* context, uint16_t index,
+                                    doom_side_t* side);
+
+/**
+ * One render-time name translation, as the level keeps it.
+ *
+ * Upstream's P_UpdateSpecials() rewrites `texturetranslation[]` and
+ * `flattranslation[]` from the animation tables; every draw then looks the
+ * picture up through them. This port names textures and flats instead of
+ * numbering them, so the translation is the same rule over the name: a name the
+ * table animates becomes the frame the level's clock selects.
+ */
+typedef r_name_t (*doom_name_translate_fn)(void* context, r_name_t name);
+
+/**
  * The validated map view. Treat the lump views as read-only after a successful
  * open; the accessors below are the interface. `open` is 1 and `error` is
  * DOOM_MAP_OK only for an accepted graph, and a rejected open zeroes all
  * fields.
  *
- * `readSector` is the one mutable seam: when set, every
- * doom_map_get_sector() answers through it, so a renderer bound to this map
- * sees the level's live sector heights, flats and light instead of the
- * immutable SECTORS lump. A host harness or probe that renders the static map
- * leaves it NULL, which is also what doom_map_open() leaves behind.
+ * THE LIVE SEAMS, AND WHY THERE ARE THREE
+ *
+ * `readSector` supplies: when set, every doom_map_get_sector() answers through
+ * it, so a renderer bound to this map sees the level's live sector heights,
+ * flats and light instead of the immutable SECTORS lump.
+ *
+ * `adjustSide` adjusts: when set, every doom_map_get_side() parses the immutable
+ * record and then hands it to the callback, which may add the scroll offset the
+ * simulation has accumulated (never T23/T25/T26's failure: a number the
+ * renderer does not read). The parse happens first and once, so the callback
+ * cannot recurse into the seam.
+ *
+ * `translateName` supplies: when set, every texture and flat name the two
+ * accessors return is passed through it, which is where the animation tables
+ * reach the picture. It is applied after `readSector`/`adjustSide`, so it also
+ * sees a name that a live reader produced.
+ *
+ * A host harness or probe that renders the static map leaves all three NULL,
+ * which is also what doom_map_open() leaves behind.
  */
 typedef struct doom_map {
     doom_map_lump_view_t lumps[DOOM_MAP_LUMP_COUNT];
     doom_sector_read_fn readSector;
     void* readSectorContext;
+    doom_side_adjust_fn adjustSide;
+    void* adjustSideContext;
+    doom_name_translate_fn translateName;
+    void* translateNameContext;
     int open;
     doom_map_error_t error;
 } doom_map_t;

@@ -296,7 +296,12 @@ PINS: dict[str, dict[str, object]] = {
         "specunsup": "SPECUNSUP count=0 overflow=0",
         "ignored": "IGNORED count=1 31@110:949:crossx1",
         "alive": "ALIVE alive=1 lastinput=2104 deathtic=500 reborns=1",
-        "arena": 53304,
+        # Re-measured once, for T35: E1M7 is one of the two episode-1 maps that
+        # carry line special 48, and p_spawn_specials() now allocates one
+        # p_scroll_t per such line from the level's arena. Four lines x 12 B =
+        # 48 B: 53,304 -> 53,352. Nothing else about this run moved -- `final`,
+        # `chain` and `cohere` are the same values as before the change.
+        "arena": 53352,
         "reload": [611],
     },
 }

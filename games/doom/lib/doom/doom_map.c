@@ -57,6 +57,10 @@ static void clear_lump_views(doom_map_t* map) {
     map->error = DOOM_MAP_OK;
     map->readSector = NULL;
     map->readSectorContext = NULL;
+    map->adjustSide = NULL;
+    map->adjustSideContext = NULL;
+    map->translateName = NULL;
+    map->translateNameContext = NULL;
 }
 
 static uint32_t stride_for_lump(int lump) {
@@ -290,6 +294,21 @@ void doom_map_get_side(const doom_map_t* map, uint16_t index, doom_side_t* out) 
     out->bottomTexture = r_pack_name(at + 12);
     out->midTexture = r_pack_name(at + 20);
     out->sector = read_u16(at + 28);
+
+    /* The scroll the simulation accumulated, then the animation: both after the
+     * parse, so the immutable record is the base and neither hook re-reads it
+     * (see doom_map.h). */
+    if (map->adjustSide != NULL) {
+        map->adjustSide(map->adjustSideContext, index, out);
+    }
+    if (map->translateName != NULL) {
+        out->topTexture = map->translateName(map->translateNameContext,
+                                            out->topTexture);
+        out->bottomTexture = map->translateName(map->translateNameContext,
+                                               out->bottomTexture);
+        out->midTexture = map->translateName(map->translateNameContext,
+                                            out->midTexture);
+    }
 }
 
 void doom_map_get_seg(const doom_map_t* map, uint16_t index, doom_seg_t* out) {
@@ -335,9 +354,7 @@ void doom_map_get_sector(const doom_map_t* map, uint16_t index,
                          doom_sector_t* out) {
     if (map->readSector != NULL) {
         map->readSector(map->readSectorContext, index, out);
-        return;
-    }
-    {
+    } else {
         const uint8_t* at = record_at(&map->lumps[DOOM_MAP_SECTORS], index,
                                       DOOM_SECTOR_SIZE);
 
@@ -348,6 +365,14 @@ void doom_map_get_sector(const doom_map_t* map, uint16_t index,
         out->lightLevel = read_i16(at + 20);
         out->special = read_i16(at + 22);
         out->tag = read_i16(at + 24);
+    }
+    /* The animation tables, applied last so they also see a live reader's
+     * name (see doom_map.h). */
+    if (map->translateName != NULL) {
+        out->floorPic = map->translateName(map->translateNameContext,
+                                           out->floorPic);
+        out->ceilingPic = map->translateName(map->translateNameContext,
+                                             out->ceilingPic);
     }
 }
 

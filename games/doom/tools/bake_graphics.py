@@ -523,6 +523,134 @@ def _pnames(lumps: Sequence) -> list[str]:
     return parse_pnames(lumps[index].data)
 
 
+# --- The animation tables (T35) ---------------------------------------------
+#
+# linuxdoom-1.10's animdefs[], verbatim and in its order: (isTexture, endname,
+# startname, speed). P_InitPicAnims() skips an entry whose start name the WAD
+# does not carry, then numbers the family by *lump index* -- `numpics =
+# endname - startname + 1` -- and P_UpdateSpecials() selects
+#
+#     pic = basepic + ((leveltime / speed + i) % numpics)
+#
+# for every index in the family. The port draws names, not numbers, but the same
+# rule applies to a name: any member of a family turns into any frame of it, so
+# every frame of a family the levels name has to be in the container. Measured
+# from DOOM1.WAD: two of these 22 entries exist (flat NUKAGE1..3 at base 51 and
+# texture SLADRIP1..3 at base 61); the other 20 are skipped here exactly as
+# upstream skips them.
+
+ANIMDEFS = (
+    (False, "NUKAGE3", "NUKAGE1", 8),
+    (False, "FWATER4", "FWATER1", 8),
+    (False, "SWATER4", "SWATER1", 8),
+    (False, "LAVA4", "LAVA1", 8),
+    (False, "BLOOD3", "BLOOD1", 8),
+    (False, "RROCK08", "RROCK05", 8),
+    (False, "SLIME04", "SLIME01", 8),
+    (False, "SLIME08", "SLIME05", 8),
+    (False, "SLIME12", "SLIME09", 8),
+    (True, "BLODGR4", "BLODGR1", 8),
+    (True, "SLADRIP3", "SLADRIP1", 8),
+    (True, "BLODRIP4", "BLODRIP1", 8),
+    (True, "FIREWALL", "FIREWALA", 8),
+    (True, "GSTFONT3", "GSTFONT1", 8),
+    (True, "FIRELAVA", "FIRELAV3", 8),
+    (True, "FIREMAG3", "FIREMAG1", 8),
+    (True, "FIREBLU2", "FIREBLU1", 8),
+    (True, "ROCKRED3", "ROCKRED1", 8),
+    (True, "BFALL4", "BFALL1", 8),
+    (True, "SFALL4", "SFALL1", 8),
+    (True, "WFALL4", "WFALL1", 8),
+    (True, "DBRAIN4", "DBRAIN1", 8),
+)
+
+
+def flat_order(lumps: Sequence) -> list[str]:
+    """The flat names in R_FlatNumForName's order: between F_START and F_END.
+
+    A zero-length nested marker (F1_START/F1_END in a DOOM II IWAD) is a
+    directory entry with no bytes and DOOM counts it, so the names are taken
+    positionally and a later duplicate does not move an earlier one.
+    """
+    start = first_index(lumps, "F_START")
+    end = first_index(lumps, "F_END")
+    if start < 0 or end < 0 or end <= start:
+        raise BakeError("--bake: the WAD has no F_START..F_END range")
+    return [lump.name.upper() for lump in lumps[start + 1:end]]
+
+
+def animation_frames(lumps: Sequence, named_flats: Iterable[str],
+                     named_textures: Iterable[str]) -> list[tuple[int, str]]:
+    """(kind, name) for every frame of every family a baked picture belongs to.
+
+    A family counts when any of its frames is a picture the bake already holds;
+    then all of its frames are needed, because the translation can reach any of
+    them whatever member the map happens to name.
+    """
+    flats = flat_order(lumps)
+    textures = list(_texture_definitions(lumps))
+    flat_index: dict[str, int] = {}
+    for at, name in enumerate(flats):
+        flat_index.setdefault(name, at)
+    texture_index: dict[str, int] = {}
+    for at, name in enumerate(textures):
+        texture_index.setdefault(name, at)
+
+    baked_flats = {name.upper() for name in named_flats}
+    baked_textures = {name.upper() for name in named_textures}
+
+    frames: list[tuple[int, str]] = []
+    for is_texture, end_name, start_name, _speed in ANIMDEFS:
+        table = texture_index if is_texture else flat_index
+        if start_name not in table or end_name not in table:
+            continue  # P_InitPicAnims' `if (... == -1) continue;`
+        base = table[start_name]
+        top = table[end_name]
+        if top < base:
+            raise BakeError(
+                f"--bake: animation {start_name}..{end_name} runs backwards "
+                f"({base}..{top}): the WAD's lump order is not P_InitPicAnims'")
+        source = textures if is_texture else flats
+        family = source[base:top + 1]
+        named = baked_textures if is_texture else baked_flats
+        if not any(name in named for name in family):
+            continue
+        kind = KIND_WALL if is_texture else KIND_FLAT
+        frames.extend((kind, name) for name in family)
+    return frames
+
+
+def bake_named_item(lumps: Sequence, name: str, kind: int,
+                    definitions: dict[str, "Texture"], pnames: list[str],
+                    patch_cache: dict[str, "Patch"]) -> "BakedItem":
+    """One wall/sky (composed) or flat (raw lump) item, by name."""
+    if kind == KIND_FLAT:
+        lump = first_index(lumps, name)
+        if lump < 0:
+            raise BakeError(f"--bake: flat {name!r} is not a lump in this WAD")
+        if len(lumps[lump].data) != FLAT_BYTES:
+            raise BakeError(f"--bake: flat {name!r} is {len(lumps[lump].data)} bytes, "
+                            f"not {FLAT_BYTES}")
+        return BakedItem(name, KIND_FLAT, 64, 64, 0, None)
+
+    texture = definitions.get(name)
+    if texture is None:
+        raise BakeError(f"--bake: texture {name!r} is not in TEXTURE1/TEXTURE2")
+    patches: dict[int, Patch] = {}
+    for _, _, patch_index in texture.patches:
+        if patch_index < 0 or patch_index >= len(pnames):
+            raise BakeError(f"--bake: PNAMES index {patch_index} is outside {len(pnames)}")
+        patch_name = pnames[patch_index].upper()
+        if patch_name not in patch_cache:
+            lump = first_index(lumps, patch_name)
+            if lump < 0:
+                raise BakeError(f"--bake: patch {patch_name!r} is not a lump in this WAD")
+            patch_cache[patch_name] = parse_patch(patch_name, lumps[lump].data)
+        patches[patch_index] = patch_cache[patch_name]
+    payload, flags = bake_texture(texture, patches)
+    return BakedItem(name, kind, texture.width, texture.height, flags, payload)
+
+
 def bake_level(lumps: Sequence, level: str, sky: str = "SKY1",
                sprite_names: Iterable[str] = ()) -> BakedSet:
     """Bakes one level's wall textures, sky, flats and sprite patch list.
@@ -670,8 +798,26 @@ def bake_union(lumps: Sequence, levels: Sequence[str], sky: str = "SKY1",
                     seen_sprite.add(sprite)
                     sprite_order.append(sprite)
 
-    flat_order = [item.name for item in items if item.kind == KIND_FLAT]
-    return BakedSet(items, flat_order, sprite_order, per_level)
+    # T35: the animation tables. A family a baked picture belongs to can turn
+    # that picture into any of its frames, so every frame has to be present; the
+    # maps name only some of them (NUKAGE3, SLADRIP2, SLADRIP3).
+    named_flats = [name for (kind, name) in index_by_key if kind == "flat"]
+    named_textures = [name for (kind, name) in index_by_key if kind == "texture"]
+    extra = animation_frames(lumps, named_flats, named_textures)
+    if extra:
+        definitions = _texture_definitions(lumps)
+        pnames = _pnames(lumps)
+        patch_cache: dict[str, Patch] = {}
+        for kind, name in extra:
+            key = ("flat" if kind == KIND_FLAT else "texture", name)
+            if key in index_by_key:
+                continue
+            index_by_key[key] = len(items)
+            items.append(bake_named_item(lumps, name, kind, definitions, pnames,
+                                         patch_cache))
+
+    flat_order_names = [item.name for item in items if item.kind == KIND_FLAT]
+    return BakedSet(items, flat_order_names, sprite_order, per_level)
 
 
 # --- Manifest ---------------------------------------------------------------

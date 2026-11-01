@@ -153,6 +153,16 @@ typedef enum p_setup_error {
  *   leveltime       P_Ticker's tic counter since the level loaded. P_CalcHeight
  *                   uses it for the bob angle; G_DoCompleted's par time (D4.3)
  *                   reads it too.
+ *   scrolls         one entry per line special 48, in line order (upstream's
+ *                   `linespeciallist[]`), allocated from this arena by
+ *                   p_spawn_specials(). Each holds the front side and the
+ *                   offset P_UpdateSpecials has accumulated on it.
+ *   scrollCount     how many entries @c scrolls holds; also the number the
+ *                   renderer's side seam walks.
+ *   animTime        the leveltime of the last P_UpdateSpecials, i.e. the clock
+ *                   the picture translations were computed with. -1
+ *                   (P_ANIM_BEFORE_FIRST) until the first one, which is
+ *                   upstream's identity translation array.
  *   playerStarts    the four start records, verbatim (upstream playerstarts[]).
  *   playerStartSeen one flag per slot: the record was present in THINGS.
  *   deathmatchStarts the first ten type-11 records (upstream deathmatchstarts[]).
@@ -184,6 +194,9 @@ typedef struct p_level {
     int16_t* lineSpecial;
     uint16_t lineCount;
     p_spec_stats_t specStats;
+    p_scroll_t* scrolls;
+    uint16_t scrollCount;
+    int32_t animTime;
 
     r_mobj_t* player;
     p_player_t playerState;
@@ -344,11 +357,15 @@ p_setup_error_t p_level_change(p_level_t* level, const doom_map_t* map);
 void p_level_shutdown(p_level_t* level);
 
 /**
- * @brief Runs one tic of the world alone: p_run_thinkers() over this list.
+ * @brief Runs one tic of the world alone: the thinkers, then P_UpdateSpecials.
+ *
+ * This is P_Ticker's middle, exactly: p_run_thinkers() over this list and then
+ * p_update_specials() (the scroll offsets and the animation clock), both before
+ * `leveltime++` -- which P_Ticker's caller owns (p_level_tic()).
  *
  * There is no player step here on purpose; p_level_tic() is the game's tic and
- * calls this function after P_PlayerThink(). The two existing gates call this
- * one because their oracle has no player (see p_level_tic's comment).
+ * calls this function after P_PlayerThink(). The existing gates call this one
+ * because their oracle has no player (see p_level_tic's comment).
  *
  * Removed mobjs are unlinked and returned to the level's zone during the walk,
  * which is the deferred half of P_RemoveMobj(). `stats` is optional.

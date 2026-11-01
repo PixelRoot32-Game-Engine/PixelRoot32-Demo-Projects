@@ -299,6 +299,11 @@ static p_setup_error_t level_load(p_level_t* level, const doom_map_t* map,
 
     level->open = 1;
 
+    /* P_InitPicAnims' identity: upstream's translation arrays map every picture
+     * to itself until the first P_UpdateSpecials() writes them. -1 is that
+     * "nothing has been computed yet" (p_spec.h). */
+    level->animTime = P_ANIM_BEFORE_FIRST;
+
     /* P_LoadThings(): every record, in file order. THINGS is optional in a map
      * view, in which case the level simply has no things. */
     things = map->lumps[DOOM_MAP_THINGS].count;
@@ -420,14 +425,22 @@ void p_level_shutdown(p_level_t* level) {
 /* --- Ticking and reporting ----------------------------------------------- */
 
 p_tick_error_t p_level_tick(p_level_t* level, p_thinker_run_t* stats) {
+    p_tick_error_t result;
+
     if (level == NULL) {
         return P_TICK_ERR_NULL_LIST;
     }
     if (!level->open) {
         return P_TICK_ERR_NOT_OPEN;
     }
-    return p_run_thinkers(&level->thinkers, &p_level_release_thinker,
-                          &level->context, stats);
+    result = p_run_thinkers(&level->thinkers, &p_level_release_thinker,
+                            &level->context, stats);
+    /* P_Ticker's next statement, P_UpdateSpecials(): the scrolls advance and the
+     * picture clock is stamped, both before `leveltime++` (p_spec.h). It runs
+     * here, in the world half, because p_level_tic() is this plus the player and
+     * P_Ticker runs it whether or not a player exists. */
+    p_update_specials(level);
+    return result;
 }
 
 uint32_t p_level_mobj_count(const p_level_t* level) {

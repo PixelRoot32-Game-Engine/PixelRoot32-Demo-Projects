@@ -87,7 +87,7 @@ import hashlib
 import math
 import struct
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import e1m1_sprites
@@ -3438,6 +3438,215 @@ def report_specials(lumps: list[Lump], map_name: str, tics: int) -> None:
     # The protocol continues with P_PlayerInSpecialSector's fixtures, which the
     # C harness prints after its SUMMARY: they are part of the same report.
     report_sector_damage(lumps, map_name)
+
+
+# --- P_UpdateSpecials: scroll and animation (T35) ---------------------------
+#
+# linuxdoom-1.10's animdefs[], verbatim and in its order: (isTexture, endname,
+# startname, speed). P_InitPicAnims() skips an entry whose start name the WAD
+# does not carry, numbers a family by lump index (`numpics = end - start + 1`)
+# and P_UpdateSpecials() selects
+#
+#     pic = basepic + ((leveltime / speed + i) % numpics)
+#
+# for every index i in the family. The port carries names, not numbers, and the
+# same rule applies to a name. Note that `i` is the absolute index, so a
+# family's *base* is part of the phase: NUKAGE1 is flat 51 (51 % 3 == 0, the
+# frame is `(leveltime/8) % 3`) and SLADRIP1 is texture 61 (61 % 3 == 1, one
+# frame further on). This is why the frame is not simply
+# `(leveltime/speed) % frames` for every family.
+ANIMDEFS = (
+    (False, "NUKAGE3", "NUKAGE1", 8),
+    (False, "FWATER4", "FWATER1", 8),
+    (False, "SWATER4", "SWATER1", 8),
+    (False, "LAVA4", "LAVA1", 8),
+    (False, "BLOOD3", "BLOOD1", 8),
+    (False, "RROCK08", "RROCK05", 8),
+    (False, "SLIME04", "SLIME01", 8),
+    (False, "SLIME08", "SLIME05", 8),
+    (False, "SLIME12", "SLIME09", 8),
+    (True, "BLODGR4", "BLODGR1", 8),
+    (True, "SLADRIP3", "SLADRIP1", 8),
+    (True, "BLODRIP4", "BLODRIP1", 8),
+    (True, "FIREWALL", "FIREWALA", 8),
+    (True, "GSTFONT3", "GSTFONT1", 8),
+    (True, "FIRELAVA", "FIRELAV3", 8),
+    (True, "FIREMAG3", "FIREMAG1", 8),
+    (True, "FIREBLU2", "FIREBLU1", 8),
+    (True, "ROCKRED3", "ROCKRED1", 8),
+    (True, "BFALL4", "BFALL1", 8),
+    (True, "SFALL4", "SFALL1", 8),
+    (True, "WFALL4", "WFALL1", 8),
+    (True, "DBRAIN4", "DBRAIN1", 8),
+)
+
+#: The scroll step: upstream's `textureoffset += FRACUNIT`.
+SCROLL_STEP = FRACUNIT
+
+
+@dataclass(frozen=True)
+class AnimFamily:
+    """One active animdefs[] entry, measured from the WAD it was built on."""
+
+    is_texture: bool
+    frames: tuple[str, ...]
+    speed: int
+    base: int
+
+
+def flat_order(lumps: list[Lump]) -> list[str]:
+    """The flat names in R_FlatNumForName's order: between F_START and F_END."""
+    start = first_index(lumps, "F_START")
+    end = first_index(lumps, "F_END")
+    if start < 0 or end < 0 or end <= start:
+        raise FormatError("the WAD has no F_START..F_END range")
+    return [lump.name.upper() for lump in lumps[start + 1:end]]
+
+
+def texture_order(lumps: list[Lump]) -> list[str]:
+    """The texture names in R_TextureNumForName's order: TEXTURE1 then TEXTURE2."""
+    names: list[str] = []
+    for lump_name in ("TEXTURE1", "TEXTURE2"):
+        index = first_index(lumps, lump_name)
+        if index < 0:
+            continue
+        for texture in parse_textures(lump_name, lumps[index].data):
+            names.append(texture.name.upper())
+    return names
+
+
+def animation_families(lumps: list[Lump],
+                       perturb: str = "none") -> list[AnimFamily]:
+    """The animdefs[] entries this WAD can animate, with their measured range.
+
+    `perturb` moves one thing in *this* implementation only, so the gate can
+    show its comparison fails: "speed" halves every speed and "phase" drops the
+    base index from the frame arithmetic.
+    """
+    flats = flat_order(lumps)
+    textures = texture_order(lumps)
+    flat_index: dict[str, int] = {}
+    for at, name in enumerate(flats):
+        flat_index.setdefault(name, at)
+    texture_index: dict[str, int] = {}
+    for at, name in enumerate(textures):
+        texture_index.setdefault(name, at)
+
+    families: list[AnimFamily] = []
+    for is_texture, end_name, start_name, speed in ANIMDEFS:
+        table = texture_index if is_texture else flat_index
+        source = textures if is_texture else flats
+        if start_name not in table or end_name not in table:
+            continue  # P_InitPicAnims' `if (... == -1) continue;`
+        base = table[start_name]
+        top = table[end_name]
+        if top < base:
+            raise FormatError(f"animation {start_name}..{end_name} runs backwards")
+        if perturb == "speed":
+            speed = max(1, speed // 2)
+        # The perturbed phase moves only the frame index, never the family's
+        # name range: `base` selects frames, `phase` only shifts the cycle.
+        phase = 0 if perturb == "phase" else base
+        families.append(AnimFamily(is_texture, tuple(source[base:top + 1]),
+                                   speed, phase))
+    return families
+
+
+def animated(name: str, families: list[AnimFamily]) -> bool:
+    return any(name in family.frames for family in families)
+
+
+def name_text(raw) -> str:
+    """A WAD name field as text: the eight bytes up to the first NUL."""
+    if isinstance(raw, str):
+        return raw
+    return raw.rstrip(b"\0").decode("latin-1")
+
+
+def anim_frame(name: str, anim_time: int, families: list[AnimFamily]) -> str:
+    """`texturetranslation[]`/`flattranslation[]` for one name, as a string."""
+    if anim_time < 0:
+        return name
+    for family in families:
+        if name not in family.frames:
+            continue
+        member = family.frames.index(name)
+        selected = (anim_time // family.speed + family.base + member) \
+            % len(family.frames)
+        return family.frames[selected]
+    return name
+
+
+def report_scrolls(lumps: list[Lump], map_name: str, tics: int,
+                   perturb: str = "none") -> None:
+    """The `--scrolls` protocol: P_UpdateSpecials on one map.
+
+    The C harness prints the same records; see tools/specials_check.c for the
+    documented script. `--scrolls-perturb` moves one constant here only.
+    """
+    bsp = read_bsp_map(lumps, map_name)
+    things = run_things(bsp, 2)         # the level's default skill
+    level = SpecLevel(bsp, RandomState(things.rng))
+    families = animation_families(lumps, perturb)
+    step = 2 * SCROLL_STEP if perturb == "step" else SCROLL_STEP
+
+    spawn_specials(level)
+    level.scrolls = [{"line": index, "side": line["side0"], "dx": 0, "dy": 0}
+                     for index, line in enumerate(bsp.linedefs)
+                     if line["special"] == 48]
+    level.anim_time = -1
+
+    # The animated sidedefs, measured from the immutable records: exactly what
+    # the C harness collects before it binds the seams.
+    textures: list[tuple[int, int, str]] = []
+    for side_index, side in enumerate(bsp.sidedefs):
+        for field, key in enumerate(("top", "bottom", "mid")):
+            base = name_text(side[key])
+            if animated(base, families):
+                textures.append((side_index, field, base))
+
+    animated_fields = 0
+    for sector in level.sectors:
+        if animated(name_text(sector["floorpic"]), families):
+            animated_fields += 1
+        if animated(name_text(sector["ceilingpic"]), families):
+            animated_fields += 1
+    animated_fields += len(textures)
+
+    print(f"SCROLLS {map_name} tics={tics} scrolls={len(level.scrolls)}")
+
+    def dump(tic: int) -> None:
+        for scroll in level.scrolls:
+            offset = bsp.sidedefs[scroll["side"]]["textureoffset"] + scroll["dx"]
+            print(f"SCROLL {tic} line={scroll['line']} side={scroll['side']} "
+                  f"dx={scroll['dx']} dy={scroll['dy']} offset={offset}")
+        for index, sector in enumerate(level.sectors):
+            floor_pic = name_text(sector["floorpic"])
+            ceiling_pic = name_text(sector["ceilingpic"])
+            if animated(floor_pic, families):
+                print(f"ANIM {tic} sector={index} field=floor name={floor_pic} "
+                      f"frame={anim_frame(floor_pic, level.anim_time, families)}")
+            if animated(ceiling_pic, families):
+                print(f"ANIM {tic} sector={index} field=ceiling name={ceiling_pic} "
+                      f"frame={anim_frame(ceiling_pic, level.anim_time, families)}")
+        for side_index, field, base in textures:
+            name = ("top", "bottom", "mid")[field]
+            print(f"ANIM {tic} side={side_index} field={name} name={base} "
+                  f"frame={anim_frame(base, level.anim_time, families)}")
+
+    dump(0)
+    for tic in range(1, tics + 1):
+        run_tic(level)
+        # P_UpdateSpecials: scrolls advance and the picture clock is stamped,
+        # both before `leveltime++` (P_Ticker's order).
+        for scroll in level.scrolls:
+            if level.line_special[scroll["line"]] == 48:
+                scroll["dx"] += step
+        level.anim_time = level.leveltime
+        level.leveltime += 1
+        dump(tic)
+
+    print(f"SUMMARY scrolls={len(level.scrolls)} animated={animated_fields}")
 
 
 # --- Stairs and teleports on a real map (T34) -------------------------------
@@ -9141,8 +9350,22 @@ def frame_views(bsp: BspMap) -> list[dict]:
 
 def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
                 detail: int | None = None,
-                column: tuple[int, int] | None = None) -> None:
+                column: tuple[int, int] | None = None,
+                scroll: tuple[int, int] | None = None,
+                view: tuple[int, int, int, int] | None = None) -> None:
     bsp = read_bsp_map(lumps, map_name)
+    if scroll is not None:
+        # P_UpdateSpecials' scroll, applied where upstream applies it: to the
+        # sidedef's textureoffset, before R_StoreWallRange reads it. The copy
+        # keeps the rest of the map (and every other frame) untouched.
+        side_index, delta = scroll
+        if side_index < 0 or side_index >= len(bsp.sidedefs):
+            raise FormatError(f"--segs-scroll: side {side_index} is outside the map")
+        sidedefs = list(bsp.sidedefs)
+        sidedefs[side_index] = dict(sidedefs[side_index])
+        sidedefs[side_index]["textureoffset"] = i32(
+            sidedefs[side_index]["textureoffset"] + delta)
+        bsp = replace(bsp, sidedefs=tuple(sidedefs))
     textures = TextureLibrary(lumps)
     flats = FlatLibrary(lumps)
     colormap_index = first_index(lumps, "COLORMAP")
@@ -9153,6 +9376,12 @@ def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
         raise FormatError(f"COLORMAP is {len(colormaps)} B, not 34 * 256")
 
     views = frame_views(bsp)
+    if view is not None:
+        # One viewpoint, given by the gate: the same four numbers the C harness
+        # is given, so the scroll proof compares two renders of one camera.
+        views = [{"x": view[0], "y": view[1], "z": view[2],
+                  "angle": u32(view[3] & 0xFFFFFFFF), "extralight": 0,
+                  "sky": b"F_SKY1\x00\x00"}]
     tables = e1m1_sprites.build_sprite_tables(lump.name for lump in lumps)
     print(f"SEGS {map_name} frames={len(views)}")
     frames: list[dict] = []
@@ -9309,6 +9538,14 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
                         default="none",
                         help="with --stairs: move one constant in this "
                              "implementation only, so the gate can prove it fails")
+    parser.add_argument("--scrolls", metavar="MAP",
+                        help="run P_UpdateSpecials on MAP: the scroll offsets of "
+                             "every line special 48 and the animated pictures, "
+                             "every tic (T35)")
+    parser.add_argument("--scrolls-perturb",
+                        choices=("none", "step", "speed", "phase"), default="none",
+                        help="with --scrolls: move one constant in this "
+                             "implementation only, so the gate can prove it fails")
     parser.add_argument("--movement", metavar="NAME",
                         help="run the 160-tic movement script (thrust, wall, "
                              "slide, corner, friction, return) and print the mobj "
@@ -9361,6 +9598,14 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
     parser.add_argument("--segs-column", metavar="N,X",
                         help="with --segs: also print the 200 pixels of column "
                              "X of frame N (the first divergent row)")
+    parser.add_argument("--segs-scroll", metavar="SIDE,DX",
+                        help="with --segs: add DX (16.16) to side SIDE's "
+                             "textureoffset before rendering, which is what "
+                             "P_UpdateSpecials' line special 48 does (T35)")
+    parser.add_argument("--segs-view", metavar="X,Y,Z,ANGLE",
+                        help="with --segs: render only this viewpoint instead of "
+                             "the 20 sampled ones, so the gate can point the "
+                             "camera at a scrolling wall (T35)")
     parser.add_argument("--limit", type=int, metavar="N",
                         help="hash at most N items of each requested kind")
     return parser
@@ -9378,11 +9623,11 @@ def main(argv: list[str] | None = None) -> int:
             or arguments.things or arguments.specials or arguments.sector_damage
             or arguments.movement or arguments.stairs
             or arguments.player or arguments.door or arguments.damage
-            or arguments.attack or arguments.enemy):
+            or arguments.attack or arguments.enemy or arguments.scrolls):
         parser.error("nothing to do: pass --patches, --textures, --flats, --all, "
                      "--map, --stats, --bsp, --segs, --things, --specials, "
                      "--sector-damage, --movement, --player, --door, --damage, "
-                     "--stairs, --attack or --enemy")
+                     "--stairs, --scrolls, --attack or --enemy")
     if arguments.limit is not None and arguments.limit < 0:
         parser.error("--limit cannot be negative")
     if arguments.tics < 0:
@@ -9404,6 +9649,30 @@ def main(argv: list[str] | None = None) -> int:
             segs_column = (int(parts[0]), int(parts[1]))
         except ValueError:
             parser.error("--segs-column wants two integers")
+
+    segs_scroll = None
+    if arguments.segs_scroll is not None:
+        if not arguments.segs:
+            parser.error("--segs-scroll needs --segs")
+        parts = arguments.segs_scroll.split(",")
+        if len(parts) != 2:
+            parser.error("--segs-scroll wants SIDE,DX")
+        try:
+            segs_scroll = (int(parts[0]), int(parts[1]))
+        except ValueError:
+            parser.error("--segs-scroll wants two integers")
+
+    segs_view = None
+    if arguments.segs_view is not None:
+        if not arguments.segs:
+            parser.error("--segs-view needs --segs")
+        parts = arguments.segs_view.split(",")
+        if len(parts) != 4:
+            parser.error("--segs-view wants X,Y,Z,ANGLE")
+        try:
+            segs_view = tuple(int(part) for part in parts)
+        except ValueError:
+            parser.error("--segs-view wants four integers")
 
     if arguments.sector_perturb != "none":
         SECTOR_PERTURB[arguments.sector_perturb] = 1
@@ -9460,9 +9729,13 @@ def main(argv: list[str] | None = None) -> int:
                        arguments.planes)
         if arguments.segs:
             report_segs(lumps, arguments.segs.upper(), arguments.drawsegs,
-                        arguments.planes, arguments.segs_detail, segs_column)
+                        arguments.planes, arguments.segs_detail, segs_column,
+                        segs_scroll, segs_view)
         if arguments.things:
             report_things(lumps, arguments.things.upper(), arguments.skill)
+        if arguments.scrolls:
+            report_scrolls(lumps, arguments.scrolls.upper(), arguments.tics,
+                           arguments.scrolls_perturb)
         if arguments.specials:
             report_specials(lumps, arguments.specials.upper(), arguments.tics)
         if arguments.sector_damage:

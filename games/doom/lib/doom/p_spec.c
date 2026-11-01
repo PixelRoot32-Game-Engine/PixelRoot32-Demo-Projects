@@ -484,10 +484,56 @@ p_spec_error_t p_spawn_specials(struct p_level* level) {
         }
     }
 
-    /* Init line EFFECTs: 48 is a texture scroll, P_UpdateSpecials' job. */
-    for (i = 0; i < level->lineCount; ++i) {
-        if (p_line_special(level->map, i) == 48) {
-            level->specStats.lineScrolls += 1u;
+    /* Init line EFFECTs. Upstream's P_SpawnSpecials fills `linespeciallist[]`
+     * with every line whose special is 48; this port allocates that list from
+     * the level's arena, one entry per line, so it is sized to the map instead
+     * of to upstream's MAXLINEANIMS (64) -- see p_spec.h. The scan is in line
+     * order, which is upstream's, and `lineScrolls` still counts every line the
+     * special names, including one with no front side (upstream would index
+     * sides[0xffff] there; that record cannot scroll, so it is counted and not
+     * stored). */
+    {
+        uint16_t scrolls = 0u;
+
+        for (i = 0; i < level->lineCount; ++i) {
+            if (p_line_special(level->map, i) == 48) {
+                level->specStats.lineScrolls += 1u;
+                scrolls += 1u;
+            }
+        }
+        level->scrolls = NULL;
+        level->scrollCount = 0u;
+        if (scrolls != 0u) {
+            zone_error_t error = ZONE_ERR_OK;
+            p_scroll_t* table = (p_scroll_t*)z_alloc(
+                &level->zone, (size_t)scrolls * sizeof(p_scroll_t), PU_LEVEL,
+                &error);
+
+            if (table == NULL) {
+                level->specStats.allocationFailures += 1u;
+            } else {
+                uint16_t at = 0u;
+
+                memset(table, 0, (size_t)scrolls * sizeof(p_scroll_t));
+                for (i = 0; i < level->lineCount; ++i) {
+                    doom_line_t line;
+
+                    if (p_line_special(level->map, i) != 48) {
+                        continue;
+                    }
+                    if (!p_line_decode(level->map, i, &line) ||
+                        line.sideNum[0] == DOOM_NO_SIDE_INDEX) {
+                        continue;
+                    }
+                    table[at].line = i;
+                    table[at].side = line.sideNum[0];
+                    table[at].dx = 0;
+                    table[at].dy = 0;
+                    at += 1u;
+                }
+                level->scrolls = table;
+                level->scrollCount = at;
+            }
         }
     }
 
@@ -1458,4 +1504,189 @@ int p_trigger_special_line(struct p_level* level, uint16_t lineIndex,
         level->specStats.triggers += 1u;
     }
     return result;
+}
+
+/* --- P_UpdateSpecials: scrolling walls and animated pictures -------------- */
+
+/*
+ * The animdefs[] families the shareware WAD actually has.
+ *
+ * Upstream's table has 22 entries and P_InitPicAnims skips every one whose
+ * start name the WAD does not carry; measured, DOOM1.WAD carries two of them
+ * (see p_spec.h). `base` is the family's own base index in the WAD's flat or
+ * texture table, because upstream's `pic = basepic + ((leveltime/speed + i) %
+ * numpics)` uses the *absolute* index `i` and therefore the base's phase. Both
+ * numbers are measurements, and the scrolls stage of tools/specials_check.py
+ * recomputes them from the WAD it is given, so a WAD with different tables
+ * diverges instead of silently animating to the wrong frame.
+ */
+typedef struct p_anim_family {
+    uint8_t isTexture;
+    uint8_t numpics;
+    uint8_t speed;
+    int16_t base;
+    r_name_t frames[P_ANIM_MAXPICS];
+} p_anim_family_t;
+
+/* The packed name of an eight-byte WAD name field, most significant byte first
+ * (r_pack_name's order). A short name is NUL padded, as the field is. */
+#define P_NAME8(a, b, c, d, e, f, g, h)                                       \
+    ((((r_name_t)(uint8_t)(a)) << 56) | (((r_name_t)(uint8_t)(b)) << 48) |     \
+     (((r_name_t)(uint8_t)(c)) << 40) | (((r_name_t)(uint8_t)(d)) << 32) |     \
+     (((r_name_t)(uint8_t)(e)) << 24) | (((r_name_t)(uint8_t)(f)) << 16) |     \
+     (((r_name_t)(uint8_t)(g)) << 8) | ((r_name_t)(uint8_t)(h)))
+
+static const p_anim_family_t kAnimFamilies[P_ANIM_FAMILIES] = {
+    /* {false, "NUKAGE3", "NUKAGE1", 8}: base 51, three frames. */
+    {
+        0u, 3u, 8u, 51,
+        {
+            P_NAME8('N', 'U', 'K', 'A', 'G', 'E', '1', 0),
+            P_NAME8('N', 'U', 'K', 'A', 'G', 'E', '2', 0),
+            P_NAME8('N', 'U', 'K', 'A', 'G', 'E', '3', 0),
+        },
+    },
+    /* {true, "SLADRIP3", "SLADRIP1", 8}: base 61, three frames. */
+    {
+        1u, 3u, 8u, 61,
+        {
+            P_NAME8('S', 'L', 'A', 'D', 'R', 'I', 'P', '1'),
+            P_NAME8('S', 'L', 'A', 'D', 'R', 'I', 'P', '2'),
+            P_NAME8('S', 'L', 'A', 'D', 'R', 'I', 'P', '3'),
+        },
+    },
+};
+
+r_name_t p_anim_frame(int32_t animTime, r_name_t name) {
+    int family;
+    int k;
+
+    if (animTime < 0 || !r_has_name(name)) {
+        return name;
+    }
+    for (family = 0; family < P_ANIM_FAMILIES; ++family) {
+        const p_anim_family_t* anim = &kAnimFamilies[family];
+
+        for (k = 0; k < (int)anim->numpics; ++k) {
+            int32_t pic;
+
+            if (anim->frames[k] != name) {
+                continue;
+            }
+            /* `pic = basepic + ((leveltime/speed + i) % numpics)` with i the
+             * family member's absolute index, base + k. animTime is
+             * non-negative and the sum is positive, so C's truncating % is
+             * upstream's here. */
+            pic = ((animTime / (int32_t)anim->speed) + (int32_t)anim->base + k)
+                  % (int32_t)anim->numpics;
+            return anim->frames[pic];
+        }
+    }
+    return name;
+}
+
+int p_anim_is_animated(r_name_t name) {
+    int family;
+    int k;
+
+    if (!r_has_name(name)) {
+        return 0;
+    }
+    for (family = 0; family < P_ANIM_FAMILIES; ++family) {
+        const p_anim_family_t* anim = &kAnimFamilies[family];
+
+        for (k = 0; k < (int)anim->numpics; ++k) {
+            if (anim->frames[k] == name) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+void p_update_specials(p_level_t* level) {
+    uint16_t i;
+
+    if (level == NULL || !level->open) {
+        return;
+    }
+
+    /* "ANIMATE LINE SPECIALS": upstream re-reads `line->special` every tic, so a
+     * number a trigger cleared stops scrolling. */
+    for (i = 0; i < level->scrollCount; ++i) {
+        p_scroll_t* scroll = &level->scrolls[i];
+
+        if (p_line_special(level->map, scroll->line) != 48) {
+            continue;
+        }
+        scroll->dx += P_SCROLL_STEP;
+        /* `dy` stays 0: this upstream's case 48 has no vertical term. */
+    }
+
+    /* "ANIMATE FLATS AND TEXTURES GLOBALLY": the translations are keyed by the
+     * clock they were computed with, which is this tic's leveltime -- P_Ticker
+     * runs this before `leveltime++`, and p_anim_frame() reads what it stored. */
+    level->animTime = level->leveltime;
+}
+
+/* --- The renderer's live seams -------------------------------------------- */
+
+void p_level_read_sector(void* context, uint16_t index, doom_sector_t* out) {
+    const p_level_t* level = (const p_level_t*)context;
+    const p_sector_t* sector;
+
+    if (level == NULL || out == NULL || level->sectors == NULL ||
+        (uint32_t)index >= (uint32_t)level->sectorCount) {
+        return;
+    }
+    sector = &level->sectors[index];
+    out->floorHeight = sector->floorHeight;
+    out->ceilingHeight = sector->ceilingHeight;
+    out->floorPic = sector->floorPic;
+    out->ceilingPic = sector->ceilingPic;
+    out->lightLevel = sector->lightLevel;
+    out->special = sector->special;
+    out->tag = sector->tag;
+}
+
+void p_level_adjust_side(void* context, uint16_t index, doom_side_t* side) {
+    const p_level_t* level = (const p_level_t*)context;
+
+    if (level == NULL || side == NULL) {
+        return;
+    }
+    p_scroll_adjust_side(level->scrolls, level->scrollCount, index, side);
+}
+
+r_name_t p_level_translate_name(void* context, r_name_t name) {
+    const p_level_t* level = (const p_level_t*)context;
+
+    if (level == NULL) {
+        return name;
+    }
+    return p_anim_frame(level->animTime, name);
+}
+
+void p_level_bind_render(p_level_t* level, doom_map_t* map) {
+    if (level == NULL || map == NULL) {
+        return;
+    }
+    map->readSector = p_level_read_sector;
+    map->readSectorContext = level;
+    map->adjustSide = p_level_adjust_side;
+    map->adjustSideContext = level;
+    map->translateName = p_level_translate_name;
+    map->translateNameContext = level;
+}
+
+void p_level_unbind_render(doom_map_t* map) {
+    if (map == NULL) {
+        return;
+    }
+    map->readSector = NULL;
+    map->readSectorContext = NULL;
+    map->adjustSide = NULL;
+    map->adjustSideContext = NULL;
+    map->translateName = NULL;
+    map->translateNameContext = NULL;
 }
