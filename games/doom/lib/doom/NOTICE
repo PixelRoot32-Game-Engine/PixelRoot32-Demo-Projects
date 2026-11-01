@@ -47,6 +47,7 @@ size:
     r_tables.*         sine, tangent and angle tables  r_tables.c/tables.c
     r_things.*         sprite projection and drawing   r_things.c
     info_tables.h      mobjinfo[] and states[]         info.c
+    st_stuff.*         the status bar and the face     st_stuff.c/st_lib.c
     z_zone.*           the zone allocator              z_zone.c
     w_wad.*            WAD lump access                 w_wad.c
 
