@@ -461,6 +461,7 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 #include "r_defs.h"
 #include "r_light.h"
 #include "r_plane.h"
+#include "r_psprite.h"
 #include "r_segs.h"
 #include "r_tables.h"
 #include "r_things.h"
@@ -2117,6 +2118,26 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     return true;
 }
 
+#if defined(DOOM_WEAPON_DIAG)
+/// SHA-256 over a w x h rectangle of the surface, row by row (no coverage bytes).
+/// The weapon check uses it: a whole-view hash also covers the animated items and
+/// torches a host rebuild cannot know the phase of, a rectangle around the gun
+/// does not.
+void hashRect(const std::uint8_t* pixels, int stride, int x0, int y0, int w, int h,
+              char hex[65]) {
+    sha256_context_t context;
+    std::uint8_t digest[32];
+
+    sha256Init(&context);
+    for (int row = 0; row < h; ++row) {
+        sha256Update(&context, pixels + static_cast<std::size_t>(y0 + row) * stride + x0,
+                     static_cast<std::size_t>(w));
+    }
+    sha256Final(&context, digest);
+    digestToHex(digest, hex);
+}
+#endif  // DOOM_WEAPON_DIAG
+
 /// Hashes the finished frame exactly as the host harness does.
 void hashSurface(const std::uint8_t* pixels, std::size_t pixelBytes, char hex[65]) {
     sha256_context_t context;
@@ -2435,16 +2456,18 @@ LevelWorld gWorld;
  * records). whd_lump_index_for_name() is a linear scan of the name table, which
  * is flash-resident and about 2,000 entries long, so a frame that asks for forty
  * names pays for it forty times; the cache below remembers each name's lump
- * index by a 32-bit FNV-1a hash. 64 slots is 384 B of DRAM and covers every
- * name a frame can draw at once (STBAR, STARMS, ten digits, the percent and
- * minus signs, six arms digits, a face, up to three keys); a name that finds
- * the table full is simply looked up each time, never dropped.
+ * index by a 32-bit FNV-1a hash. T38 raised it from 64 to 128 slots (768 B of
+ * DRAM) because the weapon widget asks for its patches through the same cache:
+ * 86 bar names plus the 28 weapon frames are 114 distinct names a long session
+ * can touch, and a weapon name that missed would pay the linear name scan every
+ * frame. A name that finds the table full is still looked up each time, never
+ * dropped.
  *
  * DOOM_HUD_NOFACES is Option B, the CYD fall-back: the bar without the face
  * widget (STBAR's empty face box stays), kept for the case the full bar misses
  * its frame-rate bar on the 4 MB board.
  */
-constexpr std::size_t kHudCacheSlots = 64u;
+constexpr std::size_t kHudCacheSlots = 128u;
 st_state_t gStatus;
 std::uint32_t gStatusLastTime = 0u;
 std::uint32_t gHudHash[kHudCacheSlots];
@@ -2527,6 +2550,63 @@ void hudDraw(std::uint8_t* surface, int width) {
                           width, kHudFaces);
     gHudMicros = elapsedMicros(start);
 }
+
+/*
+ * THE WEAPON (D5.1, T38)
+ *
+ * R_DrawPlayerSprites(): the player's psprites, drawn over the finished 3D view
+ * and under the bar. The patches are the raw, name-addressed lumps T38 baked
+ * (tools/weapon_lumps.txt), looked up through the same cache as the bar's.
+ * DOOM_HUD_NOWEAPON leaves the call out: it exists only so the cost of the
+ * weapon can be measured by an A/B build, never as a product option.
+ */
+std::uint32_t gWeaponMicros = 0u;
+int gWeaponMissing = 0;
+
+#if defined(DOOM_WEAPON_DIAG)
+// DOOM_WEAPON_DIAG (env esp32dev_ILI9341_hud_weaponcheck): once, when the pistol
+// rests, print SHA-256 hashes of a box around it before and after it is drawn, so
+// the host can rebuild both (tools/weapon_draw_check.py --board-rect). Off in the
+// shipped HUD build: the extra code moves the flash layout, which costs frame time.
+bool gWeaponPartsDone = false;
+char gPreWeaponHash[65] = "";
+// The box the resting pistol (PISGA0 at sx 1.0, sy 32.0) fits in: it paints
+// x 132..183, y 122..167.
+constexpr int kWeaponRectX = 128;
+constexpr int kWeaponRectY = 116;
+constexpr int kWeaponRectW = 64;
+constexpr int kWeaponRectH = 52;
+#endif  // DOOM_WEAPON_DIAG
+
+void weaponDraw(Driver* driver) {
+#if !defined(DOOM_HUD_NOWEAPON)
+    if (!gWorld.open) {
+        return;
+    }
+    const p_player_t& player = gWorld.level.playerState;
+    if (player.mo == nullptr) {
+        return;
+    }
+    const std::int64_t start = nowMicros();
+    gWeaponMissing = r_psprites_draw(&driver->view, &driver->surface, &driver->light, &player,
+                                     gWorld.level.sectors[player.mo->sector].lightLevel,
+                                     player.extralight, hudLump, nullptr, nullptr);
+    gWeaponMicros = elapsedMicros(start);
+#else
+    (void)driver;
+#endif
+}
+
+#if defined(DOOM_WEAPON_DIAG)
+/// True once the weapon has finished rising and rests at the ready state with no
+/// bob, which is the one steady state a stationary player reaches: the board then
+/// prints the hashes a host rebuild can match.
+bool weaponAtRest() {
+    const p_pspdef_t& weapon = gWorld.level.playerState.psprites[0];
+    return gWorld.open && weapon.state == S_PISTOL && weapon.sx == FRACUNIT
+           && weapon.sy == 32 * FRACUNIT;
+}
+#endif  // DOOM_WEAPON_DIAG
 
 #endif  // SHOW && DOOM_HUD
 
@@ -3231,6 +3311,16 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
     // The bar is part of the frame and of its hash: the HUD frame-00 hash is a
     // different number from the 200-row `50fb3d9c`, by construction.
+#if defined(DOOM_WEAPON_DIAG)
+    if (wantHash && !gWeaponPartsDone && weaponAtRest()) {
+        // The rectangle around the resting pistol before it is drawn, for the
+        // one-shot below: it separates a world mismatch from a weapon mismatch when
+        // the host rebuilds the numbers.
+        hashRect(surface, width, kWeaponRectX, kWeaponRectY, kWeaponRectW, kWeaponRectH,
+                 gPreWeaponHash);
+    }
+#endif  // DOOM_WEAPON_DIAG
+    weaponDraw(gSession.driver);
     hudDraw(surface, width);
 #endif
 
@@ -3244,13 +3334,40 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
                 *hashMicros = elapsedMicros(hashStart);
             }
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
-            // One line per reported frame: what the bar cost and whether every patch
-            // drew. gSessionLine is the session's shared buffer; no setup runs now.
+            // One line per reported frame: what the bar and the weapon cost and whether
+            // every patch drew. gSessionLine is the session's shared buffer; no setup runs
+            // now. The line deliberately carries no hash (the `frame` line that follows
+            // has the same one): this line is written inside the frame, so it is charged
+            // to the frame period, and past about 135 characters the UART's transmit
+            // buffer blocks (T38 measured ~12 ms, 134 vs 157 fps_x10, from 62 extra
+            // characters). Keep it short.
             std::snprintf(gSessionLine, sizeof gSessionLine,
-                          "SHOW,hud,hud_us=%u,missing=%d,faces=%d,view_h=%d,face=%d,hash=%s\n",
+                          "SHOW,hud,hud_us=%u,missing=%d,faces=%d,view_h=%d,face=%d,"
+                          "weapon_us=%u,weapon_missing=%d,weapon_state=%d,weapon_sy=%d\n",
                           static_cast<unsigned>(gHudMicros), gHudMissing, kHudFaces,
-                          R_VIEW_HEIGHT, static_cast<int>(gStatus.faceIndex), hash);
+                          R_VIEW_HEIGHT, static_cast<int>(gStatus.faceIndex),
+                          static_cast<unsigned>(gWeaponMicros), gWeaponMissing,
+                          static_cast<int>(gWorld.level.playerState.psprites[0].state),
+                          static_cast<int>(gWorld.level.playerState.psprites[0].sy >> FRACBITS));
             writeLine(gSessionLine);
+#if defined(DOOM_WEAPON_DIAG)
+            if (!gWeaponPartsDone && weaponAtRest()) {
+                // Once, when the pistol rests: the view alone (the bar's face is
+                // random) so a host rebuild of oracle frame 00 plus the oracle
+                // weapon can be compared with the number the board computed.
+                gWeaponPartsDone = true;
+                char viewHash[65];
+                char rectHash[65];
+                hashSurface(surface, static_cast<std::size_t>(width) * R_VIEW_HEIGHT, viewHash);
+                hashRect(surface, width, kWeaponRectX, kWeaponRectY, kWeaponRectW,
+                         kWeaponRectH, rectHash);
+                std::snprintf(gSessionLine, sizeof gSessionLine,
+                              "SHOW,weaponparts,tics=%u,rect_pre=%s,rect=%s,view=%s\n",
+                              static_cast<unsigned>(gWorld.level.leveltime), gPreWeaponHash,
+                              rectHash, viewHash);
+                writeLine(gSessionLine);
+            }
+#endif  // DOOM_WEAPON_DIAG
             if (!gHudPartsDone) {
                 // The first reported frame also prints the view and the bar apart, so
                 // a host rebuild of the hash can be localised to one half.

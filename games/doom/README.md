@@ -127,9 +127,15 @@ health, armor, the arms digits, the three key boxes and the face). `_show` keeps
 the 200-row view whose frame-00 hash is `50fb3d9c...`; the HUD frame has its own,
 `1d8b3849...`. `esp32dev_ILI9341_hud_nofaces` is the CYD fall-back (the bar
 without the face widget), kept for the case the full bar misses its frame rate.
-Not drawn: the weapon in hand (psprites), the damage/bonus palette flashes and
-the deathmatch frags. `python tools/hud_draw_check.py --wad DOOM1.WAD` compares
-the bar with an independent oracle pixel by pixel.
+`lib/doom/r_psprite.c` draws the weapon in hand over the view and under the bar
+(`R_DrawPlayerSprites`: the weapon and its muzzle flash, lit by the player's
+sector, full bright for the flash frames); its patches are the raw lumps of
+`tools/weapon_lumps.txt`. `esp32dev_ILI9341_hud_noweapon` is the same build
+without that call, kept only to measure what the weapon costs. Not drawn: the
+damage/bonus palette flashes, the invisibility fuzz and the deathmatch frags.
+`python tools/hud_draw_check.py --wad DOOM1.WAD` and
+`python tools/weapon_draw_check.py --wad DOOM1.WAD` compare the bar and the
+weapon with independent oracles pixel by pixel.
 
 Neither `DOOM1.WAD` nor any `.whd` is committed: `tools/.gitignore` refuses both,
 because a container is a repacked copy of shareware data.

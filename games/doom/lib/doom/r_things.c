@@ -381,31 +381,22 @@ static void draw_post(r_draw_surface_t* surface, int x, int yl, int yh,
 /* --- R_DrawVisSprite() ---------------------------------------------------- */
 
 /*
- * Draws the sprite's columns through the post chains. `patch` was validated in
- * the preflight, so the column offsets and every post are inside the lump.
+ * Draws the sprite's columns through the post chains with a colormap the caller
+ * chose. `patch` was validated in the preflight, so the column offsets and every
+ * post are inside the lump.
  */
-static void draw_vis_sprite(r_view_state_t* state, r_draw_surface_t* surface,
-                            const r_light_t* light, const r_vissprite_t* vis,
-                            const r_sprite_patch_t* patch, const r_patch_info_t* info,
-                            const int16_t* clipbot, const int16_t* cliptop,
-                            uint8_t* pixelMask, uint32_t* written) {
+static void draw_vis_columns(r_view_state_t* state, r_draw_surface_t* surface,
+                             const uint8_t* colormap, const r_vissprite_t* vis,
+                             const r_sprite_patch_t* patch, const r_patch_info_t* info,
+                             const int16_t* clipbot, const int16_t* cliptop,
+                             uint8_t* pixelMask, uint32_t* written) {
     const uint8_t* data = patch->data;
-    const uint8_t* colormap;
     const fixed_t iscale = vis->xiscale < 0 ? -vis->xiscale : vis->xiscale;
     const fixed_t spryscale = vis->scale;
     const fixed_t sprtopscreen =
         R_CENTER_Y_FRAC - fixed_mul(vis->texturemid, spryscale);
     fixed_t frac = vis->startfrac;
     int x;
-
-    if (vis->sprite->fullbright) {
-        colormap = light->colormaps;
-    } else {
-        colormap = r_light_sprite(light, vis->lightnum, vis->scale);
-    }
-    if (colormap == NULL) {
-        return;
-    }
 
     {
         const uint32_t spriteStart = R_PROBE_HAS(state) ? R_PROBE_NOW() : 0u;
@@ -461,6 +452,29 @@ static void draw_vis_sprite(r_view_state_t* state, r_draw_surface_t* surface,
             R_PROBE_OF(state)->maskedSpriteCycle += R_PROBE_NOW() - spriteStart;
         }
     }
+}
+
+/*
+ * R_DrawVisSprite()'s colormap choice, then the columns: full bright is map 0,
+ * everything else the sprite's light row at the sprite's own scale.
+ */
+static void draw_vis_sprite(r_view_state_t* state, r_draw_surface_t* surface,
+                            const r_light_t* light, const r_vissprite_t* vis,
+                            const r_sprite_patch_t* patch, const r_patch_info_t* info,
+                            const int16_t* clipbot, const int16_t* cliptop,
+                            uint8_t* pixelMask, uint32_t* written) {
+    const uint8_t* colormap;
+
+    if (vis->sprite->fullbright) {
+        colormap = light->colormaps;
+    } else {
+        colormap = r_light_sprite(light, vis->lightnum, vis->scale);
+    }
+    if (colormap == NULL) {
+        return;
+    }
+    draw_vis_columns(state, surface, colormap, vis, patch, info, clipbot, cliptop,
+                     pixelMask, written);
 }
 
 /* --- R_RenderMaskedSegRange() --------------------------------------------- */
@@ -955,6 +969,125 @@ r_things_error_t r_masked_emit(r_view_state_t* state, r_draw_surface_t* surface,
     }
     if (outStats != NULL) {
         *outStats = stats;
+    }
+    return R_THINGS_OK;
+}
+
+/* --- R_DrawPlayerSprites() ------------------------------------------------ */
+
+/*
+ * R_DrawPSprite() for each active layer, after the masked pass has finished.
+ *
+ * The projection is upstream's, with pspritescale = FRACUNIT because the view
+ * is the whole 320-column width:
+ *
+ *   tx = psp->sx - 160*FRACUNIT - leftoffset            (a patch's left edge)
+ *   x1 = (centerx + tx) >> FRACBITS,  x2 = (centerx + tx + width) >> FRACBITS - 1
+ *   texturemid = BASEYCENTER + 1/2 - (psp->sy - topoffset)
+ *
+ * BASEYCENTER is the literal 100 whatever the window height is, and the
+ * vertical position then comes from R_CENTER_Y_FRAC (viewheight/2) inside the
+ * shared column drawer, so the weapon follows the 168-row HUD view exactly as it
+ * does in DOOM's screen size 9. The light is the sector's row at the brightest
+ * scale column (`spritelights[MAXLIGHTSCALE-1]`); a full-bright frame (a muzzle
+ * flash) uses COLORMAP map 0. The clips are upstream's screenheightarray /
+ * negonearray: nothing clips a weapon but the window.
+ *
+ * Like the masked pass, nothing reaches the surface until every layer is proved.
+ */
+r_things_error_t r_psprites_emit(r_view_state_t* state, r_draw_surface_t* surface,
+                                 const r_light_t* light, int lightnum,
+                                 const r_psprite_layer_t* layers, uint16_t count,
+                                 uint32_t* written) {
+    int16_t clipbot[R_SCREEN_WIDTH];
+    int16_t cliptop[R_SCREEN_WIDTH];
+    r_patch_info_t infos[R_PSPRITE_LAYERS];
+    r_vissprite_t vis[R_PSPRITE_LAYERS];
+    r_sprite_t carrier[R_PSPRITE_LAYERS];
+    uint8_t drawn[R_PSPRITE_LAYERS];
+    const uint8_t* fullbrightMap;
+    const uint8_t* levelMap;
+    uint16_t index;
+    int x;
+
+    if (surface == NULL) {
+        return R_THINGS_ERR_NULL_SURFACE;
+    }
+    if (surface->pixels == NULL) {
+        return R_THINGS_ERR_SURFACE_PIXELS;
+    }
+    if (surface->width < R_SCREEN_WIDTH || surface->height < R_VIEW_HEIGHT) {
+        return R_THINGS_ERR_SURFACE_SIZE;
+    }
+    if (light == NULL || light->colormaps == NULL) {
+        return R_THINGS_ERR_NULL_LIGHT;
+    }
+    if (layers == NULL || count == 0u) {
+        return R_THINGS_OK;
+    }
+    if (count > R_PSPRITE_LAYERS) {
+        return R_THINGS_ERR_SPRITE_SHAPE;
+    }
+
+    for (index = 0; index < count; ++index) {
+        const r_sprite_patch_t* patch = &layers[index].patch;
+        r_patch_info_t* info = &infos[index];
+        r_vissprite_t* v = &vis[index];
+        fixed_t tx;
+        int x1;
+        int x2;
+
+        drawn[index] = 0u;
+        if (patch->data == NULL || patch->size < R_PATCH_HEADER_SIZE
+            || r_patch_validate(patch->data, patch->size, info) != R_ERR_OK
+            || info->width < 1 || info->height < 1) {
+            return R_THINGS_ERR_SPRITE_SHAPE;
+        }
+        tx = layers[index].sx - 160 * FRACUNIT;
+        tx -= (fixed_t)info->leftOffset * FRACUNIT;
+        x1 = (int)((R_CENTER_X_FRAC + fixed_mul(tx, FRACUNIT)) >> FRACBITS);
+        if (x1 > R_SCREEN_WIDTH) {
+            continue;
+        }
+        tx += (fixed_t)info->width * FRACUNIT;
+        x2 = (int)(((R_CENTER_X_FRAC + fixed_mul(tx, FRACUNIT)) >> FRACBITS) - 1);
+        if (x2 < 0) {
+            continue;
+        }
+
+        memset(&carrier[index], 0, sizeof carrier[index]);
+        carrier[index].fullbright = layers[index].fullbright;
+        memset(v, 0, sizeof *v);
+        v->sprite = &carrier[index];
+        v->texturemid = (R_PSPRITE_BASEYCENTER << FRACBITS) + FRACUNIT / 2
+                        - (layers[index].sy - (fixed_t)info->topOffset * FRACUNIT);
+        v->x1 = (int16_t)(x1 < 0 ? 0 : x1);
+        v->x2 = (int16_t)(x2 >= R_SCREEN_WIDTH ? R_SCREEN_WIDTH - 1 : x2);
+        v->scale = FRACUNIT;
+        v->xiscale = FRACUNIT;
+        v->startfrac = 0;
+        if (v->x1 > x1) {
+            v->startfrac += v->xiscale * (fixed_t)(v->x1 - x1);
+        }
+        drawn[index] = 1u;
+    }
+
+    fullbrightMap = light->colormaps;
+    levelMap = r_light_sprite(light, r_light_row(lightnum),
+                              (fixed_t)((R_LIGHT_SCALE_LEVELS - 1) << R_LIGHT_SCALE_SHIFT));
+    for (x = 0; x < R_SCREEN_WIDTH; ++x) {
+        clipbot[x] = (int16_t)R_VIEW_HEIGHT;
+        cliptop[x] = -1;
+    }
+
+    for (index = 0; index < count; ++index) {
+        if (drawn[index] == 0u) {
+            continue;
+        }
+        draw_vis_columns(state, surface,
+                         layers[index].fullbright ? fullbrightMap : levelMap,
+                         &vis[index], &layers[index].patch, &infos[index], clipbot,
+                         cliptop, surface->spriteMask, written);
     }
     return R_THINGS_OK;
 }

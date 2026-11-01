@@ -496,6 +496,50 @@ r_things_error_t r_masked_emit(r_view_state_t* state, r_draw_surface_t* surface,
                                const r_sprite_source_t* spriteSource,
                                r_masked_stats_t* outStats);
 
+/* --- The player's weapon (R_DrawPlayerSprites, D5.1) ---------------------- */
+
+/* d_items.h's NUMPSPRITES: the weapon layer and its muzzle flash. */
+#define R_PSPRITE_LAYERS 2
+
+/* r_things.c's BASEYCENTER: the weapon's vertical reference, 100 whatever the
+ * window height is. */
+#define R_PSPRITE_BASEYCENTER 100
+
+/*
+ * One active overlay layer: its patch (already resolved by the caller from the
+ * state's sprite and frame), its 16.16 screen position in 320x200 coordinates
+ * and whether the frame is FF_FULLBRIGHT.
+ */
+typedef struct r_psprite_layer {
+    r_sprite_patch_t patch;
+    fixed_t sx;
+    fixed_t sy;
+    uint8_t fullbright;
+} r_psprite_layer_t;
+
+/**
+ * @brief R_DrawPlayerSprites(): draws the player's weapon layers, unclipped.
+ *
+ * Call after r_masked_emit(), on the same surface and COLORMAP. Every layer's
+ * patch is proved before the first pixel; a bad one returns
+ * R_THINGS_ERR_SPRITE_SHAPE with the surface untouched. A layer wholly off the
+ * side of the view is skipped silently, as upstream returns early.
+ *
+ * @param state     The view state (only its optional probe is read); may be the
+ *                  one r_masked_emit() used.
+ * @param surface   The destination, at least R_SCREEN_WIDTH x R_VIEW_HEIGHT.
+ * @param light     A COLORMAP initialised by r_light_init().
+ * @param lightnum  `(sectorlight >> R_LIGHT_SEG_SHIFT) + extralight` of the
+ *                  sector the player stands in; clamped here.
+ * @param layers    Active layers in draw order (weapon, then flash).
+ * @param count     At most R_PSPRITE_LAYERS.
+ * @param written   Optional: receives (adds) the pixels drawn.
+ */
+r_things_error_t r_psprites_emit(r_view_state_t* state, r_draw_surface_t* surface,
+                                 const r_light_t* light, int lightnum,
+                                 const r_psprite_layer_t* layers, uint16_t count,
+                                 uint32_t* written);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
