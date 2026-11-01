@@ -65,27 +65,54 @@
  *     72,73,77 ceilings; 75,76,86,90 doors;
  *     82,83,84,91..94,98,128,129 floors;
  *     87,88,89 plats; 79,80,81 lights implemented
- *     8,100 stairs; 39,97,125,126 teleport; 48 scroll; 52,124 exit
+ *     8,100 stairs; 39,97,125,126 teleport; 48 scroll
  *                                     unsupported by this layer
+ *     52,124 exit                     implemented (D4.5): the level's exit
+ *                                     request is set, the line is not cleared
+ *                                     (upstream's G_ExitLevel/G_SecretExitLevel
+ *                                     do not write `line->special = 0`)
  *   P_UseSpecialLine
  *     1,26,27,28,31,32,33,34,117,118  manual doors, implemented (keys: D5)
  *     9,14,15,18,20,21,23,29,41,42,43,45,49,50,55,60..71,99,101,
  *     102,103,111..116,122,123,131..140
  *                                     EV implemented; the switch *texture*
  *                                     change is deferred (see p_switch note)
- *     7,127 stairs; 11,51 exits       deferred / unsupported
+ *     7,127 stairs                    deferred
+ *     11,51 exit                      implemented (D4.5): the level's exit
+ *                                     request is set and the line is cleared,
+ *                                     which is P_ChangeSwitchTexture(line, 0)'s
+ *                                     one-shot write
  *   P_ShootSpecialLine
  *     24,46,47                        EV implemented; switch texture deferred
  *
- * p_switch.* is deliberately not part of this task: the gate triggers line
- * specials directly, and P_ChangeSwitchTexture writes sidedef texture state,
- * which doom_map exposes as const zero-copy bytes. D4.2 owns mutable side state
- * and the player's use path.
+ * THE EXIT REQUEST, AND WHY IT IS A LEVEL FIELD
+ *
+ * Upstream's G_ExitLevel()/G_SecretExitLevel() write two globals: `gameaction =
+ * ga_completed` and `secretexit`. This port has no game globals, and p_spec.c
+ * must keep linking without g_game.c (the line-special gates compile it with
+ * their own source list), so the trigger records the request in
+ * `p_level_t::exitRequest` instead. g_game.c's g_exit_from_level() turns that
+ * request into the game-state write, and g_completed_next() computes the next
+ * map exactly as G_DoCompleted does. A caller that ticks a level without a game
+ * loop sees the request and does nothing, which is the faithful state for a
+ * world that has no intermission.
+ *
+ * P_ChangeSwitchTexture IS STILL NOT part of this layer, and the exit specials
+ * do not fake it. The measurement (D4.5): the nine episode-1 maps name 14
+ * distinct `SW1*` textures; none of their 14 `SW2*` partners is in the baked
+ * container, because the bake lists only the names the levels' own SIDEDEFS
+ * carry (SW2BROWN is baked only because two maps already use it as a wall). A
+ * swap would therefore ask the renderer for a texture the container does not
+ * hold. Baking the partners costs 131,072 B of payload (131,744 B with the
+ * container's per-lump overhead) against 46,116 B of free container space
+ * (3,342,336 B partition - 3,296,220 B used), so it is a capacity decision and
+ * not this task's. The one-shot line clear is kept because it is the part of
+ * P_ChangeSwitchTexture(line, 0) the simulation can represent without a texture.
  *
  * NOT IMPLEMENTED AT ALL, DELIBERATELY
  *
- *   - EV_BuildStairs, EV_Teleport, G_ExitLevel/G_SecretExitLevel, the level
- *     timer (-avg/-timer), texture animation and P_UpdateSpecials' scrolling.
+ *   - EV_BuildStairs, EV_Teleport, P_ChangeSwitchTexture, the level timer
+ *     (-avg/-timer), texture animation and P_UpdateSpecials' scrolling.
  *   - EV_SlidingDoor (compiled out upstream too).
  *
  * P_ChangeSector's crush *damage* is no longer on this list: p_map.c's
@@ -508,6 +535,21 @@ static inline int16_t p_line_tag(const doom_map_t* map, uint16_t index) {
 }
 
 /* --- Line triggering ------------------------------------------------------ */
+
+/*
+ * What G_ExitLevel() / G_SecretExitLevel() set, on the level instead of in a
+ * game global (see the file comment). `p_level_t::exitRequest` holds one of
+ * these; g_game.c reads it when the game loop runs G_DoCompleted's step.
+ *
+ *   P_EXIT_NONE    no exit requested: the value every level load starts at
+ *   P_EXIT_NORMAL  G_ExitLevel(): `secretexit = false; gameaction = ga_completed`
+ *   P_EXIT_SECRET  G_SecretExitLevel(): `secretexit = true` (non-commercial)
+ */
+typedef enum p_exit_request {
+    P_EXIT_NONE = 0,
+    P_EXIT_NORMAL = 1,
+    P_EXIT_SECRET = 2
+} p_exit_request_t;
 
 /*
  * Which upstream trigger function a caller is standing in for. The dispatch in

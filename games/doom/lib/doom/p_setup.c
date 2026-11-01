@@ -329,18 +329,18 @@ p_setup_error_t p_level_init(p_level_t* level, const doom_map_t* map, void* aren
     return level_load(level, map, arena, size, rules, NULL);
 }
 
-/* --- Reload -------------------------------------------------------------- */
+/* --- Reload and level change --------------------------------------------- */
 
 /*
- * The second load of a level: same map, same arena, same rules, and the same
- * random position the world had reached. p_setup.h carries the reasoning.
+ * The second load of a level over the same arena: p_level_reload() names the
+ * map already loaded, p_level_change() names a different one. Everything else
+ * is one rule, and it lives here once so the two cannot drift.
  *
  * Everything the caller owns has to be read before the load, because it memsets
  * the level state -- including the zone struct that holds the arena this
  * function passes back in.
  */
-p_setup_error_t p_level_reload(p_level_t* level) {
-    const doom_map_t* map;
+static p_setup_error_t level_load_over(p_level_t* level, const doom_map_t* map) {
     p_spawn_rules_t rules;
     m_random_t random;
     p_move_stats_t* moveStats;
@@ -352,14 +352,6 @@ p_setup_error_t p_level_reload(p_level_t* level) {
     size_t size;
     p_setup_error_t loaded;
 
-    if (level == NULL) {
-        return P_SETUP_ERR_NULL_LEVEL;
-    }
-    if (!level->open || level->map == NULL || level->zone.base == NULL) {
-        return P_SETUP_ERR_NOT_OPEN;
-    }
-
-    map = level->map;
     rules = level->rules;
     random = level->random;
     arena = level->zone.base;
@@ -385,6 +377,31 @@ p_setup_error_t p_level_reload(p_level_t* level) {
     level->context.actionTrace = actionTrace;
     level->context.specTrace = specTrace;
     return P_SETUP_OK;
+}
+
+p_setup_error_t p_level_reload(p_level_t* level) {
+    if (level == NULL) {
+        return P_SETUP_ERR_NULL_LEVEL;
+    }
+    if (!level->open || level->map == NULL || level->zone.base == NULL) {
+        return P_SETUP_ERR_NOT_OPEN;
+    }
+    return level_load_over(level, level->map);
+}
+
+p_setup_error_t p_level_change(p_level_t* level, const doom_map_t* map) {
+    if (level == NULL) {
+        return P_SETUP_ERR_NULL_LEVEL;
+    }
+    if (map == NULL) {
+        /* No next world: leave the open level answering rather than zeroing a
+         * live game because the caller passed the wrong pointer. */
+        return P_SETUP_ERR_NULL_MAP;
+    }
+    if (!level->open || level->zone.base == NULL) {
+        return P_SETUP_ERR_NOT_OPEN;
+    }
+    return level_load_over(level, map);
 }
 
 void p_level_shutdown(p_level_t* level) {

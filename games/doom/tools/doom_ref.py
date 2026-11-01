@@ -1962,6 +1962,10 @@ class SpecLevel:
         self.rng = rng
         self.total_secrets = 0
         self.leveltime = 0
+        # D4.5: G_ExitLevel()/G_SecretExitLevel()'s write. Upstream sets
+        # `secretexit` and `gameaction = ga_completed`; the oracle keeps the
+        # request so a comparison can see which exit a trigger asked for.
+        self.exit_request = "none"
         # T15a: the per-sector sound flood state (upstream's sector_t
         # soundtarget/soundtraversed/validcount) and the one epoch counter shared
         # by every flood, exactly as p_sector_sound_t and
@@ -2967,9 +2971,13 @@ def _trigger_special_line(level: SpecLevel, line_index: int, kind: str,
         if special in MANUAL_DOORS:
             return 1 if vertical_door(level, line_index, by_player) else 0
         if special in (11, 51):
-            level.stats["deferredLine"] += 1
+            # P_ChangeSwitchTexture(line, 0) clears the line and starts the
+            # switch sound, then G_ExitLevel()/G_SecretExitLevel() set
+            # `secretexit` and `gameaction = ga_completed`. The texture half is
+            # not modelled: the container holds no SW2 partner (D4.5).
             level.line_special[line_index] = 0
-            return 0
+            level.exit_request = "normal" if special == 11 else "secret"
+            return 1
         use = {
             9: ("donut",), 14: ("plat", PLAT_RAISE_AND_CHANGE, 32),
             15: ("plat", PLAT_RAISE_AND_CHANGE, 24),
@@ -3035,6 +3043,14 @@ def _trigger_special_line(level: SpecLevel, line_index: int, kind: str,
     if not by_player and special not in (4, 10, 39, 88, 97, 125, 126):
         level.stats["refused"] += 1
         return 0
+    # EXIT! / SECRET EXIT: G_ExitLevel()/G_SecretExitLevel() and, unlike the
+    # one-shot cases below, no `line->special = 0` in P_CrossSpecialLine.
+    if special == 52:
+        level.exit_request = "normal"
+        return 1
+    if special == 124:
+        level.exit_request = "secret"
+        return 1
     one_shot = {
         2: ("door", DOOR_OPEN), 3: ("door", DOOR_CLOSE),
         4: ("door", DOOR_NORMAL), 5: ("floor", FLOOR_RAISE),

@@ -235,6 +235,148 @@ g_demo_error_t g_demo_reborn(p_level_t* level) {
     return G_DEMO_OK;
 }
 
+/* --- G_ExitLevel / G_DoCompleted / G_DoWorldDone ------------------------- */
+
+void g_level_state_init(g_level_state_t* game, uint8_t episode, uint8_t map) {
+    if (game == NULL) {
+        return;
+    }
+    game->episode = episode;
+    game->map = map;
+    game->secretExit = 0u;
+}
+
+void g_exit_level(g_level_state_t* game) {
+    if (game == NULL) {
+        return;
+    }
+    /* `secretexit = false; gameaction = ga_completed;` -- the action is the
+     * caller calling g_completed_next(), because this port has no action loop. */
+    game->secretExit = 0u;
+}
+
+void g_secret_exit_level(g_level_state_t* game) {
+    if (game == NULL) {
+        return;
+    }
+    /* Shareware is not `commercial`, so upstream's "IF NO WOLF3D LEVELS, NO
+     * SECRET EXIT!" guard does not apply: `secretexit = true`. */
+    game->secretExit = 1u;
+}
+
+void g_exit_from_level(g_level_state_t* game, const p_level_t* level) {
+    if (game == NULL || level == NULL) {
+        return;
+    }
+    if (level->exitRequest == (uint8_t)P_EXIT_SECRET) {
+        g_secret_exit_level(game);
+    } else if (level->exitRequest == (uint8_t)P_EXIT_NORMAL) {
+        g_exit_level(game);
+    }
+    /* P_EXIT_NONE: no line set the request, so G_Ticker would not run
+     * G_DoCompleted at all and the game state must not change. */
+}
+
+int g_completed_next(g_level_state_t* game, g_level_next_t* out) {
+    if (game == NULL || out == NULL) {
+        return -1;
+    }
+    memset(out, 0, sizeof *out);
+    out->episode = game->episode;
+    out->map = game->map;
+    out->secret = game->secretExit;
+
+    /* `if ((gamemap == 8) && (gamemode != commercial)) { gameaction = ga_victory;
+     * return; }` -- the boss map ends the episode before the secret exit is
+     * consulted, so a secret exit on E1M8 still goes to the finale. */
+    if (game->map == 8u) {
+        out->victory = 1u;
+        return 0;
+    }
+    /* `if (secretexit) wminfo.next = 8;` and G_DoWorldDone's `next+1`: map 9. */
+    if (game->secretExit != 0u) {
+        out->map = 9u;
+        return 1;
+    }
+    /* `else if (gamemap == 9) { // returning from secret level ... }` */
+    if (game->map == 9u) {
+        switch (game->episode) {
+            case 1: out->map = 4u; break;
+            case 2: out->map = 6u; break;
+            case 3: out->map = 7u; break;
+            case 4: out->map = 3u; break;
+            default: return -1;
+        }
+        return 1;
+    }
+    if (game->map < 1u || game->map > 8u) {
+        return -1;
+    }
+    out->map = (uint8_t)(game->map + 1u);
+    return 1;
+}
+
+void g_level_name(uint8_t episode, uint8_t map, char out[8]) {
+    if (out == NULL) {
+        return;
+    }
+    if (episode < 1u || episode > 9u || map < 1u || map > 9u) {
+        out[0] = '\0';
+        return;
+    }
+    out[0] = 'E';
+    out[1] = (char)('0' + episode);
+    out[2] = 'M';
+    out[3] = (char)('0' + map);
+    out[4] = '\0';
+}
+
+g_level_error_t g_do_world_done(p_level_t* level, g_level_state_t* game,
+                                const g_level_next_t* next,
+                                const doom_map_t* map) {
+    if (level == NULL) {
+        return G_LEVEL_ERR_NULL_LEVEL;
+    }
+    if (!level->open) {
+        return G_LEVEL_ERR_NOT_OPEN;
+    }
+    if (game == NULL) {
+        return G_LEVEL_ERR_NULL_GAME;
+    }
+    if (next == NULL) {
+        return G_LEVEL_ERR_NULL_NEXT;
+    }
+    if (next->victory != 0u) {
+        return G_LEVEL_ERR_VICTORY;
+    }
+    if (map == NULL) {
+        return G_LEVEL_ERR_NULL_MAP;
+    }
+    if (map->open == 0) {
+        return G_LEVEL_ERR_MAP_NOT_OPEN;
+    }
+
+    /* `gamestate = GS_LEVEL; gamemap = wminfo.next+1; G_DoLoadLevel();` -- the
+     * state is written before the load, as upstream does. */
+    game->episode = next->episode;
+    game->map = next->map;
+    game->secretExit = next->secret;
+
+    if (p_level_change(level, map) != P_SETUP_OK) {
+        return G_LEVEL_ERR_SETUP;
+    }
+    if (p_spawn_specials(level) != P_SPEC_OK) {
+        return G_LEVEL_ERR_SPECIALS;
+    }
+    /* G_DoLoadLevel's `for (...) if (playeringame[i]) G_PlayerReborn (i);` is
+     * p_level_init()'s THINGS run; a new level with no wired avatar cannot be
+     * played, so it is a refusal and not a warning. */
+    if (level->player == NULL || level->playerState.mo != level->player) {
+        return G_LEVEL_ERR_NO_PLAYER;
+    }
+    return G_LEVEL_OK;
+}
+
 /* --- Playback ------------------------------------------------------------ */
 
 g_demo_error_t g_demo_play(g_demo_t* demo, p_level_t* level, g_demo_run_t* run) {
@@ -285,6 +427,15 @@ g_demo_error_t g_demo_play(g_demo_t* demo, p_level_t* level, g_demo_run_t* run) 
                 return reborn;
             }
             local.reloads += 1u;
+        }
+        /* A line trigger set an exit. Upstream's demo path would enter the game
+         * state machine's G_DoCompleted; this driver refuses to follow a
+         * transition and names why, leaving the stream short so the gate fails
+         * rather than silently playing a different level. None of the shareware
+         * demos reaches one. */
+        if (level->exitRequest != (uint8_t)P_EXIT_NONE) {
+            local.stop = (uint8_t)G_DEMO_STOP_EXIT;
+            break;
         }
     }
     local.leveltime = level->leveltime;

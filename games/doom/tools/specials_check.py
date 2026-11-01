@@ -17,7 +17,8 @@ Every line special in the map is triggered once, in ascending line index, at
 tic 0, before the first tick. The kind is the documented rule: the
 switch/manual numbers of P_UseSpecialLine are ``use``, every other special is
 ``cross``. For E1M1 that is 8 manual doors, one lift, one turbo-lowering floor,
-the exit switch (deferred) and eight scrolling lines (deferred).
+the exit switch (the request is recorded and the line cleared) and eight
+scrolling lines (deferred).
 
 Tic 0 is after the spawn scan and the triggers; tic 1 is after one
 ``p_level_tick()``. The default run is 420 tics, long enough for a door to open,

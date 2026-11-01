@@ -955,6 +955,15 @@ int main(int argc, char** argv) {
         run.tics += 1u;
         totals.tics += 1u;
 
+        /* D4.5: a line trigger set an exit. G_Ticker would enter the game state
+         * machine's G_DoCompleted; this driver has no intermission and must not
+         * follow a transition, so it stops and names it. A demo that reaches one
+         * is a finding: the run is shorter than its lump and the gate says so. */
+        if (level.exitRequest != (uint8_t)P_EXIT_NONE) {
+            run.stop = (uint8_t)G_DEMO_STOP_EXIT;
+            break;
+        }
+
         /* --- coherence, one tic at a time --- */
         sector = sectorAt(&map, level.player->x, level.player->y, &inMap);
         if (inMap == 0 || sector == 0xFFFFu) {
@@ -1220,7 +1229,9 @@ int main(int argc, char** argv) {
            (long)level.playerState.itemcount,
            (long)level.playerState.secretcount, p_level_mobj_count(&level));
     printf("RUN tics=%u stop=%s leveltime=%d declared=%u\n", run.tics,
-           run.stop == (uint8_t)G_DEMO_STOP_MARKER ? "marker" : "end",
+           run.stop == (uint8_t)G_DEMO_STOP_MARKER
+               ? "marker"
+               : (run.stop == (uint8_t)G_DEMO_STOP_EXIT ? "exit" : "end"),
            run.leveltime, g_demo_tics(&demo));
 
     printf("COHERE wallcross=%u outside=%u angleskip=%u anglebad=%u "

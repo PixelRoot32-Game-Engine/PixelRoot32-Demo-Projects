@@ -2625,6 +2625,203 @@ void test_demo_reborn_refuses_a_level_that_is_not_loaded(void) {
     TEST_ASSERT_EQUAL_INT(P_SETUP_ERR_NULL_LEVEL, p_level_reload(nullptr));
 }
 
+// --- D4.5: the level change, the next-map table and the exit request -------
+
+/*
+ * Two levels over one arena: A has the player at the origin and one light
+ * special; B has the player at (64,-64) and one zombieman, so "the new world is
+ * B's" is visible in the start, in the thing count and in the draws the load
+ * makes.
+ */
+struct ChangeFixture {
+    MoveMapBuilder builderA;
+    MoveMapBuilder builderB;
+    doom_map_t mapA{};
+    doom_map_t mapB{};
+    alignas(8) u8 arena[32768]{};
+    p_level_t level{};
+
+    ChangeFixture()
+        : builderA({{0, 128, 160, 1, 0}}), builderB({{0, 128, 160, 0, 0}}) {
+        builderA.addRoom(0);
+        builderA.addThing(0, 0, 90, 1, 7);   // player 1, facing +y
+        builderB.addRoom(0);
+        builderB.addThing(64, -64, 90, 1, 7);
+        builderB.addThing(-64, 64, 0, 3004, 7); // a zombieman
+    }
+
+    bool open() {
+        if (builderA.open(&mapA) != DOOM_MAP_OK ||
+            builderB.open(&mapB) != DOOM_MAP_OK) {
+            return false;
+        }
+        if (p_level_init(&level, &mapA, arena, sizeof arena, nullptr) !=
+            P_SETUP_OK) {
+            return false;
+        }
+        return p_spawn_specials(&level) == P_SPEC_OK;
+    }
+};
+
+void test_level_change_loads_the_named_map_and_carries_the_sequence(void) {
+    ChangeFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // A fresh B load is the number the change must reproduce: the same map, the
+    // same arena size, the same rules, but starting from a zeroed sequence.
+    p_level_t reference{};
+    alignas(8) u8 referenceArena[32768]{};
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_init(&reference, &fixture.mapB,
+                                                   referenceArena,
+                                                   sizeof referenceArena,
+                                                   nullptr));
+    TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&reference));
+    const u32 referenceDraws = reference.random.index;
+    const u32 referenceArenaBytes = z_stats(&reference.zone).inUse;
+    TEST_ASSERT_EQUAL_UINT32(2u, reference.stats.spawned);
+    TEST_ASSERT_EQUAL_UINT32(2u, reference.stats.things);
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac, reference.player->x);
+    TEST_ASSERT_EQUAL_INT32(-64 * kFrac, reference.player->y);
+
+    // Move the clock and the sequence, then change level.
+    fixture.level.leveltime = 42;
+    for (int draw = 0; draw < 3; ++draw) {
+        (void)p_random(&fixture.level.random);
+    }
+    const u32 carried = fixture.level.random.index;
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_change(&fixture.level, &fixture.mapB));
+    TEST_ASSERT_EQUAL_PTR(&fixture.mapB, fixture.level.map);
+    TEST_ASSERT_EQUAL_UINT32(2u, fixture.level.stats.things);
+    TEST_ASSERT_EQUAL_UINT32(2u, fixture.level.stats.spawned);
+    TEST_ASSERT_EQUAL_UINT32(2u, p_level_mobj_count(&fixture.level));
+    TEST_ASSERT_EQUAL_PTR(fixture.level.player, fixture.level.playerState.mo);
+    TEST_ASSERT_EQUAL_INT(P_PST_LIVE, fixture.level.playerState.playerstate);
+    TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH, fixture.level.playerState.health);
+    // B's own type-1 record, not A's.
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac, fixture.level.player->x);
+    TEST_ASSERT_EQUAL_INT32(-64 * kFrac, fixture.level.player->y);
+    // P_SetupLevel's `leveltime = 0;`, and a fresh load has no exit request.
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.leveltime);
+    TEST_ASSERT_EQUAL_UINT8(P_EXIT_NONE, fixture.level.exitRequest);
+
+    TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&fixture.level));
+    // The carried position goes into the load: the change draws exactly what a
+    // fresh B load draws, continuing from where the sequence was.
+    TEST_ASSERT_EQUAL_UINT32(carried + referenceDraws, fixture.level.random.index);
+    // And it re-laid the arena rather than growing it.
+    TEST_ASSERT_EQUAL_UINT32(referenceArenaBytes,
+                             z_stats(&fixture.level.zone).inUse);
+
+    p_level_shutdown(&reference);
+}
+
+void test_level_change_back_and_forth_leaves_the_arena_at_each_map_s_cost(void) {
+    ChangeFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    const zone_stats_t aLoaded = z_stats(&fixture.level.zone);
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_change(&fixture.level, &fixture.mapB));
+    TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&fixture.level));
+    const zone_stats_t bLoaded = z_stats(&fixture.level.zone);
+    TEST_ASSERT_TRUE(bLoaded.inUse != aLoaded.inUse);
+
+    // Back to A: the in-use figure is A's again, not A's plus B's. A transition
+    // that allocated a second level's blocks would fail here on the first hop.
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_change(&fixture.level, &fixture.mapA));
+    TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&fixture.level));
+    const zone_stats_t aAgain = z_stats(&fixture.level.zone);
+    TEST_ASSERT_EQUAL_UINT32(aLoaded.inUse, aAgain.inUse);
+    TEST_ASSERT_EQUAL_UINT32(aLoaded.freeBytes, aAgain.freeBytes);
+    TEST_ASSERT_EQUAL_UINT32(aLoaded.overhead, aAgain.overhead);
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_change(&fixture.level, &fixture.mapB));
+    TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&fixture.level));
+    TEST_ASSERT_EQUAL_UINT32(bLoaded.inUse, z_stats(&fixture.level.zone).inUse);
+}
+
+void test_level_change_refuses_a_bad_target_without_killing_the_level(void) {
+    ChangeFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // A NULL next map is a caller bug, not a reason to zero a live game.
+    TEST_ASSERT_EQUAL_INT(P_SETUP_ERR_NULL_MAP,
+                          p_level_change(&fixture.level, nullptr));
+    TEST_ASSERT_EQUAL_INT(1, fixture.level.open);
+    TEST_ASSERT_EQUAL_PTR(&fixture.mapA, fixture.level.map);
+    TEST_ASSERT_NOT_NULL(fixture.level.player);
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_ERR_NULL_LEVEL,
+                          p_level_change(nullptr, &fixture.mapB));
+    p_level_t closed{};
+    TEST_ASSERT_EQUAL_INT(P_SETUP_ERR_NOT_OPEN,
+                          p_level_change(&closed, &fixture.mapB));
+}
+
+void test_completed_next_is_upstreams_non_commercial_table(void) {
+    g_level_state_t game{};
+    g_level_next_t next{};
+
+    g_level_state_init(&game, 1u, 1u);
+    TEST_ASSERT_EQUAL_UINT8(0u, game.secretExit);
+    TEST_ASSERT_EQUAL_INT(1, g_completed_next(&game, &next));
+    TEST_ASSERT_EQUAL_UINT8(1u, next.episode);
+    TEST_ASSERT_EQUAL_UINT8(2u, next.map);
+
+    // A secret exit names map 9 from any map it can be reached on.
+    game.map = 3u;
+    g_secret_exit_level(&game);
+    TEST_ASSERT_EQUAL_UINT8(1u, game.secretExit);
+    TEST_ASSERT_EQUAL_INT(1, g_completed_next(&game, &next));
+    TEST_ASSERT_EQUAL_UINT8(9u, next.map);
+    TEST_ASSERT_EQUAL_UINT8(1u, next.secret);
+
+    // `else if (gamemap == 9)`: returning from the secret level, episode 1 -> 4.
+    game.map = 9u;
+    g_exit_level(&game);
+    TEST_ASSERT_EQUAL_UINT8(0u, game.secretExit);
+    TEST_ASSERT_EQUAL_INT(1, g_completed_next(&game, &next));
+    TEST_ASSERT_EQUAL_UINT8(4u, next.map);
+    // Episode 2's table entry, for the whole table and not only shareware's.
+    game.episode = 2u;
+    TEST_ASSERT_EQUAL_INT(1, g_completed_next(&game, &next));
+    TEST_ASSERT_EQUAL_UINT8(6u, next.map);
+
+    // `if (gamemap == 8) { gameaction = ga_victory; return; }` -- and it wins
+    // over a secret exit, so E1M8 has no E1M9 transition.
+    game.episode = 1u;
+    game.map = 8u;
+    g_secret_exit_level(&game);
+    TEST_ASSERT_EQUAL_INT(0, g_completed_next(&game, &next));
+    TEST_ASSERT_EQUAL_UINT8(1u, next.victory);
+
+    char name[8];
+    g_level_name(1u, 9u, name);
+    TEST_ASSERT_EQUAL_STRING("E1M9", name);
+    g_level_name(4u, 3u, name);
+    TEST_ASSERT_EQUAL_STRING("E4M3", name);
+}
+
+void test_exit_from_level_reads_the_request_the_trigger_wrote(void) {
+    g_level_state_t game{};
+    ChangeFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    g_level_state_init(&game, 1u, 1u);
+    fixture.level.exitRequest = P_EXIT_SECRET;
+    g_exit_from_level(&game, &fixture.level);
+    TEST_ASSERT_EQUAL_UINT8(1u, game.secretExit);
+
+    // G_ExitLevel clears `secretexit`; an empty request changes nothing.
+    fixture.level.exitRequest = P_EXIT_NORMAL;
+    g_exit_from_level(&game, &fixture.level);
+    TEST_ASSERT_EQUAL_UINT8(0u, game.secretExit);
+    fixture.level.exitRequest = P_EXIT_NONE;
+    game.secretExit = 1u;
+    g_exit_from_level(&game, &fixture.level);
+    TEST_ASSERT_EQUAL_UINT8(1u, game.secretExit);
+}
+
 // --- Weapons and the attack path (D4.2d2) ----------------------------------
 
 // A 256 x 256 room with one extra one-sided line 48 units north of the centre:
@@ -2990,6 +3187,11 @@ int main(int argc, char** argv) {
     RUN_TEST(test_level_reload_three_times_leaves_the_arena_and_the_world_unchanged);
     RUN_TEST(test_demo_reborn_answers_a_dead_player_with_a_reload);
     RUN_TEST(test_demo_reborn_refuses_a_level_that_is_not_loaded);
+    RUN_TEST(test_level_change_loads_the_named_map_and_carries_the_sequence);
+    RUN_TEST(test_level_change_back_and_forth_leaves_the_arena_at_each_map_s_cost);
+    RUN_TEST(test_level_change_refuses_a_bad_target_without_killing_the_level);
+    RUN_TEST(test_completed_next_is_upstreams_non_commercial_table);
+    RUN_TEST(test_exit_from_level_reads_the_request_the_trigger_wrote);
     RUN_TEST(test_weapon_set_psprite_runs_the_entry_action_and_follows_the_chain);
     RUN_TEST(test_weapon_setup_raises_the_pistol_to_the_ready_state);
     RUN_TEST(test_weapon_fire_spends_one_round_and_refire_chains);

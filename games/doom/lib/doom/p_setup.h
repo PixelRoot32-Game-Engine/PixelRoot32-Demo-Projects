@@ -164,6 +164,9 @@ typedef enum p_setup_error {
  *                   lives. Zero until that call.
  *   stats           the load's branch counts.
  *   error           the result of the last p_level_init().
+ *   exitRequest     G_ExitLevel()/G_SecretExitLevel()'s write, recorded on the
+ *                   level because this port has no game globals (p_spec.h). A
+ *                   level load clears it; only a line trigger sets it.
  *   open            1 after a successful load, 0 after shutdown or a refusal.
  */
 typedef struct p_level {
@@ -195,6 +198,7 @@ typedef struct p_level {
 
     p_level_stats_t stats;
     p_setup_error_t error;
+    uint8_t exitRequest; /* p_exit_request_t */
     int open;
 } p_level_t;
 
@@ -290,6 +294,46 @@ p_setup_error_t p_level_init(p_level_t* level, const doom_map_t* map, void* aren
  *         load always leaves it).
  */
 p_setup_error_t p_level_reload(p_level_t* level);
+
+/**
+ * @brief Loads a different level over the same arena: a level transition.
+ *
+ * This is the half of P_SetupLevel() that a completed level needs. Upstream's
+ * G_DoCompleted() names the next map, G_DoWorldDone() writes `gamemap =
+ * wminfo.next+1`, and G_DoLoadLevel() runs P_SetupLevel for that map. This
+ * function is the P_SetupLevel step for a caller that has already opened the
+ * next map and owns the arena, the rules and the random position:
+ *
+ *   1. read the rules, the random position, the arena (base and size) and the
+ *      caller's hooks out of @p level;
+ *   2. load @p map over the same arena, which discards every PU_LEVEL block and
+ *      runs that map's THINGS, with the carried random position already in
+ *      place;
+ *   3. reinstate the caller's hooks.
+ *
+ * HOW IT DIFFERS FROM p_level_reload(): only the map. A reload names
+ * `level->map`, the level the game is already on; a change names the caller's
+ * next map. Everything else is the same load, for the same reasons: the arena
+ * is re-laid rather than grown, `leveltime` returns to 0, the player record is
+ * rewired to the avatar the new map's type-1 THING spawns, and the P_Random()
+ * position is carried, because M_ClearRandom() belongs to G_InitNew() and a
+ * level load has never reseeded the sequence.
+ *
+ * The caller must keep @p map alive for as long as @p level uses it, exactly as
+ * p_level_init() requires. p_spawn_specials() is still the caller's next step
+ * (P_SetupLevel's order); g_game.c's g_do_world_done() is that caller.
+ *
+ * A NULL @p map is refused with P_SETUP_ERR_NULL_MAP and leaves the open level
+ * untouched: there is no new world to load, and zeroing a live level would turn
+ * a caller's bad argument into a dead game.
+ *
+ * @param level The level to change; it must be open.
+ * @param map   The next level's validated map view.
+ * @return P_SETUP_OK, P_SETUP_ERR_NULL_LEVEL, P_SETUP_ERR_NULL_MAP,
+ *         P_SETUP_ERR_NOT_OPEN, or any p_level_init() code (after which the
+ *         level is zeroed, as a refused load always leaves it).
+ */
+p_setup_error_t p_level_change(p_level_t* level, const doom_map_t* map);
 
 /**
  * @brief Frees every PU_LEVEL block and zeroes the level.

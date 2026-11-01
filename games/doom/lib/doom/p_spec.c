@@ -704,6 +704,15 @@ static int trigger_cross(struct p_level* level, uint16_t lineIndex,
             (void)p_do_ceiling(world, lineIndex, P_CEIL_LOWER_AND_CRUSH);
             consume_line(level, lineIndex);
             return 1;
+        /* EXIT! / SECRET EXIT. Upstream's P_CrossSpecialLine has no
+         * `line->special = 0` for either number, so a walk-over exit stays on the
+         * line; G_ExitLevel()/G_SecretExitLevel() are the write. */
+        case 52:
+            level->exitRequest = (uint8_t)P_EXIT_NORMAL;
+            return 1;
+        case 124:
+            level->exitRequest = (uint8_t)P_EXIT_SECRET;
+            return 1;
         case 53:
             (void)p_do_plat(world, lineIndex, P_PLAT_PERPETUAL_RAISE, 0);
             consume_line(level, lineIndex);
@@ -854,8 +863,8 @@ static int trigger_cross(struct p_level* level, uint16_t lineIndex,
             return 1;
 
         default:
-            /* 8/100 stairs, 39/97/125/126 teleports, 52/124 exits; 48 scroll, and
-             * every number upstream's cross switch does not name, do nothing. */
+            /* 8/100 stairs, 39/97/125/126 teleports; 48 scroll, and every number
+             * upstream's cross switch does not name, do nothing. */
             note_line_special(level, lineIndex, special, P_TRIGGER_CROSS);
             return 0;
     }
@@ -899,10 +908,17 @@ static int trigger_use(struct p_level* level, uint16_t lineIndex, int byPlayer) 
             return 1;
         case 11:
         case 51:
-            /* Exit level / secret exit: no level transition in this layer. */
-            level->specStats.deferredLineSpecial += 1u;
+            /* EXIT LEVEL / SECRET EXIT. Upstream runs P_ChangeSwitchTexture(line,
+             * 0) first -- which clears `line->special` and starts the switch
+             * sound -- then G_ExitLevel()/G_SecretExitLevel(), which set
+             * `gameaction = ga_completed` and `secretexit`. The texture half has
+             * no texture to draw (p_spec.h's measurement), so the one-shot clear
+             * is the part of it the simulation keeps; the exit request is the
+             * level-level form of the two globals. */
             consume_line(level, lineIndex);
-            return 0;
+            level->exitRequest = (uint8_t)(special == 11 ? P_EXIT_NORMAL
+                                                         : P_EXIT_SECRET);
+            return 1;
         case 14:
             (void)p_do_plat(world, lineIndex, P_PLAT_RAISE_AND_CHANGE, 32);
             level->specStats.deferredLineSpecial += 1u;

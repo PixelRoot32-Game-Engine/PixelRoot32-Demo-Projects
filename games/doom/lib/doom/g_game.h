@@ -12,10 +12,12 @@
  *
  * linuxdoom-1.10 g_game.c: G_DoPlayDemo() reads the header, and
  * G_ReadDemoTiccmd() decodes one four-byte command. d_ticcmd.h's ticcmd_t is
- * what they fill. This file is that pair, plus the one game-action step a
- * recorded demo forces: G_DoReborn()'s single-player branch, which is
- * `gameaction = ga_loadlevel` and therefore a reload of the same level. There is
- * still no level transition, no intermission, no menu and no save event.
+ * what they fill. This file is that pair, plus the game-state writes a level can
+ * force: G_DoReborn()'s single-player branch, which is `gameaction =
+ * ga_loadlevel` and therefore a reload of the same level, and the exit path --
+ * G_ExitLevel()/G_SecretExitLevel(), G_DoCompleted()'s next-map decision and
+ * G_DoWorldDone()'s load of the next level. There is still no intermission, no
+ * world map, no finale and no menu: those are screens, and D5.2 owns them.
  *
  * THE FORMAT (shareware WAD, version 109)
  *
@@ -184,12 +186,20 @@ typedef struct g_demo {
 typedef enum g_demo_stop {
     /* G_ReadDemoTiccmd's `if (*demo_p == DEMOMARKER)`: the recorded stream ends
      * here. Upstream answers this with G_ExitLevel(), which is the game state
-     * machine's; this port stops instead (no level transitions, D4.4's scope). */
+     * machine's; this port stops instead and reports it, because a demo that
+     * reaches a level exit is a finding about the stream, not a transition the
+     * demo path may follow (D4.4's scope). */
     G_DEMO_STOP_MARKER = 0,
     /* The lump ended with no marker. g_demo_open() refuses this, so a driver
      * that started from an accepted record cannot reach it; the value exists so
      * the report can name what happened rather than guess. */
-    G_DEMO_STOP_END = 1
+    G_DEMO_STOP_END = 1,
+    /* A tic's line trigger set p_level_t::exitRequest. Upstream's demo path is
+     * entangled with G_DoCompleted/intermission; this port refuses to follow an
+     * exit from a recording and stops with the reason named, so the run is
+     * shorter than the lump and its gate fails instead of transitioning. No
+     * shareware demo reaches an exit today. */
+    G_DEMO_STOP_EXIT = 2
 } g_demo_stop_t;
 
 /*
@@ -210,6 +220,72 @@ typedef struct g_demo_run {
     uint8_t stop;
     int32_t leveltime;
 } g_demo_run_t;
+
+/* --- The level a game is on ---------------------------------------------- */
+
+/*
+ * Upstream keeps `gameepisode`, `gamemap` and `secretexit` as globals in
+ * g_game.c. This port has no globals, so the caller owns them here. The struct is
+ * the data the game-state machine needs for a level transition, without the
+ * states this port does not have (intermission, world map, finale, menu).
+ *
+ *   episode, map  upstream's gameepisode/gamemap, 1-based.
+ *   secretExit    upstream's `secretexit`: the last exit was a secret one.
+ *                 G_ExitLevel() clears it, G_SecretExitLevel() sets it.
+ */
+typedef struct g_level_state {
+    uint8_t episode;
+    uint8_t map;
+    uint8_t secretExit;
+} g_level_state_t;
+
+/*
+ * G_DoCompleted uses wminfo.next (0-based) and G_DoWorldDone writes `gamemap =
+ * wminfo.next + 1`. This record is the already-1-based answer: the level to load,
+ * or the episode's victory. It is filled by g_completed_next().
+ *
+ *   episode, map  the next level, 1-based; unchanged from the game when
+ *                 victory is set.
+ *   secret        the exit that requested it was a secret one.
+ *   victory       1 when G_DoCompleted answered `ga_victory` instead of naming a
+ *                 next map: the boss map (gamemap 8) in a non-commercial game.
+ */
+typedef struct g_level_next {
+    uint8_t episode;
+    uint8_t map;
+    uint8_t secret;
+    uint8_t victory;
+} g_level_next_t;
+
+/*
+ * One code per failure class for a level transition, never a shared catch-all.
+ *
+ *   G_LEVEL_OK              the call did what it says
+ *   G_LEVEL_ERR_NULL_LEVEL  no level was passed
+ *   G_LEVEL_ERR_NOT_OPEN    the level is not loaded
+ *   G_LEVEL_ERR_NULL_MAP    no next map view was passed
+ *   G_LEVEL_ERR_MAP_NOT_OPEN the map view was never accepted by doom_map_open()
+ *   G_LEVEL_ERR_SETUP       p_level_change() refused the load
+ *   G_LEVEL_ERR_SPECIALS    p_spawn_specials() refused the level
+ *   G_LEVEL_ERR_NO_PLAYER   the new level produced no live console player
+ *   G_LEVEL_ERR_VICTORY     g_do_world_done() was given a victory record: there
+ *                           is no level to load
+ *   G_LEVEL_ERR_NULL_GAME   no game state was passed
+ *   G_LEVEL_ERR_NULL_NEXT   no next-level record was passed
+ */
+typedef enum g_level_error {
+    G_LEVEL_OK = 0,
+    G_LEVEL_ERR_NULL_LEVEL = 1,
+    G_LEVEL_ERR_NOT_OPEN = 2,
+    G_LEVEL_ERR_NULL_MAP = 3,
+    G_LEVEL_ERR_MAP_NOT_OPEN = 4,
+    G_LEVEL_ERR_SETUP = 5,
+    G_LEVEL_ERR_SPECIALS = 6,
+    G_LEVEL_ERR_NO_PLAYER = 7,
+    G_LEVEL_ERR_VICTORY = 8,
+    G_LEVEL_ERR_NULL_GAME = 9,
+    G_LEVEL_ERR_NULL_NEXT = 10
+} g_level_error_t;
 
 /* --- Public API ---------------------------------------------------------- */
 
@@ -365,6 +441,105 @@ void g_demo_rules(const g_demo_t* demo, p_spawn_rules_t* rules);
  */
 g_demo_error_t g_demo_reborn(p_level_t* level);
 
+/* --- G_ExitLevel / G_DoCompleted / G_DoWorldDone ------------------------- */
+
+/**
+ * @brief G_InitNew()'s game-state write for a caller starting a game.
+ *
+ * Sets the episode and map the game is on and clears `secretexit`; the port has
+ * no `G_InitNew` beyond this because the map, the arena and the rules belong to
+ * the caller.
+ */
+void g_level_state_init(g_level_state_t* game, uint8_t episode, uint8_t map);
+
+/**
+ * @brief G_ExitLevel(): `secretexit = false; gameaction = ga_completed;`.
+ *
+ * The line-special path does not call this (p_spec.c sets
+ * `p_level_t::exitRequest` instead and links without g_game.c); it is the same
+ * write for a caller that has no line, e.g. the sector-11 finale or a test.
+ */
+void g_exit_level(g_level_state_t* game);
+
+/**
+ * @brief G_SecretExitLevel(): `secretexit = true; gameaction = ga_completed;`.
+ *
+ * The shareware game is non-commercial, so upstream's "if no Wolf3D levels"
+ * guard does not clear the flag. A secret exit at the boss map is still
+ * overridden by G_DoCompleted's victory branch, which g_completed_next()
+ * reproduces.
+ */
+void g_secret_exit_level(g_level_state_t* game);
+
+/**
+ * @brief G_Ticker's read of a level's exit request, as G_DoCompleted's switch.
+ *
+ * `p_level_t::exitRequest` is P_EXIT_NONE, P_EXIT_NORMAL or P_EXIT_SECRET. A
+ * normal request is G_ExitLevel()'s write (clears `secretexit`); a secret one is
+ * G_SecretExitLevel()'s. A level with no request changes nothing, which is what
+ * G_Ticker does when no line set `gameaction`.
+ */
+void g_exit_from_level(g_level_state_t* game, const p_level_t* level);
+
+/**
+ * @brief G_DoCompleted()'s next-level decision, without the intermission.
+ *
+ * Upstream, for a non-commercial game (`gamemode != commercial`):
+ *
+ *   1. `if (gamemap == 8) { gameaction = ga_victory; return; }` -- the boss map
+ *      ends the episode, before `secretexit` is consulted;
+ *   2. if `secretexit`, `wminfo.next = 8` -> map 9;
+ *   3. else if `gamemap == 9`, the return table: episode 1 -> map 4, 2 -> 6,
+ *      3 -> 7, 4 -> 3;
+ *   4. else `wminfo.next = gamemap` -> map + 1.
+ *
+ * This function performs that decision and nothing else: no intermission, no
+ * par time, no player counts. The caller loads the named map itself.
+ *
+ * @param game  The game state; `map` and `secretExit` are read.
+ * @param out   Receives the next level (1-based) or the victory record.
+ * @return 1 when @p out names a level, 0 when it names the episode's victory,
+ *         -1 when the state names an episode or map upstream's table cannot
+ *         describe (the port ships episode 1; the table is episode 1..4).
+ */
+int g_completed_next(g_level_state_t* game, g_level_next_t* out);
+
+/**
+ * @brief Writes an episode/map as the WAD's level lump name ("E1M3").
+ *
+ * Upstream's P_SetupLevel spells the marker with `sprintf(name, "E%iM%i", ...)`;
+ * the shareware/registered maps are single-digit, so eight bytes is enough. An
+ * episode or map outside 1..9 writes an empty string rather than a truncated
+ * name.
+ */
+void g_level_name(uint8_t episode, uint8_t map, char out[8]);
+
+/**
+ * @brief G_DoWorldDone() plus G_DoLoadLevel(): the level transition itself.
+ *
+ * Upstream's G_DoWorldDone sets `gamestate = GS_LEVEL; gamemap = wminfo.next+1;
+ * G_DoLoadLevel();`. This is that write, for a caller that has already opened
+ * the next map out of the container/WAD view:
+ *
+ *   1. write @p next's episode and map into @p game, before the load, as
+ *      upstream writes `gamemap` before G_DoLoadLevel;
+ *   2. p_level_change(): the new map over the same arena, THINGS run, the player
+ *      record rewired, leveltime 0, the P_Random() position carried;
+ *   3. p_spawn_specials(): P_SetupLevel's next step, so the new level's movers,
+ *      lights and sector sound state exist;
+ *   4. require a live console player for the new map.
+ *
+ * A demo never calls this: g_demo_play() stops on an exit request instead.
+ *
+ * @return G_LEVEL_OK, or one of g_level_error_t. G_LEVEL_ERR_SETUP leaves the
+ *         level zeroed by the refused load (as p_level_change documents); a
+ *         later refusal leaves the new map loaded but not fully composed, and
+ *         the code names the step that was missing.
+ */
+g_level_error_t g_do_world_done(p_level_t* level, g_level_state_t* game,
+                                const g_level_next_t* next,
+                                const doom_map_t* map);
+
 /**
  * @brief Plays the record to its end through the world's own tic.
  *
@@ -375,6 +550,8 @@ g_demo_error_t g_demo_reborn(p_level_t* level);
  *       run->tics++
  *       if level->playerState.playerstate == PST_REBORN:
  *           g_demo_reborn(level);  run->reloads++
+ *       if level->exitRequest != P_EXIT_NONE:
+ *           run->stop = EXIT; break
  *   run->stop = MARKER or END
  *
  * so the player's commands come from the stream and from nothing else: no input
@@ -383,6 +560,12 @@ g_demo_error_t g_demo_reborn(p_level_t* level);
  * game tic rather than a world-only tick. The reborn step is G_Ticker's and lands
  * between the tic that died and the command that follows it; `run->tics` counts
  * commands, so a reload never moves it.
+ *
+ * AN EXIT STOPS THE PLAYBACK. Upstream's demo path reaches G_DoCompleted and the
+ * intermission from the same game state machine; this driver refuses to follow a
+ * transition (D4.4's scope), names the reason G_DEMO_STOP_EXIT, and leaves the
+ * stream short. No shareware demo reaches an exit today, so the pins do not
+ * move; a demo that does is a finding the shorter `tics` reports.
  *
  * The world must already be loaded at the level the header names: a map is
  * doom_map_open()'s and an arena is the caller's, so loading it is not this

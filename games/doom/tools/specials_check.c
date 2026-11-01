@@ -34,7 +34,9 @@
  *   line 151, 152, 247, 248, 324, 325, 340, 341  special 1   use   (manual doors)
  *   line 195                                    special 88  cross (lift)
  *   line 308                                    special 36  cross (turbo lower)
- *   line 330                                    special 11  use   (exit, deferred)
+ *   line 330                                    special 11  use   (exit: the
+ *                                                         request is recorded,
+ *                                                         the line is cleared)
  *   line 352..359                               special 48  cross (scroll, deferred)
  *
  * Tic 0 is the state after the spawn scan and the triggers; tic 1 is after one
