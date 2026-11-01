@@ -224,6 +224,12 @@ typedef struct p_mobj_context {
     p_sector_sound_t* sectorSound;
     uint16_t sectorSoundCount;
     uint32_t soundValidCount;
+    /* D4.4: an optional missing-action trace (p_action.h). It is the fourth
+     * harness hook of the same kind as moveStats/attackStats/sightStats: NULL
+     * costs nothing and is what every shipped build passes, while
+     * tools/demo_check.c points it at a caller-owned table to learn which
+     * actions a demo reaches, at which tic, and on which type. */
+    struct p_action_trace* actionTrace;
 } p_mobj_context_t;
 /*
  * One map object.

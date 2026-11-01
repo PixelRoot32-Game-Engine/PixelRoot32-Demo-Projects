@@ -42,16 +42,18 @@ They catch any later change; they do not certify the past. The commit that
 recorded them says so in its body, and a later commit that moves them must say
 what moved and why.
 
-What the data itself *can* falsify is the ALIVE check. A recorded stream whose
-player is still issuing movement commands a few tics before its marker is a
-recording of a live player; vanilla's single-player death runs P_DeathThink down
-to PST_REBORN and G_DoReborn reloads the level, which ends playback, so a run
-that freezes the corpse and keeps consuming commands for thousands of tics is not
-vanilla's. This gate reports that as `VERDICT faithful=0|1`; `--strict` turns it
-into a failure. The three shareware demos currently report `faithful=0` because
-two monster attack actions are still unimplemented (A_SPosAttack for the shotgun
-guy, A_SargAttack for the demon and spectre); the ANOM line names the first tic
-and the action, and the gate pins it so the day those land is visible.
+What the data itself can falsify is the ALIVE check, and the reference needs
+care. In linuxdoom-1.10 a single-player death runs P_DeathThink to PST_REBORN,
+and G_DoReborn answers it with `gameaction = ga_loadlevel` -- a level reload,
+after which playback continues. The demos' own streams are consistent with that:
+each dies and then carries a USE press, which is the respawn. This port has no
+G_Ticker/G_DoReborn step (playback is g_game.c's, not the game-state machine's),
+so a dead player stays frozen for the rest of the stream. `ALIVE` records that
+gap (`alive=0` when the player is dead at the last input tic) and `--strict`
+turns it into a failure. It does not by itself prove the death tic is wrong.
+`MISSING` is the distinct unimplemented-action set; it is empty since
+A_SPosAttack, A_SargAttack and the A_Scream sound draw landed, and the ANOM line
+stays as the count/first/last summary of the same fact.
 
 THE COHERENCE NUMBERS
 
@@ -79,8 +81,11 @@ PROVING THE GATE CAN FAIL
     --perturb viewheight   the C side is built with P_VIEWHEIGHT one map unit
                            short
 
-Both must move the final hash; the gate fails if they do not, because a pin that
-a perturbation cannot move is not measuring anything.
+Both must move the pin; the gate fails if they do not, because a pin that a
+perturbation cannot move is not measuring anything. The pin is the pair (final
+state, chain): the chain is the stronger aggregate, since it hashes every
+CHECK_TICS snapshot plus the final state, and the final alone can be insensitive
+once the player dies and `P_DeathThink` clamps the corpse's view.
 
 USAGE
 
@@ -132,9 +137,13 @@ SOURCES = (
 # and nothing else. The three fields a reader should look at first are `tics`
 # (the lump's own count, which must also equal the independent decode below),
 # `final` and `cohere` (the whole coherence line, verbatim, so any number that
-# moves names itself). `anom` and `alive` are the fidelity verdict: they say
-# which action stopped the run being faithful, at which tic, and whether the
-# player was still alive at the end.
+# moves names itself). `anom`, `missing` and `alive` are the fidelity verdict:
+# `missing` is the distinct action set (empty since D4.4's A_SPosAttack,
+# A_SargAttack and the A_Scream sound draw landed), and `alive` says whether the
+# player was still live at the last command that carried input. It is not: all
+# three demos die, and this layer has no G_DoReborn to reload the level, so the
+# stream after the death runs against a frozen corpse. The pins record that run
+# as a regression target, not as a fidelity proof.
 #
 # A demo whose pins are absent is a demo this gate has not measured yet: it
 # reports the numbers and fails, which is how a new demo is added.
@@ -142,48 +151,50 @@ PINS: dict[str, dict[str, str | int]] = {
     "DEMO1": {
         "map": "E1M5",
         "tics": 5026,
-        "final": "37158379c7d4b0b3f11b1e6b4924e64b265c929bf7f7a7de6fd0f02221c0f4af",
-        "chain": "60c9c46290da1def02a24445b15b19c7b94d95559286f544116ae05bcafb6133",
+        "final": "69b9eb23b466c5652528f52aa27e4761546f48ea3c267d1e929a7557a308894b",
+        "chain": "d579a6b857059fc7aa7fda3f79ea2a9ec1d018a8ea189be16dabbf3b06e92c97",
         "cohere": (
-            "COHERE wallcross=0 outside=0 angleskip=1982 anglebad=0 anglepunch=2 "
+            "COHERE wallcross=0 outside=0 angleskip=3876 anglebad=0 anglepunch=0 "
             "sectorchanges=2 sectors=3 doorpass=0 doorsopen=0 forward=4340 "
-            "netfwd=398341771 netback=-80748710 shots=68 ammo=68 attackticks=1463 "
+            "netfwd=195921591 netback=-15616926 shots=34 ammo=34 attackticks=1463 "
             "useticks=49 useedges=32 usetriggers=0 hpmin=0 hpmax=100 hploss=100 "
-            "hpgain=0 deadtics=1983 mobjmax=222"
+            "hpgain=0 deadtics=3877 mobjmax=219"
         ),
-        # 55 is A_SPosAttack, 56 A_SargAttack (info_tables.h's action_t).
-        "anom": "ANOM missing=44 firsttic=120 first=55 last=56 unsupported=1982",
-        "alive": "ALIVE alive=0 lastinput=5001 deathtic=3043",
+        "anom": "ANOM missing=0 firsttic=0 first=0 last=0",
+        "missing": "MISSING count=0 overflow=0",
+        "alive": "ALIVE alive=0 lastinput=5001 deathtic=1149",
     },
     "DEMO2": {
         "map": "E1M3",
         "tics": 3836,
-        "final": "09b23c04078f193ee368aa9fab9487d42a9aed7bdf7bad65086b3a1e5c958312",
-        "chain": "60c853ea35fa8e1ac7e5fc2a1833e3394a33d86bf89f964e379b175503ce4281",
+        "final": "e8bfecf524c5ece99c7ec772c06d0537d383ff0410207d17523869961cb05f77",
+        "chain": "ee4892a6da58968cf5f392879dc5d3557c5e1c5d68814ea590e59620852d4944",
         "cohere": (
-            "COHERE wallcross=0 outside=0 angleskip=3134 anglebad=0 anglepunch=0 "
-            "sectorchanges=8 sectors=7 doorpass=2 doorsopen=1 forward=3485 "
-            "netfwd=147076806 netback=-7472951 shots=15 ammo=15 attackticks=461 "
-            "useticks=62 useedges=23 usetriggers=2 hpmin=0 hpmax=100 hploss=101 "
-            "hpgain=1 deadtics=3135 mobjmax=311"
+            "COHERE wallcross=0 outside=0 angleskip=3284 anglebad=0 anglepunch=0 "
+            "sectorchanges=8 sectors=7 doorpass=2 doorsopen=2 forward=3485 "
+            "netfwd=119298357 netback=-3572193 shots=12 ammo=12 attackticks=461 "
+            "useticks=62 useedges=23 usetriggers=2 hpmin=0 hpmax=100 hploss=100 "
+            "hpgain=0 deadtics=3285 mobjmax=318"
         ),
-        "anom": "ANOM missing=5 firsttic=213 first=55 last=55 unsupported=3134",
-        "alive": "ALIVE alive=0 lastinput=3807 deathtic=701",
+        "anom": "ANOM missing=0 firsttic=0 first=0 last=0",
+        "missing": "MISSING count=0 overflow=0",
+        "alive": "ALIVE alive=0 lastinput=3807 deathtic=551",
     },
     "DEMO3": {
         "map": "E1M7",
         "tics": 2134,
-        "final": "a12de7ade273daddd257e02282a5e8fdc7d239063afee358699f1b3de8f27778",
-        "chain": "6bb4afeddb87c16c690cd999fdda6ef3f7f440bdca0f0c7e202a62bb134fd96c",
+        "final": "a200976c72757b2469d18f696c71cbe71dbb0bc0025396fd91a6e758a3efe21d",
+        "chain": "5dc62ad9fe4725cd72d6464193d1cdbc60d8ef82e2a67d05bfdedc12d1c44df4",
         "cohere": (
-            "COHERE wallcross=0 outside=0 angleskip=871 anglebad=0 anglepunch=0 "
-            "sectorchanges=9 sectors=7 doorpass=1 doorsopen=1 forward=1776 "
-            "netfwd=145816211 netback=-16335458 shots=14 ammo=14 attackticks=273 "
+            "COHERE wallcross=0 outside=0 angleskip=1633 anglebad=0 anglepunch=0 "
+            "sectorchanges=5 sectors=6 doorpass=1 doorsopen=1 forward=1776 "
+            "netfwd=70909570 netback=-6862772 shots=9 ammo=9 attackticks=273 "
             "useticks=27 useedges=10 usetriggers=1 hpmin=0 hpmax=100 hploss=100 "
-            "hpgain=0 deadtics=872 mobjmax=275"
+            "hpgain=0 deadtics=1634 mobjmax=274"
         ),
-        "anom": "ANOM missing=2 firsttic=209 first=56 last=56 unsupported=871",
-        "alive": "ALIVE alive=0 lastinput=2104 deathtic=1262",
+        "anom": "ANOM missing=0 firsttic=0 first=0 last=0",
+        "missing": "MISSING count=0 overflow=0",
+        "alive": "ALIVE alive=0 lastinput=2104 deathtic=500",
     },
 }
 
@@ -447,6 +458,10 @@ def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
         failures.append(f"{name}: the missing-action line moved.\n"
                         f"    now:  {line_of(text, 'ANOM')}\n"
                         f"    pin:  {pins['anom']}")
+    if "missing" in pins and line_of(text, "MISSING") != pins["missing"]:
+        failures.append(f"{name}: the distinct missing-action set moved.\n"
+                        f"    now:  {line_of(text, 'MISSING')}\n"
+                        f"    pin:  {pins['missing']}")
     if line_of(text, "ALIVE") != pins["alive"]:
         failures.append(f"{name}: the alive line moved.\n"
                         f"    now:  {line_of(text, 'ALIVE')}\n"
@@ -530,7 +545,7 @@ def main(argv: list[str] | None = None) -> int:
               f"{marker - DEMO_HEADER_SIZE} bytes of stream + 1 marker byte, "
               f"{len(lump)} bytes of lump")
         for kind in ("DEMO", "WORLD", "CMD", "STATE", "RUN", "COHERE", "ANOM",
-                     "ALIVE", "VERDICT"):
+                     "MISSING", "ALIVE", "VERDICT"):
             line = line_of(text, kind)
             if line:
                 print(f"  {line}")
@@ -541,14 +556,21 @@ def main(argv: list[str] | None = None) -> int:
 
         pins = PINS.get(arguments.demo, {})
         if arguments.perturb != "none":
-            # The comparison must fail for the right reason: the pin the
-            # perturbation targets has to move.
-            moved = final.get("hash") != pins.get("final")
-            print(f"  perturb={arguments.perturb}: final hash "
-                  f"{'moved, as it must' if moved else 'did NOT move'}")
+            # The pin must move. The chain is the strongest aggregate this gate
+            # records: every CHECK_TICS snapshot plus the final state, hashed in
+            # order. A perturbation that moves any checkpoint moves the chain.
+            # The final hash alone is no longer sufficient once the player dies:
+            # P_DeathThink clamps the corpse's view at 6*FRACUNIT, so a
+            # P_VIEWHEIGHT change can leave the last tic byte-identical while
+            # every tic before the death moved.
+            moved = (final.get("hash") != pins.get("final") or
+                     chain.get("hash") != pins.get("chain"))
+            print(f"  perturb={arguments.perturb}: pin "
+                  f"{'moved, as it must' if moved else 'did NOT move'} "
+                  f"(final {final.get('hash')}, chain {chain.get('hash')})")
             if not moved:
                 print(f"demo_check: --perturb {arguments.perturb} did not move the "
-                      "final hash, so the pin does not measure it", file=sys.stderr)
+                      "pin, so it does not measure the run", file=sys.stderr)
                 return EXIT_MISMATCH
             return EXIT_OK
 

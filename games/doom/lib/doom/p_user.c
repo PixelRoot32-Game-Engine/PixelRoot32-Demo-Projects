@@ -169,6 +169,85 @@ static void p_calc_height(p_level_t* level, p_player_t* player) {
     }
 }
 
+/* --- P_DeathThink -------------------------------------------------------- */
+
+/* p_user.c's `#define ANG5 (ANG90/18)`: the 5-degree step the corpse's view
+ * turns toward its killer. */
+#define P_ANG5 (ANG90 / 18)
+
+/*
+ * P_DeathThink (p_user.c): "Fall on your face when dying."
+ *
+ * Upstream's order, and the two details that matter for a recorded demo:
+ *
+ *   1. P_MovePsprites(player) -- the weapon chain still advances while dead;
+ *   2. the view falls one map unit a tic from wherever it was, clamped at
+ *      `6*FRACUNIT` (never below), with `deltaviewheight = 0` so P_CalcHeight's
+ *      seated-player walk does not also move it;
+ *   3. P_CalcHeight reads the *ground* (`onground` is set here, because
+ *      P_MovePlayer is not running) and the bob from the corpse's momentum;
+ *   4. the view turns ANG5 at a time toward `player->attacker`, and a tic spent
+ *      looking at the killer fades `damagecount`; a tic with no attacker fades
+ *      it too;
+ *   5. `if (player->cmd.buttons & BT_USE) player->playerstate = PST_REBORN;`.
+ *
+ * Step 5 is where vanilla leaves this layer: G_Ticker sees PST_REBORN at the
+ * start of the next tic and calls G_DoReborn, which reloads the level. This
+ * port's game-state machine is deliberately absent (g_game.h), so
+ * p_player_think() stops at the REBORN state rather than simulating a live
+ * player whose health is zero. The tic P_DeathThink itself runs is upstream's.
+ *
+ * `player->cmd` is this tic's command, copied by p_player_think before the
+ * branch, which is what makes the BT_USE test read the recorded stream.
+ */
+static void p_death_think(p_level_t* level, p_player_t* player) {
+    r_mobj_t* mo = player->mo;
+
+    if (mo == NULL) {
+        return;
+    }
+
+    p_move_psprites(&level->context, player);
+
+    /* fall to the ground */
+    if (player->viewheight > 6 * FRACUNIT) {
+        player->viewheight -= FRACUNIT;
+    }
+    if (player->viewheight < 6 * FRACUNIT) {
+        player->viewheight = 6 * FRACUNIT;
+    }
+
+    player->deltaviewheight = 0;
+    player->onground = (uint8_t)(mo->z <= mo->floorz);
+    p_calc_height(level, player);
+
+    if (player->attacker != NULL && player->attacker != mo) {
+        const angle_t angle =
+            p_point_to_angle(player->attacker->x - mo->x,
+                             player->attacker->y - mo->y);
+        const angle_t delta = angle - mo->angle;
+
+        if (delta < P_ANG5 || delta > (angle_t)(0u - P_ANG5)) {
+            /* looking at the killer, so fade the damage flash down */
+            mo->angle = angle;
+            if (player->damagecount != 0) {
+                player->damagecount--;
+            }
+        } else if (delta < ANG180) {
+            mo->angle += P_ANG5;
+        } else {
+            mo->angle -= P_ANG5;
+        }
+    } else if (player->damagecount != 0) {
+        player->damagecount--;
+    }
+
+    /* death animation is complete: G_Ticker's G_DoReborn owns the next step. */
+    if ((player->cmd.buttons & BT_USE) != 0u) {
+        player->playerstate = P_PST_REBORN;
+    }
+}
+
 /* --- P_PlayerThink ------------------------------------------------------- */
 
 /*
@@ -263,11 +342,16 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
      * weapon to be up and idle. */
 
     /* `if (player->playerstate == PST_DEAD) { P_DeathThink (player); return; }`
-     * P_DeathThink is not implemented. A record that is not live is counted
-     * rather than pretended to live: the tic changes nothing except this counter,
-     * and the psprite machine does not advance. */
-    if (player->playerstate != P_PST_LIVE) {
-        player->unsupportedDeath += 1u;
+     * P_DeathThink is upstream's (see p_death_think above). PST_REBORN is
+     * G_Ticker's state -- G_DoReborn reloads the level before P_Ticker runs, so
+     * upstream's P_PlayerThink never sees it. This layer has no game-state
+     * machine, so the tic stops rather than running the live body against a
+     * player whose health is zero. */
+    if (player->playerstate == P_PST_DEAD) {
+        p_death_think(level, player);
+        return;
+    }
+    if (player->playerstate == P_PST_REBORN) {
         return;
     }
 

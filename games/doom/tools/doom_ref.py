@@ -4441,6 +4441,20 @@ DAMAGE_MOBJINFO = {
          115, 0, 117, 0, 0),               # MT_BFG
 }
 
+# The deathsounds the action model needs. A_Scream chooses its sound with one
+# P_Random() draw for the zombie families -- `sfx_podth1 + P_Random()%3`
+# (59..61) and `sfx_bgdth1 + P_Random()%2` (62..63) -- and draws nothing on the
+# default arm. The two monster types these scenes simulate both carry a drawing
+# sound; the player's deathsound belongs to A_PlayerScream, which draws none.
+# (linuxdoom-1.10 sounds.h: sfx_pldeth=57, sfx_podth1=59, sfx_bgdth1=62.)
+DAMAGE_DEATHSOUND = {
+    0: 57,   # MT_PLAYER     sfx_pldeth
+    1: 59,   # MT_POSSESSED  sfx_podth1
+    11: 62,  # MT_TROOP      sfx_bgdth1
+    31: 0,   # MT_TROOPSHOT  no deathsound
+    30: 0,   # MT_BARREL     no deathsound
+}
+
 # statenum: (tics, nextstate, action, sprite name). Only the states this script
 # can reach are carried; an unknown state raises, which is how a rule that walks
 # somewhere unexpected is caught instead of silently doing nothing.
@@ -4679,8 +4693,9 @@ def damage_set_state(level: "SpecLevel", mo: dict, state: int) -> bool:
         mo["sprite"] = sprite
         # A_Fall is the action here that changes the mobj's flags outright. A_Look
         # (T15a) wakes and enters the see state; A_Chase and the four attack
-        # actions (T15b) move, face, shoot and burst. A_Scream, A_XScream,
-        # A_PlayerScream and A_Pain are sound only and change nothing.
+        # actions (T15b) move, face, shoot and burst. A_Scream picks its sound
+        # with one draw for the zombie families; A_XScream, A_PlayerScream and
+        # A_Pain are sound only and draw nothing.
         if action == "A_Fall":
             mo["flags"] &= ~MF_SOLID
         elif action == "A_Look":
@@ -4695,6 +4710,12 @@ def damage_set_state(level: "SpecLevel", mo: dict, state: int) -> bool:
             enemy_troop_attack(level, mo)
         elif action == "A_Explode":
             enemy_explode(level, mo)
+        elif action == "A_Scream":
+            # `sfx_podth1 + P_Random()%3` or `sfx_bgdth1 + P_Random()%2`: the
+            # sound choice is one draw, and it sits in the sequence a demo
+            # replays even though this port has no audio layer.
+            if 59 <= DAMAGE_DEATHSOUND.get(mo["type"], 0) <= 63:
+                level.rng.next()
         state = nxt
         if tics != 0:
             break

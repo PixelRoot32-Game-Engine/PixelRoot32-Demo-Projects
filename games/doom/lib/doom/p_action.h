@@ -103,6 +103,40 @@ typedef struct p_action_stats {
     uint32_t lastNotImplemented;
 } p_action_stats_t;
 
+/*
+ * The distinct missing-action record (D4.4).
+ *
+ * The counters above answer "how many" and "which one last", but a run that
+ * reaches two different missing actions in one tic collapses both into one
+ * counter increment and one `lastNotImplemented` value. Before anyone can
+ * decide how much action work a demo still needs, the gate has to name the
+ * *set*. This is a small, caller-owned log of that set: each distinct action
+ * once, with the tic it was first reached and the actor that reached it.
+ *
+ * It costs the firmware no storage of its own: p_mobj_context_t carries one
+ * pointer (NULL in every shipped build) and the table belongs to the caller.
+ * `tic` is the caller's current tic -- the playback harness sets it before each
+ * world tic; firstTic is whatever it held when the action was first dispatched.
+ *
+ * `type` is the r_mobj_t::type of the actor that ran the action, or
+ * P_ACTION_TYPE_NONE for a weapon-sprite dispatch, which has no mobj.
+ */
+#define P_ACTION_MISSING_MAX 32
+#define P_ACTION_TYPE_NONE 0xFFFFFFFFu
+
+typedef struct p_action_missing {
+    uint32_t action;
+    uint32_t firstTic;
+    uint32_t type;
+} p_action_missing_t;
+
+typedef struct p_action_trace {
+    uint32_t tic;      /* the caller's current tic, set before each world tic */
+    uint32_t count;    /* distinct actions recorded */
+    uint32_t overflow; /* distinct actions not recorded: the table was full */
+    p_action_missing_t entries[P_ACTION_MISSING_MAX];
+} p_action_trace_t;
+
 /**
  * @brief Zeroes @p stats. A NULL pointer is a no-op.
  */

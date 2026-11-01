@@ -21,9 +21,9 @@
  * through the real collision core (p_mobj.c/p_map.c), the view height that follows
  * the floor and the bob, and the use trace that opens a door. D4.2d1 added damage,
  * death and pickups; D4.2d2 adds the weapon state machine, the weapon change and
- * the fire button, each at its own site below. P_DeathThink, monster AI and the
- * HUD are still later units, and every deferred field and button below names its
- * owner instead of being dropped silently.
+ * the fire button, each at its own site below. P_DeathThink is real since D4.4;
+ * monster AI and the HUD are other units, and every deferred field and button
+ * below names its owner instead of being dropped silently.
  *
  * THE COMMAND IS NOT THE STATE
  *
@@ -209,7 +209,7 @@ typedef enum p_button {
  * zeroed record is a live player, which is what G_PlayerReborn leaves.
  *
  *   P_PST_LIVE    playing; P_PlayerThink runs the whole body
- *   P_PST_DEAD    dead; P_DeathThink is T14's, counted here
+ *   P_PST_DEAD    dead; P_DeathThink runs for as long as this is set
  *   P_PST_REBORN  the game loop respawns before the next tic (G_Ticker)
  */
 typedef enum p_playerstate {
@@ -310,10 +310,9 @@ struct p_level;
  *   noiseAlerts            P_FireWeapon's `P_NoiseAlert (mo, mo)`. Waking monsters
  *                          needs P_CheckSight, which is T15's, so a shot counts the
  *                          call instead of making it.
- *   unsupportedDeath       tics the think ran with playerstate != LIVE --
- *                          P_DeathThink is still open and counted at its site.
  *   onground               P_MovePlayer's file-scope `onground`; 1 when the
- *                          avatar's z is on its floor.
+ *                          avatar's z is on its floor. P_DeathThink writes it too,
+ *                          because P_MovePlayer does not run for a corpse.
  */
 typedef struct p_player {
     r_mobj_t* mo;
@@ -363,7 +362,6 @@ typedef struct p_player {
     uint32_t useTriggers;
     uint32_t silentSounds;
     uint32_t noiseAlerts;
-    uint32_t unsupportedDeath;
 } p_player_t;
 
 /* --- Public API ---------------------------------------------------------- */
@@ -464,9 +462,12 @@ void p_player_init(struct p_level* level, r_mobj_t* mobj);
  *   8. the power-up counters tick down (strength counts *up*, which is upstream's
  *      fade) and the two screen-flash counters tick down.
  *
- * A player that is not PST_LIVE increments `unsupportedDeath` and returns:
- * P_DeathThink() is not implemented, and the psprite machine therefore freezes
- * for a dead player exactly as it would if the death tic did nothing.
+ * A PST_DEAD player runs P_DeathThink() and returns: the view falls to six map
+ * units, turns toward `attacker` in ANG5 steps, fades `damagecount`, advances the
+ * weapon psprite and sets PST_REBORN on BT_USE. PST_REBORN is G_Ticker's state --
+ * G_DoReborn reloads the level before P_Ticker runs in vanilla -- and this layer
+ * has no game-state machine, so such a tic stops instead of running the live
+ * body against a zero-health player.
  *
  * P_PlayerInSpecialSector() (sector damage) is T15's, and the power-up colormaps
  * are the HUD's (D5), so `fixedcolormap` stays 0 while the tic counters themselves

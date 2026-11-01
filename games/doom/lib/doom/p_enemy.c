@@ -546,6 +546,51 @@ void p_enemy_pos_attack(p_mobj_context_t* world, r_mobj_t* actor) {
 }
 
 /*
+ * A_SPosAttack(): the shotgun guy's three-shot spread. Upstream takes the aim
+ * once on the actor's facing, then each pass spreads *from that base* (not from
+ * the previous pass's angle) and rolls its own 3..15 points. The order is
+ * draw-drift, draw-drift, draw-damage, shoot, three times; the sound is S2's.
+ */
+void p_enemy_spos_attack(p_mobj_context_t* world, r_mobj_t* actor) {
+    angle_t base;
+    fixed_t slope;
+    int pass;
+
+    if (world == NULL || actor == NULL || actor->target == NULL) {
+        return;
+    }
+    p_enemy_face_target(world, actor);
+    base = actor->angle;
+    slope = p_aim_line_attack(world, actor, base, P_MISSILERANGE, NULL);
+
+    for (pass = 0; pass < 3; ++pass) {
+        const angle_t angle =
+            base + (angle_t)((p_random(world->random) -
+                              p_random(world->random)) << 20);
+        const int damage = ((int)p_random(world->random) % 5 + 1) * 3;
+
+        p_line_attack(world, actor, angle, P_MISSILERANGE, slope, damage);
+    }
+}
+
+/*
+ * A_SargAttack(): the demon's bite. A_FaceTarget first, then the range test,
+ * and the single draw only when the bite can land.
+ */
+void p_enemy_sarg_attack(p_mobj_context_t* world, r_mobj_t* actor) {
+    int damage;
+
+    if (world == NULL || actor == NULL || actor->target == NULL) {
+        return;
+    }
+    p_enemy_face_target(world, actor);
+    if (p_check_melee_range(world, actor)) {
+        damage = ((int)p_random(world->random) % 10 + 1) * 4;
+        p_damage_mobj(world, actor->target, actor, actor, damage);
+    }
+}
+
+/*
  * A_TroopAttack(): the imp decides at the moment the state runs -- claw if the
  * player is inside P_CheckMeleeRange, fireball otherwise. Both E1M1 enemies'
  * meleestate and missilestate point at this one state for the imp, which is why

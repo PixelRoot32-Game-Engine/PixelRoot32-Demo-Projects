@@ -68,7 +68,8 @@
  *       netfwd=<i64> netback=<i64> shots=<n> ammo=<n> attackticks=<n>
  *       useticks=<n> useedges=<n> usetriggers=<n> hpmin=<n> hpmax=<n>
  *       hploss=<n> hpgain=<n> deadtics=<n> mobjmax=<n>
- *   ANOM missing=<n> firsttic=<n> first=<action> last=<action> unsupported=<n>
+ *   ANOM missing=<n> firsttic=<n> first=<action> last=<action>
+ *   MISSING count=<n> overflow=<n> <id>@<tic>:<type> ...
  *   ALIVE alive=<0|1> lastinput=<n> deathtic=<n|-1>
  *   VERDICT faithful=<0|1> reason=<none|action|death>
  *
@@ -105,6 +106,7 @@
 
 #include "doom_map.h"
 #include "g_game.h"
+#include "p_action.h"
 #include "p_mobj.h"
 #include "p_setup.h"
 #include "p_spec.h"
@@ -626,6 +628,7 @@ int main(int argc, char** argv) {
     const char* demoName;
     char mapName[8];
     run_totals_t totals;
+    p_action_trace_t missingTrace;
     sha256_t commandHash;
     sha256_t chainHash;
     sha256_t checkHash;
@@ -779,6 +782,14 @@ int main(int argc, char** argv) {
         free(bytes);
         return 2;
     }
+    /* The distinct missing-action set: a caller-owned table the dispatcher fills
+     * in, one entry per action the run reaches without an implementation. It
+     * exists because `missing=` plus `last=` cannot name a set: two different
+     * actions in one tic collapse into one counter increment. Installed before
+     * p_spawn_specials() so a missing action reached during level setup would
+     * also be recorded (at tic 0); the spawn path itself runs none. */
+    memset(&missingTrace, 0, sizeof missingTrace);
+    level.context.actionTrace = &missingTrace;
     if (p_spawn_specials(&level) != P_SPEC_OK) {
         fprintf(stderr, "demo_check: %s: p_spawn_specials refused the level\n",
                 mapName);
@@ -881,6 +892,7 @@ int main(int argc, char** argv) {
         ranMove = level.playerState.playerstate == P_PST_LIVE &&
                   prevReaction == 0;
 
+        missingTrace.tic = tic;
         if (p_level_tic(&level, &cmd, NULL) != P_TICK_OK) {
             fprintf(stderr, "demo_check: the world refused tic %u\n", tic);
             p_level_shutdown(&level);
@@ -1077,10 +1089,29 @@ int main(int argc, char** argv) {
            totals.useEdges, totals.useTriggers, (long)totals.hpMin,
            (long)totals.hpMax, (long)totals.hpLoss, (long)totals.hpGain,
            totals.deadTics, totals.mobjMax);
-    printf("ANOM missing=%u firsttic=%u first=%u last=%u unsupported=%u\n",
+    printf("ANOM missing=%u firsttic=%u first=%u last=%u\n",
            totals.missing, totals.missingFirstTic, totals.missingFirstAction,
-           totals.missingLastAction,
-           (unsigned)level.playerState.unsupportedDeath);
+           totals.missingLastAction);
+    {
+        uint32_t entry;
+
+        /* One token per distinct action: `<id>@<firstTic>:<type>`, type as the
+         * mobj type that drew it (psprite for a weapon-sprite dispatch, which
+         * has no mobj). */
+        printf("MISSING count=%u overflow=%u", missingTrace.count,
+               missingTrace.overflow);
+        for (entry = 0u; entry < missingTrace.count; ++entry) {
+            const p_action_missing_t* missing = &missingTrace.entries[entry];
+
+            if (missing->type == P_ACTION_TYPE_NONE) {
+                printf(" %u@%u:psprite", missing->action, missing->firstTic);
+            } else {
+                printf(" %u@%u:%u", missing->action, missing->firstTic,
+                       missing->type);
+            }
+        }
+        printf("\n");
+    }
 
     {
         /* "Faithful" in the only sense this harness can assert without a

@@ -38,6 +38,36 @@
 #include "p_enemy.h"
 #include "p_user.h"
 
+/*
+ * Records a missing action in the caller's trace, if there is one. The first
+ * dispatch of an action wins: later ones add nothing, so the table stays the
+ * distinct set rather than a log. A full table is reported through `overflow`
+ * instead of being silently dropped.
+ */
+static void trace_missing(p_mobj_context_t* world, uint32_t action,
+                          uint32_t type) {
+    p_action_trace_t* trace;
+    uint32_t index;
+
+    if (world == NULL || world->actionTrace == NULL) {
+        return;
+    }
+    trace = world->actionTrace;
+    for (index = 0u; index < trace->count; ++index) {
+        if (trace->entries[index].action == action) {
+            return;
+        }
+    }
+    if (trace->count >= (uint32_t)P_ACTION_MISSING_MAX) {
+        trace->overflow += 1u;
+        return;
+    }
+    trace->entries[trace->count].action = action;
+    trace->entries[trace->count].firstTic = trace->tic;
+    trace->entries[trace->count].type = type;
+    trace->count += 1u;
+}
+
 void p_action_init(p_action_stats_t* stats) {
     if (stats == NULL) {
         return;
@@ -114,6 +144,26 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
             }
             return P_ACTION_DONE;
 
+        case A_SPosAttack:
+            /* A_SPosAttack (p_enemy.c, D4.4): three spread passes, each with its
+             * own drift/drift/damage draw, aimed once on the actor's facing. */
+            p_enemy_spos_attack(world, mobj);
+            if (stats != NULL) {
+                stats->calls += 1u;
+                stats->done += 1u;
+            }
+            return P_ACTION_DONE;
+
+        case A_SargAttack:
+            /* A_SargAttack (p_enemy.c, D4.4): face, range-test, then one draw
+             * for 4..40 points of bite. Demon and spectre share the state. */
+            p_enemy_sarg_attack(world, mobj);
+            if (stats != NULL) {
+                stats->calls += 1u;
+                stats->done += 1u;
+            }
+            return P_ACTION_DONE;
+
         case A_TroopAttack:
             p_enemy_troop_attack(world, mobj);
             if (stats != NULL) {
@@ -141,14 +191,36 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
             return P_ACTION_DONE;
 
         case A_Scream:
+            /* A_Scream (p_enemy.c) chooses deathsound with one P_Random draw for
+             * the zombie families: `sfx_podth1 + P_Random()%3` for podth1..3
+             * (59..61) and `sfx_bgdth1 + P_Random()%2` for bgdth1..2 (62..63);
+             * every other deathsound takes the default arm and draws nothing.
+             * The sound itself is S2's, but the draw is part of a demo's random
+             * sequence, so it is performed and the value thrown away -- the same
+             * rule A_Look follows for the see sound. */
+            if (world != NULL && world->random != NULL &&
+                (uint32_t)mobj->type < NUM_MOBJ_TYPES) {
+                const int32_t deathsound = mobjinfo[mobj->type].deathsound;
+
+                if (deathsound >= 59 && deathsound <= 61) {
+                    (void)p_random(world->random);
+                } else if (deathsound >= 62 && deathsound <= 63) {
+                    (void)p_random(world->random);
+                }
+            }
+            if (stats != NULL) {
+                stats->calls += 1u;
+                stats->stubs += 1u;
+            }
+            return P_ACTION_STUB;
+
         case A_XScream:
         case A_PlayerScream:
         case A_Pain:
-            /* Pure sound in upstream: A_Scream picks deathsound (gibdth for the
-             * three zombie variants), A_XScream plays sfx_slop for a gibbed
+            /* Pure sound in upstream: A_XScream plays sfx_slop for a gibbed
              * thing, A_PlayerScream picks pldeth or pdiehi, A_Pain plays
-             * painsound. No APU layer exists yet (S2), so nothing happens; the
-             * counter is what says so. */
+             * painsound. None of the three draws. No APU layer exists yet (S2),
+             * so nothing happens; the counter is what says so. */
             if (stats != NULL) {
                 stats->calls += 1u;
                 stats->stubs += 1u;
@@ -161,6 +233,7 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
                 stats->notImplemented += 1u;
                 stats->lastNotImplemented = (uint32_t)action;
             }
+            trace_missing(world, (uint32_t)action, (uint32_t)mobj->type);
             return P_ACTION_NOT_IMPLEMENTED;
     }
 }
@@ -228,6 +301,7 @@ p_action_outcome_t p_action_run_psprite(p_mobj_context_t* world,
                 stats->notImplemented += 1u;
                 stats->lastNotImplemented = (uint32_t)action;
             }
+            trace_missing(world, (uint32_t)action, P_ACTION_TYPE_NONE);
             return P_ACTION_NOT_IMPLEMENTED;
     }
 

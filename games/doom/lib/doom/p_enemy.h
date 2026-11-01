@@ -170,6 +170,42 @@ void p_enemy_face_target(p_mobj_context_t* world, r_mobj_t* actor);
 void p_enemy_pos_attack(p_mobj_context_t* world, r_mobj_t* actor);
 
 /**
+ * @brief A_SPosAttack(): the shotgun guy's three-shot spread.
+ *
+ * Upstream's order, which is three interleaved draws per pass:
+ *
+ *   A_FaceTarget;
+ *   base = actor->angle; slope = P_AimLineAttack(actor, base, MISSILERANGE);
+ *   for (i = 0; i < 3; ++i) {
+ *       angle = base + ((P_Random()-P_Random())<<20);
+ *       damage = ((P_Random()%5)+1)*3;
+ *       P_LineAttack(actor, angle, MISSILERANGE, slope, damage);
+ *   }
+ *
+ * The aim is taken once, on the facing, and every pass re-spreads from that
+ * base: `angle` is not accumulated across passes. The nine draws are part of a
+ * demo's sequence even though the shotgun sound is S2's.
+ *
+ * @param world The level's context (random sequence, attack trace).
+ * @param actor The shotgun guy; no target is a no-op.
+ */
+void p_enemy_spos_attack(p_mobj_context_t* world, r_mobj_t* actor);
+
+/**
+ * @brief A_SargAttack(): the demon's and spectre's melee bite.
+ *
+ * `A_FaceTarget (actor); if (P_CheckMeleeRange (actor)) { damage =
+ * ((P_Random()%10)+1)*4; P_DamageMobj (actor->target, actor, actor, damage); }`
+ *
+ * The draw happens only after P_CheckMeleeRange succeeds, so a bite that misses
+ * consumes nothing. S_StartSound is S2's and draws nothing.
+ *
+ * @param world The level's context.
+ * @param actor The demon or spectre; no target is a no-op.
+ */
+void p_enemy_sarg_attack(p_mobj_context_t* world, r_mobj_t* actor);
+
+/**
  * @brief A_TroopAttack(): the imp's claw inside melee range, else a fireball.
  *
  * The claw rolls `((P_Random()%8)+1)*3` and damages directly; the fireball is

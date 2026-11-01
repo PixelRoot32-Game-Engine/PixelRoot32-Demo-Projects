@@ -2301,17 +2301,33 @@ void test_player_think_counts_the_deferred_buttons_and_death(void) {
     p_player_think(&fixture.level, &special);
     TEST_ASSERT_EQUAL_UINT8(0u, fixture.player().cmd.buttons);
 
-    // PST_DEAD is P_DeathThink's, which is still open: counted, not faked.
+    // PST_DEAD runs P_DeathThink: the view falls one map unit, P_CalcHeight reads
+    // the ground, and the command's movement does not move the corpse.
     fixture.player().playerstate = P_PST_DEAD;
-    const fixed_t viewz = fixture.player().viewz;
+    const fixed_t beforeHeight = fixture.player().viewheight;
+    const fixed_t beforeZ = fixture.player().viewz;
     p_ticcmd_t walk{};
     walk.forwardmove = 0x19;
     p_player_think(&fixture.level, &walk);
-    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().unsupportedDeath);
     TEST_ASSERT_EQUAL_INT(P_PST_DEAD, fixture.player().playerstate);
+    TEST_ASSERT_EQUAL_INT32(beforeHeight - kFrac,
+                            fixture.player().viewheight);
+    TEST_ASSERT_EQUAL_INT32(fixture.mo()->z + fixture.player().viewheight,
+                            fixture.player().viewz);
+    TEST_ASSERT_TRUE(fixture.player().viewz < beforeZ);
     TEST_ASSERT_EQUAL_INT32(0, fixture.mo()->momx);
-    TEST_ASSERT_EQUAL_INT32(viewz, fixture.player().viewz);
-    fixture.player().playerstate = P_PST_LIVE;
+
+    // `if (player->cmd.buttons & BT_USE) player->playerstate = PST_REBORN;`
+    // G_Ticker's G_DoReborn owns that state; this layer stops there rather than
+    // running the live body against a zero-health player.
+    p_ticcmd_t respawn{};
+    respawn.buttons = BT_USE;
+    p_player_think(&fixture.level, &respawn);
+    TEST_ASSERT_EQUAL_INT(P_PST_REBORN, fixture.player().playerstate);
+    const fixed_t rebornHeight = fixture.player().viewheight;
+    p_player_think(&fixture.level, &respawn);
+    TEST_ASSERT_EQUAL_INT(P_PST_REBORN, fixture.player().playerstate);
+    TEST_ASSERT_EQUAL_INT32(rebornHeight, fixture.player().viewheight);
 }
 
 void test_player_calc_height_clamps_bob_and_ceiling(void) {
