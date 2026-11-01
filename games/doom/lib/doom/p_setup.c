@@ -347,6 +347,7 @@ p_setup_error_t p_level_reload(p_level_t* level) {
     p_attack_stats_t* attackStats;
     p_sight_stats_t* sightStats;
     p_action_trace_t* actionTrace;
+    p_spec_trace_t* specTrace;
     void* arena;
     size_t size;
     p_setup_error_t loaded;
@@ -367,6 +368,7 @@ p_setup_error_t p_level_reload(p_level_t* level) {
     attackStats = level->context.attackStats;
     sightStats = level->context.sightStats;
     actionTrace = level->context.actionTrace;
+    specTrace = level->context.specTrace;
 
     /* The carried position goes *into* the load, not back on top of it: the
      * THINGS run draws (P_SpawnMobj's `lastlook`, P_SpawnMapThing's tic jitter)
@@ -381,6 +383,7 @@ p_setup_error_t p_level_reload(p_level_t* level) {
     level->context.attackStats = attackStats;
     level->context.sightStats = sightStats;
     level->context.actionTrace = actionTrace;
+    level->context.specTrace = specTrace;
     return P_SETUP_OK;
 }
 

@@ -33,6 +33,38 @@ its header to its terminator, and checks four things:
      doors and triggers USE lines, it fires and spends ammo, and its health stays
      inside its own bounds.
 
+WHAT THE STRICT VERDICT CHECKS
+
+`--strict` turns every fidelity gap into a failure. There are four:
+
+  1. an action the run reached that p_action.c does not implement (`ANOM` and the
+     `MISSING` set);
+  2. a line special the run reached that upstream's trigger function acts on and
+     this port has no EV for (`SPECUNSUP`). A number upstream does *not* name for
+     that trigger kind is not a gap: P_CrossSpecialLine falls out of its switch
+     and P_UseSpecialLine returns true without acting, so doing nothing is the
+     faithful answer. Those events are reported as `IGNORED` evidence instead,
+     which is what DEMO2's 27 and DEMO3's 1 turned out to be;
+  3. the player not being PST_LIVE when the stream ends, or a death no reload
+     answered (`ALIVE`);
+  4. a press whose 64-unit `P_UseLines` ray reached a special line that did not
+     trigger, or a press that triggered where the independent walk finds no
+     special line in reach. The walk below is re-derived from linuxdoom-1.10's
+     `P_PathTraverse` + `PTR_UseTraverse`: the USERANGE ray, the blockmap-origin
+     nudge, ascending intercepts, `P_LineOpening` stopping a closed non-special
+     line, and the first special line ending the walk.
+
+The earlier door conditions -- "some USE press triggered a line" and "the player
+passed a moved door" -- were not derived from upstream and are false for a
+faithful DEMO1, whose stream never meets a special line at all. They are replaced
+by (4), which says what is falsifiable: a press that had a line in reach used it,
+and a press with nothing in reach did not.
+
+The walk uses the map's own initial sector heights and special numbers, read from
+the WAD by `doom_ref.read_bsp_map`. All 58 presses of the three shareware demos
+agree with the C under that model; a future demo whose press depends on a door
+that has already moved would show as a disagreement here rather than be hidden.
+
 WHAT A PIN DOES AND DOES NOT PROVE -- READ THIS BEFORE RE-BASELINING
 
 There is no 1993 DOOM on this machine to diff against, and no oracle for a whole
@@ -121,7 +153,8 @@ EXIT CODES
     1  a pin or an assertion failed, or a perturbation did not move the hash
     2  the command line, the compiler or the input was unusable
 
-Standard library only.
+Standard library only, plus this repository's `doom_ref.py` for the independently
+parsed map the P_UseLines walk needs.
 """
 
 from __future__ import annotations
@@ -134,6 +167,12 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+# The independent map loader and fine tables: doom_ref.py is this project's
+# from-linuxdoom-1.10 Python oracle, and the P_UseLines re-derivation below uses
+# its geometry rather than a third parser. Everything it imports is stdlib.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import doom_ref  # noqa: E402  (path-dependent by design)
 
 FRACUNIT = 1 << 16
 MAXHEALTH = 100
@@ -186,6 +225,8 @@ PINS: dict[str, dict[str, object]] = {
         "spec": "SPEC triggers=0 unsupported=0 deferred=0 scrolls=0",
         "anom": "ANOM missing=0 firsttic=0 first=0 last=0",
         "missing": "MISSING count=0 overflow=0",
+        "specunsup": "SPECUNSUP count=0 overflow=0",
+        "ignored": "IGNORED count=0",
         "alive": "ALIVE alive=1 lastinput=5001 deathtic=1149 reborns=5",
         "arena": 43616,
         "reload": [1424, 2331, 3164, 4019, 4363],
@@ -202,9 +243,12 @@ PINS: dict[str, dict[str, object]] = {
             "useticks=62 useedges=23 usetriggers=2 hpmin=0 hpmax=100 hploss=100 "
             "hpgain=0 deadtics=109 mobjmax=318"
         ),
-        "spec": "SPEC triggers=2 unsupported=27 deferred=0 scrolls=0",
+        "spec": "SPEC triggers=2 unsupported=0 deferred=0 scrolls=0",
         "anom": "ANOM missing=0 firsttic=0 first=0 last=0",
         "missing": "MISSING count=0 overflow=0",
+        "specunsup": "SPECUNSUP count=0 overflow=0",
+        "ignored": ("IGNORED count=5 31@80:996:shootx8 31@91:996:crossx1 "
+                    "2@160:988:shootx1 1@188:329:shootx15 1@391:329:crossx2"),
         "alive": "ALIVE alive=1 lastinput=3807 deathtic=551 reborns=1",
         "arena": 60048,
         "reload": [659],
@@ -221,9 +265,11 @@ PINS: dict[str, dict[str, object]] = {
             "useticks=27 useedges=10 usetriggers=1 hpmin=0 hpmax=100 hploss=100 "
             "hpgain=0 deadtics=112 mobjmax=274"
         ),
-        "spec": "SPEC triggers=1 unsupported=1 deferred=0 scrolls=0",
+        "spec": "SPEC triggers=1 unsupported=0 deferred=0 scrolls=0",
         "anom": "ANOM missing=0 firsttic=0 first=0 last=0",
         "missing": "MISSING count=0 overflow=0",
+        "specunsup": "SPECUNSUP count=0 overflow=0",
+        "ignored": "IGNORED count=1 31@110:949:crossx1",
         "alive": "ALIVE alive=1 lastinput=2104 deathtic=500 reborns=1",
         "arena": 53304,
         "reload": [611],
@@ -317,6 +363,82 @@ def player_start(things: bytes) -> tuple[int, int]:
     if len(starts) != 1:
         raise ValueError(f"the map carries {len(starts)} player-1 starts, expected 1")
     return starts[0]
+
+
+# --- P_UseLines, re-derived from linuxdoom-1.10 ------------------------------
+#
+# p_user.c computes a 64-map-unit ray along the player's facing and hands it to
+# P_PathTraverse(PT_ADDLINES, PTR_UseTraverse). Neither the ray nor the walk is
+# taken from the C side: this is the oracle's own reading of the same source.
+
+USERANGE = 64 * FRACUNIT
+MAPBLOCKSIZE = 128 * FRACUNIT
+
+
+def blockmap_origin(lumps: list, map_name: str) -> tuple[int, int]:
+    """P_PathTraverse's `bmaporgx/bmaporgy`: the BLOCKMAP header's origin.
+
+    It is 16.16 like every other coordinate; the header stores map units.
+    """
+    marker = doom_ref.first_index(lumps, map_name)
+    if marker < 0 or marker + 10 >= len(lumps):
+        raise ValueError(f"{map_name}: no BLOCKMAP after the marker")
+    data = lumps[marker + 1 + 9].data
+    if len(data) < 4:
+        raise ValueError(f"{map_name}: the BLOCKMAP header is short")
+    x, y = struct.unpack_from("<hh", data, 0)
+    return x * FRACUNIT, y * FRACUNIT
+
+
+def use_lines_reach(level: "doom_ref.SpecLevel", origin: tuple[int, int],
+                    x1: int, y1: int, angle: int) -> int | None:
+    """The first special line P_UseLines' ray reaches, or None.
+
+    Upstream's rules, in its order:
+
+      * `x2 = x1 + (USERANGE>>FRACBITS)*finecosine[angle]` -- a map-unit product,
+        not a FixedMul;
+      * P_PathTraverse nudges its source by one unit on each axis that is not on a
+        blockmap boundary ("don't side exactly on a line"), and the direction is
+        the nudged source to the un-nudged end;
+      * intercepts ascending; a tied fraction is one visit, as upstream's
+        `frac <= last` skip makes it;
+      * PTR_UseTraverse: a non-special line runs P_LineOpening, and
+        `openrange <= 0` stops the walk ("can't use through a wall"); a special
+        line is dispatched and ends the walk.
+
+    The level is built from the WAD's initial sector heights and special
+    numbers, which is the state all 58 presses of the three demos agree on.
+    """
+    fine = (angle & 0xFFFFFFFF) >> doom_ref.ANGLETOFINESHIFT
+    x2 = doom_ref.i32(x1 + 64 * doom_ref.FINE_SINE[fine + doom_ref.FINEANGLES // 4])
+    y2 = doom_ref.i32(y1 + 64 * doom_ref.FINE_SINE[fine])
+    if (x1 - origin[0]) & (MAPBLOCKSIZE - 1):
+        x1 = doom_ref.i32(x1 + FRACUNIT)
+    if (y1 - origin[1]) & (MAPBLOCKSIZE - 1):
+        y1 = doom_ref.i32(y1 + FRACUNIT)
+    dx = doom_ref.i32(x2 - x1)
+    dy = doom_ref.i32(y2 - y1)
+
+    last = -1
+    while True:
+        best = FRACUNIT + 1
+        best_line = None
+        for index in range(len(level.bsp.linedefs)):
+            frac = doom_ref.movement_trace_line(level, x1, y1, dx, dy, index)
+            if frac is None or frac <= last:
+                continue
+            if frac < best:
+                best = frac
+                best_line = index
+        if best_line is None:
+            return None
+        last = best
+        if level.line_special[best_line] == 0:
+            if doom_ref.movement_line_opening(level, best_line)["range"] <= 0:
+                return None
+            continue
+        return best_line
 
 
 def decode_stream(data: bytes) -> tuple[list[tuple[int, int, int, int]], int]:
@@ -431,7 +553,8 @@ def number(record: dict[str, str], key: str, default: int = 0) -> int:
 
 def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
               header: DemoHeader, start: tuple[int, int],
-              strict: bool) -> list[str]:
+              strict: bool,
+              use_walk) -> list[str]:
     """Every failure, each named independently, so one run reports them all."""
     failures: list[str] = []
     pins = PINS.get(name)
@@ -446,6 +569,8 @@ def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
     anom = record_of(text, "ANOM")
     alive = record_of(text, "ALIVE")
     verdict = record_of(text, "VERDICT")
+    specunsup = record_of(text, "SPECUNSUP")
+    presses = [record_of(line, "PRESS") for line in lines_of(text, "PRESS")]
 
     if not demo or not run:
         return [f"{name}: the harness produced no DEMO/RUN line"]
@@ -576,6 +701,14 @@ def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
         failures.append(f"{name}: the line-special set moved.\n"
                         f"    now:  {line_of(text, 'SPEC')}\n"
                         f"    pin:  {pins['spec']}")
+    if "specunsup" in pins and line_of(text, "SPECUNSUP") != pins["specunsup"]:
+        failures.append(f"{name}: the unsupported-special set moved.\n"
+                        f"    now:  {line_of(text, 'SPECUNSUP')}\n"
+                        f"    pin:  {pins['specunsup']}")
+    if "ignored" in pins and line_of(text, "IGNORED") != pins["ignored"]:
+        failures.append(f"{name}: the upstream-ignored set moved.\n"
+                        f"    now:  {line_of(text, 'IGNORED')}\n"
+                        f"    pin:  {pins['ignored']}")
     if "arena" in pins and number(arena, "load") != pins["arena"]:
         failures.append(f"{name}: the level's arena load is {arena.get('load')} B, "
                         f"pinned {pins['arena']} B")
@@ -600,17 +733,40 @@ def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
         else:
             print(f"  UNFAITHFUL {message}")
 
-    # 5b. The door evidence is part of the fidelity claim, not of the format: a
-    # demo presses USE at things it can use, so a faithful run must trigger lines
-    # and pass through at least one door. This block used to live *inside* the
-    # verdict branch above, which meant that the day a run became faithful the
-    # checks silently stopped running; --strict must evaluate them either way.
-    if strict and number(cohere, "useticks") > 0:
-        if number(cohere, "usetriggers") == 0:
-            failures.append(f"{name}: {cohere.get('useticks')} USE tics "
-                            "triggered no line, so the demo never used a door")
-        if number(cohere, "doorpass") == 0:
-            failures.append(f"{name}: the player never passed a moved door")
+    # 5a. The line-special gap, named. A run that reaches a special upstream acts
+    # on and this port cannot execute is not upstream's world after the first
+    # one; the set (<special>@<tic>:<line>:<kind>x<hits>) is the evidence.
+    if strict and number(specunsup, "count") > 0:
+        tokens = [part for line in lines_of(text, "SPECUNSUP")
+                  for part in line.split()[1:] if "@" in part]
+        failures.append(f"{name}: the run reached {specunsup.get('count')} distinct "
+                        "special(s) upstream handles and this port does not: "
+                        + " ".join(tokens))
+
+    # 5b. P_UseLines, re-derived. Each PRESS line is a live player's press with
+    # the position and facing the tic ended on -- P_UseLines runs after
+    # P_MovePlayer, and nothing later in P_PlayerThink moves the avatar. The walk
+    # below decides whether upstream's 64-unit ray would have reached a special
+    # line. A press that had one in reach must have triggered it, and a press that
+    # triggered must have had one in reach. This replaces the old "some press
+    # triggered" / "the player passed a door" pair, neither of which upstream
+    # requires and both of which a faithful DEMO1 must fail.
+    if strict:
+        for press in presses:
+            tic = number(press, "n")
+            line = use_walk(number(press, "x"), number(press, "y"),
+                            number(press, "angle"))
+            reached = 1 if line is not None else 0
+            triggered = number(press, "reached")
+            if reached != triggered:
+                if reached:
+                    failures.append(
+                        f"{name}: the press at tic {tic} had special line {line} "
+                        "within USERANGE and triggered nothing")
+                else:
+                    failures.append(
+                        f"{name}: the press at tic {tic} triggered a line but the "
+                        "independent P_UseLines walk found no special line in reach")
     return failures
 
 
@@ -636,8 +792,10 @@ def main(argv: list[str] | None = None) -> int:
                              "to prove the pin can fail (default: none)")
     parser.add_argument("--strict", action="store_true",
                         help="treat `faithful=0` as a failure: the run reached an "
-                             "unimplemented action, or its player died before the "
-                             "stream's last input")
+                             "unimplemented action or an upstream line special this "
+                             "port cannot execute, its player was not live at the "
+                             "end, or a USE press's 64-unit ray disagrees with the "
+                             "independent P_UseLines walk")
     arguments = parser.parse_args(argv)
 
     if not arguments.wad.is_file():
@@ -648,9 +806,19 @@ def main(argv: list[str] | None = None) -> int:
         lump = read_wad_lump(arguments.wad, arguments.demo)
         header = DemoHeader(lump)
         commands, marker = decode_stream(lump)
-        start = player_start(read_wad_map_things(
-            arguments.wad, f"E{header.episode}M{header.map}"))
+        map_name = f"E{header.episode}M{header.map}"
+        start = player_start(read_wad_map_things(arguments.wad, map_name))
+        # The P_UseLines model: the oracle's own WAD/BSP reader, built from the
+        # map's initial state. doom_ref's exceptions are not ValueError, so they
+        # are caught by name below.
+        _wad_kind, lumps = doom_ref.read_wad(arguments.wad)
+        use_level = doom_ref.SpecLevel(doom_ref.read_bsp_map(lumps, map_name),
+                                       doom_ref.RandomState(0))
+        use_origin = blockmap_origin(lumps, map_name)
     except (OSError, ValueError) as error:
+        print(f"demo_check: {arguments.demo}: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    except Exception as error:  # doom_ref.InputError / FormatError, by name
         print(f"demo_check: {arguments.demo}: {error}", file=sys.stderr)
         return EXIT_USAGE
 
@@ -671,7 +839,8 @@ def main(argv: list[str] | None = None) -> int:
               f"{marker - DEMO_HEADER_SIZE} bytes of stream + 1 marker byte, "
               f"{len(lump)} bytes of lump")
         for kind in ("DEMO", "WORLD", "ARENA", "CMD", "STATE", "RUN", "COHERE",
-                     "SPEC", "ANOM", "MISSING", "ALIVE", "VERDICT"):
+                     "SPEC", "ANOM", "MISSING", "SPECUNSUP", "IGNORED", "ALIVE",
+                     "VERDICT"):
             line = line_of(text, kind)
             if line:
                 print(f"  {line}")
@@ -703,7 +872,9 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_OK
 
         failures = check_run(text, arguments.demo, commands, header, start,
-                             arguments.strict)
+                             arguments.strict,
+                             lambda x, y, angle: use_lines_reach(use_level, use_origin,
+                                                                 x, y, angle))
         for failure in failures:
             print(f"demo_check: {failure}", file=sys.stderr)
         if failures:

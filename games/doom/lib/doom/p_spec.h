@@ -51,8 +51,10 @@
  * Line specials (P_CrossSpecialLine, P_UseSpecialLine, P_ShootSpecialLine):
  * every number whose EV function exists below is dispatched; stairs, teleports,
  * exits, texture scrolling (48) and the remaining switch numbers are counted as
- * `unsupportedLineSpecial` / `deferredLineSpecial`. The header of each EV file
- * lists its own type enumeration against upstream.
+ * `unsupportedLineSpecial` / `deferredLineSpecial`. A number that upstream's
+ * trigger function does not name at all is a no-op upstream and is not counted
+ * here: see `upstream_handles()` in p_spec.c. The header of each EV file lists
+ * its own type enumeration against upstream.
  *
  *   P_CrossSpecialLine, one-shot (the number is cleared)
  *     2,3,4 doors; 5,19,36,37,38,40,56,58,59,119,130 floors;
@@ -219,7 +221,8 @@ typedef struct p_sector {
  *   doorRaiseIn5Mins        sector special 14
  *   secrets                 sector special 9, also added to totalSecrets
  *   unsupportedSectorSpecial a nonzero sector special with no spawn
- *   unsupportedLineSpecial  a trigger whose EV function does not exist here
+ *   unsupportedLineSpecial  a trigger whose number upstream's function acts on
+ *                           but this port has no EV for
  *   deferredLineSpecial     a trigger whose EV exists but does something later
  *   lineScrolls             line special 48, P_UpdateSpecials' job
  *   deathmatchSpecials      P_SpawnDeathmatchSpecials' counter (see p_spec.c)
@@ -234,6 +237,9 @@ typedef struct p_sector {
  *   adjacentOverflow        a sector with more than 20 neighbours
  *   triggers                p_trigger_special_line() calls that ran an EV
  *   triggersRefused         a trigger refused by a mode/player check
+ *   useLineHits             P_UseLines() dispatches that reached a special line
+ *                           (P_UseLines' PTR_UseTraverse answer, independent of
+ *                           whether the EV then did anything)
  */
 typedef struct p_spec_stats {
     uint32_t spawned;
@@ -258,7 +264,49 @@ typedef struct p_spec_stats {
     uint32_t adjacentOverflow;
     uint32_t triggers;
     uint32_t triggersRefused;
+    uint32_t useLineHits;
 } p_spec_stats_t;
+
+/*
+ * The distinct line-special record (D4.4).
+ *
+ * `unsupportedLineSpecial` answers "how many triggers had no EV"; it cannot say
+ * which special numbers, and a run that reaches a line with no handler is not
+ * upstream's world after the first one, however coherent its counters look. This
+ * is a small, caller-owned log of the set, one entry per distinct
+ * (special, trigger kind), with the first tic it was reached and the line that
+ * carried it.
+ *
+ * `unsupported` separates the two cases that a single counter conflates:
+ *
+ *   1  upstream's trigger function acts on this number and this port has no EV
+ *      for it: a real fidelity gap.
+ *   0  upstream's trigger function does not name this number either, so doing
+ *      nothing is the faithful answer. Recorded as evidence, not counted as a
+ *      gap.
+ *
+ * Like p_action_trace_t it costs the firmware no storage of its own:
+ * p_mobj_context_t carries one pointer (NULL in every shipped build) and the
+ * table belongs to the caller. `tic` is the caller's current tic, set before each
+ * world tic.
+ */
+#define P_SPEC_UNSUPPORTED_MAX 32
+
+typedef struct p_spec_trace_entry {
+    int16_t special;
+    int16_t kind;      /* the p_trigger_kind_t that reached it */
+    uint16_t line;
+    uint8_t unsupported; /* see above */
+    uint32_t firstTic;
+    uint32_t hits;     /* events that reached this (special, kind) */
+} p_spec_trace_entry_t;
+
+typedef struct p_spec_trace {
+    uint32_t tic;      /* the caller's current tic, set before each world tic */
+    uint32_t count;    /* distinct (special, kind) pairs recorded */
+    uint32_t overflow; /* distinct pairs not recorded: the table was full */
+    p_spec_trace_entry_t entries[P_SPEC_UNSUPPORTED_MAX];
+} p_spec_trace_t;
 
 /* --- Error codes ---------------------------------------------------------- */
 

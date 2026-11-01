@@ -2918,17 +2918,41 @@ def run_tic(level: SpecLevel) -> None:
 # --- The trigger script -----------------------------------------------------
 
 USE_SPECIALS = {
-    1, 9, 11, 14, 15, 18, 20, 21, 23, 26, 27, 28, 29, 31, 32, 33, 34, 41, 42,
-    43, 45, 49, 50, 51, 55, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,
+    1, 7, 9, 11, 14, 15, 18, 20, 21, 23, 26, 27, 28, 29, 31, 32, 33, 34, 41,
+    42, 43, 45, 49, 50, 51, 55, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,
     99, 101, 102, 103, 111, 112, 113, 114, 115, 116, 117, 118, 122, 123, 127,
     131, 132, 133, 134, 135, 136, 137, 138, 139, 140,
 }
 
 MANUAL_DOORS = {1, 26, 27, 28, 31, 32, 33, 34, 117, 118}
 
+# linuxdoom-1.10's three trigger switches, copied whole. A number outside the
+# table for a kind is a no-op upstream -- P_CrossSpecialLine falls out of its
+# switch, P_UseSpecialLine returns true without acting, P_ShootSpecialLine
+# returns -- so a port that does nothing is faithful. Only a number *inside* a
+# table that the port cannot execute is an unsupported special.
+CROSS_SPECIALS = {
+    2, 3, 4, 5, 6, 8, 10, 12, 13, 16, 17, 19, 22, 25, 30, 35, 36, 37, 38, 39,
+    40, 44, 52, 53, 54, 56, 57, 58, 59, 72, 73, 74, 75, 76, 77, 79, 80, 81,
+    82, 83, 84, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 100, 104,
+    105, 106, 107, 108, 109, 110, 119, 120, 121, 124, 125, 126, 128, 129, 130,
+    141,
+}
+SHOOT_SPECIALS = {24, 46, 47}
+UPSTREAM_SPECIALS = {
+    "use": USE_SPECIALS,
+    "cross": CROSS_SPECIALS,
+    "shoot": SHOOT_SPECIALS,
+}
+
 
 def trigger_kind_for(special: int) -> str:
     return "use" if special in USE_SPECIALS else "cross"
+
+
+def upstream_handles(kind: str, special: int) -> bool:
+    """Does linuxdoom-1.10's trigger function act on this number at all?"""
+    return special in UPSTREAM_SPECIALS[kind]
 
 
 def _trigger_special_line(level: SpecLevel, line_index: int, kind: str,
@@ -3003,7 +3027,8 @@ def _trigger_special_line(level: SpecLevel, line_index: int, kind: str,
             run_effect(level, line_index, button[special])
             level.stats["deferredLine"] += 1
             return 1
-        level.stats["unsupportedLine"] += 1
+        if upstream_handles("use", special):
+            level.stats["unsupportedLine"] += 1
         return 0
 
     # CROSS
@@ -3061,7 +3086,8 @@ def _trigger_special_line(level: SpecLevel, line_index: int, kind: str,
     if special in retrigger:
         run_effect(level, line_index, retrigger[special])
         return 1
-    level.stats["unsupportedLine"] += 1
+    if upstream_handles("cross", special):
+        level.stats["unsupportedLine"] += 1
     return 0
 
 

@@ -494,6 +494,107 @@ static void consume_line(struct p_level* level, uint16_t lineIndex) {
     }
 }
 
+/*
+ * Does upstream's trigger function act on this number?
+ *
+ * This is the line between "a handler this port has not written" and "upstream
+ * does nothing here". P_CrossSpecialLine, P_UseSpecialLine and
+ * P_ShootSpecialLine each switch over a fixed set; a number outside it is a
+ * no-op -- P_CrossSpecialLine falls out of the switch, and P_UseSpecialLine
+ * even returns true without doing anything -- so a port that also does nothing
+ * is faithful and must not be counted as missing. Each list is copied from
+ * linuxdoom-1.10's switch, in ascending order.
+ */
+static int upstream_handles(p_trigger_kind_t kind, int16_t special) {
+    if (kind == P_TRIGGER_SHOOT) {
+        switch (special) {
+            case 24:
+            case 46:
+            case 47:
+                return 1;
+            default:
+                return 0;
+        }
+    }
+    if (kind == P_TRIGGER_USE) {
+        switch (special) {
+            /* manuals */
+            case 1: case 26: case 27: case 28: case 31: case 32: case 33:
+            case 34: case 117: case 118:
+            /* switches and buttons */
+            case 7: case 9: case 11: case 14: case 15: case 18: case 20:
+            case 21: case 23: case 29: case 41: case 42: case 43: case 45:
+            case 49: case 50: case 51: case 55: case 60: case 61: case 62:
+            case 63: case 64: case 65: case 66: case 67: case 68: case 69:
+            case 70: case 71: case 99: case 101: case 102: case 103: case 111:
+            case 112: case 113: case 114: case 115: case 116: case 122:
+            case 123: case 127: case 131: case 132: case 133: case 134:
+            case 135: case 136: case 137: case 138: case 139: case 140:
+                return 1;
+            default:
+                return 0;
+        }
+    }
+    switch (special) {
+        case 2: case 3: case 4: case 5: case 6: case 8: case 10: case 12:
+        case 13: case 16: case 17: case 19: case 22: case 25: case 30:
+        case 35: case 36: case 37: case 38: case 39: case 40: case 44:
+        case 52: case 53: case 54: case 56: case 57: case 58: case 59:
+        case 72: case 73: case 74: case 75: case 76: case 77: case 79:
+        case 80: case 81: case 82: case 83: case 84: case 86: case 87:
+        case 88: case 89: case 90: case 91: case 92: case 93: case 94:
+        case 95: case 96: case 97: case 98: case 100: case 104: case 105:
+        case 106: case 107: case 108: case 109: case 110: case 119:
+        case 120: case 121: case 124: case 125: case 126: case 128:
+        case 129: case 130: case 141:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/*
+ * Records a trigger that reached a line special this port does not implement.
+ * The entry is marked `unsupported` only when upstream's trigger function acts
+ * on the number; a number upstream ignores is recorded with the flag clear,
+ * because doing nothing is its faithful answer and it must not be counted as a
+ * missing handler. The first tic a pair is reached wins; later hits only add to
+ * `hits`. A full table is reported through `overflow` instead of being silently
+ * dropped.
+ */
+static void note_line_special(struct p_level* level, uint16_t lineIndex,
+                              int16_t special, p_trigger_kind_t kind) {
+    p_spec_trace_t* trace;
+    const int unsupported = upstream_handles(kind, special);
+    uint32_t index;
+
+    if (unsupported) {
+        level->specStats.unsupportedLineSpecial += 1u;
+    }
+    trace = level->context.specTrace;
+    if (trace == NULL) {
+        return;
+    }
+    for (index = 0u; index < trace->count; ++index) {
+        if (trace->entries[index].special == special &&
+            trace->entries[index].kind == (int16_t)kind) {
+            trace->entries[index].hits += 1u;
+            return;
+        }
+    }
+    if (trace->count >= (uint32_t)P_SPEC_UNSUPPORTED_MAX) {
+        trace->overflow += 1u;
+        return;
+    }
+    trace->entries[trace->count].special = special;
+    trace->entries[trace->count].kind = (int16_t)kind;
+    trace->entries[trace->count].line = lineIndex;
+    trace->entries[trace->count].unsupported = (uint8_t)unsupported;
+    trace->entries[trace->count].firstTic = trace->tic;
+    trace->entries[trace->count].hits = 1u;
+    trace->count += 1u;
+}
+
 /* The short list a non-player thing may cross (P_CrossSpecialLine). */
 static int thing_can_cross(int16_t special) {
     switch (special) {
@@ -753,8 +854,9 @@ static int trigger_cross(struct p_level* level, uint16_t lineIndex,
             return 1;
 
         default:
-            /* 8/100 stairs, 39/97/125/126 teleports, 52/124 exits, 48 scroll. */
-            level->specStats.unsupportedLineSpecial += 1u;
+            /* 8/100 stairs, 39/97/125/126 teleports, 52/124 exits; 48 scroll, and
+             * every number upstream's cross switch does not name, do nothing. */
+            note_line_special(level, lineIndex, special, P_TRIGGER_CROSS);
             return 0;
     }
 }
@@ -1001,11 +1103,11 @@ static int trigger_use(struct p_level* level, uint16_t lineIndex, int byPlayer) 
         /* Stairs (7, 127) have no EV here. */
         case 7:
         case 127:
-            level->specStats.unsupportedLineSpecial += 1u;
+            note_line_special(level, lineIndex, special, P_TRIGGER_USE);
             return 0;
 
         default:
-            level->specStats.unsupportedLineSpecial += 1u;
+            note_line_special(level, lineIndex, special, P_TRIGGER_USE);
             return 0;
     }
 }
@@ -1033,7 +1135,7 @@ static int trigger_shoot(struct p_level* level, uint16_t lineIndex,
             level->specStats.deferredLineSpecial += 1u;
             return 1;
         default:
-            level->specStats.unsupportedLineSpecial += 1u;
+            note_line_special(level, lineIndex, special, P_TRIGGER_SHOOT);
             return 0;
     }
 }

@@ -300,6 +300,12 @@ struct p_level;
  *
  *   useTriggers            use presses that triggered a special line.
  *   useTriggered           this tic's answer, cleared at the top of the think.
+ *   usePresses             P_UseLines() calls the live player actually made. A
+ *                          demo's USE edges are not all presses: P_DeathThink
+ *                          consumes its own BT_USE, and a player killed earlier in
+ *                          the same tic never reaches P_PlayerThink's live body.
+ *                          The gate compares this against the demo's edges and
+ *                          uses it to place each press's ray.
  *   silentSounds           every S_* call the weapon actions and P_FireWeapon make.
  *                          S2 puts audio entirely outside this port, so there is no
  *                          sound to make; the count is how "the shot was loud" and
@@ -360,6 +366,7 @@ typedef struct p_player {
     uint8_t pspritesStarted;
 
     uint32_t useTriggers;
+    uint32_t usePresses;
     uint32_t silentSounds;
     uint32_t noiseAlerts;
 } p_player_t;

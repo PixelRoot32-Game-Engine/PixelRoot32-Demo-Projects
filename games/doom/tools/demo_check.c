@@ -650,6 +650,7 @@ int main(int argc, char** argv) {
     char mapName[8];
     run_totals_t totals;
     p_action_trace_t missingTrace;
+    p_spec_trace_t unsupportedTrace;
     sha256_t commandHash;
     sha256_t chainHash;
     sha256_t checkHash;
@@ -658,6 +659,8 @@ int main(int argc, char** argv) {
     uint32_t tic = 0;
     uint32_t missingBefore = 0;
     uint32_t specBefore[4] = {0u, 0u, 0u, 0u};
+    uint32_t pressBefore = 0;
+    uint32_t useLineHitsBefore = 0;
     fixed_t prevX = 0;
     fixed_t prevY = 0;
     angle_t prevAngle = 0;
@@ -813,6 +816,11 @@ int main(int argc, char** argv) {
      * also be recorded (at tic 0); the spawn path itself runs none. */
     memset(&missingTrace, 0, sizeof missingTrace);
     level.context.actionTrace = &missingTrace;
+    /* The distinct unsupported-line-special set, the same arrangement: a
+     * caller-owned table the trigger dispatch fills in, installed before the
+     * spawn scan so a special reached during setup would also be recorded. */
+    memset(&unsupportedTrace, 0, sizeof unsupportedTrace);
+    level.context.specTrace = &unsupportedTrace;
     if (p_spawn_specials(&level) != P_SPEC_OK) {
         fprintf(stderr, "demo_check: %s: p_spawn_specials refused the level\n",
                 mapName);
@@ -859,6 +867,8 @@ int main(int argc, char** argv) {
     specBefore[1] = level.specStats.unsupportedLineSpecial;
     specBefore[2] = level.specStats.deferredLineSpecial;
     specBefore[3] = level.specStats.lineScrolls;
+    pressBefore = level.playerState.usePresses;
+    useLineHitsBefore = level.specStats.useLineHits;
 
     /* One perturb, and it is the honest one: the stream is shifted by one tic
      * against the world, so every command lands on the wrong world state. If the
@@ -932,6 +942,7 @@ int main(int argc, char** argv) {
                   prevReaction == 0;
 
         missingTrace.tic = tic;
+        unsupportedTrace.tic = tic;
         if (p_level_tic(&level, &cmd, NULL) != P_TICK_OK) {
             fprintf(stderr, "demo_check: the world refused tic %u\n", tic);
             p_level_shutdown(&level);
@@ -1085,6 +1096,25 @@ int main(int argc, char** argv) {
         prevReady = level.playerState.readyweapon;
         prevSector = sector;
 
+        /* --- the press's own evidence ---
+         *
+         * P_UseLines is upstream's PTR_UseTraverse: it walks the USERANGE
+         * intercepts, stops at the first special line (dispatching it), and a
+         * non-special line with no opening stops it too. `usePresses` says the
+         * live player made a press this tic -- a death press never reaches
+         * P_PlayerThink's body -- and `useLineHits` says the walk reached a
+         * special line, whether or not its EV did anything. Tools/demo_check.py
+         * re-walks the same 64-unit ray from the WAD's own geometry and these
+         * two numbers are its independent comparison. */
+        if (level.playerState.usePresses != pressBefore) {
+            printf("PRESS n=%u x=%ld y=%ld angle=%lu reached=%u\n", tic,
+                   (long)level.player->x, (long)level.player->y,
+                   (unsigned long)level.player->angle,
+                   level.specStats.useLineHits != useLineHitsBefore ? 1u : 0u);
+            pressBefore = level.playerState.usePresses;
+        }
+        useLineHitsBefore = level.specStats.useLineHits;
+
         /* --- G_Ticker's reborn step ---
          *
          * `if (playeringame[i] && players[i].playerstate == PST_REBORN)
@@ -1124,6 +1154,8 @@ int main(int argc, char** argv) {
             specBefore[1] = level.specStats.unsupportedLineSpecial;
             specBefore[2] = level.specStats.deferredLineSpecial;
             specBefore[3] = level.specStats.lineScrolls;
+            pressBefore = level.playerState.usePresses;
+            useLineHitsBefore = level.specStats.useLineHits;
             /* The avatar is a different mobj at the map's start: the step this
              * tic did not make is the level change, not a teleport, and the next
              * tic compares against the respawned player. */
@@ -1230,23 +1262,87 @@ int main(int argc, char** argv) {
         }
         printf("\n");
     }
+    {
+        uint32_t entry;
+        uint32_t unsupportedCount = 0u;
+        uint32_t ignoredCount = 0u;
+
+        /* Two sets, because the counter conflated them. `SPECUNSUP` is the
+         * fidelity gap: upstream's trigger function names the number and this
+         * port has no EV for it. `IGNORED` is the faithful no-op: upstream's
+         * function does not name it either, so doing nothing is correct. One
+         * token per distinct (special, kind): `<special>@<tic>:<line>:<kind>x<hits>`. */
+        printf("SPECUNSUP count=");
+        for (entry = 0u; entry < unsupportedTrace.count; ++entry) {
+            if (unsupportedTrace.entries[entry].unsupported != 0u) {
+                unsupportedCount += 1u;
+            }
+        }
+        printf("%u overflow=%u", unsupportedCount, unsupportedTrace.overflow);
+        for (entry = 0u; entry < unsupportedTrace.count; ++entry) {
+            const p_spec_trace_entry_t* unsupported =
+                &unsupportedTrace.entries[entry];
+            const char* kind;
+
+            if (unsupported->unsupported == 0u) {
+                continue;
+            }
+            kind = unsupported->kind == (int16_t)P_TRIGGER_USE
+                       ? "use"
+                       : (unsupported->kind == (int16_t)P_TRIGGER_SHOOT ? "shoot"
+                                                                        : "cross");
+            printf(" %d@%u:%u:%sx%u", (int)unsupported->special,
+                   unsupported->firstTic, (unsigned)unsupported->line, kind,
+                   unsupported->hits);
+        }
+        printf("\n");
+
+        printf("IGNORED count=");
+        for (entry = 0u; entry < unsupportedTrace.count; ++entry) {
+            if (unsupportedTrace.entries[entry].unsupported == 0u) {
+                ignoredCount += 1u;
+            }
+        }
+        printf("%u", ignoredCount);
+        for (entry = 0u; entry < unsupportedTrace.count; ++entry) {
+            const p_spec_trace_entry_t* ignored = &unsupportedTrace.entries[entry];
+            const char* kind;
+
+            if (ignored->unsupported != 0u) {
+                continue;
+            }
+            kind = ignored->kind == (int16_t)P_TRIGGER_USE
+                       ? "use"
+                       : (ignored->kind == (int16_t)P_TRIGGER_SHOOT ? "shoot"
+                                                                    : "cross");
+            printf(" %d@%u:%u:%sx%u", (int)ignored->special, ignored->firstTic,
+                   (unsigned)ignored->line, kind, ignored->hits);
+        }
+        printf("\n");
+    }
 
     {
         /* "Faithful" in the only sense this harness can assert without a
-         * reference: every action the run reached is implemented, and the stream
-         * is played on a live player -- which, for a demo that dies, means every
-         * death was answered by a reload (G_DoReborn -> ga_loadlevel) and the
-         * player is PST_LIVE at the last command. A run that ends DEAD or
-         * PST_REBORN is a frozen corpse with commands still arriving, and that is
-         * not what vanilla's G_CheckDemoStatus-less death does. */
+         * reference: every action the run reached is implemented, no trigger
+         * reached a line special with no EV handler (a run that does is no
+         * longer upstream's world after the first one, whatever its coherence
+         * counters say), and the stream is played on a live player -- which, for
+         * a demo that dies, means every death was answered by a reload
+         * (G_DoReborn -> ga_loadlevel) and the player is PST_LIVE at the last
+         * command. A run that ends DEAD or PST_REBORN is a frozen corpse with
+         * commands still arriving, and that is not what vanilla's
+         * G_CheckDemoStatus-less death does. */
         const int alive = level.playerState.playerstate == P_PST_LIVE;
+        const int unsupported = totals.spec[1] != 0u;
 
         printf("ALIVE alive=%d lastinput=%ld deathtic=%ld reborns=%u\n", alive,
                (long)totals.lastInputTic, (long)totals.deathTic,
                (unsigned)totals.reloads);
         printf("VERDICT faithful=%d reason=%s\n",
-               totals.missing == 0u && alive != 0 ? 1 : 0,
-               totals.missing != 0u ? "action" : (alive != 0 ? "none" : "death"));
+               totals.missing == 0u && alive != 0 && !unsupported ? 1 : 0,
+               totals.missing != 0u ? "action"
+                                    : (alive == 0 ? "death"
+                                                  : (unsupported ? "special" : "none")));
     }
 
     p_level_shutdown(&level);

@@ -230,6 +230,12 @@ typedef struct p_mobj_context {
      * tools/demo_check.c points it at a caller-owned table to learn which
      * actions a demo reaches, at which tic, and on which type. */
     struct p_action_trace* actionTrace;
+    /* D4.4: an optional distinct unsupported-line-special trace (p_spec.h).
+     * The fifth harness hook of the same kind: NULL costs nothing and is what
+     * every shipped build passes, while tools/demo_check.c points it at a
+     * caller-owned table to learn which line specials a run reaches with no EV
+     * handler, at which tic, and on which line. */
+    struct p_spec_trace* specTrace;
 } p_mobj_context_t;
 /*
  * One map object.

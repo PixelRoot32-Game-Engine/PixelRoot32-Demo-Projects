@@ -1354,8 +1354,14 @@ void p_use_lines(p_mobj_context_t* world, r_mobj_t* mobj) {
 
             /* Upstream computes the user's side and passes it to
              * P_UseSpecialLine; this port's dispatch has no side argument, so
-             * the crossing itself is the decision. */
+             * the crossing itself is the decision. `useLineHits` is PTR_UseTraverse's
+             * answer -- a special line was reached -- and is recorded apart from
+             * `triggers` because an EV that declines still means the ray got
+             * there. */
             if (world->level != NULL) {
+                if (world->specStats != NULL) {
+                    world->specStats->useLineHits += 1u;
+                }
                 (void)p_trigger_special_line(world->level, bestLine,
                                              P_TRIGGER_USE, 1);
             }

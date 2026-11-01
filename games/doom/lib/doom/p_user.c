@@ -261,6 +261,7 @@ static void p_death_think(p_level_t* level, p_player_t* player) {
 static void p_player_use_lines(p_level_t* level, p_player_t* player) {
     const uint32_t before = level->specStats.triggers;
 
+    player->usePresses += 1u;
     p_use_lines(&level->context, player->mo);
 
     if (level->specStats.triggers != before) {

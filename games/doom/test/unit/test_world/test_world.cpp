@@ -1502,6 +1502,67 @@ void test_specs_secret_sectors_and_unsupported_specials_are_counted(void) {
     TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_LIGHTFLASH));
 }
 
+void test_specs_ignored_trigger_is_not_a_missing_handler(void) {
+    // Special 1 is a manual door: P_UseSpecialLine has a case for it but
+    // P_CrossSpecialLine does not, so a player walking over it is a no-op
+    // upstream. The port must do nothing and must not count it as a gap.
+    SpecFixture fixture({{0, 0, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 1, 0, 1, 0, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    p_spec_trace_t trace{};
+    fixture.level.context.specTrace = &trace;
+    trace.tic = 7u;
+
+    TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, 1));
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.level.specStats.unsupportedLineSpecial);
+    TEST_ASSERT_EQUAL_UINT32(1u, trace.count);
+    TEST_ASSERT_EQUAL_INT16(1, trace.entries[0].special);
+    TEST_ASSERT_EQUAL_INT16(static_cast<i16>(P_TRIGGER_CROSS),
+                            trace.entries[0].kind);
+    TEST_ASSERT_EQUAL_UINT16(0u, trace.entries[0].line);
+    TEST_ASSERT_EQUAL_UINT32(7u, trace.entries[0].firstTic);
+    TEST_ASSERT_EQUAL_UINT8(0u, trace.entries[0].unsupported);
+    TEST_ASSERT_EQUAL_UINT32(1u, trace.entries[0].hits);
+    TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_DOOR));
+}
+
+void test_specs_unhandled_upstream_special_is_counted_once_in_the_set(void) {
+    // 8 is build-stairs and 7 is build-stairs on a switch: upstream acts on
+    // both, this port has no EV. They are the gap the counter names, and the
+    // set is distinct (special, kind) with the first line and tic.
+    SpecFixture fixture({{0, 0, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 8, 1, 0, 1, true);
+    fixture.builder.addLine(4, 7, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    p_spec_trace_t trace{};
+    fixture.level.context.specTrace = &trace;
+
+    trace.tic = 3u;
+    TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, 1));
+    trace.tic = 9u;
+    TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, 1));
+    TEST_ASSERT_EQUAL_UINT32(2u, fixture.level.specStats.unsupportedLineSpecial);
+    TEST_ASSERT_EQUAL_UINT32(1u, trace.count);
+    TEST_ASSERT_EQUAL_INT16(8, trace.entries[0].special);
+    TEST_ASSERT_EQUAL_UINT32(3u, trace.entries[0].firstTic);
+    TEST_ASSERT_EQUAL_UINT32(2u, trace.entries[0].hits);
+
+    TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 1,
+                                                    P_TRIGGER_USE, 1));
+    TEST_ASSERT_EQUAL_UINT32(3u, fixture.level.specStats.unsupportedLineSpecial);
+    TEST_ASSERT_EQUAL_UINT32(2u, trace.count);
+    TEST_ASSERT_EQUAL_INT16(7, trace.entries[1].special);
+    TEST_ASSERT_EQUAL_INT16(static_cast<i16>(P_TRIGGER_USE),
+                            trace.entries[1].kind);
+    TEST_ASSERT_EQUAL_UINT16(1u, trace.entries[1].line);
+    TEST_ASSERT_EQUAL_UINT8(1u, trace.entries[1].unsupported);
+}
+
 void test_specs_spawn_order_is_sector_index_order(void) {
     // 13 (sync fast strobe) on sector 0, 9 (secret) on 1, 1 (flash) on 2,
     // 8 (glow) on 3: the thinkers must appear as 0, 2, 3.
@@ -2903,6 +2964,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_specs_tag_door_twice_creates_one_thinker);
     RUN_TEST(test_specs_manual_door_twice_reverses_instead_of_duplicating);
     RUN_TEST(test_specs_secret_sectors_and_unsupported_specials_are_counted);
+    RUN_TEST(test_specs_ignored_trigger_is_not_a_missing_handler);
+    RUN_TEST(test_specs_unhandled_upstream_special_is_counted_once_in_the_set);
     RUN_TEST(test_specs_spawn_order_is_sector_index_order);
     RUN_TEST(test_specs_p_change_sector_counts_and_answers_clear);
     RUN_TEST(test_line_record_exposes_special_and_tag);
