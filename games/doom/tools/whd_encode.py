@@ -74,12 +74,13 @@ DEFLATE_WINDOW_BITS = -15
 DEFLATE_MEMORY_LEVEL = 9
 
 # The partition the shipped container is written to: partitions_wad.csv gives
-# `wad` 0x0C0000..0x400000 (T36), 3,407,872 B. D3.11 shrank the app slot to
+# `wad` 0x0B0000..0x400000 (T38), 3,473,408 B. D3.11 shrank the app slot to
 # 768 KB so the container gained 196,608 B without dropping a single Phase-5
-# lump; T36 took another 65,536 B from the app (now 720,896 B) for the HUD art.
+# lump; T36 took another 65,536 B from the app (720,896 B) for the HUD art and T38
+# another 65,536 B (now 655,360 B) for the weapon art.
 # --budget overrides it for a probe of some other layout; every answer below is
 # measured against whatever it is given.
-FLASH_BUDGET = 3_407_872
+FLASH_BUDGET = 3_473_408
 
 WAD_HEADER_SIZE = 12
 WAD_DIRECTORY_ENTRY_SIZE = 16
@@ -1096,15 +1097,16 @@ dropping and baking (both default off; the command records the choice):
   --sprite-list PATH  the sprite lumps the bake keeps: the generated .inc form
                       or one name per line.
   --raw-list PATH     --raw for every name in a file, one per line. The shipped
-                      container passes tools/hud_lumps.txt, the 86 status-bar
+                      container passes tools/hud_lumps.txt (and tools/weapon_lumps.txt, the 28 psprite
+                      patches of T38), the 86 status-bar
                       patches D5.1 draws (T36): raw and 4-byte aligned, they are
                       read in place from the mapped partition by name, with no
                       manifest slot and no RAM.
   --sky NAME          the sky texture to bake (default SKY1).
 
 budget and proofs:
-  --budget BYTES   the wad partition the container must fit (default 3,407,872 B,
-                   the shipped partitions_wad.csv: 0x0C0000..0x400000). --stats
+  --budget BYTES   the wad partition the container must fit (default 3,473,408 B,
+                   the shipped partitions_wad.csv: 0x0B0000..0x400000). --stats
                    reports total, spare and what each level would cost if it
                    were baked alone.
   --baked-capacity ENTRIES

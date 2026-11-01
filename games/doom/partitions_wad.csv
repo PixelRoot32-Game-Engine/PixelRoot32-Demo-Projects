@@ -1,6 +1,6 @@
 # Partition table for env:esp32dev_ILI9341_wad and every container-reading build
 # (D3.10; the layout D0.5 wrote down, D3.10 repartitioned, D3.11 widened and T36
-# moved another 64 KB from the app to the container).
+# and T38 each moved another 64 KB from the app to the container).
 #
 # The demo's own copy of the table. The bench keeps its own file because it is a
 # separate PlatformIO project with its own 2 MB container probe; this copy exists
@@ -8,10 +8,10 @@
 # this episode layout is made here, not in the bench.
 #
 #   nvs       0x009000 .. 0x00F000        24 KB  (unchanged; the bootloader's)
-#   factory   0x010000 .. 0x0C0000       720,896 B  app (0xB0000)
-#   wad       0x0C0000 .. 0x400000     3,407,872 B  the mmap'd PWHD container
+#   factory   0x010000 .. 0x0B0000       655,360 B  app (0xA0000)
+#   wad       0x0B0000 .. 0x400000     3,473,408 B  the mmap'd PWHD container
 #
-# WHY 720,896 B OF APP AND 3,407,872 B OF CONTAINER
+# WHY 655,360 B OF APP AND 3,473,408 B OF CONTAINER
 #
 # D3.8 measured the shipped image at 356,837 B in a 1,984 KB slot. D3.10 moved
 # 1 MB to the container so the whole episode fit, at the price of dropping 447
@@ -27,7 +27,16 @@
 # container gains 65,536 B, leaving 63,632 B spare. The app keeps 168,896 B of
 # headroom over the 552,000 B image (23.4 %).
 #
-# The split is on a 64 KB boundary: 0x0C0000 is exactly 12 x 64 KB, so the
+# T38 prepares D5.1's weapon widget. The 28 psprite patches the shareware
+# episode can show (PUNG, PISG/PISF, SHTG/SHTF, CHGG/CHGF, MISG/MISF, SAWG; the
+# IWAD has no plasma, BFG or super-shotgun art) are 141,444 B. They already
+# sat in the container deflated; kept raw by name, so drawing them needs no zone,
+# the container becomes 3,413,032 B, which is 5,160 B OVER the previous
+# 3,407,872 B partition. So the app gives up another 64 KB (720,896 B -> 655,360 B)
+# and the container gains 65,536 B, leaving 60,376 B spare. The app image is
+# about 556,000 B, so it keeps about 99,000 B of headroom (15 %).
+#
+# The split is on a 64 KB boundary: 0x0B0000 is exactly 11 x 64 KB, so the
 # container starts page-aligned and the table still ends exactly at 0x400000.
 # Every offset and size in the factory and wad rows is 64 KB aligned, and the
 # only unaligned row is `nvs`, whose 0x9000 offset the bootloader fixes and which
@@ -42,8 +51,8 @@
 #
 # Subtype 0x40 is the first custom data subtype. WhdSource finds the partition
 # by label, so the number only has to be unique in this table. The container is
-# flashed at 0x0C0000; see tools/make_container.ps1 for the exact command.
+# flashed at 0x0B0000; see tools/make_container.ps1 for the exact command.
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,     0x9000,   0x6000,
-factory,  app,  factory, 0x10000,  0xB0000,
-wad,      data, 0x40,    0xC0000,  0x340000,
+factory,  app,  factory, 0x10000,  0xA0000,
+wad,      data, 0x40,    0xB0000,  0x350000,
