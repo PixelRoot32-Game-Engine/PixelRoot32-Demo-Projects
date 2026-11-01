@@ -90,11 +90,14 @@ Then turn it into the container the firmware reads, from **`games/doom`**:
 .\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD
 ```
 
-It writes `tools/DOOM1.whd` -- 3,211,696 B of the `wad` partition's 3,342,336 --
+It writes `tools/DOOM1.whd` -- 3,293,368 B of the `wad` partition's 3,342,336 --
 and proves the result four ways: the WAD rebuilds byte for byte, the container
 parses, all nine levels open through `lib/doom/doom_map.c`, and every baked
-texture recomposes from the source WAD's patches. `-Flash` writes it to the
-board at 0x0D0000 after building it:
+texture recomposes from the source WAD's patches. The encode also reads
+`kBakedCapacity` out of `src/doomc/BakedGraphics.h` and refuses a bake whose
+manifest holds more records than the firmware can: that budget is separate from
+the flash one, and a container past it is rejected whole at boot. `-Flash`
+writes it to the board at 0x0D0000 after building it:
 
 ```powershell
 .\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD -Flash -Port COM4
