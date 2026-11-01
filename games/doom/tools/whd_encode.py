@@ -1101,6 +1101,13 @@ budget and proofs:
                    the shipped partitions_wad.csv: 0x0D0000..0x400000). --stats
                    reports total, spare and what each level would cost if it
                    were baked alone.
+  --baked-capacity ENTRIES
+                   the firmware's manifest capacity (kBakedCapacity in
+                   src/doomc/BakedGraphics.h). A bake holding more records fails
+                   here instead of booting to the shell with
+                   reason=baked,code=too_many: fitting the wad partition does not
+                   mean the adapter can hold the manifest. tools/make_container.ps1
+                   reads the constant from that header and passes it.
 
 --check:
   a WAD input is rebuilt and every lump is compared byte for byte, raw ones
@@ -1177,6 +1184,12 @@ exit codes:
     parser.add_argument("--budget", type=int, default=FLASH_BUDGET, metavar="BYTES",
                         help=f"the wad partition the container must fit (default "
                              f"{FLASH_BUDGET:,} B, the shipped partitions_wad.csv)")
+    parser.add_argument("--baked-capacity", type=int, default=None, metavar="ENTRIES",
+                        help="fail when the bake's manifest holds more than this many "
+                             "records: the firmware's kBakedCapacity, from "
+                             "src/doomc/BakedGraphics.h. tools/make_container.ps1 "
+                             "reads it from the header and passes it; a bake past it "
+                             "is refused at boot with reason=baked,code=too_many")
     parser.add_argument("--sprite-list", type=Path, metavar="PATH",
                         help="file naming the sprite lumps --bake keeps: the generated "
                              ".inc form or one name per line")
@@ -1275,12 +1288,38 @@ def parse_level_line(line: str) -> tuple[str, str, dict[str, tuple[int, int]]] |
     return fields[1], status, measured
 
 
+def assert_baked_capacity(count: int, capacity: int | None) -> None:
+    """Refuses a bake the firmware's manifest cannot hold (T27).
+
+    Fitting the wad partition is only half the budget. The adapter also holds a
+    fixed number of manifest records -- `kBakedCapacity` in
+    src/doomc/BakedGraphics.h -- and a container past it is refused whole at
+    boot with `reason=baked,code=too_many`, which leaves the panel on the shell.
+    T25 shipped exactly that: 352 entries into a 256-entry adapter, with 48,968 B
+    of flash to spare, because no tool compared the two budgets. This is the
+    comparison, and the encode is the last point before a flash where it can run.
+
+    @param count    how many records the bake's manifest holds.
+    @param capacity the firmware's capacity, or None to skip the check.
+    """
+    if capacity is None or count <= capacity:
+        return
+    raise InputError(
+        f"the bake's manifest holds {count:,} records and the firmware holds "
+        f"{capacity:,} (kBakedCapacity): {count - capacity:,} over. A container "
+        f"past that capacity is refused whole at boot "
+        f"(reason=baked,code=too_many) no matter how much flash is left. Raise "
+        f"kBakedCapacity in src/doomc/BakedGraphics.h together with its DRAM "
+        f"note, or bake fewer sprite frames.")
+
+
 def check_levels(arguments: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     """``--check-levels``: opens all nine maps out of the container through C."""
     if (arguments.output is not None or arguments.check or arguments.raw
             or arguments.raw_level or arguments.drop_lumps or arguments.drop_level
             or arguments.bake or arguments.sprite_list or arguments.sky is not None
-            or arguments.drop_unused_sprites or arguments.drop_baked_sources):
+            or arguments.drop_unused_sprites or arguments.drop_baked_sources
+            or arguments.baked_capacity is not None):
         parser.error("--check-levels reads a container as it is; it writes nothing "
                      "and selects nothing")
 
@@ -1458,8 +1497,14 @@ def main(argv: list[str] | None = None) -> int:
                                          selection.level_name)
                 wad_kept = kept[:len(kept) - appended_count]
             baked_manifest = next(lump.data for lump in kept if lump.name == bake.MANIFEST_NAME)
+            # The manifest is final here -- drop_baked_sources rebuilt it above --
+            # and this is the only place the record count and the firmware's own
+            # capacity meet, before the container is written and flashed (T27).
+            assert_baked_capacity(len(records), arguments.baked_capacity)
         elif arguments.drop_baked_sources:
             raise InputError("--drop-baked-sources is a bake decision: pass --bake")
+        elif arguments.baked_capacity is not None:
+            raise InputError("--baked-capacity is a bake decision: pass --bake")
     except (InputError, bake.BakeError) as error:
         print(f"whd_encode: {error}", file=sys.stderr)
         return EXIT_INPUT
@@ -1523,10 +1568,11 @@ def check_container(arguments: argparse.Namespace,
     if (arguments.raw or arguments.raw_level or arguments.drop_lumps
             or arguments.drop_level or arguments.bake or arguments.sprite_list
             or arguments.sky is not None or arguments.drop_unused_sprites
-            or arguments.drop_baked_sources):
+            or arguments.drop_baked_sources or arguments.baked_capacity is not None):
         parser.error("--raw, --raw-level, --drop-lumps, --drop-level, --bake, "
-                     "--sprite-list, --drop-unused-sprites and --drop-baked-sources "
-                     "select what to write; a container is checked as it is")
+                     "--sprite-list, --drop-unused-sprites, --drop-baked-sources and "
+                     "--baked-capacity select or gate what to write; a container is "
+                     "checked as it is")
 
     try:
         container = arguments.input.read_bytes()

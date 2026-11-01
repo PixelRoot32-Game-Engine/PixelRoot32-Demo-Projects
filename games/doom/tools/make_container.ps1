@@ -106,6 +106,21 @@ $Budget = 3342336
 $Levels = "E1M1,E1M2,E1M3,E1M4,E1M5,E1M6,E1M7,E1M8,E1M9"
 $Root = Split-Path -Parent $PSScriptRoot
 
+# The firmware holds a fixed number of manifest records -- `kBakedCapacity` in the
+# adapter's header -- and a bake past it fits the flash partition and is still
+# refused whole at boot with `reason=baked,code=too_many`, leaving the panel on
+# the shell. T25 shipped exactly that. The constant is read from the header, so
+# there is one source of truth, and whd_encode.py fails the encode: the mismatch
+# stops here instead of on the device. A header this cannot parse is a build
+# failure, never a silently skipped check.
+$AdapterHeader = Join-Path $Root "src\doomc\BakedGraphics.h"
+$CapacityLine = Select-String -Path $AdapterHeader -Pattern "kBakedCapacity\s*=\s*(\d+)" |
+    Select-Object -First 1
+if ($null -eq $CapacityLine) {
+    throw "kBakedCapacity not found in ${AdapterHeader}: the bake capacity check cannot run"
+}
+$BakedCapacity = [int]$CapacityLine.Matches[0].Groups[1].Value
+
 Push-Location $Root
 try {
     if (-not (Test-Path $Wad)) {
@@ -122,10 +137,11 @@ try {
         "--bake", $Levels,
         "--drop-baked-sources",
         "--sprite-list", "tools/e1m1_sprites.inc",
-        "--budget", $Budget
+        "--budget", $Budget,
+        "--baked-capacity", $BakedCapacity
     )
 
-    Write-Host "== encode: nine levels, every sprite, union bake, 3,342,336 B budget =="
+    Write-Host "== encode: nine levels, every sprite, union bake, 3,342,336 B budget, $BakedCapacity manifest entries =="
     & python tools/whd_encode.py $Wad -o $Out --force @EncodeArgs --stats
     if ($LASTEXITCODE -ne 0) {
         throw "whd_encode.py exited $LASTEXITCODE"
