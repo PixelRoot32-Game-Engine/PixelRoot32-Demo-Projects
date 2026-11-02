@@ -12,16 +12,26 @@
  * tested and diffed without a board, and the mapping into `AudioEvent` lives
  * in DoomAudio.cpp alone.
  *
- * THE NUMBERS IN T45 ARE PLACEHOLDERS, AND THEY SAY SO
+ * WHERE THE NUMBERS COME FROM (T46)
  *
- * T45's job is the layer, not the timbre: every id 1..NUMSFX-1 resolves to a
- * cue with the right shape and the right *character* (a weapon crack is a
- * pulse or a noise burst; a monster's sight is a low pulse; a door is a low
- * creak), and one per id so D6.1's "every shareware id resolves" is true
- * everywhere. T46 replaces the numbers with values derived from the WAD's DS*
- * lumps through tools/sfx_design.py and gates them with tools/sfx_check.py,
- * and it must be able to do that without touching this API: the fields below
- * are what the analysis produces.
+ * T45 shipped legal placeholders grouped by character. T46 replaces them with
+ * values fitted to the WAD's 55 `DS*` lumps by `tools/sfx_design.py`, which
+ * writes `SfxBankTable.inc`. The 53 ids the shareware WAD has no lump for are
+ * fitted from the closest relative in the same family (the donor is named in
+ * `tools/sfx_fit.txt`); no id is left without a cue and no lump is invented.
+ * `tools/sfx_check.py` renders every donated cue through the real APU on the
+ * host and gates the deviation from the original, so the table is measured,
+ * not asserted.
+ *
+ * WHY THE FIT NEEDS THESE FIELDS
+ *
+ * A one-shot's timbre is the waveform plus the envelope. The APU takes ADSR
+ * only through an `InstrumentPreset` (see SfxCueEvent.h), so the four
+ * envelope numbers have to be cue data first: a gunshot is a fast attack and
+ * a long decay, a door creak is a plateau, a pickup is a short plateau with a
+ * tiny release. `noiseShort` selects the APU's 93-step LFSR for a high,
+ * narrow-band hit (the chainsaw's grind, a shotgun's cocking click); without
+ * it the fit could not reproduce the original's centroid.
  *
  * THE 8 -> 4 RULE IS A PURE FUNCTION
  *
@@ -86,9 +96,17 @@ enum class SfxClass : std::uint8_t {
  * `frequencyHz` is the start frequency; `sweepEndHz > 0` is a sweep to that
  * frequency over `durationSec`. For `Noise`, `frequencyHz` is the LFSR clock
  * and `noisePeriod` (0 = derive from the clock) overrides it. `duty` is the
- * pulse duty cycle. `attackSec`/`releaseSec` are the envelope times T46's
- * analysis produces; the Legacy profile applies its own envelope, so T45
- * carries them for the design gate and does not synthesise an ADSR from them.
+ * pulse duty cycle.
+ *
+ * The envelope is ADSR, fitted from the original's 16-segment RMS contour:
+ * `attackSec` is the rise to the first segment at >= 0.8 of the peak,
+ * `decaySec` the fall from the peak to the sustain plateau, `sustain` that
+ * plateau (0..1) and `releaseSec` the final fall to 10 %. The APU caps a
+ * release at 100 ms, so the fit never asks for more. These are cue data, not
+ * APU data: `sfxCueEvent()` copies them into the preset the event carries.
+ *
+ * `noiseShort` selects the APU's 93-step (metallic) LFSR. It is set only for
+ * the aperiodic, high, narrow-band cues T46 classifies as `metallic`.
  *
  * `pitch`/`dutyPoints` are copied into the APU event only when their count is
  * >= 2 (pitch) or >= 1 (duty); a pitch envelope supersedes `sweepEndHz`, which
@@ -103,7 +121,10 @@ struct SfxCue {
     float duty;
     std::uint8_t noisePeriod;
     float attackSec;
+    float decaySec;
+    float sustain;
     float releaseSec;
+    bool noiseShort;
     SfxClass priority;
     SfxPoint pitch[kSfxMaxBreakpoints];
     std::uint8_t pitchCount;

@@ -59,8 +59,9 @@
 
 #if defined(DOOM_AUDIO)
 
+#include "doomc/SfxCueEvent.h"
+
 #include <audio/AudioEngine.h>
-#include <pixelroot32/apu/AudioTypes.h>
 
 namespace {
 
@@ -69,16 +70,12 @@ using doom::doomc::DoomAudioTelemetry;
 using doom::doomc::DoomAudioTelemetrySource;
 using doom::doomc::SfxClass;
 using doom::doomc::SfxCue;
-using doom::doomc::SfxWave;
-using doom::doomc::kSfxMaxBreakpoints;
+using doom::doomc::SfxVoiceScratch;
 using doom::doomc::kSfxVoices;
 using pixelroot32::audio::AudioCommand;
 using pixelroot32::audio::AudioCommandType;
 using pixelroot32::audio::AudioEngine;
 using pixelroot32::audio::AudioEvent;
-using pixelroot32::audio::SfxBreakpoint;
-using pixelroot32::audio::SweepCurve;
-using pixelroot32::audio::WaveType;
 
 /// ApuCore::SFX_VOICE_BASE: the first slot a PLAY_EVENT may use. Written as a
 /// literal because the APU's constants live in the synthesis library and this
@@ -107,12 +104,9 @@ struct Voice {
     SfxClass cls;
     float frequency;
     float sweepEnd;
-    std::uint8_t pitchCount;
-    std::uint8_t dutyCount;
-    /// Per-play copies: the pitch scale is applied here, and the event keeps
-    /// pointers into this entry.
-    SfxBreakpoint pitch[kSfxMaxBreakpoints];
-    SfxBreakpoint duty[kSfxMaxBreakpoints];
+    /// Per-play breakpoint copies: the pitch scale is applied here, and the
+    /// event keeps pointers into this entry.
+    SfxVoiceScratch scratch;
 };
 
 AudioEngine* gEngine = nullptr;
@@ -163,93 +157,6 @@ void submitStop(std::int32_t slot) {
     gEngine->submitCommand(command);
 }
 
-WaveType waveType(SfxWave wave) {
-    switch (wave) {
-        case SfxWave::Pulse:
-            return WaveType::PULSE;
-        case SfxWave::Triangle:
-            return WaveType::TRIANGLE;
-        case SfxWave::Noise:
-            return WaveType::NOISE;
-        case SfxWave::Sine:
-            return WaveType::SINE;
-        case SfxWave::Saw:
-            return WaveType::SAW;
-    }
-    return WaveType::PULSE;
-}
-
-/**
- * @brief Builds the APU event for one cue at one volume/pitch.
- *
- * Field order is why this is named assignment and not a brace list: the event
- * has 15 fields and `preset` sits at position 7, after `noisePeriod`. A
- * positional initialiser past `duty` silently shifts every field after it
- * (pixelroot32-audio skill, gotcha 13), and a wrong `duration`/`volume` order
- * compiles cleanly too (gotcha 14).
- *
- * @param pitchScale pitch / 128, clamped so a frequency can never be 0.
- */
-AudioEvent makeEvent(const SfxCue& cue, std::int32_t volume, float pitchScale,
-                     Voice& voice) {
-    AudioEvent event{};
-
-    event.type = waveType(cue.wave);
-    event.frequency = cue.frequencyHz * pitchScale;
-    if (event.frequency < 20.0f) {
-        event.frequency = 20.0f;
-    }
-    event.duration = cue.durationSec;
-    event.volume = cue.volume * (static_cast<float>(volume) / 127.0f);
-    if (event.volume < 0.0f) {
-        event.volume = 0.0f;
-    } else if (event.volume > 1.0f) {
-        event.volume = 1.0f;
-    }
-    event.duty = cue.duty;
-    event.noisePeriod = cue.noisePeriod;
-    event.loop = false;
-    event.sweepCurve = SweepCurve::Linear;
-
-    // A pitch table supersedes the single-segment sweep (the APU's own rule),
-    // and its values are the cue's at the requested pitch.
-    voice.pitchCount = 0u;
-    if (cue.pitchCount >= 2u) {
-        const std::uint8_t count =
-            cue.pitchCount > kSfxMaxBreakpoints ? static_cast<std::uint8_t>(kSfxMaxBreakpoints)
-                                                : cue.pitchCount;
-        for (std::uint8_t index = 0; index < count; ++index) {
-            voice.pitch[index].timeSec = cue.pitch[index].timeSec;
-            voice.pitch[index].value = cue.pitch[index].value * pitchScale;
-        }
-        voice.pitchCount = count;
-        event.pitchEnvelope = voice.pitch;
-        event.pitchEnvelopeCount = count;
-        event.sweepEndHz = 0.0f;
-        event.sweepDurationSec = 0.0f;
-    } else if (cue.sweepEndHz > 0.0f) {
-        event.sweepEndHz = cue.sweepEndHz * pitchScale;
-        event.sweepDurationSec = cue.durationSec;
-        event.sweepCurve = SweepCurve::Exponential;
-    }
-
-    voice.dutyCount = 0u;
-    if (cue.dutyCount > 0u) {
-        const std::uint8_t count =
-            cue.dutyCount > kSfxMaxBreakpoints ? static_cast<std::uint8_t>(kSfxMaxBreakpoints)
-                                               : cue.dutyCount;
-        for (std::uint8_t index = 0; index < count; ++index) {
-            voice.duty[index].timeSec = cue.dutyPoints[index].timeSec;
-            voice.duty[index].value = cue.dutyPoints[index].value;
-        }
-        voice.dutyCount = count;
-        event.dutySteps = voice.duty;
-        event.dutyStepCount = count;
-    }
-
-    return event;
-}
-
 std::uint16_t ticsFor(const SfxCue& cue) {
     const float tics = cue.durationSec * kTicsPerSecond;
     const std::int32_t rounded = static_cast<std::int32_t>(tics + 0.5f);
@@ -258,21 +165,22 @@ std::uint16_t ticsFor(const SfxCue& cue) {
 
 #if defined(DOOM_AUDIO_SCRIPT)
 void logPlay(std::int32_t sfxId, std::int32_t slot, std::int32_t volume,
-             std::int32_t pitch) {
+             std::int32_t pitch, float durationSec) {
     if (gPlayLogCount >= kPlayLogLimit) {
         return;
     }
     ++gPlayLogCount;
-    char line[128];
+    char line[160];
     std::snprintf(line, sizeof line,
-                  "SHOW,audio,play,id=%d,name=%s,voice=%d,vol=%d,pitch=%d\n",
+                  "SHOW,audio,play,id=%d,name=%s,voice=%d,vol=%d,pitch=%d,dur_ms=%d\n",
                   static_cast<int>(sfxId), doom::doomc::sfxBankName(sfxId),
                   static_cast<int>(slot), static_cast<int>(volume),
-                  static_cast<int>(pitch));
+                  static_cast<int>(pitch),
+                  static_cast<int>(durationSec * 1000.0f + 0.5f));
     doom::doomc::writeLine(line);
 }
 #else
-void logPlay(std::int32_t, std::int32_t, std::int32_t, std::int32_t) {}
+void logPlay(std::int32_t, std::int32_t, std::int32_t, std::int32_t, float) {}
 #endif
 
 }  // namespace
@@ -327,15 +235,10 @@ extern "C" int32_t doom_sound_start(int32_t sfx_id, int32_t volume, int32_t pitc
         ++gStats.steals;
     }
 
-    float pitchScale = static_cast<float>(pitch) / 128.0f;
-    if (pitchScale < 0.0625f) {
-        pitchScale = 0.0625f;
-    } else if (pitchScale > 4.0f) {
-        pitchScale = 4.0f;
-    }
-
     *entry = Voice{};
-    const AudioEvent event = makeEvent(*cue, volume, pitchScale, *entry);
+    const AudioEvent event =
+        doom::doomc::sfxCueEvent(*cue, static_cast<int>(volume),
+                                 static_cast<int>(pitch), entry->scratch);
     entry->handle = gNextHandle++;
     if (gNextHandle <= 0) {
         gNextHandle = 1;
@@ -355,7 +258,7 @@ extern "C" int32_t doom_sound_start(int32_t sfx_id, int32_t volume, int32_t pitc
     if (absoluteSlot > gStats.highestVoice) {
         gStats.highestVoice = absoluteSlot;
     }
-    logPlay(sfx_id, absoluteSlot, volume, pitch);
+    logPlay(sfx_id, absoluteSlot, volume, pitch, cue->durationSec);
     return entry->handle;
 }
 
@@ -391,13 +294,9 @@ extern "C" void doom_sound_update(int32_t handle, int32_t volume, int32_t pitch)
     if (cue == nullptr) {
         return;
     }
-    float pitchScale = static_cast<float>(pitch) / 128.0f;
-    if (pitchScale < 0.0625f) {
-        pitchScale = 0.0625f;
-    } else if (pitchScale > 4.0f) {
-        pitchScale = 4.0f;
-    }
-    const AudioEvent event = makeEvent(*cue, volume, pitchScale, *voice);
+    const AudioEvent event =
+        doom::doomc::sfxCueEvent(*cue, static_cast<int>(volume),
+                                 static_cast<int>(pitch), voice->scratch);
     gEngine->playEvent(event);
 }
 

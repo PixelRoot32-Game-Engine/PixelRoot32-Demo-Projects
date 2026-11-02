@@ -41,6 +41,7 @@
 #pragma GCC diagnostic pop
 
 #include "doomc/SfxBank.h"
+#include "doomc/SfxCueEvent.h"
 
 #include "../../test_config.h"
 
@@ -52,6 +53,12 @@ using doom::doomc::sfxBankSize;
 using doom::doomc::sfxVoiceSelect;
 using doom::doomc::kSfxMaxBreakpoints;
 using doom::doomc::kSfxVoices;
+using doom::doomc::sfxBankPreset;
+using doom::doomc::SfxVoiceScratch;
+using doom::doomc::sfxCueEvent;
+using pixelroot32::audio::AudioEvent;
+using pixelroot32::audio::InstrumentPreset;
+using pixelroot32::audio::WaveType;
 
 namespace {
 
@@ -487,13 +494,20 @@ void test_every_id_has_a_cue_inside_the_apus_ranges(void) {
         TEST_ASSERT_TRUE(cue->volume >= 0.0f && cue->volume <= 1.0f);
         TEST_ASSERT_TRUE(cue->duty >= 0.0f && cue->duty <= 1.0f);
         TEST_ASSERT_TRUE(cue->sweepEndHz >= 0.0f);
-        TEST_ASSERT_TRUE(cue->attackSec >= 0.0f);
-        TEST_ASSERT_TRUE(cue->releaseSec >= 0.0f);
+        TEST_ASSERT_TRUE(cue->attackSec >= 0.0f && cue->attackSec <= 10.0f);
+        TEST_ASSERT_TRUE(cue->decaySec >= 0.0f && cue->decaySec <= 10.0f);
+        TEST_ASSERT_TRUE(cue->sustain >= 0.0f && cue->sustain <= 1.0f);
+        TEST_ASSERT_TRUE(cue->releaseSec >= 0.0f && cue->releaseSec <= 10.0f);
+        // The 93-step LFSR is a NOISE property only.
+        if (cue->noiseShort) {
+            TEST_ASSERT_TRUE(cue->wave == doom::doomc::SfxWave::Noise);
+        }
 
         TEST_ASSERT_TRUE(cue->pitchCount <= (std::uint8_t)kSfxMaxBreakpoints);
         TEST_ASSERT_TRUE(cue->dutyCount <= (std::uint8_t)kSfxMaxBreakpoints);
         for (std::uint8_t point = 0; point < cue->pitchCount; ++point) {
             TEST_ASSERT_TRUE(cue->pitch[point].timeSec >= 0.0f);
+            TEST_ASSERT_TRUE(cue->pitch[point].value > 0.0f);
             if (point > 0) {
                 TEST_ASSERT_TRUE(cue->pitch[point].timeSec
                                  >= cue->pitch[point - 1].timeSec);
@@ -501,10 +515,85 @@ void test_every_id_has_a_cue_inside_the_apus_ranges(void) {
         }
         for (std::uint8_t point = 0; point < cue->dutyCount; ++point) {
             TEST_ASSERT_TRUE(cue->dutyPoints[point].timeSec >= 0.0f);
+            TEST_ASSERT_TRUE(cue->dutyPoints[point].value >= 0.0f
+                             && cue->dutyPoints[point].value <= 1.0f);
             if (point > 0) {
                 TEST_ASSERT_TRUE(cue->dutyPoints[point].timeSec
                                  >= cue->dutyPoints[point - 1].timeSec);
             }
+        }
+    }
+}
+
+void test_every_cues_preset_is_the_envelope_it_was_fitted_to(void) {
+    // `AudioEvent` takes ADSR through an InstrumentPreset and nowhere else;
+    // if the two tables drifted, the cue would carry numbers the APU never
+    // reads. SfxBank.cpp derives one from the other, and this proves it.
+    TEST_ASSERT_NULL(sfxBankPreset(nullptr));
+    TEST_ASSERT_NULL(sfxBankPreset(sfxBankCue(0)));
+    TEST_ASSERT_NULL(sfxBankPreset(sfxBankCue((std::int32_t)NUMSFX)));
+
+    for (std::int32_t id = 1; id < (std::int32_t)NUMSFX; ++id) {
+        const SfxCue* cue = sfxBankCue(id);
+        TEST_ASSERT_NOT_NULL(cue);
+        const InstrumentPreset* preset = sfxBankPreset(cue);
+        TEST_ASSERT_NOT_NULL(preset);
+
+        TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, cue->volume, preset->baseVolume);
+        TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, cue->durationSec, preset->defaultDuration);
+        TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, cue->duty, preset->duty);
+        TEST_ASSERT_EQUAL_UINT8(cue->noisePeriod, preset->noisePeriod);
+        TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, cue->attackSec, preset->attackTime);
+        TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, cue->decaySec, preset->decayTime);
+        TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, cue->sustain, preset->sustainLevel);
+        TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, cue->releaseSec, preset->releaseTime);
+        TEST_ASSERT_EQUAL(cue->noiseShort, preset->noiseLfsrShort);
+        TEST_ASSERT_EQUAL(cue->noiseShort, preset->noiseShortMode);
+        TEST_ASSERT_TRUE(preset->lfoTarget == pixelroot32::audio::LfoTarget::NONE);
+    }
+}
+
+void test_the_event_translation_is_the_one_the_gate_renders(void) {
+    // `SfxCueEvent.h` is shared by DoomAudio.cpp and tools/sfx_render.cpp;
+    // this asserts the mapping itself, so a gate that renders the bank is
+    // rendering the firmware's event.
+    const SfxCue* cue = sfxBankCue(sfx_pistol);
+    TEST_ASSERT_NOT_NULL(cue);
+    SfxVoiceScratch scratch{};
+    const AudioEvent event = sfxCueEvent(*cue, 127, 128, scratch);
+
+    TEST_ASSERT_TRUE(event.type == WaveType::NOISE || event.type == WaveType::PULSE);
+    TEST_ASSERT_FLOAT_WITHIN(1.0e-4f, cue->frequencyHz, event.frequency);
+    TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, cue->durationSec, event.duration);
+    TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, cue->volume, event.volume);
+    TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, cue->duty, event.duty);
+    TEST_ASSERT_EQUAL_UINT8(cue->noisePeriod, event.noisePeriod);
+    TEST_ASSERT_TRUE(event.preset == sfxBankPreset(cue));
+    TEST_ASSERT_FALSE(event.loop);
+    if (cue->pitchCount >= 2u) {
+        TEST_ASSERT_TRUE(event.pitchEnvelope == scratch.pitch);
+        TEST_ASSERT_EQUAL_UINT8(cue->pitchCount, event.pitchEnvelopeCount);
+        for (std::uint8_t point = 0; point < cue->pitchCount; ++point) {
+            TEST_ASSERT_FLOAT_WITHIN(1.0e-4f, cue->pitch[point].timeSec,
+                                     scratch.pitch[point].timeSec);
+            TEST_ASSERT_FLOAT_WITHIN(1.0e-4f, cue->pitch[point].value,
+                                     scratch.pitch[point].value);
+        }
+    }
+    if (cue->dutyCount > 0u) {
+        TEST_ASSERT_TRUE(event.dutySteps == scratch.duty);
+        TEST_ASSERT_EQUAL_UINT8(cue->dutyCount, event.dutyStepCount);
+    }
+
+    // DOOM's pitch is 1/128ths: half pitch is half frequency on the tone and
+    // on every pitch-table value the event carries.
+    const AudioEvent lower = sfxCueEvent(*cue, 64, 64, scratch);
+    TEST_ASSERT_FLOAT_WITHIN(1.0e-4f, cue->frequencyHz * 0.5f, lower.frequency);
+    TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, cue->volume * (64.0f / 127.0f), lower.volume);
+    if (cue->pitchCount >= 2u) {
+        for (std::uint8_t point = 0; point < cue->pitchCount; ++point) {
+            TEST_ASSERT_FLOAT_WITHIN(1.0e-4f, cue->pitch[point].value * 0.5f,
+                                     scratch.pitch[point].value);
         }
     }
 }
@@ -604,6 +693,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_start_kills_sounds_and_asks_for_the_levels_music);
     RUN_TEST(test_pause_resume_and_stop_reach_the_music_transport);
     RUN_TEST(test_every_id_has_a_cue_inside_the_apus_ranges);
+    RUN_TEST(test_every_cues_preset_is_the_envelope_it_was_fitted_to);
+    RUN_TEST(test_the_event_translation_is_the_one_the_gate_renders);
     RUN_TEST(test_voice_selection_prefers_idle_then_the_least_important);
     RUN_TEST(test_no_class_combination_steals_a_reserved_voice);
     RUN_TEST(test_update_sounds_ticks_and_frees_a_finished_channel);
