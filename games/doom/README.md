@@ -169,8 +169,14 @@ the container's own `M_*` patches and the HU font.
 the menu on its press edge (a held Start does not flicker it) and, while the menu
 is open, closes it from any screen, as Esc toggles DOOM's menu. Start is never a
 game button: the world never sees it. LEFT + RIGHT held together is the game's
-again (both cancel to no turn) and no longer opens anything. **Select** (GPIO 35)
-toggles the automap (see "The automap" below) and is not a game button either.
+again (both cancel to no turn) and no longer opens anything. **Up + Down held
+together for about 200 ms** toggles the automap (see "The automap" below): both
+keys are real pull-up'd gameplay keys and upstream adds then subtracts them, so
+the world sees `forwardmove 0`. While the chord is held the map's d-pad does not
+see it, so opening the map keeps following the player. **Select** (GPIO 35) is
+wired but **not** the map key in the shipped image, because it floats on the
+maintainer's unit (see the wiring note); the `DOOM_MAP_SELECT` build flag swaps it
+back in for a board with the pull-up fitted.
 While the menu is open:
 
 | Button | Does |
@@ -195,9 +201,11 @@ nothing there: each button needs an **external pull-up** (typically 10 kOhm from
 the pin to 3V3) with the switch between the pin and GND. Whether the
 maintainer's Start and Select buttons have one is an open hardware question, and
 on the unit this task ran on, **GPIO 35 floats**: `Select` read as held from
-boot, and in the shipped image the automap opened and closed by itself every 1-2
-seconds (see the automap section). GPIO 34 read stable-high on the same unit, so
-Start behaved. Without the resistor the map key is unusable.
+boot and changed level every 1-2 seconds, so the first shipped automap build
+opened and closed the map by itself; the shipped trigger is now the Up+Down chord
+(see the automap section) and Select is behind `DOOM_MAP_SELECT`. GPIO 34 read
+stable-high on the same unit, so Start behaved. Without the resistor Select stays
+unusable, before and after this change.
 
 **Screens.** NEW GAME and OPTIONS. NEW GAME is linuxdoom's skill screen (the
 cursor starts on the saved skill); choosing a row reloads E1M1 at that skill over
@@ -257,11 +265,21 @@ player stands still behind the map, as they do behind the menu):
 
 | Button | Does |
 | --- | --- |
-| Select (GPIO 35) | opens the map, or closes it; one press is one toggle |
+| Up + Down, held ~200 ms | opens the map, or closes it; one hold is one toggle |
 | Up / Down / Left / Right | pan the window; the first press cancels "follow the player" |
 | A | zoom in (1.02x a tic, twice a second) |
 | B | zoom out (to the whole level, then it stops) |
 | Start | opens the menu over the map, as upstream draws the menu on top of it |
+
+The trigger is Up+Down rather than a dedicated key for one measured reason: GPIO
+35 (Select) is wired but floats on the maintainer's unit -- it read as held from
+boot and changed level every ~1.5 s, so a shipped image binding the map to it
+opened and closed the map by itself every 1-2 seconds. Both chord keys are real
+pull-up'd gameplay keys, upstream adds then subtracts the pair so the world sees
+`forwardmove 0`, and while the chord is held the map's d-pad is masked so the
+opening frame still follows the player (`follow=1`, `scale=5584`, the gate's own
+`spawn_mapped` hash). `-D DOOM_MAP_SELECT` swaps Select back in once the 10 kOhm
+pull-up is fitted.
 
 There is no button for the grid: upstream toggles it with `g`, this board has no
 keyboard, and no control was invented for it. The grid is proven by the host gate
@@ -305,10 +323,38 @@ light strobe, the grid, zoom-in, a pan with the follow cancelled, zoom-out to th
 clamp, the computer-map power-up, E1M2 with its own bounds, and the stopped map.
 Rows 168-199 must stay untouched. `--perturb colour|scale` moves one oracle
 constant and must fail. `esp32dev_ILI9341_hud_mapcheck` plays a fixed input script
-(Select, A, B, the d-pad, a walk, Select again) through the real button path and
-prints `SHOW,map` for every reported frame; it reads only the script's Select, so
-a floating GPIO 35 cannot scramble the states. A diagnostic, never the shipped
+(Up+Down, A, B, the d-pad, a walk, Up+Down again) through the real button path and
+prints `SHOW,map` for every reported frame. A diagnostic, never the shipped
 image.
+
+### The level transition's fade (D5.4)
+
+Vanilla's screen melt (`f_wipe.c`) copies `screens[2]` and `screens[3]` -- two
+more 64,000 B surfaces, plus column-major transposes of both. This board does not
+have them: the largest free block after setup is 47,092 B (plan section 12.1), so
+the melt is S3-profile work and is not attempted here. The 4 MB profile
+substitutes a **palette fade**, which needs no buffer at all: after every level
+load -- a map change, a death's reload and a New Game -- the first frame is
+painted black and the next eight steps ramp back through the PLAYPAL table the
+palette path already owns (`palette::applyGammaScaled()`: one integer scale per
+channel before the gamma table, then the two packings).
+
+**What it costs.** Eight table rebuilds per transition, measured on the CYD at
+**1.96-2.01 ms in total** (`SHOW,fade,steps=8,us=<total>`; ~245 us a step, well
+under one 28.57 ms tic) and nothing at all on the frames between transitions. A
+fade owns the palette while it runs, so the damage/pickup flashes are skipped for
+those frames and the gamma path defers to it; the last step hands the table back
+to the normal path. The reload is noticed without new plumbing: `leveltime`
+restarts at 0 on every load, so a tic count that goes backwards is a transition.
+
+**Gate.** `python tools/fade_check.py --wad DOOM1.WAD` builds the firmware's own
+`DoomPalette.cpp` and compares its tables for gamma 0..4 at every fade scale
+(0..256 plus out-of-range values that must clamp) against an independent oracle,
+then proves scale 0 is black, scale 256 is exactly `applyGamma()`, and every
+channel is monotone across the scale. `--stub` builds a copy of
+`DoomPalette.cpp` with the scale term removed -- the pre-change behaviour -- and
+must fail; `--perturb` moves the oracle by one scale step and must fail.
+
 
 Neither `DOOM1.WAD` nor any `.whd` is committed: `tools/.gitignore` refuses both,
 because a container is a repacked copy of shareware data.

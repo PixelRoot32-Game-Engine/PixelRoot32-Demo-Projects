@@ -168,18 +168,32 @@ void initFromPlaypal(const std::uint8_t* rgb888) {
     g_playpalBuilt = true;
 }
 
-void applyGamma(const std::uint8_t* rgb888, std::uint8_t level) {
+void applyGammaScaled(const std::uint8_t* rgb888, std::uint8_t level, std::uint16_t fade256) {
     if (!g_playpalBuilt || rgb888 == nullptr) {
         return;
     }
+    if (fade256 > kFadeFull) {
+        fade256 = kFadeFull;  // the documented clamp: 256 is "unchanged"
+    }
+    // One integer scaling for all three channels, applied before the gamma
+    // table exactly as a dimmer in front of the DAC would be: 0 is black and
+    // `kFadeFull` reproduces applyGamma() byte for byte. The product is at most
+    // 255 * 256 = 65,280, so the shift cannot lose a bit to overflow.
     for (int index = 0; index < kEntryCount; ++index) {
         const int base = index * 3;
-        const std::uint8_t r = m_gamma_correct(level, rgb888[base + 0]);
-        const std::uint8_t g = m_gamma_correct(level, rgb888[base + 1]);
-        const std::uint8_t b = m_gamma_correct(level, rgb888[base + 2]);
+        const std::uint8_t r = m_gamma_correct(
+            level, static_cast<std::uint8_t>((static_cast<std::uint32_t>(rgb888[base + 0]) * fade256) >> 8));
+        const std::uint8_t g = m_gamma_correct(
+            level, static_cast<std::uint8_t>((static_cast<std::uint32_t>(rgb888[base + 1]) * fade256) >> 8));
+        const std::uint8_t b = m_gamma_correct(
+            level, static_cast<std::uint8_t>((static_cast<std::uint32_t>(rgb888[base + 2]) * fade256) >> 8));
         g_playpalTable[index] = rgb888To332(r, g, b);
         g_playpal565Table[index] = rgb888To565(r, g, b);
     }
+}
+
+void applyGamma(const std::uint8_t* rgb888, std::uint8_t level) {
+    applyGammaScaled(rgb888, level, kFadeFull);
 }
 
 const std::uint8_t* playpalTable() { return g_playpalTable; }

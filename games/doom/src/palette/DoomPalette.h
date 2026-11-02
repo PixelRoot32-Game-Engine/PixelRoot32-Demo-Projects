@@ -225,5 +225,27 @@ const std::uint8_t* playpalTable();
  */
 void applyGamma(const std::uint8_t* rgb888, std::uint8_t level);
 
+/// The scale `applyGammaScaled()` takes for "the palette unchanged".
+constexpr std::uint16_t kFadeFull = 256u;
+
+/**
+ * @brief Rebuilds the PLAYPAL tables for gamma *and* a fade scale (D5.4).
+ *
+ * Vanilla's screen melt needs two more 64,000 B surfaces the CYD does not have
+ * (PLAN 12.1: the largest free block after setup is 47,092 B), so the 4 MB
+ * profile substitutes a palette fade: the frame ramps up from black after a
+ * level load. This is its only colour step -- one table rebuild, no buffer, no
+ * per-pixel pass.
+ *
+ * Each channel is scaled by @p fade256 / 256 before the gamma table, so
+ * `fade256 == 0` is black, `kFadeFull` reproduces `applyGamma()` exactly, and a
+ * value in between is that same palette at that brightness.
+ *
+ * @param rgb888  768 PLAYPAL bytes, as `applyGamma()` takes them.
+ * @param level   gamma 0..4.
+ * @param fade256 0..256; above 256 clamps to 256.
+ */
+void applyGammaScaled(const std::uint8_t* rgb888, std::uint8_t level, std::uint16_t fade256);
+
 }  // namespace palette
 }  // namespace doom

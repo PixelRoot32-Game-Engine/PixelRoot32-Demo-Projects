@@ -234,16 +234,28 @@ private:
     bool mapSelectHeld_ = false;
 
     /**
+     * @brief The shipped Up+Down chord's latch and frame count (D5.3).
+     *
+     * GPIO 35 has no pull-up on this board and floats, so the shipped build
+     * toggles the map on Up+Down held together for `kMapChordFrames` frames: both
+     * are real pull-up'd keys, and upstream adds then subtracts them, so the
+     * world sees `forwardmove 0`. `mapChordArmed_` is cleared when the chord
+     * fires and set again only when a key is released, so one hold is one toggle.
+     */
+    bool mapChordArmed_ = true;
+    std::uint8_t mapChordFrames_ = 0;
+
+    /**
      * @brief Whether Select has been seen released since boot (D5.3).
      *
-     * GPIO 35 is input-only on this SoC and has no internal pull-up, so
-     * `INPUT_PULLUP` does nothing there and a floating pin reads LOW -- "held" --
-     * from the first sample (this board's own log: the map opened at boot with no
-     * press). A control that opened the map on a floating pin and could never
-     * close it is worse than no control, so Select is armed only after it has
-     * been read released once: a stuck-low pin is then simply dead, which is what
-     * a missing pull-up deserves. The README says so, and the scripted build
-     * ignores the physical pin entirely.
+     * Only `DOOM_MAP_SELECT` builds read the physical pin. GPIO 35 is input-only
+     * on this SoC and has no internal pull-up, so `INPUT_PULLUP` does nothing
+     * there and a floating pin reads LOW -- "held" -- from the first sample (this
+     * board's own log: the map opened at boot with no press, then toggled every
+     * ~1.5 s as the pin drifted). A control that opened the map on a floating pin
+     * and could never close it is worse than no control, so Select is armed only
+     * after it has been read released once: a stuck-low pin is then simply dead,
+     * which is what a missing pull-up deserves. The README says so.
      */
     bool mapSelectArmed_ = false;
 
@@ -266,6 +278,31 @@ private:
 
     /// Rebuilds the PLAYPAL tables at the menu's gamma and hands them to the panel.
     void applyMenuGamma();
+
+    /**
+     * @brief Starts the level transition's palette fade (D5.4).
+     *
+     * Vanilla's `f_wipe.c` melt copies `screens[2]` and `screens[3]`: two more
+     * 64,000 B surfaces, which this board does not have (the largest free block
+     * after setup is 47,092 B -- PLAN 12.1). The 4 MB profile substitutes this
+     * fade: the new frame ramps up from black through the PLAYPAL table the
+     * palette path already owns, one table rebuild per step, no buffer.
+     */
+    void startFade();
+
+    /**
+     * @brief One fade step per rendered frame, and the reload that starts one.
+     *
+     * A level load is noticed without new plumbing: `leveltime` restarts at 0 on
+     * every load, `G_DoReborn`'s reload included, so a tic count that goes
+     * backwards is a reload. While a fade runs the palette flash is skipped --
+     * the fade owns the table -- and the last step re-applies the exact palette
+     * the flip-flop path would have built.
+     */
+    void updateFade();
+
+    /// Builds the panel's tables from the resident PLAYPAL at @p scale/256.
+    bool applyFade(std::uint16_t scale);
 
 #if defined(DOOM_PALFLASH)
     /**
@@ -316,6 +353,17 @@ private:
     bool settingsDirty_ = false;
     /// The gamma level the panel's palette was last built for.
     std::uint8_t gammaApplied_ = 0;
+
+    /// Fade steps a level load runs: eight frames at the shipped rate is ~0.5 s.
+    static constexpr std::uint8_t kFadeSteps = 8u;
+    /// True while a level transition's fade owns the palette (D5.4).
+    bool fadeActive_ = false;
+    /// Steps already applied: 0 means the black frame was just painted.
+    std::uint8_t fadeStep_ = 0;
+    /// The previous frame's `leveltime`, for the reload that starts a fade.
+    std::uint32_t fadeLastTics_ = 0;
+    /// Microseconds the whole fade spent rebuilding tables, reported once.
+    std::uint32_t fadeMicros_ = 0;
 #if defined(DOOM_PALFLASH)
     /// The PLAYPAL page the panel's palette was last built from (0 = normal).
     std::uint8_t paletteApplied_ = 0;

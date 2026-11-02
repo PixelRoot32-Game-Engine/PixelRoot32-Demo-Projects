@@ -106,12 +106,16 @@ constexpr std::uint8_t kStartIndex = 6;
 /// never packed into the world's bits, so `kButtonCount` stays 6.
 constexpr std::uint8_t kSelectIndex = 7;
 
-/// The scripted-input build's Select bit. The engine never sets bit 7 of the
+/// How many consecutive frames Up+Down must be held to toggle the automap on the
+/// shipped build: about 200 ms at the shipped frame rate, long enough that no
+/// single mistaken press opens the map. GPIO 35 is not the trigger there because
+/// it floats on this board (no pull-up); `DOOM_MAP_SELECT` compiles that key in.
+constexpr std::uint8_t kMapChordFrames = 3;
+
+/// The scripted-input build's map chord. The engine never sets bit 7 of the
 /// button byte (the six game bits are 0..5), and the menu's Start is 0x40, so a
-/// diagnostic script can press Select through the same byte the real sample fills
-/// without the menu reading it as Start. `runMap()` masks it out of what the world
-/// sees, exactly as the menu masks its Start bit.
-constexpr std::uint8_t kMapScriptSelect = 0x80u;
+/// diagnostic script reaches `runMap()` through the same byte the real sample
+/// fills without the menu reading it as Start.
 
 // --- Shell geometry ---------------------------------------------------------
 
@@ -868,23 +872,23 @@ std::uint8_t menuScriptButtons(std::uint32_t frame) {
 /*
  * DOOM_MAP_SCRIPT (env esp32dev_ILI9341_hud_mapcheck): the board's buttons cannot
  * be pressed from the build host, so this diagnostic plays a fixed input script
- * into the same path a real press takes -- the sampled buttons plus the Select
- * bit, both read by `runMap()` -- and the serial log shows what the automap did.
- * Each step holds `buttons` for `frames` frames; a tap is one frame down and two
- * up, so every press is its own rising edge (Select's toggle is edge-triggered).
+ * into the same path a real press takes -- the sampled button byte `runMap()`
+ * reads -- and the serial log shows what the automap did. Each step holds
+ * `buttons` for `frames` frames; a chord is four frames held and six released,
+ * which is the shipped Up+Down trigger (kMapChordFrames), not a private path.
  *
  * What it does, in order, and why each part is there:
- *   1. Select: the map opens at the entry scale, following the player, nothing
+ *   1. Up+Down: the map opens at the entry scale, following the player, nothing
  *      mapped yet -- the state tools/am_check.py pins as `spawn`.
  *   2. A held: zoom in (one 1.02x step per tic). B held: back out.
  *   3. RIGHT then UP held: pan, which cancels the follow; the window stops where
  *      the level's edge clamps it.
- *   4. Select: the map closes and the world frame comes back.
+ *   4. Up+Down: the map closes and the world frame comes back.
  *   5. UP held: the player walks forward, so the wall pass marks more lines.
- *   6. Select: the map opens again (the follow stays off, as upstream's static
+ *   6. Up+Down: the map opens again (the follow stays off, as upstream's static
  *      does), with the lines walked in step 5 drawn.
  *   7. B held: zoom out to the whole level (the min_scale_mtof clamp).
- *   8. Select: closed, and the log goes back to SHOW,frame lines.
+ *   8. Up+Down: closed, and the log goes back to SHOW,frame lines.
  *
  * The grid is not in the script: upstream toggles it with 'g', the board has no
  * button for it, and inventing one is not this task's call.
@@ -896,11 +900,12 @@ struct MapScriptStep {
 
 #define MTAP(button) {(button), 1}, {0, 2}
 #define MHOLD(button, count) {(button), (count)}, {0, 4}
+#define MCHORD() {(doomc::kButtonUp | doomc::kButtonDown), 4}, {0, 6}
 #define MWAIT(count) {0, (count)}
 
 const MapScriptStep kMapScript[] = {
     MWAIT(40),
-    MTAP(kMapScriptSelect),                 // the map opens, following, full scale
+    MCHORD(),                               // the map opens, following, full scale
     MWAIT(30),
     MHOLD(doomc::kButtonA, 24),             // zoom in
     MWAIT(6),
@@ -910,15 +915,15 @@ const MapScriptStep kMapScript[] = {
     MWAIT(6),
     MHOLD(doomc::kButtonUp, 20),            // pan up
     MWAIT(12),
-    MTAP(kMapScriptSelect),                 // the map closes
+    MCHORD(),                               // the map closes
     MWAIT(20),
     MHOLD(doomc::kButtonUp, 30),            // the player walks
     MWAIT(20),
-    MTAP(kMapScriptSelect),                 // the map opens again, panned
+    MCHORD(),                               // the map opens again, panned
     MWAIT(30),
     MHOLD(doomc::kButtonB, 40),             // zoom out to the whole level
     MWAIT(16),
-    MTAP(kMapScriptSelect),                 // closed again
+    MCHORD(),                               // closed again
     MWAIT(20),
 };
 
@@ -1300,6 +1305,11 @@ void DoomScene::runWorldTics(std::uint8_t buttons) {
 
 void DoomScene::applyMenuGamma() {
     gammaApplied_ = menu_.settings.gamma;
+    if (fadeActive_) {
+        // D5.4: a fade owns the tables until it finishes; its next step composes
+        // the new gamma. Rebuilding here would flash the frame to full brightness.
+        return;
+    }
 #if defined(DOOM_PALFLASH)
     // The gamma changes under whatever flash is on the screen.
     if (!applyPalette(paletteApplied_, gammaApplied_)) {
@@ -1310,6 +1320,67 @@ void DoomScene::applyMenuGamma() {
     palette::applyGamma(sceneRenderer_.playpal(), gammaApplied_);
     engine.getRenderer().getDrawSurface().setPalette8(palette::playpal565Table());
 #endif
+}
+
+void DoomScene::startFade() {
+    fadeActive_ = true;
+    fadeStep_ = 0;
+    fadeMicros_ = 0;
+}
+
+bool DoomScene::applyFade(std::uint16_t scale) {
+    const std::uint8_t* playpal = sceneRenderer_.playpal();
+    if (playpal == nullptr) {
+        return false;
+    }
+    palette::applyGammaScaled(playpal, gammaApplied_, scale);
+    engine.getRenderer().getDrawSurface().setPalette8(palette::playpal565Table());
+    return true;
+}
+
+void DoomScene::updateFade() {
+    if (!sceneRenderer_.isOpen()) {
+        return;
+    }
+    // A level load restarts `leveltime` at 0 -- the next map, and G_DoReborn's
+    // reload too -- so a tic count that went backwards is the transition. No new
+    // plumbing, and it cannot fire on a pause: a paused world does not run tics.
+    if (showPlayer_.valid && showPlayer_.tics < fadeLastTics_) {
+        startFade();
+    }
+    if (showPlayer_.valid) {
+        fadeLastTics_ = showPlayer_.tics;
+    }
+    if (!fadeActive_) {
+        return;
+    }
+
+    const std::uint32_t startUs = sampleMicros();
+    if (fadeStep_ == 0u) {
+        (void)applyFade(0u);  // the reloaded level's first frame is black
+        fadeStep_ = 1u;
+    } else if (fadeStep_ < kFadeSteps) {
+        ++fadeStep_;
+        (void)applyFade(static_cast<std::uint16_t>(256u * fadeStep_ / kFadeSteps));
+    } else {
+        fadeActive_ = false;
+#if defined(DOOM_PALFLASH)
+        // Hand the table back to the flash path: force it to rebuild page 0 (or
+        // the page the player's counters call for) on the next frame.
+        paletteApplied_ = 0xFFu;
+#else
+        (void)applyFade(palette::kFadeFull);
+#endif
+    }
+    fadeMicros_ += sampleMicros() - startUs;
+
+    if (!fadeActive_) {
+        char line[96];
+        std::snprintf(line, sizeof line, "SHOW,fade,steps=%u,us=%u,frame=%u\n",
+                      static_cast<unsigned>(kFadeSteps), static_cast<unsigned>(fadeMicros_),
+                      static_cast<unsigned>(showFrame_));
+        writeConsoleLine(line);
+    }
 }
 
 #if defined(DOOM_PALFLASH)
@@ -1403,6 +1474,10 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
         const bool started = sceneRenderer_.newGame(skill);
         // The reload is a stall, not a tic: do not replay the tics that elapsed.
         worldTic_ = ticClock_.tic();
+        if (started) {
+            // D5.4: a New Game is a level load with no level change to notice.
+            startFade();
+        }
         std::snprintf(line, sizeof line, "SHOW,newgame,skill=%d,status=%s,frame=%u\n", skill,
                       started ? "ok" : "fail", static_cast<unsigned>(showFrame_));
         writeConsoleLine(line);
@@ -1450,8 +1525,17 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
  * map. The board has no 'f', so the d-pad is always the map's while the map is
  * up, and the first press is what stops the follow (am_map.c's am_pan()).
  *
- * The menu wins: while it is open, Select is recorded but changes nothing, so a
- * press that belonged to the menu does not toggle the map when the menu closes.
+ * The menu wins: while it is open, the map's key is recorded but changes nothing,
+ * so a press that belonged to the menu does not toggle the map when it closes.
+ *
+ * THE KEY, and why it is a chord. Upstream toggles on TAB. This board has no TAB:
+ * GPIO 35 is wired as Select but has no pull-up and floats (measured: reads held
+ * at boot, changes level every ~1.5 s), so a key that trusts it opens the map by
+ * itself. The shipped build therefore toggles on **Up+Down held together for
+ * kMapChordFrames frames** -- both are real pull-up'd keys, and upstream adds then
+ * subtracts the pair, so the world sees forwardmove 0. `DOOM_MAP_SELECT` swaps
+ * Select back in for a board that has the 10 kOhm pull-up fitted; the scripted
+ * diagnostic build presses its own bit through the same code path.
  */
 std::uint8_t DoomScene::runMap(std::uint8_t buttons, bool menuOpen) {
     static_assert(AM_PAN_UP == doomc::kButtonUp && AM_PAN_DOWN == doomc::kButtonDown
@@ -1462,19 +1546,33 @@ std::uint8_t DoomScene::runMap(std::uint8_t buttons, bool menuOpen) {
                       && AM_ZOOM_RELEASE == doomc::kMapZoomRelease,
                   "the automap's zoom directions are the driver's");
 
-#if defined(DOOM_MAP_SCRIPT)
-    // Diagnostic build: the script is the only Select. GPIO 35 floats on this
-    // board (DoomScene.h's mapSelectArmed_), and a physical edge arriving in the
-    // middle of the script would make every scripted state unreproducible.
-    const bool select = (buttons & kMapScriptSelect) != 0u;
-#else
-    // GPIO 35 has no internal pull-up, so a floating pin reads held from boot;
-    // Select arms only once it has been seen released. See DoomScene.h.
+#if defined(DOOM_MAP_SELECT)
+    // GPIO 35 as the map key, for a board that has the 10 kOhm pull-up fitted.
+    // Measured without it: the pin reads held at boot and changes level every
+    // ~1.5 s, so this path is compiled out of every shipped environment.
     const bool physical = engine.getInputManager().isButtonDown(kSelectIndex);
     if (!physical) {
         mapSelectArmed_ = true;
     }
     const bool select = mapSelectArmed_ && physical;
+#else
+    // The shipped chord: Up and Down held together for kMapChordFrames frames.
+    // Both are real pull-up'd gameplay keys, and upstream adds then subtracts
+    // them, so the world sees forwardmove 0 and the chord costs the player
+    // nothing; the sole cost is the one tic a mismatched press can move.
+    const bool chord = (buttons & static_cast<std::uint8_t>(doomc::kButtonUp | doomc::kButtonDown))
+                       == static_cast<std::uint8_t>(doomc::kButtonUp | doomc::kButtonDown);
+    bool select = false;
+    if (chord) {
+        if (mapChordArmed_ && ++mapChordFrames_ >= kMapChordFrames) {
+            select = true;
+            mapChordArmed_ = false;
+            mapChordFrames_ = 0;
+        }
+    } else {
+        mapChordArmed_ = true;
+        mapChordFrames_ = 0;
+    }
 #endif
     if (select != mapSelectHeld_) {
         mapSelectHeld_ = select;
@@ -1491,7 +1589,19 @@ std::uint8_t DoomScene::runMap(std::uint8_t buttons, bool menuOpen) {
         return buttons;
     }
 
-    const std::uint8_t held = static_cast<std::uint8_t>(buttons & 0x3Fu);
+    const std::uint8_t held = [&]() {
+        std::uint8_t bits = static_cast<std::uint8_t>(buttons & 0x3Fu);
+        // The chord is a key, not a pan (D5.3): while Up+Down are held together
+        // the map's d-pad must not see them, or opening the map would cancel the
+        // follow before its first frame. Measured before this guard: the entry
+        // frame printed follow=0 instead of following the player.
+        const std::uint8_t mask =
+            static_cast<std::uint8_t>(doomc::kButtonUp | doomc::kButtonDown);
+        if ((bits & mask) == mask) {
+            bits = static_cast<std::uint8_t>(bits & ~mask);
+        }
+        return bits;
+    }();
     (void)sceneRenderer_.mapPan(
         static_cast<std::uint8_t>(held & (AM_PAN_UP | AM_PAN_DOWN | AM_PAN_LEFT | AM_PAN_RIGHT)));
     if ((held & doomc::kButtonA) != 0u) {
@@ -1610,10 +1720,19 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
     // written at the top of the *next* draw, and every field on it describes the
     // frame it reports.
     showPlayer_ = sceneRenderer_.player();
+#if defined(DOOM_MENU)
+    // D5.4: a level load's fade owns the palette while it runs; asked before the
+    // flash so the flash never rebuilds a full-brightness table mid-fade.
+    updateFade();
+#endif
 #if defined(DOOM_PALFLASH)
-    // ST_Drawer's ST_doPaletteStuff: before the frame is drawn, so the present that
-    // follows already expands the indices through the right page.
+#if defined(DOOM_MENU)
+    if (!fadeActive_) {
+        updatePaletteFlash();
+    }
+#else
     updatePaletteFlash();
+#endif
 #endif
     bool rendered = false;
 
