@@ -1,0 +1,26 @@
+# Partition table for env:esp32dev_ILI9341_hud_nowad -- a DIAGNOSTIC image whose
+# only purpose is to prove the ERR_PARTITION_MISSING screen on the board.
+#
+# It is partitions_wad.csv with the `wad` row removed, so the app still boots
+# from the same address and the board reaches the level-open path; the open then
+# fails at esp_partition_find_first("wad"), which is exactly the code path that
+# paints "NO WAD SPACE". The screen cannot be reached with the shipped table
+# because that table always carries the partition -- which is the point.
+#
+# The `nvs` row is copied byte for byte from partitions_wad.csv (0x009000,
+# 24 KB): the bootloader assumes that address and RF calibration lives there, so
+# moving it would be a second change in a table that exists to prove one line.
+#
+# The `factory` app row covers everything from 0x010000 to the end of the 4 MB
+# part (0x3F0000 = 4,128,768 B). All of it is app here, because there is nothing
+# else to spend it on: the container is absent by construction and the image is
+# never flashed as a release.
+#
+# As in partitions_wad.csv there is no OTA slot and no spiffs slot -- a 4 MB part
+# cannot carry a second app image and a container at once -- and no `phy_init`
+# row either, because this IDF version (Arduino-ESP32 4.2 / IDF 4.4) does not
+# require one for Wi-Fi PHY calibration.
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+factory,  app,  factory, 0x10000,  0x3F0000,
