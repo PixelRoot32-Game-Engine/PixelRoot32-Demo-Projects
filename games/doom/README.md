@@ -368,33 +368,110 @@ recorded, 0 failed. `--perturb` (frequency x1.5) and `--stub` (a fixed 440 Hz
 square) must both fail. The gate proves the cue **is** the sound it claims to
 be; whether it is pleasant is the listening pass.
 
-**What is still not.** Music is not wired yet: the transport exists and
-`doom_music_start()` answers "no track" until T47. The menu's volume slider
-still drives nothing (T49) and its "NO SOUND YET" label is unchanged. The
+**Music (D6.4).** `esp32dev_ILI9341_hud` plays E1M1. `lib/doom/s_sound.c`
+keeps upstream's `S_ChangeMusic`/`S_StartMusic`/`S_StopMusic`/`S_PauseSound`;
+the three `doom_music_*` calls they make are implemented in
+`src/doomc/DoomAudio.cpp` over the engine's `MusicPlayer`. `S_Start` asks for
+`mus_e1m1` on every level load and after New Game, and the menu's open/close
+already calls `S_PauseSound`/`S_ResumeSound` (`DoomScene::runMenu`), so the
+pause path is upstream's, not a second control.
+
+**The converter.** `tools/mus2tracks.py` reads a `d_*` MUS lump, parses it by
+`mus2mid.c`'s rules, and writes a deterministic C++ include. MUS has no tempo
+field: its clock is fixed at 140 ticks/s and a quarter note is 70 ticks.
+`ApuCore` clamps `tempoBPM` to 300, so the converter runs `MusicPlayer` at
+**300 BPM**, where a beat is 0.2 s and one sequencer tick is 1/4 beat = 0.05 s
+— exactly 7 MUS ticks, the finest grid the API allows. Every press's start is
+placed on the nearest grid tick (`round(cumulativeMusTicks / 7)`) and its
+`duration` is the difference of consecutive grid starts / 4 beats, an exact
+multiple of 0.25 that the sequencer's truncation returns unchanged. The track
+closes at `round(scoreEnd / 7) / 4` beats, so all four tracks end on the same
+grid tick (E1M1: 1,920 ticks = 480.000 stored beats = 96.0 s) and the loops
+align exactly. The measured worst start error is **21.43 ms** (half a 50 ms
+tick is 25 ms). Pitch is `octave = midi / 12 - 1`, `note = midi % 12`, clamped
+to octave 0..8 (D_INTRO's bass is MIDI 8 and its 24 notes become G#0);
+pitch-wheel events are counted and ignored (1,146 in E1M1, a few cents each).
+
+**Roles are measured, not fixed.** The three busiest melodic channels are kept
+and register decides: lowest mean pitch is the triangle bass, highest the pulse
+lead (duty 0.5), the last the pulse harmony (duty 0.125). A fixed channel
+number would not hold -- E1M1's bass is ch2, E1M3's ch0, E1M5's ch1, D_INTER's
+ch2 with a different melody/third order. Channels that do not make the three
+are dropped and printed (`D_INTER` drops ch3's 400 notes and ch4's 194).
+
+**Percussion.** One noise track. Simultaneous hits are folded by a fixed
+priority (kick > snare > tom > open hi-hat > closed hi-hat > crash > ride >
+other) because `ApuCore` plays one percussion voice per hit; the losers are
+counted (190 of E1M1's 702 drum presses, mostly the kick+snare+tom stack DOOM
+layers on one tick). The APU has three presets, so the mapping is kick
+(35/36), snare (38-40), tom (41/43/45/47/48/50, folded to the snare's mid-band
+body), and hi-hat for open/closed hats, crash, ride and the odd 75/80/81. A
+drum's audible length is the preset's `defaultDuration`; the note's duration
+only advances the sequencer. This is a deliberate fidelity cost of one
+percussion voice.
+
+**What ships.** Only `mus_e1m1`; `MusicBank.cpp` includes
+`src/assets/music/MusE1M1.inc` once and answers `nullptr` for every other id,
+so `S_ChangeMusic` leaves a level quiet instead of holding a request. E1M1:
+2,332 press events -> 2,145 `MusicNote`s -> **34,320 B** (melody ch0 657 array
+entries, third ch1 712, bass ch2 263, percussion 513). `D_INTRO` is 80 notes =
+1,280 B and `D_INTER` is 3,975 = 63,600 B; both are converted and gated in
+memory, but only E1M1 is committed. The title would fit the remaining flash
+(no scene requests `mus_intro`), the intermission does not: the post-T47
+`_hud` image is 641,881 B of 655,360, leaving **13,479 B**, and `D_INTER`
+alone is 63,600 B.
+
+**The gate.** `tools/music_check.py` converts `D_INTRO`, `D_INTER` and
+`D_E1M1` in memory, re-derives every press's pitch and grid start from the
+MUS, checks every percussion tick against the fold priority, and proves each
+track's stored durations sum to `round(scoreEnd / 7) / 4` and project to the
+same `round(scoreEnd / 7)` APU ticks. For E1M1 it also requires the committed
+include to be byte-identical to a fresh conversion and parses the arrays back
+to compare against the MUS. `--perturb` (every melodic pitch +1 semitone) and
+`--stub` (empty tracks) both fail all three lumps. `tools/mus2tracks.py
+--check` reproduces the committed asset byte for byte. The record is
+`tools/music_check.txt`, and it carries the worst start error per track.
+
+**The grid's price.** The 300 BPM ceiling fixes the grid at 50 ms, so a note
+can start at most 25 ms from its original tick; the measured worst is
+**21.43 ms** on all three lumps, and the four tracks close on the same grid
+tick (E1M1: 1,920 ticks = 480.000 stored beats = 96.0 s). At 22,050 Hz the
+0.05 s tick truncates to 1,102 samples (49.977 ms), a 0.045 % shortening shared
+by all four tracks, so it cannot desynchronise them. A finer grid would need a
+higher `TICKS_PER_BEAT` in the APU; the BPM clamp is the API's ceiling.
+
+The menu's volume slider still drives nothing (T49) and its "NO SOUND YET"
+label is unchanged; the APU telemetry is T48, so the music line prints
+`underruns=-,worst_us=-`. `S_StartMusic` (looping = 0) is never called by the
+port; the shipped track loops, and a non-looping view would need a second
+`MusicTrack` struct per asset. The listening pass is the maintainer's: the
+board log proves the transport, not the timbre. Two earlier caveats stand: the
 `Legacy` profile's release is capped at 100 ms, so a cue whose original tail is
-longer decays inside its own duration instead; that is one of the recorded
-deviations. Sector-originated cues (doors, lifts, floors) are non-local at full
-volume, because this port's `p_sector_t` has no `soundorg` field; their
-sector-index token keeps one-sound-per-sector and `S_StopSound` working. A few
-one-shot specials the port counts as "deferred switch textures" are doors that
-upstream clears without a texture change, so they also get the switch cue -- the
-port's existing model, made audible.
+longer decays inside its own duration; and sector-originated cues (doors,
+lifts, floors) are non-local at full volume because `p_sector_t` has no
+`soundorg`, their sector-index token keeping one-sound-per-sector and
+`S_StopSound` working.
 
 **Eight channels, four voices.** DOOM keeps its eight logical channels, so
 vanilla's priority and origin rules still apply. The APU has four SFX voices:
 an idle voice is taken first, otherwise the least important sounding cue is
 stolen, and when every voice holds a Reserved cue (the player's pain, the
 player's weapon, the boss family) the newcomer is refused rather than stealing
-one. `steals` and `refused` are counted, and `pio test -e sound_test` (19 cases,
-including the preset/cue consistency and the shared event translation) proves
-the selector never names a Reserved cue as a victim, for every class
-combination.
+one. `steals` and `refused` are counted, and `pio test -e sound_test` (20 cases,
+including the preset/cue consistency, the shared event translation and the
+music bank's one shipped track) proves the selector never names a Reserved cue
+as a victim, for every class combination.
 
-**Log.** At boot: `SHOW,audio,init,status=ok,bank=108,mode=legacy`. Once a
-second beside `SHOW,frame`:
+**Log.** At boot: `SHOW,audio,init,status=ok,bank=108,mode=legacy`, then
+`SHOW,music,event=init,track=none,...`; when `S_Start` loads E1M1,
+`SHOW,music,event=start,track=e1m1,notes=657/712/263/513,
+beats=480.00/480.00/480.00/480.00,playing=1,paused=0,underruns=-,worst_us=-`
+(480 stored beats at 300 BPM is the original 96 s; at 120 BPM the same score
+would read 192). Once a second beside `SHOW,frame`:
 `SHOW,audio,plays=..,steals=..,refused=..,unknown=..,voices=4,active=..,
-underruns=-,worst_us=-` (the two `-` fields are T48's APU telemetry; this
-branch does not expose it yet).
+underruns=-,worst_us=-` and the same `SHOW,music,event=periodic,...
+` line (the two `-` fields are T48's APU telemetry; this branch does not
+expose it yet).
 
 **How to hear it.** `esp32dev_ILI9341_hud_audiotest` is the shipped build plus
 `-D DOOM_AUDIO_SCRIPT=1`: at boot it plays twelve cues -- pistol, shotgun,
