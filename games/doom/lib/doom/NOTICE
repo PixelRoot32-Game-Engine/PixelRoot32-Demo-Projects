@@ -48,6 +48,8 @@ size:
     r_things.*         sprite projection and drawing   r_things.c
     info_tables.h      mobjinfo[] and states[]         info.c
     st_stuff.*         the status bar and the face     st_stuff.c/st_lib.c
+    m_menu.*           the menu and the settings       m_menu.c
+    m_gamma.*          the gamma tables                v_video.c (gammatable)
     z_zone.*           the zone allocator              z_zone.c
     w_wad.*            WAD lump access                 w_wad.c
 

@@ -207,5 +207,23 @@ const std::uint16_t* playpal565Table();
  */
 const std::uint8_t* playpalTable();
 
+/**
+ * @brief Rebuilds the PLAYPAL tables for DOOM's gamma level (D5.2).
+ *
+ * linuxdoom's `I_SetPalette` passes every PLAYPAL channel through
+ * `gammatable[usegamma]` before it reaches the display; this is that step. It
+ * rewrites `playpal565Table()` and `playpalTable()` IN PLACE from @p rgb888
+ * (the pointers stay valid), so the caller only has to hand the unchanged
+ * `playpal565Table()` pointer to `DrawSurface::setPalette8()` again -- the way
+ * the frame driver already applies the palette. Level 0 reproduces
+ * `initFromPlaypal()`'s tables exactly.
+ *
+ * A no-op until `initFromPlaypal()` has run. Levels above 4 clamp to 4.
+ *
+ * @param rgb888 The same 768 PLAYPAL bytes `initFromPlaypal()` was given.
+ * @param level  0..4.
+ */
+void applyGamma(const std::uint8_t* rgb888, std::uint8_t level);
+
 }  // namespace palette
 }  // namespace doom

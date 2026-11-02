@@ -1,5 +1,7 @@
 #include "palette/DoomPalette.h"
 
+#include "m_menu.h"
+
 namespace doom {
 namespace palette {
 namespace {
@@ -164,6 +166,20 @@ void initFromPlaypal(const std::uint8_t* rgb888) {
                                                rgb888[base + 2]);
     }
     g_playpalBuilt = true;
+}
+
+void applyGamma(const std::uint8_t* rgb888, std::uint8_t level) {
+    if (!g_playpalBuilt || rgb888 == nullptr) {
+        return;
+    }
+    for (int index = 0; index < kEntryCount; ++index) {
+        const int base = index * 3;
+        const std::uint8_t r = m_gamma_correct(level, rgb888[base + 0]);
+        const std::uint8_t g = m_gamma_correct(level, rgb888[base + 1]);
+        const std::uint8_t b = m_gamma_correct(level, rgb888[base + 2]);
+        g_playpalTable[index] = rgb888To332(r, g, b);
+        g_playpal565Table[index] = rgb888To565(r, g, b);
+    }
 }
 
 const std::uint8_t* playpalTable() { return g_playpalTable; }
