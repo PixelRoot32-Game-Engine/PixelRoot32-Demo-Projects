@@ -749,6 +749,82 @@ bool frameLevelArenaStats(std::uint32_t* inUse, std::uint32_t* freeBytes,
 const char* frameLevelLastMissing();
 #endif
 
+#if defined(DOOM_HUD)
+/**
+ * @brief The automap's state and controls (D5.3).
+ *
+ * `lib/doom/am_map.c` is upstream's `am_map.c`; the session owns its state
+ * (`am_state_t`) and its shadow bitmap, and these five calls are the whole seam.
+ * They exist only in a HUD build, because the automap fills the 168 rows above
+ * the status bar and there is no 168-row window without `DOOM_HUD`.
+ *
+ * The map is drawn by the one render path, not by these calls: while it is
+ * active, `frameLevelRenderView()` paints the map into rows 0..167 instead of the
+ * world, then the bar and the menu, and reports the frame as usual. It also
+ * prints the map's own line once per reported frame:
+ *
+ *   SHOW,map,us=<map microseconds>,active=1,follow=<0|1>,scale=<scale_mtof>,
+ *   grid=<0|1>,hash=<SHA-256 of the 320x168 window>
+ *
+ * The hash is the window alone (no coverage record: the map clears every pixel it
+ * owns), which is the number `tools/am_check.py` prints for the same state.
+ *
+ * @return `frameLevelMapActive()`: true while the map is up.
+ */
+bool frameLevelMapActive();
+
+/**
+ * @brief AM_Start(): opens the map centred on the player.
+ *
+ * Nothing happens when no world is open, the level has no avatar, or the
+ * session could not allocate the shadow bitmap at level load (the failure is
+ * already on the `SHOW,map,init` line). The follow flag is upstream's: it is
+ * kept across a stop/start, so reopening the map resumes the last pan. The
+ * arrow's facing is taken from the avatar here as well as per tic, because a map
+ * opened between two tics would otherwise draw the arrow pointing east.
+ */
+bool frameLevelMapStart();
+
+/// AM_Stop(): the map goes down and the world frame comes back.
+void frameLevelMapStop();
+
+/**
+ * @brief The four d-pad directions, applied once per frame.
+ *
+ * @param bits Bit 0 up, 1 down, 2 left, 3 right -- the engine's `InputMap.h`
+ *             order, which is `am_map.h`'s `AM_PAN_*`. A pan cancels the follow
+ *             (the board has no 'f' key) and the window stops at the level's
+ *             edges.
+ * @return true while the map is up; a stopped map ignores the call.
+ */
+bool frameLevelMapPan(std::uint8_t bits);
+
+/// The automap's zoom directions, `am_map.h`'s `AM_ZOOM_*`.
+constexpr int kMapZoomRelease = 0;
+constexpr int kMapZoomIn = 1;
+constexpr int kMapZoomOut = -1;
+
+/**
+ * @brief The '=' / '-' keys: one zoom step per tic while held.
+ *
+ * @param direction kMapZoomIn, kMapZoomOut or kMapZoomRelease.
+ * @return true while the map is up.
+ */
+bool frameLevelMapZoom(int direction);
+
+/**
+ * @brief Clears the automap's mapped bits (D5.3).
+ *
+ * Two callers. The boot frame-00 verification renders the harness's viewpoint,
+ * which is not the player's (it faces east while the player faces north), and its
+ * wall pass would otherwise leave six lines marked that the player has never
+ * seen. And a level reload starts with every line unseen, which is upstream's
+ * P_SetupLevel re-reading the linedefs' flags. The window and the map's up/down
+ * state are not touched; the bitmap's size never changes after `SHOW,map,init`.
+ */
+void frameLevelMapForget();
+#endif  // DOOM_HUD
+
 /**
  * @brief Fills @p out with the console player's state.
  *

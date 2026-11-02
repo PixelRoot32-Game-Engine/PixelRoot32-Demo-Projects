@@ -207,6 +207,49 @@ private:
      * @param buttons The buttons sampled for this frame.
      */
     void runWorldTics(std::uint8_t buttons);
+
+#if defined(DOOM_HUD)
+    /**
+     * @brief The automap's turn of one frame (D5.3): Select, then its controls.
+     *
+     * Select (engine input index 7, GPIO 35) toggles the map on its rising edge:
+     * an edge opens it, the next one closes it, and the same press cannot toggle
+     * twice because only the edge is read. While the map is up the d-pad pans
+     * (which cancels the follow, as am_map.c's comment explains), A zooms in and
+     * B zooms out, and **none of those bits reach the world's ticcmd**: the map's
+     * buttons are the map's, so `runMap()` answers 0 and the player stands still
+     * behind the map, exactly as the menu answers 0 while it is open.
+     *
+     * A Select press is swallowed while the menu is open (the menu owns the
+     * input) but still recorded, so closing the menu does not toggle the map on a
+     * press that belonged to the menu.
+     *
+     * @param buttons  The world's buttons from `runMenu()`.
+     * @param menuOpen Whether the menu was open this frame.
+     * @return The buttons the world may see: @p buttons, or 0 while the map is up.
+     */
+    std::uint8_t runMap(std::uint8_t buttons, bool menuOpen);
+
+    /// Select's held state on the previous frame: the map's toggle edge.
+    bool mapSelectHeld_ = false;
+
+    /**
+     * @brief Whether Select has been seen released since boot (D5.3).
+     *
+     * GPIO 35 is input-only on this SoC and has no internal pull-up, so
+     * `INPUT_PULLUP` does nothing there and a floating pin reads LOW -- "held" --
+     * from the first sample (this board's own log: the map opened at boot with no
+     * press). A control that opened the map on a floating pin and could never
+     * close it is worse than no control, so Select is armed only after it has
+     * been read released once: a stuck-low pin is then simply dead, which is what
+     * a missing pull-up deserves. The README says so, and the scripted build
+     * ignores the physical pin entirely.
+     */
+    bool mapSelectArmed_ = false;
+
+    /// Frames the scripted map diagnostic has played (DOOM_MAP_SCRIPT only).
+    std::uint32_t mapScriptFrame_ = 0;
+#endif
 #endif
 
 #if defined(DOOM_MENU)

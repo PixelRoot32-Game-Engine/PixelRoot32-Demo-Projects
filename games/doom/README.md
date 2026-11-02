@@ -169,8 +169,9 @@ the container's own `M_*` patches and the HU font.
 the menu on its press edge (a held Start does not flicker it) and, while the menu
 is open, closes it from any screen, as Esc toggles DOOM's menu. Start is never a
 game button: the world never sees it. LEFT + RIGHT held together is the game's
-again (both cancel to no turn) and no longer opens anything. Select (GPIO 35) is
-not mapped. While the menu is open:
+again (both cancel to no turn) and no longer opens anything. **Select** (GPIO 35)
+toggles the automap (see "The automap" below) and is not a game button either.
+While the menu is open:
 
 | Button | Does |
 | --- | --- |
@@ -185,16 +186,18 @@ is replayed when it closes) and the world is handed no buttons until every butto
 has been released, so the Start press does not reach the game and the B that
 closed the menu does not become a use.
 
-**Wiring note for GPIO 34 (not verified on hardware).** The engine's input layer
-(`InputManager::init()`) calls `pinMode(pin, INPUT_PULLUP)` on every configured
-pin and reads a button as pressed when `digitalRead() == LOW` (active low, with a
-100 ms debounce). GPIO 34 is input-only on the ESP32 and has **no internal
-pull-up or pull-down**, so `INPUT_PULLUP` does nothing there: the Start button
-needs an **external pull-up** (typically 10 kOhm from GPIO 34 to 3V3) with the
-switch between GPIO 34 and GND. Without that resistor the pin floats and can read
-as spurious Start presses (the menu would open and close by itself). Whether the
-maintainer's Start button has that resistor is an open hardware question; the
-electrical path has only been exercised by a scripted press, never by a real one.
+**Wiring note for GPIO 34 and GPIO 35 (not verified on hardware).** The engine's
+input layer (`InputManager::init()`) calls `pinMode(pin, INPUT_PULLUP)` on every
+configured pin and reads a button as pressed when `digitalRead() == LOW` (active
+low, with a 100 ms debounce). GPIO 34 and GPIO 35 are both input-only on the
+ESP32 and have **no internal pull-up or pull-down**, so `INPUT_PULLUP` does
+nothing there: each button needs an **external pull-up** (typically 10 kOhm from
+the pin to 3V3) with the switch between the pin and GND. Whether the
+maintainer's Start and Select buttons have one is an open hardware question, and
+on the unit this task ran on, **GPIO 35 floats**: `Select` read as held from
+boot, and in the shipped image the automap opened and closed by itself every 1-2
+seconds (see the automap section). GPIO 34 read stable-high on the same unit, so
+Start behaved. Without the resistor the map key is unusable.
 
 **Screens.** NEW GAME and OPTIONS. NEW GAME is linuxdoom's skill screen (the
 cursor starts on the saved skill); choosing a row reloads E1M1 at that skill over
@@ -235,6 +238,76 @@ against an independent drawer, pixel by pixel) and `pio test -e menu_test`.
 `esp32dev_ILI9341_hud_menutest` plays a fixed input script into the real button
 path so the board can be driven without pressing anything; it is a diagnostic,
 never the shipped image.
+
+Neither `DOOM1.WAD` nor any `.whd` is committed: `tools/.gitignore` refuses both,
+because a container is a repacked copy of shareware data.
+
+### The automap (D5.3)
+
+`esp32dev_ILI9341_hud` also carries the automap: `lib/doom/am_map.c`, a
+translation of linuxdoom's `am_map.c` (the window and its scale, the outcode
+clipper, the Bresenham rasteriser, the block-aligned grid, the wall colour ladder,
+the player arrow and the crosshair), drawn into the 168 rows above the status bar.
+While the map is up the world frame and the weapon are not drawn at all -- the
+bar and, if it is open, the menu are painted on top, exactly upstream's
+`D_Display` order.
+
+**Buttons.** While the map is up, none of them reach the world's tic command (the
+player stands still behind the map, as they do behind the menu):
+
+| Button | Does |
+| --- | --- |
+| Select (GPIO 35) | opens the map, or closes it; one press is one toggle |
+| Up / Down / Left / Right | pan the window; the first press cancels "follow the player" |
+| A | zoom in (1.02x a tic, twice a second) |
+| B | zoom out (to the whole level, then it stops) |
+| Start | opens the menu over the map, as upstream draws the menu on top of it |
+
+There is no button for the grid: upstream toggles it with `g`, this board has no
+keyboard, and no control was invented for it. The grid is proven by the host gate
+and not reachable on the panel.
+
+**What is drawn.** A line appears only when the wall pass has stored a range for
+it, which is upstream's rule (`ML_MAPPED`): the port's linedefs are a frozen
+flash record, so the session owns a shadow bitmap of one bit per linedef (60 bytes
+for E1M1's 475 lines, 130 for E1M2's 1,033) and `r_segs.c` sets a bit for every
+wall range it stores -- the same third statement of upstream's
+`R_StoreWallRange`. The colours are upstream's: red for a solid wall, brown for a
+floor-level change, yellow for a ceiling-level change, yellow-ish for a line
+special 39 teleporter, grey for the computer-map power-up's unseen lines.
+`AM_updateLightLev()`'s strobe is ported but **not running**, because upstream
+1.10's own call to it is commented out: every wall is its base colour, exactly as
+the reference is. Marks, `AM_drawThings`, the `IDDT` cheat and the deathmatch
+followers are not ported (no keyboard, no marks art, no cheats, one player).
+
+**Rate.** `AM_Ticker` runs once per 35 Hz world tic (not per frame), so a pan is
+140 px a second and a zoom 2x a second whatever the panel's frame rate is.
+
+**What it costs.** On the CYD a map frame costs **0.84-1.02 ms** (measured:
+`us=` on every `SHOW,map` line), against ~30 ms for the world frame; the shadow
+bitmap is 60 bytes of heap taken at level load and freed with the session, and the
+whole `.bss` cost is 240 B (the automap's state and two counters).
+
+**Log.** While the map is up, each reported frame also prints
+`SHOW,map,us=<map microseconds>,active=1,follow=<0|1>,scale=<scale_mtof>,
+grid=<0|1>,hash=<SHA-256 of the 320x168 window>`. That hash is the number
+`tools/am_check.py` prints for the same state: the board's first map frame
+(`b1677b75...`, the spawn view with the lines the wall pass stored there) is the
+gate's `spawn_mapped` state, byte for byte. With the map down the log is exactly
+what it was: no field was added to `SHOW,frame`.
+
+**Gates.** `python tools/am_check.py --wad DOOM1.WAD` renders ten scripted states
+through the real `am_map.c` (and the real BSP walk and wall pass, for the mapped
+bits) and compares the whole 320x200 surface with an independent oracle in
+`tools/doom_ref.py`: E1M1 at the entry scale, the same view after a walk, the
+light strobe, the grid, zoom-in, a pan with the follow cancelled, zoom-out to the
+clamp, the computer-map power-up, E1M2 with its own bounds, and the stopped map.
+Rows 168-199 must stay untouched. `--perturb colour|scale` moves one oracle
+constant and must fail. `esp32dev_ILI9341_hud_mapcheck` plays a fixed input script
+(Select, A, B, the d-pad, a walk, Select again) through the real button path and
+prints `SHOW,map` for every reported frame; it reads only the script's Select, so
+a floating GPIO 35 cannot scramble the states. A diagnostic, never the shipped
+image.
 
 Neither `DOOM1.WAD` nor any `.whd` is committed: `tools/.gitignore` refuses both,
 because a container is a repacked copy of shareware data.

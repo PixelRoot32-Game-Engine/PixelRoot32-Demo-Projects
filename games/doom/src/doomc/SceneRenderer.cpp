@@ -103,6 +103,48 @@ void SceneRenderer::setMenu(const m_menu* menu) {
 }
 #endif  // DOOM_MENU
 
+bool SceneRenderer::mapActive() const {
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
+    return open_ && frameLevelMapActive();
+#else
+    return false;
+#endif
+}
+
+bool SceneRenderer::mapStart() {
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
+    return open_ && frameLevelMapStart();
+#else
+    return false;
+#endif
+}
+
+void SceneRenderer::mapStop() {
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
+    if (open_) {
+        frameLevelMapStop();
+    }
+#endif
+}
+
+bool SceneRenderer::mapPan(std::uint8_t bits) {
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
+    return open_ && frameLevelMapPan(bits);
+#else
+    (void)bits;
+    return false;
+#endif
+}
+
+bool SceneRenderer::mapZoom(int direction) {
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
+    return open_ && frameLevelMapZoom(direction);
+#else
+    (void)direction;
+    return false;
+#endif
+}
+
 bool SceneRenderer::render(std::uint8_t* indexPixels, int width, int height, bool wantHash,
                            SceneFrameMeasurements* out) {
     if (!open_ || indexPixels == nullptr) {
@@ -203,6 +245,12 @@ bool SceneRenderer::verifySpawnFrame(std::uint8_t* indexPixels, int width, int h
                   static_cast<long>(spawn.z), static_cast<unsigned long>(spawn.angle),
                   static_cast<unsigned>(hashMicros), hash);
     writeLine(line);
+#if defined(DOOM_HUD)
+    // D5.3: this render is a proof, not gameplay. Its viewpoint is the harness's
+    // (facing east) and the wall pass marks what it sees, so leaving those bits
+    // behind would show the player six lines they never looked at.
+    frameLevelMapForget();
+#endif
     return hash[0] != '\0';
 #else
     (void)width;

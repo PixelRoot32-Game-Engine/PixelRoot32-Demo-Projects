@@ -460,6 +460,9 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 #if defined(DOOM_PALFLASH_SCRIPT)
 #include "p_inter.h"
 #endif
+#if defined(DOOM_HUD)
+#include "am_map.h"
+#endif
 #include "r_bsp.h"
 #include "r_data.h"
 #include "r_defs.h"
@@ -2161,6 +2164,28 @@ void hashSurface(const std::uint8_t* pixels, std::size_t pixelBytes, char hex[65
     digestToHex(digest, hex);
 }
 
+#if defined(DOOM_HUD)
+/**
+ * @brief The automap frame's hash: the map window's rows alone (D5.3).
+ *
+ * `hashSurface()` appends the wall pass's coverage record, which a map frame
+ * never writes (it clears every pixel of the window itself), so a map frame has
+ * no coverage to report and a stale one would make the number depend on the last
+ * world frame instead of on the picture. This hashes exactly the 320x168 index
+ * bytes `am_draw()` owns, which is the number `tools/am_check.py` prints for the
+ * same state and the one the board's `SHOW,map` line carries.
+ */
+void hashWindow(const std::uint8_t* pixels, std::size_t pixelBytes, char hex[65]) {
+    sha256_context_t context;
+    std::uint8_t digest[32];
+
+    sha256Init(&context);
+    sha256Update(&context, pixels, pixelBytes);
+    sha256Final(&context, digest);
+    digestToHex(digest, hex);
+}
+#endif
+
 bool isBreakdownView(int frame) {
     for (int index = 0; index < kFrameBreakdownCount; ++index) {
         if (kFrameBreakdownFrames[index] == frame) {
@@ -2665,6 +2690,113 @@ void menuDraw(std::uint8_t* surface, int width) {
 }
 #endif  // DOOM_MENU
 
+/*
+ * THE AUTOMAP (D5.3)
+ *
+ * lib/doom/am_map.c is upstream's am_map.c translated; this block is the session
+ * side of it and nothing else:
+ *
+ *   the bitmap   one shadow bit per linedef, `(lines + 7) / 8` bytes of heap,
+ *                taken when the level opens and freed when the session closes.
+ *                r_segs.c sets a bit for every wall range the wall pass stores,
+ *                which is upstream's `linedef->flags |= ML_MAPPED`.
+ *   the state    `gMap`, the caller-owned am_state_t: AM_LevelInit once per
+ *                level load, AM_Stop on a reload, the window kept in tics.
+ *   the frame    renderSessionView() draws it over the 168 view rows instead of
+ *                the world, then the bar and the menu on top, exactly the order
+ *                upstream's D_Display uses (the automap, then the status bar).
+ *
+ * Why the map can be up without breaking anything: the map is drawn *instead of*
+ * renderOnce(), so no pass runs and the surface's rows 168..199 are the bar's as
+ * usual; the hash block below is unchanged, so `SHOW,frame` still reports a
+ * number; and `SHOW,map` is the map's own line, printed only while the map is up.
+ *
+ * THE TIC
+ *
+ * AM_Ticker runs from frameLevelRunTics(), once per 35 Hz tic and after
+ * p_level_tic -- upstream's G_Ticker order (P_Ticker, then the automap) -- so the
+ * pan is 140 px a second and a zoom is 2x a second whatever the frame rate is.
+ * Driving it from the frame instead would make both a function of the panel.
+ */
+am_state_t gMap;
+std::uint8_t* gMapped = nullptr;
+std::uint32_t gMappedBytes = 0u;
+std::uint32_t gMapMicros = 0u;
+int gMapLinesDrawn = 0;
+
+/// Takes the shadow bitmap and initialises the automap for the open level.
+bool openAutomap() {
+    const doom_map_t& map = gSession.driver->map;
+    const std::uint32_t lines = map.lumps[DOOM_MAP_LINEDEFS].count;
+    const std::uint32_t bytes = (lines + 7u) / 8u;
+    char (&line)[kFrameProfileLineCapacity] = gSessionLine;
+
+    if (lines == 0u || bytes == 0u) {
+        std::snprintf(line, sizeof line, "SHOW,map,init,status=fail,reason=lines,lines=%u\n",
+                      static_cast<unsigned>(lines));
+        writeLine(line);
+        return false;
+    }
+    gMapped = static_cast<std::uint8_t*>(
+        heap_caps_malloc(static_cast<std::size_t>(bytes), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (gMapped == nullptr) {
+        std::snprintf(line, sizeof line,
+                      "SHOW,map,init,status=fail,reason=alloc,bytes=%u,heap=%u\n",
+                      static_cast<unsigned>(bytes),
+                      static_cast<unsigned>(esp_get_free_heap_size()));
+        writeLine(line);
+        return false;
+    }
+    std::memset(gMapped, 0, static_cast<std::size_t>(bytes));
+    gMappedBytes = bytes;
+
+    am_clear_state(&gMap);
+    if (!am_level_init(&gMap, &map, gMapped, gMappedBytes)) {
+        heap_caps_free(gMapped);
+        gMapped = nullptr;
+        gMappedBytes = 0u;
+        std::snprintf(line, sizeof line, "SHOW,map,init,status=fail,reason=level\n");
+        writeLine(line);
+        return false;
+    }
+    am_stop(&gMap);
+
+    // Both copies on purpose: the wall pass reads the state's copy (r_bsp_init()
+    // copied the storage into the view when the session opened) and the driver
+    // keeps the descriptor it was given.
+    gSession.driver->storage.mapped = gMapped;
+    gSession.driver->storage.mappedBytes = gMappedBytes;
+    gSession.driver->view.storage.mapped = gMapped;
+    gSession.driver->view.storage.mappedBytes = gMappedBytes;
+
+    std::snprintf(line, sizeof line,
+                  "SHOW,map,init,status=ok,lines=%u,bytes=%u,scale=%ld,min=%ld,max=%ld\n",
+                  static_cast<unsigned>(lines), static_cast<unsigned>(gMappedBytes),
+                  static_cast<long>(gMap.scaleMtof), static_cast<long>(gMap.minScaleMtof),
+                  static_cast<long>(gMap.maxScaleMtof));
+    writeLine(line);
+    return true;
+}
+
+/// Releases the shadow bitmap. Safe on a closed automap.
+void closeAutomap() {
+    am_stop(&gMap);
+    gMap.mapped = nullptr;
+    gMap.mappedBytes = 0u;
+    if (gMapped != nullptr) {
+        heap_caps_free(gMapped);
+        gMapped = nullptr;
+    }
+    gMappedBytes = 0u;
+}
+
+/// A reloaded level (New Game) has seen nothing yet, and P_SetupLevel re-reading
+/// the linedefs would have cleared upstream's ML_MAPPED bits the same way.
+void resetAutomap() {
+    am_stop(&gMap);
+    frameLevelMapForget();
+}
+
 #endif  // SHOW && DOOM_HUD
 
 /*
@@ -2921,6 +3053,10 @@ bool openWorldSession() {
     p_level_bind_render(&gWorld.level, &gSession.driver->map);
 #if defined(DOOM_HUD)
     hudStart();
+    // D5.3: the automap's shadow bitmap and its level state. A refusal is
+    // reported (`SHOW,map,init,status=fail`) and leaves the map unavailable; the
+    // world frame is untouched either way.
+    (void)openAutomap();
 #endif
     std::snprintf(line, sizeof line,
                   "SHOW,arena,fit,status=ok,chosen=%u,peak=%u,used=%u,headroom=25,round=1024,"
@@ -3337,6 +3473,10 @@ void closeLevelSession() {
     // p_level_shutdown() walks the level's zone to release them.
     closeWorldSession();
 #endif
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
+    // D5.3: the shadow bitmap is the session's heap block, so it goes with it.
+    closeAutomap();
+#endif
     doom_whd_source_close();
     releaseWorkingSet();
     gSession.open = false;
@@ -3373,27 +3513,54 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
     bindSurface(gSession.driver, surface, width, height);
     FrameProfileSample local;
     FrameProfileSample* out = sample != nullptr ? sample : &local;
-    if (!renderOnce(gSession.driver, view, surface, width, height, out)) {
-        return false;
-    }
+    std::uint32_t mapMicros = 0u;
+    bool mapFrame = false;
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
-    // The bar is part of the frame and of its hash: the HUD frame-00 hash is a
-    // different number from the 200-row `50fb3d9c`, by construction.
-#if defined(DOOM_WEAPON_DIAG)
-    if (wantHash && !gWeaponPartsDone && weaponAtRest()) {
-        // The rectangle around the resting pistol before it is drawn, for the
-        // one-shot below: it separates a world mismatch from a weapon mismatch when
-        // the host rebuilds the numbers.
-        hashRect(surface, width, kWeaponRectX, kWeaponRectY, kWeaponRectW, kWeaponRectH,
-                 gPreWeaponHash);
-    }
-#endif  // DOOM_WEAPON_DIAG
-    weaponDraw(gSession.driver);
-    hudDraw(surface, width);
+    // D5.3: the automap replaces the world frame. Upstream's D_Display draws the
+    // automap *instead of* the view (R_RenderPlayerView is skipped while
+    // automapactive) and the status bar and the menu on top of it; that is the
+    // order below. No pass runs, so nothing is marked as seen while the map is
+    // up, and the weapon (a psprite, drawn between the view and the bar) is not
+    // drawn either -- upstream's R_DrawPlayerSprites is part of the view it
+    // skipped.
+    if (am_active(&gMap)) {
+        const std::int64_t mapStart = nowMicros();
+        const int drawn = am_draw(&gMap, surface, width);
+        mapMicros = elapsedMicros(mapStart);
+        gMapMicros = mapMicros;
+        gMapLinesDrawn = drawn;
+        *out = FrameProfileSample{};
+        out->frameMicros = mapMicros;
+        hudDraw(surface, width);
 #if defined(DOOM_MENU)
-    menuDraw(surface, width);
+        menuDraw(surface, width);
+#endif
+        mapFrame = true;
+    }
+#endif
+    if (!mapFrame) {
+        if (!renderOnce(gSession.driver, view, surface, width, height, out)) {
+            return false;
+        }
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
+        // The bar is part of the frame and of its hash: the HUD frame-00 hash is a
+        // different number from the 200-row `50fb3d9c`, by construction.
+#if defined(DOOM_WEAPON_DIAG)
+        if (wantHash && !gWeaponPartsDone && weaponAtRest()) {
+            // The rectangle around the resting pistol before it is drawn, for the
+            // one-shot below: it separates a world mismatch from a weapon mismatch when
+            // the host rebuilds the numbers.
+            hashRect(surface, width, kWeaponRectX, kWeaponRectY, kWeaponRectW, kWeaponRectH,
+                     gPreWeaponHash);
+        }
+#endif  // DOOM_WEAPON_DIAG
+        weaponDraw(gSession.driver);
+        hudDraw(surface, width);
+#if defined(DOOM_MENU)
+        menuDraw(surface, width);
 #endif
 #endif
+    }
 
     if (hash != nullptr) {
         if (wantHash) {
@@ -3421,6 +3588,54 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
                           static_cast<int>(gWorld.level.playerState.psprites[0].state),
                           static_cast<int>(gWorld.level.playerState.psprites[0].sy >> FRACBITS));
             writeLine(gSessionLine);
+            if (mapFrame) {
+                // D5.3: the map's own line, once per reported frame and only while
+                // the map is up, so no map-off log grows a field. The hash is the
+                // 168-window bytes alone (`hashWindow`), which is exactly what
+                // tools/am_check.py prints for the same state, so the board and the
+                // host compare one number. `scale` is `scale_mtof` raw: the zoom in
+                // the driver's own 16.16 unit, not a rounded ratio.
+                char mapHash[65];
+                hashWindow(surface, static_cast<std::size_t>(width) * R_VIEW_HEIGHT, mapHash);
+                std::snprintf(gSessionLine, sizeof gSessionLine,
+                              "SHOW,map,us=%u,active=%d,follow=%d,scale=%ld,grid=%d,hash=%s\n",
+                              static_cast<unsigned>(mapMicros), am_active(&gMap),
+                              am_follow(&gMap), static_cast<long>(am_scale_mtof(&gMap)),
+                              am_grid(&gMap), mapHash);
+                writeLine(gSessionLine);
+            }
+#if defined(DOOM_MAP_SCRIPT)
+            if (mapFrame) {
+                // D5.3 diagnostic build only: the automap's own numbers, so a
+                // board picture that disagrees with tools/am_check.py can be
+                // localised to the window, the mapped set or the drawing.
+                std::uint32_t marked = 0u;
+                for (std::uint32_t line = 0u; line < gMap.lineCount; ++line) {
+                    if (am_mapped(&gMap, line) != 0) {
+                        ++marked;
+                    }
+                }
+                std::snprintf(gSessionLine, sizeof gSessionLine,
+                              "SHOW,mapdbg,mx=%ld,my=%ld,mw=%ld,mh=%ld,drawn=%d,mapped=%u\n",
+                              static_cast<long>(gMap.mX), static_cast<long>(gMap.mY),
+                              static_cast<long>(gMap.mW), static_cast<long>(gMap.mH),
+                              static_cast<int>(gMapLinesDrawn), static_cast<unsigned>(marked));
+                writeLine(gSessionLine);
+                {
+                    char bits[2u * 64u + 1u];
+                    std::size_t at = 0u;
+                    for (std::uint32_t byte = 0u; byte < gMap.mappedBytes && at + 2u < sizeof bits;
+                         ++byte) {
+                        static const char kHex[] = "0123456789abcdef";
+                        bits[at++] = kHex[(gMapped[byte] >> 4) & 0x0Fu];
+                        bits[at++] = kHex[gMapped[byte] & 0x0Fu];
+                    }
+                    bits[at] = '\0';
+                    std::snprintf(gSessionLine, sizeof gSessionLine, "SHOW,mapbits,%s\n", bits);
+                    writeLine(gSessionLine);
+                }
+            }
+#endif
 #if defined(DOOM_WEAPON_DIAG)
             if (!gWeaponPartsDone && weaponAtRest()) {
                 // Once, when the pistol rests: the view alone (the bar's face is
@@ -3541,6 +3756,45 @@ bool frameLevelRenderView(std::uint8_t* surface, int width, int height, std::int
                              hashMicros);
 }
 
+#if defined(DOOM_HUD)
+static_assert(kMapZoomRelease == AM_ZOOM_RELEASE && kMapZoomIn == AM_ZOOM_IN
+                  && kMapZoomOut == AM_ZOOM_OUT,
+              "the map's zoom directions are am_map.h's");
+static_assert(kMapZoomIn == 1 && kMapZoomOut == -1,
+              "the map's zoom directions are the two sign values the driver documents");
+
+bool frameLevelMapActive() { return am_active(&gMap) != 0; }
+
+bool frameLevelMapStart() {
+    if (!gWorld.open || gWorld.level.playerState.mo == nullptr) {
+        return false;
+    }
+    const r_mobj_t* avatar = gWorld.level.playerState.mo;
+    if (!am_start(&gMap, avatar->x, avatar->y)) {
+        return false;
+    }
+    // The arrow's facing, from the first frame. am_ticker() keeps it current once
+    // the tics run, but a map opened between two tics (or before the first one)
+    // would otherwise draw the arrow at angle 0 -- east -- whatever way the
+    // player is facing (upstream reads `plr->mo->angle` at draw time, so it never
+    // has this gap).
+    gMap.playerAngle = avatar->angle;
+    return true;
+}
+
+void frameLevelMapStop() { am_stop(&gMap); }
+
+bool frameLevelMapPan(std::uint8_t bits) { return am_pan(&gMap, bits) != 0; }
+
+bool frameLevelMapZoom(int direction) { return am_zoom(&gMap, direction) != 0; }
+
+void frameLevelMapForget() {
+    if (gMapped != nullptr) {
+        std::memset(gMapped, 0, static_cast<std::size_t>(gMappedBytes));
+    }
+}
+#endif  // DOOM_HUD
+
 bool frameLevelSpawnView(LevelView* out) {
     if (out == nullptr || !ensureSpawnView()) {
         return false;
@@ -3569,6 +3823,15 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
         }
 #if defined(DOOM_HUD)
         hudTick();
+#endif
+#if defined(DOOM_HUD)
+        // D5.3: upstream's G_Ticker order -- P_Ticker, then ST_Ticker, then the
+        // automap's AM_Ticker -- one call per 35 Hz tic, so the pan and the zoom
+        // are the reference's per-second rates and not the panel's frame rate.
+        if (am_active(&gMap) && gWorld.level.playerState.mo != nullptr) {
+            const r_mobj_t* avatar = gWorld.level.playerState.mo;
+            am_ticker(&gMap, avatar->x, avatar->y, avatar->angle);
+        }
 #endif
     }
     return true;
@@ -3602,6 +3865,11 @@ bool frameLevelNewGame(int skill) {
     p_level_bind_render(&level, map);
     if (reloaded) {
         hudStart();
+#if defined(DOOM_HUD)
+        // D5.3: a reloaded level has seen nothing yet, and the map goes down with
+        // the old level (upstream's P_SetupLevel re-reads every linedef flag).
+        resetAutomap();
+#endif
         // One idle tic, so the player's eye height (viewz, computed by the first
         // P_PlayerThink) exists before the first frame of the new game is drawn.
         (void)frameLevelRunTics(1u, 0u);
@@ -3619,6 +3887,9 @@ bool frameLevelNewGame(int skill) {
         gFrameWorld = &level;
         p_level_bind_render(&level, map);
         hudStart();
+#if defined(DOOM_HUD)
+        resetAutomap();
+#endif
     } else {
         gWorld.open = false;
     }

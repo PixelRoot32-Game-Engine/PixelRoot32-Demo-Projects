@@ -134,6 +134,23 @@ public:
 #endif
 
     /**
+     * @brief The automap (D5.3): the controls, and whether it is up.
+     *
+     * `render()` paints the map instead of the world while it is active, so the
+     * scene only has to hand over the buttons and let it be. These are the
+     * driver's `frameLevelMap*` calls behind the one open/closed check the scene
+     * already trusts; a closed renderer answers false and does nothing, which is
+     * the same fallback every other method here has.
+     */
+    bool mapActive() const;
+    bool mapStart();
+    void mapStop();
+    /// Bit 0 up, 1 down, 2 left, 3 right (`doomc/InputMap.h`'s order).
+    bool mapPan(std::uint8_t bits);
+    /// 1 zoom in, -1 zoom out, 0 released (`doomc/FrameDriver.h`).
+    bool mapZoom(int direction);
+
+    /**
      * @brief Renders the player's viewpoint into a caller-owned 8bpp surface.
      *
      * The surface receives DOOM palette indices, not colours: on the panel the

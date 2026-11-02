@@ -29,13 +29,18 @@
 #error "DOOM_PALFLASH needs DOOM_MENU: it composes with the menu's gamma"
 #endif
 
+#if defined(DOOM_MENU) || defined(DOOM_HUD)
+#include "doomc/InputMap.h"  /* the button bits the menu and the automap read */
+#endif
 #if defined(DOOM_MENU)
-#include "doomc/InputMap.h"
 #include "doomc/SceneRenderer.h"
 #include "doomc/SettingsStore.h"
 #if defined(ARDUINO)
 #include "platforms/PreferencesStore.h"
 #endif
+#endif
+#if defined(DOOM_HUD)
+#include "am_map.h"  /* AM_PAN_* and AM_ZOOM_*: the automap's controls (D5.3) */
 #endif
 
 #include <cstddef>
@@ -93,8 +98,20 @@ constexpr int kButtonCount = 6;
 
 /// The engine's `InputConfig` index of Start (GPIO 34 on the CYD): after the six
 /// game buttons, so the shell, the INPUT line and the on-screen slots never see it.
-/// Only the menu reads it (D5.2); Select (index 7) stays unmapped.
+/// Only the menu reads it (D5.2).
 constexpr std::uint8_t kStartIndex = 6;
+
+/// The engine's `InputConfig` index of Select (GPIO 35 on the CYD): the automap's
+/// toggle (D5.3). Like Start it is not a game button: it is sampled on its own,
+/// never packed into the world's bits, so `kButtonCount` stays 6.
+constexpr std::uint8_t kSelectIndex = 7;
+
+/// The scripted-input build's Select bit. The engine never sets bit 7 of the
+/// button byte (the six game bits are 0..5), and the menu's Start is 0x40, so a
+/// diagnostic script can press Select through the same byte the real sample fills
+/// without the menu reading it as Start. `runMap()` masks it out of what the world
+/// sees, exactly as the menu masks its Start bit.
+constexpr std::uint8_t kMapScriptSelect = 0x80u;
 
 // --- Shell geometry ---------------------------------------------------------
 
@@ -847,6 +864,77 @@ std::uint8_t menuScriptButtons(std::uint32_t frame) {
 
 #endif  // DOOM_MENU
 
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD) && defined(DOOM_MAP_SCRIPT)
+/*
+ * DOOM_MAP_SCRIPT (env esp32dev_ILI9341_hud_mapcheck): the board's buttons cannot
+ * be pressed from the build host, so this diagnostic plays a fixed input script
+ * into the same path a real press takes -- the sampled buttons plus the Select
+ * bit, both read by `runMap()` -- and the serial log shows what the automap did.
+ * Each step holds `buttons` for `frames` frames; a tap is one frame down and two
+ * up, so every press is its own rising edge (Select's toggle is edge-triggered).
+ *
+ * What it does, in order, and why each part is there:
+ *   1. Select: the map opens at the entry scale, following the player, nothing
+ *      mapped yet -- the state tools/am_check.py pins as `spawn`.
+ *   2. A held: zoom in (one 1.02x step per tic). B held: back out.
+ *   3. RIGHT then UP held: pan, which cancels the follow; the window stops where
+ *      the level's edge clamps it.
+ *   4. Select: the map closes and the world frame comes back.
+ *   5. UP held: the player walks forward, so the wall pass marks more lines.
+ *   6. Select: the map opens again (the follow stays off, as upstream's static
+ *      does), with the lines walked in step 5 drawn.
+ *   7. B held: zoom out to the whole level (the min_scale_mtof clamp).
+ *   8. Select: closed, and the log goes back to SHOW,frame lines.
+ *
+ * The grid is not in the script: upstream toggles it with 'g', the board has no
+ * button for it, and inventing one is not this task's call.
+ */
+struct MapScriptStep {
+    std::uint8_t buttons;
+    std::uint8_t frames;
+};
+
+#define MTAP(button) {(button), 1}, {0, 2}
+#define MHOLD(button, count) {(button), (count)}, {0, 4}
+#define MWAIT(count) {0, (count)}
+
+const MapScriptStep kMapScript[] = {
+    MWAIT(40),
+    MTAP(kMapScriptSelect),                 // the map opens, following, full scale
+    MWAIT(30),
+    MHOLD(doomc::kButtonA, 24),             // zoom in
+    MWAIT(6),
+    MHOLD(doomc::kButtonB, 24),             // back out
+    MWAIT(6),
+    MHOLD(doomc::kButtonRight, 30),         // pan right: the follow is cancelled
+    MWAIT(6),
+    MHOLD(doomc::kButtonUp, 20),            // pan up
+    MWAIT(12),
+    MTAP(kMapScriptSelect),                 // the map closes
+    MWAIT(20),
+    MHOLD(doomc::kButtonUp, 30),            // the player walks
+    MWAIT(20),
+    MTAP(kMapScriptSelect),                 // the map opens again, panned
+    MWAIT(30),
+    MHOLD(doomc::kButtonB, 40),             // zoom out to the whole level
+    MWAIT(16),
+    MTAP(kMapScriptSelect),                 // closed again
+    MWAIT(20),
+};
+
+/// The buttons the script holds on @p frame, or 0 once it has ended.
+std::uint8_t mapScriptButtons(std::uint32_t frame) {
+    std::uint32_t at = 0;
+    for (const MapScriptStep& step : kMapScript) {
+        if (frame < at + step.frames) {
+            return step.buttons;
+        }
+        at += step.frames;
+    }
+    return 0;
+}
+#endif  // SHOW && DOOM_HUD && DOOM_MAP_SCRIPT
+
 }  // namespace
 
 void DoomScene::init() {
@@ -1113,6 +1201,14 @@ void DoomScene::update(unsigned long deltaTime) {
         }
     }
 
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD) && defined(DOOM_MAP_SCRIPT)
+    // D5.3's diagnostic build: a fixed script plays Select and the map's keys
+    // through the same byte the real sample fills, because no button on this board
+    // can be pressed from the build host. Its Select bit is kMapScriptSelect, which
+    // `runMap()` strips before anything reaches the world.
+    buttons = static_cast<std::uint8_t>(buttons | mapScriptButtons(mapScriptFrame_++));
+#endif
+
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
     // D4.2f: the world ticks on every frame, before the early return below. That
     // return exists for the shell's repaint and the INPUT line; it must not stop
@@ -1124,7 +1220,14 @@ void DoomScene::update(unsigned long deltaTime) {
     if (input.isButtonDown(kStartIndex)) {
         menuButtons = static_cast<std::uint8_t>(menuButtons | M_BTN_START);
     }
-    runWorldTics(runMenu(menuButtons));
+    std::uint8_t worldButtons = runMenu(menuButtons);
+#if defined(DOOM_HUD)
+    // D5.3: the automap owns Select and, while it is up, the d-pad, A and B. The
+    // menu comes first: while it is open it owns the frame's input and the map is
+    // only a picture under it (upstream draws the menu on top of the automap).
+    worldButtons = runMap(worldButtons, m_menu_active(&menu_) != 0);
+#endif
+    runWorldTics(worldButtons);
 #else
     runWorldTics(buttons);
 #endif
@@ -1329,6 +1432,79 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
 }
 
 #endif  // DOOM_MENU
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
+
+/*
+ * THE AUTOMAP'S CONTROLS (D5.3)
+ *
+ * Select toggles on its rising edge and latches until release -- only the edge is
+ * read, so one press is one toggle. While the map is up the d-pad pans, A zooms
+ * in, B zooms out, and NOTHING reaches the world's ticcmd: the map's buttons are
+ * the map's, so the player stands still behind it. That is the same shape the
+ * menu uses (a paused world and no input), and it is what keeps a pan from
+ * turning the player and a zoom from firing the pistol.
+ *
+ * Upstream needs no such rule because its arrow keys are shared: following, they
+ * turn the player and the map ignores them; the 'f' key is what hands them to the
+ * map. The board has no 'f', so the d-pad is always the map's while the map is
+ * up, and the first press is what stops the follow (am_map.c's am_pan()).
+ *
+ * The menu wins: while it is open, Select is recorded but changes nothing, so a
+ * press that belonged to the menu does not toggle the map when the menu closes.
+ */
+std::uint8_t DoomScene::runMap(std::uint8_t buttons, bool menuOpen) {
+    static_assert(AM_PAN_UP == doomc::kButtonUp && AM_PAN_DOWN == doomc::kButtonDown
+                      && AM_PAN_LEFT == doomc::kButtonLeft
+                      && AM_PAN_RIGHT == doomc::kButtonRight,
+                  "the automap's pan bits are the engine's d-pad bits");
+    static_assert(AM_ZOOM_IN == doomc::kMapZoomIn && AM_ZOOM_OUT == doomc::kMapZoomOut
+                      && AM_ZOOM_RELEASE == doomc::kMapZoomRelease,
+                  "the automap's zoom directions are the driver's");
+
+#if defined(DOOM_MAP_SCRIPT)
+    // Diagnostic build: the script is the only Select. GPIO 35 floats on this
+    // board (DoomScene.h's mapSelectArmed_), and a physical edge arriving in the
+    // middle of the script would make every scripted state unreproducible.
+    const bool select = (buttons & kMapScriptSelect) != 0u;
+#else
+    // GPIO 35 has no internal pull-up, so a floating pin reads held from boot;
+    // Select arms only once it has been seen released. See DoomScene.h.
+    const bool physical = engine.getInputManager().isButtonDown(kSelectIndex);
+    if (!physical) {
+        mapSelectArmed_ = true;
+    }
+    const bool select = mapSelectArmed_ && physical;
+#endif
+    if (select != mapSelectHeld_) {
+        mapSelectHeld_ = select;
+        if (select && !menuOpen) {
+            if (sceneRenderer_.mapActive()) {
+                sceneRenderer_.mapStop();
+            } else {
+                (void)sceneRenderer_.mapStart();
+            }
+        }
+    }
+
+    if (menuOpen || !sceneRenderer_.mapActive()) {
+        return buttons;
+    }
+
+    const std::uint8_t held = static_cast<std::uint8_t>(buttons & 0x3Fu);
+    (void)sceneRenderer_.mapPan(
+        static_cast<std::uint8_t>(held & (AM_PAN_UP | AM_PAN_DOWN | AM_PAN_LEFT | AM_PAN_RIGHT)));
+    if ((held & doomc::kButtonA) != 0u) {
+        (void)sceneRenderer_.mapZoom(AM_ZOOM_IN);
+    } else if ((held & doomc::kButtonB) != 0u) {
+        (void)sceneRenderer_.mapZoom(AM_ZOOM_OUT);
+    } else {
+        (void)sceneRenderer_.mapZoom(AM_ZOOM_RELEASE);
+    }
+    return 0;
+}
+
+#endif  // SHOW && DOOM_HUD
 
 void DoomScene::draw(Renderer& renderer) {
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
