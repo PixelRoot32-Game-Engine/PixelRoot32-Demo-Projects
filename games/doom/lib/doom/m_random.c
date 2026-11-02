@@ -59,3 +59,11 @@ int32_t p_random(m_random_t* random) {
     random->index = (random->index + 1u) & (M_RANDOM_TABLE_SIZE - 1u);
     return (int32_t)rndtable[random->index];
 }
+
+int32_t m_random(m_random_t* random) {
+    if (random == NULL) {
+        return 0;
+    }
+    random->index = (random->index + 1u) & (M_RANDOM_TABLE_SIZE - 1u);
+    return (int32_t)rndtable[random->index];
+}

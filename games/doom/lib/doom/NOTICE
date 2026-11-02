@@ -25,7 +25,7 @@ Files in this group implement an upstream subsystem one-to-one, whatever their
 size:
 
     m_fixed.h          fixed-point arithmetic          m_fixed.c
-    m_random.*         the P_Random table              m_random.c
+    m_random.*         the P_Random/M_Random table     m_random.c
     p_action.*         state actions                   p_enemy.c/p_inter.c
     p_ceilng.*         ceiling movers                  p_ceilng.c
     p_doors.*          door movers                     p_doors.c
@@ -38,6 +38,8 @@ size:
     p_spec.*           sector and line specials        p_spec.c
     p_tick.*           the thinker list                p_tick.c
     p_user.*           player movement and view        p_user.c
+    s_sound.*          the channel layer and seam      s_sound.c
+    sounds.*           sfxenum_t/musicenum_t, S_sfx[]  sounds.c/sounds.h
     r_bsp.*            BSP traversal and clipping      r_bsp.c (r_bspupd)
     r_data.*           texture, flat and sprite data   r_data.c
     r_defs.h           the renderer's shared types     r_defs.h

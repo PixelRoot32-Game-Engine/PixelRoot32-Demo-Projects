@@ -19,9 +19,11 @@
  *
  * The sequence is therefore *data*: `p_random()` bumps the index with
  * `(index + 1) & 0xff` and answers `table[index]`, so the first call answers
- * table[1] = 8, not table[0] = 0. Upstream's `M_Random()` keeps a second,
- * independent index for menu/effect pacing; this port has not needed it yet and
- * does not pretend to implement it.
+ * table[1] = 8, not table[0] = 0. Upstream's `M_Random()` is the same table
+ * with a second, independent index for menu and effect pacing; `m_random()` is
+ * that function, and the caller owns the second position. The sound layer's
+ * pitch jitter uses it (s_sound.c), which is why a jitter never moves the
+ * simulation's P_Random sequence and a demo stays in step.
  *
  * CALLER-OWNED, LIKE EVERYTHING ELSE HERE
  *
@@ -79,6 +81,18 @@ void m_random_init(m_random_t* random);
  * @return A value in [0, 255].
  */
 int32_t p_random(m_random_t* random);
+
+/**
+ * @brief Upstream's M_Random(): the same table, a separate position.
+ *
+ * Identical arithmetic to p_random() but meant to be called with its own
+ * m_random_t, exactly as linuxdoom keeps `rndindex` apart from `prndindex`.
+ * The sound layer's pitch jitter is this sequence: it is deterministic from
+ * boot, and it cannot desynchronise a recorded demo.
+ *
+ * @return A value in [0, 255]; 0 for a NULL state, as p_random().
+ */
+int32_t m_random(m_random_t* random);
 
 #ifdef __cplusplus
 } /* extern "C" */
