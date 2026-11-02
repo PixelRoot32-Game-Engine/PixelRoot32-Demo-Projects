@@ -43,7 +43,9 @@
  *     the weapon widget are D5.1, and `sx`/`sy` are written so that layer has
  *     something to read when it arrives.
  *   - audio. Every `S_StartSound` the weapon actions make is counted in
- *     p_player_t::silentSounds (S2 has no audio layer at all).
+ *     p_player_t::silentSounds and, under DOOM_AUDIO, played at the same site
+ *     through DOOM_SOUND_START. The counter is what the attack gates assert;
+ *     the call is what the APU hears.
  *   - P_NoiseAlert. T15a owns the flood; P_FireWeapon calls it and still counts
  *     the call in p_player_t::noiseAlerts, so "a shot woke the neighbours" and
  *     "the call was reached" are separately visible.
@@ -268,7 +270,8 @@ void p_calc_swing(const struct p_level* level, const struct p_player* player,
  * psprites[ps_weapon].sy = WEAPONBOTTOM; P_SetPsprite (player, ps_weapon,
  * newstate);`
  *
- * The chainsaw's `S_StartSound (sfx_sawup)` is counted in `silentSounds`.
+ * The chainsaw's `S_StartSound (sfx_sawup)` is counted in `silentSounds` and
+ * played through the sound layer.
  */
 void p_bring_up_weapon(p_mobj_context_t* world, struct p_player* player);
 

@@ -20,6 +20,12 @@
 #endif
 
 #include "palette/DoomPalette.h"
+#if defined(DOOM_AUDIO)
+#include "doomc/DoomAudio.h"
+#include "doomc/SfxBank.h"
+#include "s_sound.h"
+#include "sounds.h"
+#endif
 
 #if defined(DOOM_MENU) && !defined(PIXELROOT32_DOOM_SHOW_E1M1)
 #error "DOOM_MENU belongs to the game build: define PIXELROOT32_DOOM_SHOW_E1M1 too"
@@ -962,6 +968,26 @@ void DoomScene::init() {
     // and nothing else in the frame path changes.
     palette::init();
 
+#if defined(DOOM_AUDIO)
+    // D6.1/D6.3: the S_* layer first, so a level load's S_Start() has a seam to
+    // talk to. `S_Init` takes upstream's volumes (0..127); the menu's 0..15 is
+    // T49's, and until then the layer runs at full scale. `mode=legacy` is a
+    // literal on purpose: this port never sends SET_SOUND_PROFILE (S4).
+    doomc::doomAudioInit(engine.getAudioEngine());
+    S_Init(S_MAX_VOLUME, S_MAX_VOLUME);
+    {
+        char audioLine[72];
+        std::snprintf(audioLine, sizeof audioLine,
+                      "SHOW,audio,init,status=ok,bank=%u,mode=legacy\n",
+                      static_cast<unsigned>(doomc::sfxBankSize()));
+        writeConsoleLine(audioLine);
+    }
+    audioLastReportUs_ = sampleMicros();
+#if defined(DOOM_AUDIO_SCRIPT)
+    audioScriptLastUs_ = sampleMicros();
+#endif
+#endif
+
 #if !defined(PIXELROOT32_DOOM_FRAME_LOG)
     // The C <-> C++ link probe: one C translation unit calls a C++ bridge that
     // calls this port's palette and the engine's console, and the value it
@@ -1238,6 +1264,13 @@ void DoomScene::update(unsigned long deltaTime) {
 #endif
 #endif
 
+#if defined(DOOM_AUDIO_SCRIPT)
+    // The diagnostic build's listen test, after the world has ticked so the
+    // level exists and the boot log is already on the wire. It uses its own
+    // 700 ms clock, not the frame rate.
+    runAudioScript();
+#endif
+
     if (buttons == buttons_) {
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
         showUpdateEntry_ = updateEntry;
@@ -1300,6 +1333,87 @@ void DoomScene::runWorldTics(std::uint8_t buttons) {
 }
 
 #endif  // PIXELROOT32_DOOM_SHOW_E1M1
+
+#if defined(DOOM_AUDIO)
+
+void DoomScene::reportAudio() {
+    const std::uint32_t now = sampleMicros();
+    // One second, the task's cadence. It is its own constant rather than the
+    // frame line's so the two can move independently.
+    if (now - audioLastReportUs_ < 1000000u) {
+        return;
+    }
+    audioLastReportUs_ = now;
+
+    const doomc::DoomAudioStats& stats = doomc::doomAudioStats();
+    doomc::DoomAudioTelemetry telemetry = {0u, 0u};
+    const bool haveTelemetry = doomc::doomAudioReadTelemetry(&telemetry);
+    char line[192];
+
+    if (haveTelemetry) {
+        std::snprintf(line, sizeof line,
+                      "SHOW,audio,plays=%u,steals=%u,refused=%u,unknown=%u,"
+                      "voices=%d,active=%d,underruns=%u,worst_us=%u\n",
+                      static_cast<unsigned>(stats.plays),
+                      static_cast<unsigned>(stats.steals),
+                      static_cast<unsigned>(stats.refused),
+                      static_cast<unsigned>(stats.unknown), doomc::doomAudioVoiceCount(),
+                      doomc::doomAudioActiveVoices(),
+                      static_cast<unsigned>(telemetry.underruns),
+                      static_cast<unsigned>(telemetry.worstUs));
+    } else {
+        // No telemetry source yet (T48): `-` is this build's state, not a zero
+        // it cannot prove.
+        std::snprintf(line, sizeof line,
+                      "SHOW,audio,plays=%u,steals=%u,refused=%u,unknown=%u,"
+                      "voices=%d,active=%d,underruns=-,worst_us=-\n",
+                      static_cast<unsigned>(stats.plays),
+                      static_cast<unsigned>(stats.steals),
+                      static_cast<unsigned>(stats.refused),
+                      static_cast<unsigned>(stats.unknown), doomc::doomAudioVoiceCount(),
+                      doomc::doomAudioActiveVoices());
+    }
+    writeConsoleLine(line);
+}
+
+#if defined(DOOM_AUDIO_SCRIPT)
+
+void DoomScene::runAudioScript() {
+    // The twelve ids are the sfxenum_t values the maintainer asked to hear; the
+    // two comments name what each one is. NULL is upstream's "no origin": the
+    // script is a cue-by-cue listen test, not a positional one.
+    static const int kScript[] = {
+        sfx_pistol,  /* pistol */
+        sfx_shotgn,  /* shotgun */
+        sfx_doropn,  /* door open */
+        sfx_dorcls,  /* door close */
+        sfx_swtchn,  /* switch */
+        sfx_stnmov,  /* lift */
+        sfx_bgsit1,  /* imp sight */
+        sfx_plpain,  /* player pain */
+        sfx_itemup,  /* item pickup */
+        sfx_telept,  /* teleport */
+        sfx_barexp,  /* barrel explosion */
+        sfx_pldeth,  /* player death */
+    };
+    constexpr std::uint32_t kStepCount = sizeof(kScript) / sizeof(kScript[0]);
+    constexpr std::uint32_t kStepIntervalUs = 700000u;
+
+    if (audioScriptStep_ >= kStepCount) {
+        return;
+    }
+    const std::uint32_t now = sampleMicros();
+    if (now - audioScriptLastUs_ < kStepIntervalUs) {
+        return;
+    }
+    audioScriptLastUs_ = now;
+    S_StartSound(nullptr, kScript[audioScriptStep_]);
+    ++audioScriptStep_;
+}
+
+#endif  // DOOM_AUDIO_SCRIPT
+
+#endif  // DOOM_AUDIO
 
 #if defined(DOOM_MENU)
 
@@ -1455,6 +1569,16 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
     char line[160];
 
     if (active != wasActive) {
+#if defined(DOOM_AUDIO)
+        // Upstream's menu pause: P_Pause calls S_PauseSound, P_Unpause calls
+        // S_ResumeSound. T47 is what makes it audible; the transport is wired
+        // now so the menu's pause is not a missing call later.
+        if (active) {
+            S_PauseSound();
+        } else {
+            S_ResumeSound();
+        }
+#endif
         // One short line per open/close, never per frame. It carries the world's
         // arena so a New Game that overflowed it (a refused allocation) is visible.
         std::uint32_t inUse = 0u, spare = 0u, refusedAllocs = 0u, mobjs = 0u;
@@ -1675,6 +1799,12 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
                       showHash_);
         writeConsoleLine(line);
     }
+
+#if defined(DOOM_AUDIO)
+    // Beside the frame line, with its own one-second clock: printed with the
+    // frame cadence it would burst ten identical lines at boot.
+    reportAudio();
+#endif
 
     // Decide whether this frame takes a hash and gets a line at the next draw.
     // Bounded two ways: the first frames every frame, then one per second, and

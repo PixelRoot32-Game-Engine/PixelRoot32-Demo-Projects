@@ -558,7 +558,8 @@ r_mobj_t* p_spawn_blood(p_mobj_context_t* world, fixed_t x, fixed_t y, fixed_t z
  *     from `th->info->speed` and the slope;
  *   - `P_CheckMissileSpawn (th);`.
  *
- * The `seesound` is counted, not played (S2).
+ * The `seesound` is started at the spawn (upstream's P_SpawnPlayerMissile does
+ * it there) and the level's player record counts it.
  *
  * @param world  The level's context.
  * @param source The mobj firing; NULL is refused.
@@ -701,8 +702,8 @@ void p_xy_movement(p_mobj_context_t* world, r_mobj_t* mobj);
  * when airborne and not MF_NOGRAVITY, then clip the ceiling (reflecting a
  * flying skull, exploding a missile).
  *
- * The player view-height squash and its sound are not here: this port has no
- * player_t view state yet (D5) and no sound layer (S2).
+ * The player view-height squash is the player layer's; the hard landing's
+ * `sfx_oof` is started here, where the floor is hit.
  */
 void p_z_movement(p_mobj_context_t* world, r_mobj_t* mobj);
 

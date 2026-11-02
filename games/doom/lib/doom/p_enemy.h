@@ -21,8 +21,9 @@
  *      before waking; a non-ambush actor wakes on the sound alone.
  *   3. otherwise P_LookForPlayers(actor, false): the four-slot scan upstream
  *      writes, reduced to the one slot this port simulates.
- *   4. on waking: the see sound is *discarded* (S2 has no audio layer) and the
- *      actor enters `mobjinfo[type].seestate`.
+ *   4. on waking: the see sound is chosen by upstream's switch (one draw for the
+ *      two zombie families, none otherwise) and started; the actor enters
+ *      `mobjinfo[type].seestate`.
  *
  * WHAT A_Chase DOES, IN UPSTREAM'S ORDER
  *
@@ -38,8 +39,9 @@
  *      missile when `movecount` reached zero (or on nightmare) and
  *      P_CheckMissileRange passes; on a missile, set MF_JUSTATTACKED.
  *   6. walk: `--movecount` or P_NewChaseDir when the step is blocked.
- *   7. the active sound's P_Random() draw, kept for the sequence and thrown away
- *      (S2). Both E1M1 enemies name an active sound, so every A_Chase draws one.
+ *   7. the active sound: one P_Random() draw, and the sound only when it is
+ *      below 3, exactly upstream. Both E1M1 enemies name an active sound, so
+ *      every A_Chase draws one.
  *
  * THE WALK SPEED IS AN INTEGER
  *

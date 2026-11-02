@@ -472,6 +472,9 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 #include "r_segs.h"
 #include "r_tables.h"
 #include "r_things.h"
+#if defined(DOOM_AUDIO)
+#include "s_sound.h"
+#endif
 #if defined(DOOM_HUD)
 #include "st_stuff.h"
 #endif
@@ -3051,6 +3054,15 @@ bool openWorldSession() {
     // loadPlaypal, so they never take this branch and keep rendering the
     // immutable map.
     p_level_bind_render(&gWorld.level, &gSession.driver->map);
+#if defined(DOOM_AUDIO)
+    // G_DoLoadLevel's S_Start: kill the previous level's sounds, tell the layer
+    // which level this is (S_Start's music number and the map-8 rule) and let it
+    // start the music. The listener exists from the first tic; setting it here
+    // keeps a sound started before that tick distance-adjusted.
+    S_SetGameLevel(1, static_cast<int>(kFrameLevel));
+    S_SetListener(gWorld.level.playerState.mo);
+    S_Start();
+#endif
 #if defined(DOOM_HUD)
     hudStart();
     // D5.3: the automap's shadow bitmap and its level state. A refusal is
@@ -3820,11 +3832,21 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
     // rather than two reads of a device that updates at frame rate.
     const p_ticcmd_t cmd = mapButtons(buttons);
     for (std::uint32_t tic = 0; tic < tics; ++tic) {
+#if defined(DOOM_AUDIO)
+        // The listener is the console player's avatar; upstream's G_Ticker
+        // hands `players[0].mo` to S_UpdateSounds once per tic, after P_Ticker.
+        S_SetListener(gWorld.level.playerState.mo);
+#endif
         // No walk statistics: the scene reports the world's state, and D4.2d's
         // combat owns the counters that would read them.
         if (p_level_tic(&gWorld.level, &cmd, nullptr) != P_TICK_OK) {
             return false;
         }
+#if defined(DOOM_AUDIO)
+        // One tick per simulated tic: cue lifetimes, distance re-attenuation and
+        // the channel table all advance at DOOM's 35 Hz, not the panel's rate.
+        S_UpdateSounds(gWorld.level.playerState.mo);
+#endif
 #if defined(DOOM_HUD)
         hudTick();
 #endif
@@ -3873,6 +3895,13 @@ bool frameLevelNewGame(int skill) {
         // D5.3: a reloaded level has seen nothing yet, and the map goes down with
         // the old level (upstream's P_SetupLevel re-reads every linedef flag).
         resetAutomap();
+#endif
+#if defined(DOOM_AUDIO)
+        // G_DoLoadLevel is the same entry point for a New Game: the animation,
+        // the player's ear height and the music all start over. The reload
+        // carried the random position, not the channel table.
+        S_SetListener(level.playerState.mo);
+        S_Start();
 #endif
         // One idle tic, so the player's eye height (viewz, computed by the first
         // P_PlayerThink) exists before the first frame of the new game is drawn.

@@ -308,12 +308,12 @@ struct p_level;
  *                          The gate compares this against the demo's edges and
  *                          uses it to place each press's ray.
  *   silentSounds           every S_* call the weapon actions and P_FireWeapon make.
- *                          S2 puts audio entirely outside this port, so there is no
- *                          sound to make; the count is how "the shot was loud" and
- *                          "the shot's sound was never written" stay distinguishable.
- *                          D4.2d1 counted its death sounds as A_* stubs; the weapons
- *                          have no stub action to hang a counter on, so it lives
- *                          here.
+ *                          D6.1 plays the same calls through DOOM_SOUND_START under
+ *                          DOOM_AUDIO; the count is what the attack gates assert, so
+ *                          "the shot was loud" stays a number a gate can pin.
+ *                          D4.2d1's death sounds are A_* stubs that count and, since
+ *                          D6.1, play; these weapon calls have no stub action to hang
+ *                          a counter on, so it lives here.
  *   noiseAlerts            P_FireWeapon's `P_NoiseAlert (mo, mo)`. Waking monsters
  *                          needs P_CheckSight, which is T15's, so a shot counts the
  *                          call instead of making it.

@@ -10,8 +10,8 @@
  * P_CheckMissileRange, A_FaceTarget, A_PosAttack, A_TroopAttack and A_Explode.
  *
  * See p_enemy.h for the upstream order, the one-slot reduction of the player
- * scan, the see-sound draw that is performed for the random sequence and
- * discarded for the missing audio layer, and the deliberate gaps in the chase
+ * scan, the see sound's draw and the three sound sites the chase and the attack
+ * actions start (see/active/attack), and the deliberate gaps in the chase
  * (a monster cannot open a door it bumps).
  *
  * This is C99 only: <stdint.h>, no allocation, no globals, no stdio, no floating
@@ -24,6 +24,7 @@
 #include "p_map.h"
 #include "p_setup.h"
 #include "p_sight.h"
+#include "s_sound.h"
 
 /* --- The direction table P_NewChaseDir walks ------------------------------ */
 
@@ -133,17 +134,27 @@ int p_look_for_players(p_mobj_context_t* world, r_mobj_t* actor, int allaround) 
 /* --- A_Look ---------------------------------------------------------------- */
 
 /*
- * The see-sound draw. Upstream's switch chooses the sound with one P_Random()
- * draw for sfx_posit1..3 (36..38) and sfx_bgsit1..2 (39..40); every other see
- * sound takes the default arm and draws nothing. No audio layer exists (S2), so
- * the draw is kept for the random sequence and the value thrown away.
+ * The see sound. Upstream's switch chooses it with one P_Random() draw for
+ * sfx_posit1..3 (36..38) and one for sfx_bgsit1..2 (39..40); every other see
+ * sound takes the default arm and draws nothing. The draw is kept for the random
+ * sequence and its value now picks the id that is played -- one switch, both
+ * jobs, exactly upstream's shape.
  */
-static void see_sound_draw(p_mobj_context_t* world, int32_t seesound) {
+static void see_sound(p_mobj_context_t* world, r_mobj_t* actor,
+                      int32_t seesound) {
+    int32_t sound = seesound;
+
     if (world == NULL || world->random == NULL) {
         return;
     }
-    if (seesound >= 36 && seesound <= 40) {
-        (void)p_random(world->random);
+    if (seesound >= (int32_t)sfx_posit1 && seesound <= (int32_t)sfx_posit3) {
+        sound = (int32_t)sfx_posit1 + (p_random(world->random) % 3);
+    } else if (seesound >= (int32_t)sfx_bgsit1
+               && seesound <= (int32_t)sfx_bgsit2) {
+        sound = (int32_t)sfx_bgsit1 + (p_random(world->random) % 2);
+    }
+    if (sound > 0 && sound < (int32_t)NUMSFX) {
+        DOOM_SOUND_START(actor, sound);
     }
 }
 
@@ -178,7 +189,7 @@ void p_enemy_look(p_mobj_context_t* world, r_mobj_t* actor) {
     }
 
 seeyou:
-    see_sound_draw(world, info->seesound);
+    see_sound(world, actor, info->seesound);
     (void)p_set_mobj_state(world, actor, (statenum_t)info->seestate, NULL);
 }
 
@@ -500,9 +511,12 @@ void p_enemy_chase(p_mobj_context_t* world, r_mobj_t* actor) {
         p_new_chase_dir(world, actor);
     }
 
-    /* make active sound: the draw is kept, the sound is S2's */
+    /* make active sound: upstream draws and plays it on `P_Random () < 3`, so
+     * the draw happens whether or not the sound does. */
     if (info->activesound != 0 && world->random != NULL) {
-        (void)p_random(world->random);
+        if (p_random(world->random) < 3) {
+            DOOM_SOUND_START(actor, info->activesound);
+        }
     }
 }
 
@@ -524,8 +538,9 @@ void p_enemy_face_target(p_mobj_context_t* world, r_mobj_t* actor) {
 
 /*
  * A_PosAttack(): the zombieman's pistol. Aim along the exact bearing, then
- * drift the shot by one random pair and roll 3..15 points. The sfx_pistol the
- * original plays is the audio layer's (S2).
+ * drift the shot by one random pair and roll 3..15 points. Upstream's
+ * `S_StartSound (actor, sfx_pistol)` sits between the facing and the first
+ * draw.
  */
 void p_enemy_pos_attack(p_mobj_context_t* world, r_mobj_t* actor) {
     angle_t angle;
@@ -536,6 +551,7 @@ void p_enemy_pos_attack(p_mobj_context_t* world, r_mobj_t* actor) {
         return;
     }
     p_enemy_face_target(world, actor);
+    DOOM_SOUND_START(actor, sfx_pistol);
     angle = actor->angle;
     slope = p_aim_line_attack(world, actor, angle, P_MISSILERANGE, NULL);
 
@@ -546,10 +562,12 @@ void p_enemy_pos_attack(p_mobj_context_t* world, r_mobj_t* actor) {
 }
 
 /*
- * A_SPosAttack(): the shotgun guy's three-shot spread. Upstream takes the aim
- * once on the actor's facing, then each pass spreads *from that base* (not from
- * the previous pass's angle) and rolls its own 3..15 points. The order is
- * draw-drift, draw-drift, draw-damage, shoot, three times; the sound is S2's.
+ * A_SPosAttack(): the shotgun guy's three-shot spread. Upstream plays
+ * `sfx_shotgn` *before* the facing (its only attack action where the sound
+ * comes first), then takes the aim once on the actor's facing, and each pass
+ * spreads *from that base* (not from the previous pass's angle) and rolls its
+ * own 3..15 points. The order is draw-drift, draw-drift, draw-damage, shoot,
+ * three times.
  */
 void p_enemy_spos_attack(p_mobj_context_t* world, r_mobj_t* actor) {
     angle_t base;
@@ -559,6 +577,7 @@ void p_enemy_spos_attack(p_mobj_context_t* world, r_mobj_t* actor) {
     if (world == NULL || actor == NULL || actor->target == NULL) {
         return;
     }
+    DOOM_SOUND_START(actor, sfx_shotgn);
     p_enemy_face_target(world, actor);
     base = actor->angle;
     slope = p_aim_line_attack(world, actor, base, P_MISSILERANGE, NULL);
@@ -604,6 +623,7 @@ void p_enemy_troop_attack(p_mobj_context_t* world, r_mobj_t* actor) {
     }
     p_enemy_face_target(world, actor);
     if (p_check_melee_range(world, actor)) {
+        DOOM_SOUND_START(actor, sfx_claw);
         damage = ((int)p_random(world->random) % 8 + 1) * 3;
         p_damage_mobj(world, actor->target, actor, actor, damage);
         return;

@@ -16,9 +16,12 @@
  *      out-parameter respectively;
  *   2. `leveltime` is `world->level->leveltime`, which is what the two bob
  *      angles and the weapon's sway read;
- *   3. every `S_StartSound` is counted in p_player_t::silentSounds instead of
- *      played: there is no audio layer in this port (S2), and a counter is how
- *      the gap stays visible rather than becoming a missing statement.
+ *   3. every `S_StartSound` is still counted in p_player_t::silentSounds -- the
+ *      counters are what the attack, damage, enemy and demo gates assert -- and
+ *      the same site also asks the sound layer to play it (DOOM_SOUND_START,
+ *      which is the real call under DOOM_AUDIO and a no-op in a build without
+ *      audio). The sound id is upstream's at each site, so the counter and the
+ *      cue cannot disagree about which sound happened.
  *
  * This is C99 only: no allocation, no globals, no stdio, no floating point.
  */
@@ -32,6 +35,7 @@
 #include "p_sight.h"
 #include "p_user.h"
 #include "r_tables.h"
+#include "s_sound.h"
 
 /* --- The weapon table ---------------------------------------------------- */
 
@@ -96,12 +100,17 @@ static fixed_t fine_sin(uint32_t index) {
     return r_fine_sine[index];
 }
 
-/* Every `S_StartSound (...)` in p_pspr.c and in the attack path reaches this. It
- * counts and plays nothing: S2 puts audio outside this task and outside this
- * layer, and a named counter is how a reader sees that the branch exists. */
-static void weapon_sound(p_player_t* player) {
+/* Every `S_StartSound (...)` in p_pspr.c and in the attack path reaches this.
+ * It counts (the gates assert that count) and plays the same id the counter
+ * names. A context with no avatar leaves the sound to the counter: upstream has
+ * no such context, and a NULL origin would make every such call share one
+ * logical channel. */
+static void weapon_sound(p_player_t* player, int32_t sfx_id) {
     if (player != NULL) {
         player->silentSounds += 1u;
+        if (player->mo != NULL) {
+            DOOM_SOUND_START(player->mo, sfx_id);
+        }
     }
 }
 
@@ -130,7 +139,7 @@ static void a_weapon_ready(p_mobj_context_t* world, p_player_t* player,
 
     if (player->readyweapon == (int32_t)P_WP_CHAINSAW &&
         psp->state == (int16_t)S_SAW) {
-        weapon_sound(player); /* sfx_sawidl */
+        weapon_sound(player, sfx_sawidl);
     }
 
     /* "check for change: if player is dead, put the weapon away" */
@@ -261,7 +270,7 @@ static void fire_pistol(p_mobj_context_t* world, p_player_t* player) {
     const p_weaponinfo_t* row = weapon_row(player->readyweapon);
     fixed_t slope;
 
-    weapon_sound(player); /* sfx_pistol */
+    weapon_sound(player, sfx_pistol);
 
     if (player->mo != NULL) {
         (void)p_set_mobj_state(world, player->mo, S_PLAY_ATK2, NULL);
@@ -280,7 +289,7 @@ static void fire_shotgun(p_mobj_context_t* world, p_player_t* player) {
     fixed_t slope;
     int i;
 
-    weapon_sound(player); /* sfx_shotgn */
+    weapon_sound(player, sfx_shotgn);
 
     if (player->mo != NULL) {
         (void)p_set_mobj_state(world, player->mo, S_PLAY_ATK2, NULL);
@@ -304,7 +313,10 @@ static void fire_chaingun(p_mobj_context_t* world, p_player_t* player,
     const p_weaponinfo_t* row = weapon_row(player->readyweapon);
     fixed_t slope;
 
-    weapon_sound(player); /* sfx_pistol */
+    /* Upstream's A_FireCGun plays `sfx_chgun`, the one linked row: the pistol's
+     * cue at pitch 150. The port used to name sfx_pistol in this comment; the
+     * id is what the channel layer's link arithmetic reads. */
+    weapon_sound(player, sfx_chgun);
 
     /* `if (!player->ammo[weaponinfo[readyweapon].ammo]) return;` -- the empty
      * gun clicks instead of firing, and the flash sprite's offset arithmetic
@@ -574,7 +586,7 @@ void p_bring_up_weapon(p_mobj_context_t* world, p_player_t* player) {
     }
 
     if (player->pendingweapon == (int32_t)P_WP_CHAINSAW) {
-        weapon_sound(player); /* sfx_sawup */
+        weapon_sound(player, sfx_sawup);
     }
 
     newstate = (statenum_t)weapon_row(player->pendingweapon)->upState;
@@ -764,10 +776,10 @@ void a_punch(p_mobj_context_t* world, struct p_player* player) {
     slope = p_aim_line_attack(world, player->mo, angle, P_MELEERANGE, &target);
     p_line_attack(world, player->mo, angle, P_MELEERANGE, slope, (int)damage);
 
-    /* "turn to face target" -- and the punch's sound, which is the audio layer's
-     * (S2) and is counted instead of played. */
+    /* "turn to face target" -- and the punch's own sound, `sfx_punch` in
+     * upstream's A_Punch, on the same branch. */
     if (target != NULL) {
-        weapon_sound(player);
+        weapon_sound(player, sfx_punch);
         player->mo->angle =
             p_point_to_angle(target->x - player->mo->x,
                              target->y - player->mo->y);

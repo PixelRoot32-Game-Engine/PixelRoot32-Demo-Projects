@@ -14,9 +14,10 @@
  *      pointer stored on the mobj;
  *   2. `I_Error` has no equivalent, so a branch upstream treats as impossible
  *      refuses locally instead of aborting;
- *   3. sound, the HUD message text and haptics are absent (D5), and the
- *      branches that would name them are kept as comments so the rule stays
- *      readable;
+ *   3. the HUD message text and haptics are absent (D5); the pickup sounds are
+ *      now wired -- one cue per accepted item, chosen by the arm that grants it
+ *      and started only after every refusing arm has returned, which is
+ *      upstream's own "a refused pickup is silent" shape;
  *   4. `readyweapon` is read by two rules -- P_GiveAmmo's auto-select tail and
  *      P_TouchSpecialThing's berserk branch -- and D4.2d2 added the field they
  *      needed, so neither is omitted any more.
@@ -34,6 +35,7 @@
 #include "p_pspr.h"
 #include "p_setup.h"
 #include "r_tables.h"
+#include "s_sound.h"
 
 /* --- Small helpers -------------------------------------------------------- */
 
@@ -321,11 +323,10 @@ int p_give_power(p_player_t* player, p_power_t power) {
  * two mobj types that share a sprite (MT_MISC0 and its variants) behave alike by
  * construction.
  *
- * The one-line messages (`player->message = GOTARMOR;`) and the pickup sounds
- * are the HUD's and the audio layer's (D5); nothing here writes either, and no
- * arm changes the rule because of it. `MF_COUNTITEM`, the removal and the
- * BONUSADD flash are the tail of the function and run only for an arm that did
- * not refuse.
+ * The one-line messages (`player->message = GOTARMOR;`) are the HUD's and are
+ * not written here. The pickup sound is: `pickupSfx` starts as sfx_itemup and
+ * the weapon and power-up arms raise it to sfx_wpnup / sfx_getpow, so the cue
+ * follows the arm that granted the item and a refused arm stays silent.
  */
 void p_touch_special_thing(p_mobj_context_t* world, r_mobj_t* special,
                            r_mobj_t* toucher) {
@@ -333,6 +334,10 @@ void p_touch_special_thing(p_mobj_context_t* world, r_mobj_t* special,
     int32_t delta;
     int i;
     int dropped;
+    /* Upstream starts the pickup cue inside the arm that grants the item. This
+     * port carries the arm's choice to the tail and starts it once: every
+     * refusing arm returns before then, so a refused pickup is still silent. */
+    int32_t pickupSfx = sfx_itemup;
 
     if (world == NULL || special == NULL || toucher == NULL) {
         return;
@@ -452,12 +457,14 @@ void p_touch_special_thing(p_mobj_context_t* world, r_mobj_t* special,
             if (!p_give_power(player, P_PW_INVULNERABILITY)) {
                 return;
             }
+            pickupSfx = sfx_getpow;
             break;
 
         case SPR_PSTR:
             if (!p_give_power(player, P_PW_STRENGTH)) {
                 return;
             }
+            pickupSfx = sfx_getpow;
             /* `if (player->readyweapon != wp_fist) player->pendingweapon =
              * wp_fist;` -- berserk switches to the fist unless the fist is
              * already out, which is the whole point of the power-up. */
@@ -470,24 +477,28 @@ void p_touch_special_thing(p_mobj_context_t* world, r_mobj_t* special,
             if (!p_give_power(player, P_PW_INVISIBILITY)) {
                 return;
             }
+            pickupSfx = sfx_getpow;
             break;
 
         case SPR_SUIT:
             if (!p_give_power(player, P_PW_IRONFEET)) {
                 return;
             }
+            pickupSfx = sfx_getpow;
             break;
 
         case SPR_PMAP:
             if (!p_give_power(player, P_PW_ALLMAP)) {
                 return;
             }
+            pickupSfx = sfx_getpow;
             break;
 
         case SPR_PVIS:
             if (!p_give_power(player, P_PW_INFRARED)) {
                 return;
             }
+            pickupSfx = sfx_getpow;
             break;
 
         /* ammo */
@@ -559,42 +570,49 @@ void p_touch_special_thing(p_mobj_context_t* world, r_mobj_t* special,
             if (!p_give_weapon(world, player, P_WP_BFG, 0)) {
                 return;
             }
+            pickupSfx = sfx_wpnup;
             break;
 
         case SPR_MGUN:
             if (!p_give_weapon(world, player, P_WP_CHAINGUN, dropped)) {
                 return;
             }
+            pickupSfx = sfx_wpnup;
             break;
 
         case SPR_CSAW:
             if (!p_give_weapon(world, player, P_WP_CHAINSAW, 0)) {
                 return;
             }
+            pickupSfx = sfx_wpnup;
             break;
 
         case SPR_LAUN:
             if (!p_give_weapon(world, player, P_WP_MISSILE, 0)) {
                 return;
             }
+            pickupSfx = sfx_wpnup;
             break;
 
         case SPR_PLAS:
             if (!p_give_weapon(world, player, P_WP_PLASMA, 0)) {
                 return;
             }
+            pickupSfx = sfx_wpnup;
             break;
 
         case SPR_SHOT:
             if (!p_give_weapon(world, player, P_WP_SHOTGUN, dropped)) {
                 return;
             }
+            pickupSfx = sfx_wpnup;
             break;
 
         case SPR_SGN2:
             if (!p_give_weapon(world, player, P_WP_SUPERSHOTGUN, dropped)) {
                 return;
             }
+            pickupSfx = sfx_wpnup;
             break;
 
         default:
@@ -609,6 +627,12 @@ void p_touch_special_thing(p_mobj_context_t* world, r_mobj_t* special,
     }
     (void)p_remove_mobj(world, special);
     player->bonuscount += P_BONUSADD;
+
+    /* `S_StartSound (player->mo, sfx_itemup|sfx_wpnup|sfx_getpow)` -- the
+     * signal the pickup reached the player, after the item is gone. */
+    if (player->mo != NULL) {
+        DOOM_SOUND_START(player->mo, pickupSfx);
+    }
 }
 
 /* --- P_KillMobj ----------------------------------------------------------- */

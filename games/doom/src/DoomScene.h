@@ -183,6 +183,36 @@ private:
      */
     void pollTicClock();
 
+#if defined(DOOM_AUDIO)
+    /**
+     * @brief Prints the sound layer's counters, once a second.
+     *
+     * `SHOW,audio,plays=..,steals=..,refused=..,unknown=..,voices=..,active=..,
+     * underruns=..,worst_us=..`. The last two come from the telemetry source
+     * T48 installs; until then they print `-`, which is the honest state:
+     * this port's pinned APU branch does not expose getUnderrunCount() yet.
+     */
+    void reportAudio();
+
+    /// `sampleMicros()` at the last audio report, so the cadence is its own.
+    std::uint32_t audioLastReportUs_ = 0;
+
+#if defined(DOOM_AUDIO_SCRIPT)
+    /**
+     * @brief The diagnostic build's twelve-cue script (T45).
+     *
+     * One cue every 700 ms through the real S_StartSound path, so a maintainer
+     * can hear the mapping on the board: pistol, shotgun, door open, door
+     * close, switch, lift, imp sight, player pain, item pickup, teleport,
+     * barrel explosion, player death. Never the shipped image.
+     */
+    void runAudioScript();
+
+    std::uint32_t audioScriptStep_ = 0;
+    std::uint32_t audioScriptLastUs_ = 0;
+#endif
+#endif
+
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
     /**
      * @brief Renders the game frame, measures it and closes the measurement.

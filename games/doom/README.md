@@ -211,9 +211,9 @@ has no Y/N keys).
 **What each setting does today.** Gamma changes the palette for real: the PLAYPAL
 tables are rebuilt through `gammatable` (`lib/doom/m_gamma.c`) and handed to the
 panel with `setPalette8()` again, live while you move the thermometer. Skill takes
-effect when a New Game starts. **Volume drives nothing yet**: the port has no sound
-code, so the value is stored and shown (the screen says "no sound yet") and will
-only mean something when the APU sound lands.
+effect when a New Game starts. **Volume still drives nothing**: the APU sound layer
+now exists (see "Sound" below), but the menu's 0..15 value is not wired to it yet
+(T49), so it is stored and shown (the screen still says "no sound yet").
 
 **Persistence.** The three values live in NVS (namespace `doom`, key `cfg`, 8
 bytes: magic, version, the values, a checksum) through the Arduino `Preferences`
@@ -317,8 +317,62 @@ prints `SHOW,map` for every reported frame; it reads only the script's Select bi
 so the pin's electrical noise cannot scramble the states. A diagnostic, never the
 shipped image.
 
-### The level transition's fade (D5.4)
+### Sound (D6.1/D6.3)
 
+`esp32dev_ILI9341_hud` carries `-D DOOM_AUDIO=1`: DOOM's own sound API --
+`S_StartSound`, `S_UpdateSounds`, `S_Start`, `S_ChangeMusic`, `S_PauseSound` --
+ported from linuxdoom's `s_sound.c` and `sounds.c` in `lib/doom/`, with the
+DMX half replaced by a narrow C seam into the APU (`src/doomc/DoomAudio.cpp`).
+Every cue is **pure APU synthesis** on the Legacy profile: four SFX voices
+(slots 4..7), no PCM sample, no DMX decode, and never a `SET_SOUND_PROFILE`.
+
+**What plays.** Weapons (pistol, shotgun, chaingun through its `chgun` link,
+chainsaw start/idle, punch, rocket/plasma/BFG where a level can hand them
+out), doors (open, close, blazing, the crush bounce), lifts and floor movers
+(`pstart`/`pstop`/`stnmov`), switches (pressed lines, exits), monsters (sight,
+active, attack, pain, death), the player (pain, death, the hard-landing `oof`),
+pickups (`itemup`/`wpnup`/`getpow`) and the teleporter. The "one sound per
+origin", `S_sfx[]` priority/`link`, distance culling and `M_Random` pitch
+jitter are upstream's rules, statement for statement.
+
+**What does not.** The *timbre* is not DOOM's: each id resolves to a
+placeholder cue grouped by character (a weapon crack, a monster growl, a door
+creak), and T46 replaces those numbers with values derived from the WAD's
+`DS*` lumps and gates them against the originals. Music is not wired yet: the
+transport exists and `doom_music_start()` answers "no track" until T47. The
+menu's volume slider still drives nothing (T49) and its "NO SOUND YET" label is
+unchanged. Sector-originated cues (doors, lifts, floors) are non-local at full
+volume, because this port's `p_sector_t` has no `soundorg` field; their
+sector-index token keeps one-sound-per-sector and `S_StopSound` working. A few
+one-shot specials the port counts as "deferred switch textures" are doors that
+upstream clears without a texture change, so they also get the switch cue -- the
+port's existing model, made audible.
+
+**Eight channels, four voices.** DOOM keeps its eight logical channels, so
+vanilla's priority and origin rules still apply. The APU has four SFX voices:
+an idle voice is taken first, otherwise the least important sounding cue is
+stolen, and when every voice holds a Reserved cue (the player's pain, the
+player's weapon, the boss family) the newcomer is refused rather than stealing
+one. `steals` and `refused` are counted, and `tools`-free `pio test -e
+sound_test` proves the selector never names a Reserved cue as a victim, for
+every class combination.
+
+**Log.** At boot: `SHOW,audio,init,status=ok,bank=108,mode=legacy`. Once a
+second beside `SHOW,frame`:
+`SHOW,audio,plays=..,steals=..,refused=..,unknown=..,voices=4,active=..,
+underruns=-,worst_us=-` (the two `-` fields are T48's APU telemetry; this
+branch does not expose it yet).
+
+**How to hear it.** `esp32dev_ILI9341_hud_audiotest` is the shipped build plus
+`-D DOOM_AUDIO_SCRIPT=1`: at boot it plays twelve cues -- pistol, shotgun,
+door open, door close, switch, lift, imp sight, player pain, item pickup,
+teleport, barrel explosion, player death -- one every 700 ms through the real
+`S_StartSound` path, and prints a `SHOW,audio,play,id=..,name=..,voice=..,
+vol=..,pitch=..` line for each. Flash it with
+`pio run -e esp32dev_ILI9341_hud_audiotest -t upload`. It is a diagnostic,
+never the shipped image.
+
+### The level transition's fade (D5.4)
 Vanilla's screen melt (`f_wipe.c`) copies `screens[2]` and `screens[3]` -- two
 more 64,000 B surfaces, plus column-major transposes of both. This board does not
 have them: the largest free block after setup is 47,092 B (plan section 12.1), so

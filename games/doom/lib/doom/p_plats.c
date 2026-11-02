@@ -17,6 +17,8 @@
 
 #include "p_floor.h"
 #include "p_mobj.h"
+#include "p_setup.h"
+#include "s_sound.h"
 
 /* One p_plat_thinker_t, linked and owned by the sector. */
 static p_plat_thinker_t* new_plat(struct p_mobj_context* world,
@@ -120,6 +122,7 @@ int p_do_plat(struct p_mobj_context* world, uint16_t lineIndex,
                 plat->status = P_PLAT_UP;
                 /* NO MORE DAMAGE, IF APPLICABLE */
                 sector->special = 0;
+                DOOM_SOUND_START(S_SectorOrigin((uint16_t)secnum), sfx_stnmov);
                 break;
 
             case P_PLAT_RAISE_AND_CHANGE:
@@ -128,6 +131,7 @@ int p_do_plat(struct p_mobj_context* world, uint16_t lineIndex,
                 plat->high = sector->floorHeight + amount * FRACUNIT;
                 plat->wait = 0;
                 plat->status = P_PLAT_UP;
+                DOOM_SOUND_START(S_SectorOrigin((uint16_t)secnum), sfx_stnmov);
                 break;
 
             case P_PLAT_DOWN_WAIT_UP_STAY:
@@ -139,6 +143,7 @@ int p_do_plat(struct p_mobj_context* world, uint16_t lineIndex,
                 plat->high = sector->floorHeight;
                 plat->wait = 35 * P_PLATWAIT;
                 plat->status = P_PLAT_DOWN;
+                DOOM_SOUND_START(S_SectorOrigin((uint16_t)secnum), sfx_pstart);
                 break;
 
             case P_PLAT_BLAZE_DWUS:
@@ -150,6 +155,7 @@ int p_do_plat(struct p_mobj_context* world, uint16_t lineIndex,
                 plat->high = sector->floorHeight;
                 plat->wait = 35 * P_PLATWAIT;
                 plat->status = P_PLAT_DOWN;
+                DOOM_SOUND_START(S_SectorOrigin((uint16_t)secnum), sfx_pstart);
                 break;
 
             case P_PLAT_PERPETUAL_RAISE:
@@ -165,6 +171,7 @@ int p_do_plat(struct p_mobj_context* world, uint16_t lineIndex,
                 plat->wait = 35 * P_PLATWAIT;
                 /* `plat->status = P_Random()&1;` -- one draw, at trigger time. */
                 plat->status = (int16_t)(p_random(world->random) & 1);
+                DOOM_SOUND_START(S_SectorOrigin((uint16_t)secnum), sfx_pstart);
                 break;
 
             default:
@@ -222,12 +229,21 @@ void p_plat_thinker(p_thinker_t* thinker, void* context) {
         case P_PLAT_UP:
             result = p_move_plane(world, plat->sector, plat->speed, plat->high,
                                   plat->crush, 0, 1);
+            /* `if (!(leveltime&7))` -- the lift's hum only for the two
+             * raisers that show a floor changing under the player. */
+            if (world->level != NULL && (world->level->leveltime & 7) == 0
+                && (plat->type == (int16_t)P_PLAT_RAISE_AND_CHANGE
+                    || plat->type == (int16_t)P_PLAT_RAISE_TO_NEAREST_AND_CHANGE)) {
+                DOOM_SOUND_START(S_SectorOrigin(plat->sector), sfx_stnmov);
+            }
             if (result == P_MOVE_CRUSHED && !plat->crush) {
                 plat->count = plat->wait;
                 plat->status = P_PLAT_DOWN;
+                DOOM_SOUND_START(S_SectorOrigin(plat->sector), sfx_pstart);
             } else if (result == P_MOVE_PASTDEST) {
                 plat->count = plat->wait;
                 plat->status = P_PLAT_WAITING;
+                DOOM_SOUND_START(S_SectorOrigin(plat->sector), sfx_pstop);
 
                 switch (plat->type) {
                     case P_PLAT_BLAZE_DWUS:
@@ -250,6 +266,7 @@ void p_plat_thinker(p_thinker_t* thinker, void* context) {
             if (result == P_MOVE_PASTDEST) {
                 plat->count = plat->wait;
                 plat->status = P_PLAT_WAITING;
+                DOOM_SOUND_START(S_SectorOrigin(plat->sector), sfx_pstop);
             }
             break;
 
@@ -261,6 +278,7 @@ void p_plat_thinker(p_thinker_t* thinker, void* context) {
                 } else {
                     plat->status = P_PLAT_DOWN;
                 }
+                DOOM_SOUND_START(S_SectorOrigin(plat->sector), sfx_pstart);
             }
             /* Upstream has no break here: it falls into in_stasis. */
             break;

@@ -32,6 +32,7 @@
 #include "p_setup.h"
 #include "p_user.h"
 #include "r_tables.h"
+#include "s_sound.h"
 
 /* --- Line geometry ------------------------------------------------------- */
 
@@ -692,10 +693,17 @@ int p_do_teleport(struct p_level* level, uint16_t lineIndex, r_mobj_t* thing,
                     thing->z + level->playerState.viewheight;
             }
 
-            /* spawn teleport fog at source and destination. The sound call is
-             * `S_StartSound (fog, sfx_telept)`, named and not faked: this port
-             * has no sound layer yet. */
-            (void)p_spawn_mobj(&level->context, oldx, oldy, oldz, MT_TFOG, NULL);
+            /* spawn teleport fog at source and destination. The sound is
+             * upstream's `S_StartSound (fog, sfx_telept)`: the *first* fog, the
+             * one at the source, is the origin. */
+            {
+                r_mobj_t* fog = p_spawn_mobj(&level->context, oldx, oldy, oldz,
+                                             MT_TFOG, NULL);
+
+                if (fog != NULL) {
+                    DOOM_SOUND_START(fog, sfx_telept);
+                }
+            }
             (void)p_spawn_mobj(
                 &level->context,
                 man->x + P_TELEPORT_FOG_DISTANCE * r_fine_cosine(man->angle),
@@ -1171,8 +1179,8 @@ static int trigger_cross(struct p_level* level, uint16_t lineIndex,
  * the button specials, which upstream leaves reusable; `clear` says whether a
  * one-shot switch clears its line. The texture change itself is deferred (see
  * p_switch in this file's report). */
-static int trigger_use(struct p_level* level, uint16_t lineIndex,
-                       r_mobj_t* thing, int side) {
+static int trigger_use_arm(struct p_level* level, uint16_t lineIndex,
+                           r_mobj_t* thing, int side) {
     p_mobj_context_t* world = &level->context;
     int16_t special = level->lineSpecial[lineIndex];
     const int byPlayer = (thing != NULL && thing->player != 0u) ? 1 : 0;
@@ -1444,6 +1452,34 @@ static int trigger_use(struct p_level* level, uint16_t lineIndex,
             note_line_special(level, lineIndex, special, P_TRIGGER_USE);
             return 0;
     }
+}
+
+/*
+ * P_ChangeSwitchTexture's audible half, in one place.
+ *
+ * The arms do not each call it: they already mark the deferred texture change
+ * with `deferredLineSpecial`, so this wrapper starts the cue for exactly the
+ * arms that deferred one. Upstream's rule is `line->special == 11 ? sfx_swtchx
+ * : sfx_swtchn`; the two exit specials write their one-shot clear directly and
+ * defer no texture, so they are named here to keep their switch audible.
+ *
+ * The port's counter is broader than upstream's P_ChangeSwitchTexture: a few
+ * door and floor arms that upstream clears without a texture change count too.
+ * They get the same cue -- the port's existing model, made audible -- and that
+ * small overshoot is stated in the report rather than hidden.
+ */
+static int trigger_use(struct p_level* level, uint16_t lineIndex,
+                       r_mobj_t* thing, int side) {
+    const int16_t special = level->lineSpecial[lineIndex];
+    const uint32_t before = level->specStats.deferredLineSpecial;
+    const int handled = trigger_use_arm(level, lineIndex, thing, side);
+
+    if (handled
+        && (level->specStats.deferredLineSpecial != before || special == 11
+            || special == 51)) {
+        DOOM_SOUND_START(thing, special == 11 ? sfx_swtchx : sfx_swtchn);
+    }
+    return handled;
 }
 
 static int trigger_shoot(struct p_level* level, uint16_t lineIndex,

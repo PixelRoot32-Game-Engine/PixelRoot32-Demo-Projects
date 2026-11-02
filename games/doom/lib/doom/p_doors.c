@@ -19,6 +19,7 @@
 
 #include "p_floor.h"
 #include "p_mobj.h"
+#include "s_sound.h"
 
 /* One p_door_thinker_t, linked and owned by the sector. */
 static p_door_thinker_t* new_door(struct p_mobj_context* world,
@@ -79,16 +80,19 @@ int p_do_door(struct p_mobj_context* world, uint16_t lineIndex,
                 door->topHeight = door_top_height(world, (uint16_t)secnum);
                 door->direction = -1;
                 door->speed = P_VDOORSPEED * 4;
+                DOOM_SOUND_START(S_SectorOrigin((uint16_t)secnum), sfx_bdcls);
                 break;
 
             case P_DOOR_CLOSE:
                 door->topHeight = door_top_height(world, (uint16_t)secnum);
                 door->direction = -1;
+                DOOM_SOUND_START(S_SectorOrigin((uint16_t)secnum), sfx_dorcls);
                 break;
 
             case P_DOOR_CLOSE_30_THEN_OPEN:
                 door->topHeight = sector->ceilingHeight;
                 door->direction = -1;
+                DOOM_SOUND_START(S_SectorOrigin((uint16_t)secnum), sfx_dorcls);
                 break;
 
             case P_DOOR_BLAZE_RAISE:
@@ -96,12 +100,20 @@ int p_do_door(struct p_mobj_context* world, uint16_t lineIndex,
                 door->direction = 1;
                 door->topHeight = door_top_height(world, (uint16_t)secnum);
                 door->speed = P_VDOORSPEED * 4;
+                /* `if (topheight != ceilingheight)` -- a door already at its
+                 * top is silent, which is upstream's guard. */
+                if (door->topHeight != sector->ceilingHeight) {
+                    DOOM_SOUND_START(S_SectorOrigin((uint16_t)secnum), sfx_bdopn);
+                }
                 break;
 
             case P_DOOR_NORMAL:
             case P_DOOR_OPEN:
                 door->direction = 1;
                 door->topHeight = door_top_height(world, (uint16_t)secnum);
+                if (door->topHeight != sector->ceilingHeight) {
+                    DOOM_SOUND_START(S_SectorOrigin((uint16_t)secnum), sfx_doropn);
+                }
                 break;
 
             default:
@@ -170,6 +182,13 @@ int p_vertical_door(struct p_mobj_context* world, uint16_t lineIndex,
     door = new_door(world, sectorIndex);
     if (door == NULL) {
         return 0;
+    }
+    /* for proper sound: upstream plays the creak before the thinker exists
+     * (EV_VerticalDoor's "for proper sound" switch). 117/118 are blazing. */
+    if (special == 117 || special == 118) {
+        DOOM_SOUND_START(S_SectorOrigin(sectorIndex), sfx_bdopn);
+    } else {
+        DOOM_SOUND_START(S_SectorOrigin(sectorIndex), sfx_doropn);
     }
     door->sector = sectorIndex;
     door->direction = 1;
@@ -296,11 +315,16 @@ void p_door_thinker(p_thinker_t* thinker, void* context) {
             }
             switch (door->type) {
                 case P_DOOR_BLAZE_RAISE:
+                    door->direction = -1;   /* time to go back down */
+                    DOOM_SOUND_START(S_SectorOrigin(door->sector), sfx_bdcls);
+                    break;
                 case P_DOOR_NORMAL:
                     door->direction = -1;   /* time to go back down */
+                    DOOM_SOUND_START(S_SectorOrigin(door->sector), sfx_dorcls);
                     break;
                 case P_DOOR_CLOSE_30_THEN_OPEN:
                     door->direction = 1;
+                    DOOM_SOUND_START(S_SectorOrigin(door->sector), sfx_doropn);
                     break;
                 default:
                     break;
@@ -316,6 +340,7 @@ void p_door_thinker(p_thinker_t* thinker, void* context) {
             if (door->type == P_DOOR_RAISE_IN_5_MINS) {
                 door->direction = 1;
                 door->type = P_DOOR_NORMAL;
+                DOOM_SOUND_START(S_SectorOrigin(door->sector), sfx_doropn);
             }
             break;
 
@@ -327,6 +352,8 @@ void p_door_thinker(p_thinker_t* thinker, void* context) {
                 switch (door->type) {
                     case P_DOOR_BLAZE_RAISE:
                     case P_DOOR_BLAZE_CLOSE:
+                        DOOM_SOUND_START(S_SectorOrigin(door->sector),
+                                         sfx_bdcls);
                         finish_door(world, door);
                         break;
                     case P_DOOR_NORMAL:
@@ -348,6 +375,8 @@ void p_door_thinker(p_thinker_t* thinker, void* context) {
                         break;
                     default:
                         door->direction = 1;
+                        DOOM_SOUND_START(S_SectorOrigin(door->sector),
+                                         sfx_doropn);
                         break;
                 }
             }

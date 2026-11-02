@@ -21,6 +21,8 @@
 
 #include "p_map.h"
 #include "p_mobj.h"
+#include "p_setup.h"
+#include "s_sound.h"
 
 /* --- P_ChangeSector ------------------------------------------------------ */
 
@@ -593,6 +595,13 @@ void p_floor_thinker(p_thinker_t* thinker, void* context) {
         return;
     }
     sector = &world->sectors[floor->sector];
+
+    /* `if (!(leveltime&7)) S_StartSound (&sector->soundorg, sfx_stnmov);` --
+     * upstream plays the moving-floor hum every eight tics, before the move is
+     * even examined. */
+    if (world->level != NULL && (world->level->leveltime & 7) == 0) {
+        DOOM_SOUND_START(S_SectorOrigin(floor->sector), sfx_stnmov);
+    }
 
     result = p_move_plane(world, floor->sector, floor->speed, floor->destHeight,
                           floor->crush, 0, floor->direction);

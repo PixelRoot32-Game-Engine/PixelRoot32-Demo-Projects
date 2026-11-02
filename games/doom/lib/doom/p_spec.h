@@ -696,8 +696,7 @@ typedef enum p_trigger_kind {
  *   6. a player's `reactiontime = 18`, `thing->angle = m->angle`, and all three
  *      momentum components are zeroed.
  *
- * `S_StartSound(fog, sfx_telept)` is not in this port: there is no sound layer
- * yet, so the call is named here and nothing is faked.
+ * `S_StartSound(fog, sfx_telept)` is started on the source fog, as upstream does.
  *
  * @param level     The level; its mobjs are searched and its player record is
  *                  written.

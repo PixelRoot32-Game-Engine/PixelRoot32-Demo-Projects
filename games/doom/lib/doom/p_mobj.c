@@ -34,6 +34,7 @@
 #include "p_setup.h"
 #include "r_bsp.h"
 #include "r_tables.h"
+#include "s_sound.h"
 
 /* --- Helpers ------------------------------------------------------------ */
 
@@ -604,9 +605,10 @@ static fixed_t sector_floor(const p_mobj_context_t* world, uint16_t sector) {
 /*
  * P_ExplodeMissile(): stop, enter the death state and lose MF_MISSILE.
  *
- * The deathsound is the audio layer's (S2) and the sky-wall hack that decides
- * whether a missile explodes at all lives with the rest of the missile work in
- * T14; everything that changes the thing is here.
+ * The deathsound is the explosion's own (`sfx_barexp` for a barrel, `sfx_rxplod`
+ * for a rocket, `sfx_firxpl` for a fireball); upstream starts it at the tail of
+ * this function, and this does the same. The sky-wall hack that decides whether
+ * a missile explodes at all lives with the rest of the missile work in T14.
  */
 static void explode_missile(p_mobj_context_t* world, r_mobj_t* mobj) {
     mobj->momx = 0;
@@ -620,6 +622,10 @@ static void explode_missile(p_mobj_context_t* world, r_mobj_t* mobj) {
         mobj->tics = 1;
     }
     mobj->flags &= ~MF_MISSILE;
+
+    if (mobjinfo[mobj->type].deathsound != 0) {
+        DOOM_SOUND_START(mobj, mobjinfo[mobj->type].deathsound);
+    }
 }
 
 void p_xy_movement(p_mobj_context_t* world, r_mobj_t* mobj) {
@@ -766,9 +772,13 @@ void p_z_movement(p_mobj_context_t* world, r_mobj_t* mobj) {
             mobj->momz = -mobj->momz;
         }
         if (mobj->momz < 0) {
-            /* Upstream's player branch here squashes the viewheight and plays
-             * sfx_oof when the landing is hard; no player view (D5) and no
-             * sound layer (S2) exist yet. */
+            /* Upstream squashes the player's view and plays sfx_oof when the
+             * landing is hard: `mo->player && mo->momz < -GRAVITY*8`. The view
+             * squash is the player layer's (`playerState.deltaviewheight`); the
+             * sound belongs here, where the floor is hit. */
+            if (mobj->player != 0u && mobj->momz < -P_GRAVITY * 8) {
+                DOOM_SOUND_START(mobj, sfx_oof);
+            }
             mobj->momz = 0;
         }
         mobj->z = mobj->floorz;
@@ -847,8 +857,8 @@ int p_check_missile_spawn(p_mobj_context_t* world, r_mobj_t* mobj) {
  * counter-clockwise from that (`an += 1<<26; ... an -= 2<<26;`). The first probe
  * that finds something wins and its slope becomes `momz`.
  *
- * The missile's `seesound` is the audio layer's (S2); it is counted in the level's
- * player record rather than played, at the site upstream plays it.
+ * The missile's `seesound` is played at the spawn, as upstream's
+ * P_SpawnPlayerMissile does, and the level's player record still counts it.
  */
 void p_spawn_player_missile(p_mobj_context_t* world, r_mobj_t* source,
                             mobjtype_t type) {
@@ -887,8 +897,11 @@ void p_spawn_player_missile(p_mobj_context_t* world, r_mobj_t* source,
         return;
     }
 
-    if (mobjinfo[type].seesound != 0 && world->level != NULL) {
-        world->level->playerState.silentSounds += 1u;
+    if (mobjinfo[type].seesound != 0) {
+        if (world->level != NULL) {
+            world->level->playerState.silentSounds += 1u;
+        }
+        DOOM_SOUND_START(th, mobjinfo[type].seesound);
     }
 
     th->target = source; /* where it came from */
@@ -915,7 +928,7 @@ void p_spawn_player_missile(p_mobj_context_t* world, r_mobj_t* source,
  * a stationary or very close target uses the `dist < 1` clamp. Then
  * P_CheckMissileSpawn's tic jitter and half-step.
  *
- * The missile's `seesound` is the audio layer's (S2).
+ * The missile's `seesound` is started at the spawn, as upstream does.
  */
 r_mobj_t* p_spawn_missile(p_mobj_context_t* world, r_mobj_t* source,
                           r_mobj_t* dest, mobjtype_t type) {
@@ -930,6 +943,11 @@ r_mobj_t* p_spawn_missile(p_mobj_context_t* world, r_mobj_t* source,
                       type, NULL);
     if (th == NULL) {
         return NULL;
+    }
+    /* Upstream's missile spawn starts the type's `seesound` here: a fireball's
+     * launch (sfx_firsht), a rocket's (sfx_rlaunc). */
+    if (mobjinfo[type].seesound != 0) {
+        DOOM_SOUND_START(th, mobjinfo[type].seesound);
     }
     th->target = source; /* where it came from */
     an = p_point_to_angle(dest->x - source->x, dest->y - source->y);
