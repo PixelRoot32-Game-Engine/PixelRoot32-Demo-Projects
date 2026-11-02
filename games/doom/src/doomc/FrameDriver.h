@@ -167,6 +167,10 @@
 #include <cstddef>
 #include <cstdint>
 
+#if defined(DOOM_MENU)
+struct m_menu;  // lib/doom/m_menu.h
+#endif
+
 namespace doom {
 namespace doomc {
 
@@ -703,6 +707,47 @@ bool frameLevelSpawnView(LevelView* out);
  * @return false when no world is open or a tic refused to run.
  */
 bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons);
+
+#if defined(DOOM_MENU)
+/**
+ * @brief The menu's New Game (D5.2): reloads the level at @p skill.
+ *
+ * `rules.skill` takes @p skill, the random position is cleared (G_InitNew's
+ * M_ClearRandom) and `g_demo_reborn()` re-lays E1M1 over the world's own arena
+ * with every THING run again, the status bar restarted. The arena is sized at
+ * nightmare under `DOOM_MENU`, so every skill fits (`tools/menu_check.py --arena`).
+ *
+ * @param skill 0 (baby) .. 4 (nightmare).
+ * @return true when the new game is running. false means the reload was refused:
+ *         the level was laid out again at the default skill, or, if that failed
+ *         too, the world is closed and the frame keeps its last picture.
+ */
+bool frameLevelNewGame(int skill);
+
+/**
+ * @brief The menu the frame draws over everything else, or NULL.
+ *
+ * The driver keeps the pointer (the scene owns the struct). A closed menu draws
+ * nothing and costs one comparison per frame.
+ */
+void frameLevelSetMenu(const m_menu* menu);
+
+/**
+ * @brief The world arena's state, for the menu's serial line: bytes in use, bytes
+ *        free, allocations the zone refused since the last load, live mobjs.
+ *
+ * The refusal counter is the proof New Game fits: a skill whose THINGS or whose
+ * play overflowed the arena shows up as a non-zero count here.
+ *
+ * @return false when no world is open (every output is 0).
+ */
+bool frameLevelArenaStats(std::uint32_t* inUse, std::uint32_t* freeBytes,
+                          std::uint32_t* failures, std::uint32_t* mobjs);
+
+/// The name of the last picture a resolver could not find ("" if none), for the
+/// refusal diagnostic.
+const char* frameLevelLastMissing();
+#endif
 
 /**
  * @brief Fills @p out with the console player's state.

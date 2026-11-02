@@ -5,6 +5,10 @@
 
 #include "doomc/FrameDriver.h"
 
+#if defined(DOOM_MENU)
+struct m_menu;  // lib/doom/m_menu.h
+#endif
+
 namespace doom {
 namespace doomc {
 
@@ -109,6 +113,25 @@ public:
      * @return false when the world is closed or a tic refused to run.
      */
     bool runTics(std::uint32_t tics, std::uint8_t buttons);
+
+#if defined(DOOM_MENU)
+    /**
+     * @brief The menu's New Game (D5.2): reloads the level at @p skill.
+     *
+     * A delegation to `frameLevelNewGame()`; see it for what is reset.
+     *
+     * @return true when the new game is running.
+     */
+    bool newGame(int skill);
+
+    /// The menu `render()` paints over the finished frame, or NULL for none. The
+    /// renderer keeps the pointer; the scene owns the struct.
+    void setMenu(const m_menu* menu);
+
+    /// The 768 PLAYPAL bytes the palette tables were built from, or NULL before
+    /// `open()`: what `palette::applyGamma()` regrades.
+    const std::uint8_t* playpal() const { return open_ ? frameLevelPlaypal() : nullptr; }
+#endif
 
     /**
      * @brief Renders the player's viewpoint into a caller-owned 8bpp surface.

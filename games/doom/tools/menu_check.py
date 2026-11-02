@@ -549,13 +549,52 @@ def container_gate(arguments) -> int:
     return 1 if failures else 0
 
 
+# --- The arena gate (New Game reloads E1M1 at every skill inside the board's arena) ------
+
+ARENA_SOURCES = (
+    "m_menu.c", "m_gamma.c", "p_setup.c", "p_mobj.c", "p_map.c", "p_user.c", "p_tick.c",
+    "p_action.c", "p_inter.c", "p_pspr.c", "p_sight.c", "p_enemy.c", "m_random.c", "z_zone.c",
+    "doom_map.c", "g_game.c", "whd.c", "r_segs.c", "r_light.c", "r_bsp.c", "r_plane.c",
+    "r_tables.c", "r_data.c", "w_wad.c", "p_spec.c", "p_floor.c", "p_doors.c", "p_plats.c",
+    "p_ceilng.c", "p_lights.c",
+)
+
+
+def arena_gate(arguments) -> int:
+    workdir = Path(tempfile.mkdtemp(prefix="menu_arena_"))
+    try:
+        executable = workdir / ("menu_arena.exe" if sys.platform == "win32" else "menu_arena")
+        command = [arguments.cc, "-std=gnu99", "-O2", "-Wall", "-Wextra", "-DMENU_CHECK_ARENA",
+                   "-I", str(LIB), "-o", str(executable), str(ROOT / "tools" / "menu_check.c")]
+        command += [str(LIB / name) for name in ARENA_SOURCES]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            print("menu_check: the arena harness did not compile:\n" + (result.stderr or result.stdout),
+                  file=sys.stderr)
+            return 2
+        # --perturb leaves the renderer's live reader bound across the reload, which is
+        # the defect the board showed (every frame refused after the first New Game).
+        extra = ["--bound"] if arguments.perturb else []
+        result = subprocess.run([str(executable), "--arena", str(arguments.arena)] + extra,
+                                capture_output=True, text=True)
+        sys.stdout.write(result.stdout)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+        return result.returncode
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--cc", default="gcc")
     parser.add_argument("--container", type=Path, help="gate the finished container's menu art")
     parser.add_argument("--wad", type=Path, help="the source IWAD (with --container)")
+    parser.add_argument("--arena", type=Path, help="prove New Game fits the board's arena at every skill")
     parser.add_argument("--perturb", action="store_true", help="inject a bug; the run must then fail")
     arguments = parser.parse_args(argv)
+    if arguments.arena is not None:
+        return arena_gate(arguments)
     if arguments.container is not None:
         if arguments.wad is None:
             parser.error("--container needs --wad")

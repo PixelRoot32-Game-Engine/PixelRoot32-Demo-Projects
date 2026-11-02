@@ -468,6 +468,13 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 #if defined(DOOM_HUD)
 #include "st_stuff.h"
 #endif
+#if defined(DOOM_MENU)
+#if !defined(DOOM_HUD)
+#error "DOOM_MENU draws over the HUD build: define DOOM_HUD too"
+#endif
+#include "g_game.h"
+#include "m_menu.h"
+#endif
 
 // The E1M1 sprite fixture: the DoomEd number -> frame-0 lump table
 // tools/gen_e1m1_sprites.py generates for the host harness. Fixture data, not
@@ -2608,6 +2615,52 @@ bool weaponAtRest() {
 }
 #endif  // DOOM_WEAPON_DIAG
 
+#if defined(DOOM_MENU)
+/*
+ * THE MENU (D5.2)
+ *
+ * lib/doom/m_menu.c owns the state machine and the drawing; this file only
+ * paints it over the finished frame and carries out its New Game. The menu is
+ * the scene's, so the driver holds a pointer, not a copy, and a NULL pointer or
+ * a closed menu costs one comparison per frame.
+ *
+ * The patches are the raw, name-addressed lumps T39 baked
+ * (tools/menu_lumps.txt) and are looked up through the HUD's cache. The HUD and
+ * the weapon already use 114 of its 128 slots in a long session and the menu asks
+ * for about 70 more names, so the cache is emptied whenever the menu opens or
+ * closes: while it is open the frame needs only the names it actually draws (the
+ * bar, the weapon and the active screen), and none of them pays the linear scan of
+ * the container's name table that a full cache would charge every frame.
+ */
+static_assert(sizeof(gHudHash) / sizeof(gHudHash[0]) == kHudCacheSlots, "HUD cache layout");
+const m_menu_t* gMenu = nullptr;
+bool gMenuWasActive = false;
+std::uint32_t gMenuMicros = 0u;
+int gMenuMissing = 0;
+
+void hudCacheReset() {
+    for (std::size_t slot = 0u; slot < kHudCacheSlots; ++slot) {
+        gHudHash[slot] = 0u;
+        gHudLump[slot] = 0;
+    }
+}
+
+/// Paints the open menu over the finished frame (menu, then nothing above it).
+void menuDraw(std::uint8_t* surface, int width) {
+    const bool active = m_menu_active(gMenu) != 0;
+    if (active != gMenuWasActive) {
+        gMenuWasActive = active;
+        hudCacheReset();
+    }
+    if (!active) {
+        return;
+    }
+    const std::int64_t start = nowMicros();
+    gMenuMissing = m_menu_draw(gMenu, hudLump, nullptr, surface, width);
+    gMenuMicros = elapsedMicros(start);
+}
+#endif  // DOOM_MENU
+
 #endif  // SHOW && DOOM_HUD
 
 /*
@@ -2670,9 +2723,11 @@ bool takeArena(std::uint32_t bytes, std::uint8_t** arena, void** block) {
  * @return P_SETUP_OK with @p zoneOut filled, or the p_level_init() code.
  */
 p_setup_error_t probeWorld(const doom_map_t* map, std::uint8_t* arena, std::uint32_t bytes,
-                           p_level_t* level, zone_stats_t* zoneOut) {
+                           p_level_t* level, zone_stats_t* zoneOut,
+                           p_skill_t skill = P_SKILL_MEDIUM) {
     *zoneOut = zone_stats_t{};
-    const p_spawn_rules_t rules = p_spawn_rules_default();
+    p_spawn_rules_t rules = p_spawn_rules_default();
+    rules.skill = skill;
     const p_setup_error_t setup = p_level_init(level, map, arena, bytes, &rules);
     if (setup != P_SETUP_OK) {
         return setup;
@@ -2748,8 +2803,17 @@ bool openWorldSession() {
         static_cast<std::uint32_t>(heap_caps_get_largest_free_block(caps));
 
     zone_stats_t zone;
+#if defined(DOOM_MENU)
+    // D5.2: the menu's New Game can reload this level at any skill, and a harder
+    // skill spawns more things (E1M1: 92 mobjs at medium, 116 at ultra-violence
+    // and nightmare). The arena must hold the largest of them, so the peak is
+    // measured at nightmare; the world itself still starts at medium below.
+    const p_skill_t probeSkill = P_SKILL_NIGHTMARE;
+#else
+    const p_skill_t probeSkill = P_SKILL_MEDIUM;
+#endif
     const p_setup_error_t probeSetup =
-        probeWorld(map, probeArena, probeBytes, &gWorld.level, &zone);
+        probeWorld(map, probeArena, probeBytes, &gWorld.level, &zone, probeSkill);
     const std::uint32_t things = gWorld.level.stats.things;
     const std::uint32_t spawned = gWorld.level.stats.spawned;
     const std::uint32_t spawnFailed = gWorld.level.stats.spawnFailed;
@@ -3322,6 +3386,9 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
 #endif  // DOOM_WEAPON_DIAG
     weaponDraw(gSession.driver);
     hudDraw(surface, width);
+#if defined(DOOM_MENU)
+    menuDraw(surface, width);
+#endif
 #endif
 
     if (hash != nullptr) {
@@ -3502,6 +3569,79 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
     }
     return true;
 }
+
+#if defined(DOOM_MENU)
+bool frameLevelNewGame(int skill) {
+    if (!gWorld.open || skill < 0 || skill >= M_SKILL_COUNT) {
+        return false;
+    }
+    p_level_t& level = gWorld.level;
+
+    // G_InitNew(): the skill into the rules, the random position cleared
+    // (M_ClearRandom), then G_DoLoadLevel's reload of E1M1 over the same arena --
+    // the path the demo gate already proves (g_demo_reborn). Every THING is run
+    // again from the map's own records under the new skill, the player is
+    // G_PlayerReborn's, leveltime is 0.
+    //
+    // The renderer's live reader is UNBOUND for the reload and bound again after.
+    // The reload copies the map's sectors with doom_map_get_sector(), which answers
+    // through a bound reader (p_level_read_sector) -- and the level it would read is
+    // the one being rebuilt, so with the reader bound the copy is stack garbage (the
+    // first board run of this menu refused every frame after the first New Game,
+    // FLAT_MISSING, with 85 of 85 sectors wrong). tools/menu_check.py --arena
+    // reproduces that with --perturb.
+    doom_map_t* map = &gSession.driver->map;
+    level.rules.skill = static_cast<p_skill_t>(skill);
+    std::memset(&level.random, 0, sizeof level.random);
+    p_level_unbind_render(map);
+    const bool reloaded = g_demo_reborn(&level) == G_DEMO_OK;
+    p_level_bind_render(&level, map);
+    if (reloaded) {
+        hudStart();
+        // One idle tic, so the player's eye height (viewz, computed by the first
+        // P_PlayerThink) exists before the first frame of the new game is drawn.
+        (void)frameLevelRunTics(1u, 0u);
+        return true;
+    }
+
+    // A refused load leaves the level zeroed (p_setup.h). tools/menu_check.py
+    // --arena proves E1M1 fits at every skill in this arena, so this is the
+    // recovery for a build whose measurement was changed: lay the level out again
+    // at the default skill, or close the world so the frame keeps its last picture.
+    zone_stats_t unused;
+    gFrameWorld = nullptr;
+    p_level_unbind_render(map);
+    if (probeWorld(map, gWorld.arena, gWorld.arenaBytes, &level, &unused) == P_SETUP_OK) {
+        gFrameWorld = &level;
+        p_level_bind_render(&level, map);
+        hudStart();
+    } else {
+        gWorld.open = false;
+    }
+    return false;
+}
+
+void frameLevelSetMenu(const m_menu* menu) { gMenu = menu; }
+
+bool frameLevelArenaStats(std::uint32_t* inUse, std::uint32_t* freeBytes,
+                          std::uint32_t* failures, std::uint32_t* mobjs) {
+    *inUse = 0u;
+    *freeBytes = 0u;
+    *failures = 0u;
+    *mobjs = 0u;
+    if (!gWorld.open) {
+        return false;
+    }
+    const zone_stats_t zone = z_stats(&gWorld.level.zone);
+    *inUse = zone.inUse;
+    *freeBytes = zone.freeBytes;
+    *failures = zone.failures;
+    *mobjs = p_level_mobj_count(&gWorld.level);
+    return true;
+}
+
+const char* frameLevelLastMissing() { return gFailTexture; }
+#endif  // DOOM_MENU
 
 bool frameLevelPlayer(LevelPlayer* out) {
     if (out == nullptr) {
@@ -3787,6 +3927,26 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
     (void)buttons;
     return false;
 }
+
+#if defined(DOOM_MENU)
+bool frameLevelNewGame(int skill) {
+    (void)skill;
+    return false;
+}
+
+void frameLevelSetMenu(const m_menu* menu) { (void)menu; }
+
+bool frameLevelArenaStats(std::uint32_t* inUse, std::uint32_t* freeBytes,
+                          std::uint32_t* failures, std::uint32_t* mobjs) {
+    *inUse = 0u;
+    *freeBytes = 0u;
+    *failures = 0u;
+    *mobjs = 0u;
+    return false;
+}
+
+const char* frameLevelLastMissing() { return ""; }
+#endif
 
 bool frameLevelPlayer(LevelPlayer* out) {
     if (out != nullptr) {

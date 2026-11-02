@@ -81,6 +81,28 @@ bool SceneRenderer::runTics(std::uint32_t tics, std::uint8_t buttons) {
 #endif
 }
 
+#if defined(DOOM_MENU)
+bool SceneRenderer::newGame(int skill) {
+    if (!open_) {
+        return false;
+    }
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    return frameLevelNewGame(skill);
+#else
+    (void)skill;
+    return false;
+#endif
+}
+
+void SceneRenderer::setMenu(const m_menu* menu) {
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    frameLevelSetMenu(menu);
+#else
+    (void)menu;
+#endif
+}
+#endif  // DOOM_MENU
+
 bool SceneRenderer::render(std::uint8_t* indexPixels, int width, int height, bool wantHash,
                            SceneFrameMeasurements* out) {
     if (!open_ || indexPixels == nullptr) {
