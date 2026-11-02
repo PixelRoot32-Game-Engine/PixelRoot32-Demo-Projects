@@ -14,6 +14,10 @@
 
 #include "time/TicClock.h"
 
+#if defined(DOOM_MENU)
+#include "m_menu.h"
+#endif
+
 namespace doom {
 
 /**
@@ -205,6 +209,22 @@ private:
     void runWorldTics(std::uint8_t buttons);
 #endif
 
+#if defined(DOOM_MENU)
+    /**
+     * @brief The menu's turn of one frame (D5.2): input, its three outcomes, the save.
+     *
+     * Feeds the sampled buttons to the menu state machine and returns what the
+     * WORLD may see (nothing while the menu is open or latched). Then carries out
+     * what the menu asked for: a New Game reload, a gamma change on the palette,
+     * and the write of the settings when the player leaves the options screen.
+     * The menu being open pauses the 35 Hz world tic, in `runWorldTics()`.
+     */
+    std::uint8_t runMenu(std::uint8_t buttons);
+
+    /// Rebuilds the PLAYPAL tables at the menu's gamma and hands them to the panel.
+    void applyMenuGamma();
+#endif
+
     /**
      * @brief Buttons held at the last `update()`, packed as `INPUT` reports them.
      *
@@ -224,6 +244,17 @@ private:
     /// Last tic written to the serial line; the change filter behind the
     /// once-per-tic (never per-frame) reporting.
     std::uint32_t reportedTic_ = kNoTic;
+
+#if defined(DOOM_MENU)
+    /// The menu and the settings it edits: skill, volume, gamma (D5.2). ~24 bytes.
+    m_menu_t menu_;
+    /// A persisted value changed and has not been written yet.
+    bool settingsDirty_ = false;
+    /// The gamma level the panel's palette was last built for.
+    std::uint8_t gammaApplied_ = 0;
+    /// Frames the scripted-input diagnostic has played (DOOM_MENU_SCRIPT only).
+    std::uint32_t menuScriptFrame_ = 0;
+#endif
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
     /**

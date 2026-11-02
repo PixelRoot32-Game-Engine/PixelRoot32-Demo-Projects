@@ -21,6 +21,19 @@
 
 #include "palette/DoomPalette.h"
 
+#if defined(DOOM_MENU) && !defined(PIXELROOT32_DOOM_SHOW_E1M1)
+#error "DOOM_MENU belongs to the game build: define PIXELROOT32_DOOM_SHOW_E1M1 too"
+#endif
+
+#if defined(DOOM_MENU)
+#include "doomc/InputMap.h"
+#include "doomc/SceneRenderer.h"
+#include "doomc/SettingsStore.h"
+#if defined(ARDUINO)
+#include "platforms/PreferencesStore.h"
+#endif
+#endif
+
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -734,6 +747,97 @@ void reportZoneProbe() {
 
 #endif  // PIXELROOT32_DOOM_ZONE_PROBE
 
+
+#if defined(DOOM_MENU)
+
+/// The store the settings live in: the board's NVS through Preferences, or RAM on
+/// the desktop mirror. The game code only ever sees the doomc::SettingsStore seam.
+#if defined(ARDUINO)
+platforms::PreferencesStore gSettingsStore;
+#else
+doomc::MemorySettingsStore gSettingsStore;
+#endif
+
+static_assert(M_BTN_UP == doomc::kButtonUp && M_BTN_DOWN == doomc::kButtonDown
+                  && M_BTN_LEFT == doomc::kButtonLeft && M_BTN_RIGHT == doomc::kButtonRight
+                  && M_BTN_A == doomc::kButtonA && M_BTN_B == doomc::kButtonB,
+              "the menu reads InputMap.h's button bits");
+
+#if defined(DOOM_MENU_SCRIPT)
+/*
+ * DOOM_MENU_SCRIPT (env esp32dev_ILI9341_hud_menutest): the board has no buttons
+ * this build can press, so the diagnostic plays a fixed input script into the same
+ * path a real press takes -- `m_menu_buttons()`, ORed onto the sampled buttons --
+ * and the serial log shows what the menu did. Each step holds `buttons` for
+ * `frames` frames; a key press is one frame down and two up so every press is its
+ * own rising edge.
+ *
+ * What the script does, in order, and why each part is there:
+ *   1. wait, then LEFT+RIGHT: the chord opens the main menu (menu-open fps window)
+ *   2. DOWN, A: OPTIONS. Skill is driven to 0 then to 2, volume to 0 then to 5 and
+ *      gamma to 0 then to 3 (the clamps are exercised, and the end values are the
+ *      same whatever the stored ones were, so a second boot can be compared).
+ *   3. B, B: back to main, then close: the settings are written to NVS
+ *   4. NEW GAME at skills 0, 1, 2, 3, 4 and 3 again: each is a chord, A, a cursor
+ *      move from the saved skill and A, then a wait so the reload and the first
+ *      frames of the new world are in the log. The last one leaves skill 3. The main
+ *      screen remembers its cursor (upstream's lastOn), which step 2 left on OPTIONS,
+ *      so the first one moves it back to NEW GAME with one UP.
+ * End state: skill 3, volume 5, gamma 3, menu closed.
+ */
+struct ScriptStep {
+    std::uint8_t buttons;
+    std::uint8_t frames;
+};
+
+#define TAP(button) {(button), 1}, {0, 2}
+#define CHORD {static_cast<std::uint8_t>(M_BTN_LEFT | M_BTN_RIGHT), 1}, {0, 3}
+#define WAIT(count) {0, (count)}
+#define NEWGAME_AT(downs) CHORD, TAP(M_BTN_A), downs, TAP(M_BTN_A), WAIT(60)
+#define NEWGAME_FIRST(downs) CHORD, TAP(M_BTN_UP), TAP(M_BTN_A), downs, TAP(M_BTN_A), WAIT(60)
+#define DOWN3 TAP(M_BTN_DOWN), TAP(M_BTN_DOWN), TAP(M_BTN_DOWN)
+#define LEFT5 TAP(M_BTN_LEFT), TAP(M_BTN_LEFT), TAP(M_BTN_LEFT), TAP(M_BTN_LEFT), TAP(M_BTN_LEFT)
+#define RIGHT3 TAP(M_BTN_RIGHT), TAP(M_BTN_RIGHT), TAP(M_BTN_RIGHT)
+#define LEFT16 LEFT5, LEFT5, LEFT5, TAP(M_BTN_LEFT)
+
+const ScriptStep kMenuScript[] = {
+    WAIT(40),
+    CHORD,
+    WAIT(60),                                  // main menu open
+    TAP(M_BTN_DOWN), TAP(M_BTN_A),             // OPTIONS
+    WAIT(60),                                  // setup-lite open
+    LEFT5, RIGHT3 /* skill 0, then 3 */,
+    TAP(M_BTN_LEFT),                           // skill 2
+    TAP(M_BTN_DOWN), LEFT16, RIGHT3, TAP(M_BTN_RIGHT), TAP(M_BTN_RIGHT),  // volume 0, then 5
+    TAP(M_BTN_DOWN), LEFT5, RIGHT3,            // gamma 0, then 3
+    WAIT(40),
+    TAP(M_BTN_B), WAIT(10), TAP(M_BTN_B),      // main, then closed: the write happens
+    WAIT(50),
+    // New game. The cursor starts on the saved skill (2 after the options above).
+    NEWGAME_FIRST(DOWN3),                      // 2 -> 0 (wraps: down, down, down)
+    NEWGAME_AT(TAP(M_BTN_DOWN)),               // 0 -> 1
+    NEWGAME_AT(TAP(M_BTN_DOWN)),               // 1 -> 2
+    NEWGAME_AT(TAP(M_BTN_DOWN)),               // 2 -> 3
+    NEWGAME_AT(TAP(M_BTN_DOWN)),               // 3 -> 4
+    NEWGAME_AT(TAP(M_BTN_UP)),                 // 4 -> 3
+    WAIT(120),
+};
+
+/// The buttons the script holds on @p frame, or 0 once it has ended.
+std::uint8_t menuScriptButtons(std::uint32_t frame) {
+    std::uint32_t at = 0;
+    for (const ScriptStep& step : kMenuScript) {
+        if (frame < at + step.frames) {
+            return step.buttons;
+        }
+        at += step.frames;
+    }
+    return 0;
+}
+#endif  // DOOM_MENU_SCRIPT
+
+#endif  // DOOM_MENU
+
 }  // namespace
 
 void DoomScene::init() {
@@ -744,6 +848,13 @@ void DoomScene::init() {
     // Nothing is held when the shell comes up; the first change edge is what
     // prints the INPUT line.
     buttons_ = 0;
+
+#if defined(DOOM_MENU)
+    // A closed menu with the defaults, so a session that never opens (no
+    // partition, rejected container) still has a well-formed one. The real
+    // settings replace it below, once the level is open.
+    m_menu_init(&menu_, nullptr);
+#endif
 
     // Builds the index -> RGB332 table once. It is the port's whole palette
     // story: Phase 2 replaces the synthetic source with the WAD's PLAYPAL lump
@@ -839,6 +950,30 @@ void DoomScene::init() {
         // presents, one lookup per pixel and no per-frame pass. The call is a
         // no-op on a surface without an 8-bit buffer (DrawSurface's default), so
         // the desktop mirror keeps its own conversion below.
+#if defined(DOOM_MENU)
+        // D5.2: the stored settings, or the defaults when the store has no valid
+        // record. The gamma goes into the PLAYPAL tables before the panel is
+        // handed them, so the first frame already shows it. Boot continues at
+        // medium skill in E1M1 as always: the stored skill is the cursor's start
+        // in New Game, not the first level's skill.
+        {
+            m_settings_t stored;
+            const bool fromStore = doomc::loadSettings(gSettingsStore, &stored);
+            m_menu_init(&menu_, &stored);
+            settingsDirty_ = false;
+            menuScriptFrame_ = 0;
+            gammaApplied_ = menu_.settings.gamma;
+            palette::applyGamma(sceneRenderer_.playpal(), gammaApplied_);
+            sceneRenderer_.setMenu(&menu_);
+            char line[96];
+            std::snprintf(line, sizeof line,
+                          "SHOW,menu,settings=%s,skill=%d,volume=%d,gamma=%d,volume_drives=nothing\n",
+                          fromStore ? "nvs" : "default", static_cast<int>(menu_.settings.skill),
+                          static_cast<int>(menu_.settings.volume),
+                          static_cast<int>(menu_.settings.gamma));
+            writeConsoleLine(line);
+        }
+#endif
         engine.getRenderer().getDrawSurface().setPalette8(palette::playpal565Table());
 
         // D4.2f's byte-identity proof: render the host harness's frame 00 through
@@ -973,7 +1108,13 @@ void DoomScene::update(unsigned long deltaTime) {
     // D4.2f: the world ticks on every frame, before the early return below. That
     // return exists for the shell's repaint and the INPUT line; it must not stop
     // the simulation, or a held button would freeze the game.
+#if defined(DOOM_MENU)
+    // D5.2: the menu sees the raw buttons and answers with what the world may
+    // see. Open or latched, that is nothing, and runWorldTics() does not tick.
+    runWorldTics(runMenu(buttons));
+#else
     runWorldTics(buttons);
+#endif
 #endif
 
     if (buttons == buttons_) {
@@ -1019,6 +1160,15 @@ void DoomScene::runWorldTics(std::uint8_t buttons) {
     }
     const std::uint32_t owed = tic - worldTic_;
     worldTic_ = tic;
+#if defined(DOOM_MENU)
+    // The menu pauses the world: the tic clock keeps running and `worldTic_`
+    // follows it, so no backlog is replayed when the menu closes. The skull still
+    // animates, in tics.
+    if (m_menu_active(&menu_)) {
+        m_menu_tick(&menu_, owed);
+        return;
+    }
+#endif
 
     // Every owed tic runs, in order. A long stall (a serial write, a debugger
     // pause) replays its backlog instead of dropping it: DOOM's own loop runs
@@ -1029,6 +1179,73 @@ void DoomScene::runWorldTics(std::uint8_t buttons) {
 }
 
 #endif  // PIXELROOT32_DOOM_SHOW_E1M1
+
+#if defined(DOOM_MENU)
+
+void DoomScene::applyMenuGamma() {
+    gammaApplied_ = menu_.settings.gamma;
+    palette::applyGamma(sceneRenderer_.playpal(), gammaApplied_);
+    engine.getRenderer().getDrawSurface().setPalette8(palette::playpal565Table());
+}
+
+std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
+#if defined(DOOM_MENU_SCRIPT)
+    buttons = static_cast<std::uint8_t>(buttons | menuScriptButtons(menuScriptFrame_++));
+#endif
+    const bool wasActive = m_menu_active(&menu_) != 0;
+    const std::uint8_t worldButtons = m_menu_buttons(&menu_, buttons);
+    const bool active = m_menu_active(&menu_) != 0;
+    char line[160];
+
+    if (active != wasActive) {
+        // One short line per open/close, never per frame. It carries the world's
+        // arena so a New Game that overflowed it (a refused allocation) is visible.
+        std::uint32_t inUse = 0u, spare = 0u, refusedAllocs = 0u, mobjs = 0u;
+        (void)doomc::frameLevelArenaStats(&inUse, &spare, &refusedAllocs, &mobjs);
+        std::snprintf(line, sizeof line,
+                      "SHOW,menu,state=%s,frame=%u,arena_used=%u,arena_free=%u,arena_refused=%u,"
+                      "mobjs=%u,refused=%u,missing=%s\n",
+                      active ? "open" : "closed", static_cast<unsigned>(showFrame_),
+                      static_cast<unsigned>(inUse), static_cast<unsigned>(spare),
+                      static_cast<unsigned>(refusedAllocs), static_cast<unsigned>(mobjs),
+                      static_cast<unsigned>(showRefused_), doomc::frameLevelLastMissing());
+        writeConsoleLine(line);
+    }
+
+    int skill = 0;
+    if (m_menu_take_new_game(&menu_, &skill)) {
+        const bool started = sceneRenderer_.newGame(skill);
+        // The reload is a stall, not a tic: do not replay the tics that elapsed.
+        worldTic_ = ticClock_.tic();
+        std::snprintf(line, sizeof line, "SHOW,newgame,skill=%d,status=%s,frame=%u\n", skill,
+                      started ? "ok" : "fail", static_cast<unsigned>(showFrame_));
+        writeConsoleLine(line);
+    }
+
+    if (m_menu_take_settings_changed(&menu_)) {
+        settingsDirty_ = true;
+    }
+    if (menu_.settings.gamma != gammaApplied_) {
+        // Live: the palette follows the thermometer, so the player sees the gamma
+        // while choosing it.
+        applyMenuGamma();
+    }
+
+    // Written once the player leaves the options screen (or the menu), not on every
+    // step of a slider: NVS commits are slow and the flash wears.
+    if (settingsDirty_ && (!active || menu_.screen != M_SCREEN_OPTIONS)) {
+        const bool saved = doomc::saveSettings(gSettingsStore, menu_.settings);
+        settingsDirty_ = false;
+        std::snprintf(line, sizeof line, "SHOW,menu,saved=%s,skill=%d,volume=%d,gamma=%d\n",
+                      saved ? "ok" : "fail", static_cast<int>(menu_.settings.skill),
+                      static_cast<int>(menu_.settings.volume),
+                      static_cast<int>(menu_.settings.gamma));
+        writeConsoleLine(line);
+    }
+    return worldButtons;
+}
+
+#endif  // DOOM_MENU
 
 void DoomScene::draw(Renderer& renderer) {
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
