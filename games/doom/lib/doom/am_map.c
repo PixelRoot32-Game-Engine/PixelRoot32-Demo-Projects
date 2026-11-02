@@ -21,8 +21,6 @@
  *   AM_restoreScaleAndLoc  '0' key that calls it is not on the board
  *   AM_updateLightLev      the strobe table (see below: not called by the tick)
  *   AM_clipMline           the Cohen-Sutherland outcode clipper, verbatim
- *   AM_getIslope           upstream's slope helper, unused by the drawing code
- *                          it was written for and kept for the same reason
  *   AM_drawFline           the Bresenham rasteriser
  *   AM_drawMline           clip, then draw
  *   AM_clearFB,            the frame: background, grid, walls, players,
@@ -66,6 +64,9 @@
  *      in AM_drawWalls is the base colour, and this port reproduces exactly
  *      that. A caller that wants the strobe calls am_update_light_lev() from its
  *      tic loop; nothing else changes.
+ *   7. `AM_getIslope()`. Upstream's slope helper is called by nothing in 1.10 --
+ *      the rasteriser computes its own deltas -- so porting it would be a
+ *      function no path can reach.
  *
  * TWO DIVERGENCES THE BOARD FORCED, BOTH NAMED
  *
