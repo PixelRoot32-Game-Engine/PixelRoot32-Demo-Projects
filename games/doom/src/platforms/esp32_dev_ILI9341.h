@@ -24,6 +24,7 @@
 #include <platforms/EngineConfig.h>
 
 #include "DoomScene.h"
+#include "doomc/DoomAudio.h"
 
 namespace pr32 = pixelroot32;
 
@@ -81,8 +82,26 @@ pr32::core::Engine engine(config, inputConfig, audioConfig);
 
 doom::DoomScene doomScene;
 
+// D6.5 (T48): the two numbers the APU already keeps -- blocks whose DMA ring
+// had drained, and the worst synthesis time of one block. The seam asks for
+// them once a second from the scene's report and never from the frame path, so
+// the cost is one indirect call and two atomic loads a second; `user` is the
+// backend this header owns. A build with no source prints `-`.
+static bool readApuTelemetry(void* user, doom::doomc::DoomAudioTelemetry* out) {
+    if (user == nullptr || out == nullptr) {
+        return false;
+    }
+    const auto* backend = static_cast<pr32::drivers::esp32::ESP32_I2S_AudioBackend*>(user);
+    out->underruns = backend->getUnderrunCount();
+    out->worstUs = backend->getWorstRenderUs();
+    return true;
+}
+
 void setup() {
     engine.init();
+    // After init(), because that is what starts the audio task the counters
+    // belong to: before it, both would read a backend that has rendered nothing.
+    doom::doomc::doomAudioSetTelemetrySource(readApuTelemetry, &audioBackend);
     engine.setScene(&doomScene);
 }
 

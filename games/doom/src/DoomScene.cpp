@@ -2,6 +2,7 @@
 
 #include "doom_link_probe.h"
 #include "doomc/DoomConsole.h"
+#include "doomc/AudioTelemetry.h"
 
 #if defined(PIXELROOT32_DOOM_WAD_PROBE)
 #include "doomc/WhdSource.h"
@@ -1274,6 +1275,12 @@ void DoomScene::update(unsigned long deltaTime) {
     runAudioScript();
 #endif
 
+#if defined(DOOM_AUDIO_SOAK)
+    // D6.5's soak (T48): the gate that paces the four-cue load is the tic, not
+    // the frame, so a slow frame can skip a round but never add one.
+    runAudioSoak();
+#endif
+
     if (buttons == buttons_) {
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
         showUpdateEntry_ = updateEntry;
@@ -1351,31 +1358,13 @@ void DoomScene::reportAudio() {
     const doomc::DoomAudioStats& stats = doomc::doomAudioStats();
     doomc::DoomAudioTelemetry telemetry = {0u, 0u};
     const bool haveTelemetry = doomc::doomAudioReadTelemetry(&telemetry);
-    char line[192];
 
-    if (haveTelemetry) {
-        std::snprintf(line, sizeof line,
-                      "SHOW,audio,plays=%u,steals=%u,refused=%u,unknown=%u,"
-                      "voices=%d,active=%d,underruns=%u,worst_us=%u\n",
-                      static_cast<unsigned>(stats.plays),
-                      static_cast<unsigned>(stats.steals),
-                      static_cast<unsigned>(stats.refused),
-                      static_cast<unsigned>(stats.unknown), doomc::doomAudioVoiceCount(),
-                      doomc::doomAudioActiveVoices(),
-                      static_cast<unsigned>(telemetry.underruns),
-                      static_cast<unsigned>(telemetry.worstUs));
-    } else {
-        // No telemetry source yet (T48): `-` is this build's state, not a zero
-        // it cannot prove.
-        std::snprintf(line, sizeof line,
-                      "SHOW,audio,plays=%u,steals=%u,refused=%u,unknown=%u,"
-                      "voices=%d,active=%d,underruns=-,worst_us=-\n",
-                      static_cast<unsigned>(stats.plays),
-                      static_cast<unsigned>(stats.steals),
-                      static_cast<unsigned>(stats.refused),
-                      static_cast<unsigned>(stats.unknown), doomc::doomAudioVoiceCount(),
-                      doomc::doomAudioActiveVoices());
-    }
+    // The line is built by the seam (src/doomc/AudioTelemetry.cpp), outside the
+    // engine gate, so env:sound_test can prove the `-` case and the real
+    // numbers without an engine, an APU or a board.
+    char line[doomc::kAudioReportLineBytes];
+    doomc::formatAudioReportLine(line, sizeof line, stats, doomc::doomAudioVoiceCount(),
+                                 doomc::doomAudioActiveVoices(), haveTelemetry, telemetry);
     writeConsoleLine(line);
 
     // The transport beside the counters: S_Start asks for E1M1 at level load,
@@ -1420,6 +1409,159 @@ void DoomScene::runAudioScript() {
 }
 
 #endif  // DOOM_AUDIO_SCRIPT
+
+#if defined(DOOM_AUDIO_SOAK)
+
+namespace {
+
+/// The four one-shots the soak holds: the longest cues the bank has (1.69 s
+/// barexp, 1.40 s telept, 1.40 s rlaunc, 1.00 s pldeth), one per voice. Two are
+/// `Reserved`, so a monster's cue cannot steal them and shrink the test.
+constexpr int kSoakCues[] = {sfx_barexp, sfx_telept, sfx_rlaunc, sfx_pldeth};
+constexpr int kSoakVoices = static_cast<int>(sizeof kSoakCues / sizeof kSoakCues[0]);
+
+/// Four tics at 35 Hz: each voice restarts every 114 ms while its cue lasts
+/// 1.0-1.7 s, so all four keep synthesising all the time. The gate, not the
+/// frame rate, is what paces it -- but a round runs at most once per frame, so
+/// at the shipped ~15 fps the gate lands on 4-5 tics and the measured cadence is
+/// ~30 submits/s rather than the 35 a 35 Hz caller would ask for. The voices are
+/// re-armed every ~130 ms either way, so the render cost is the same number.
+constexpr std::uint32_t kSoakTicInterval = 4u;
+
+/// One line a minute, for ten minutes.
+constexpr std::uint32_t kSoakReportSeconds = 60u;
+constexpr std::uint32_t kSoakMinutes = 10u;
+constexpr std::uint32_t kSoakReportMicros = kSoakReportSeconds * 1000000u;
+
+/// The brief's reference block: 128 samples at 22050 Hz (5.80 ms), the DMA
+/// granularity the APU's own measurements use. The engine's render block here
+/// is 512 samples (23.22 ms); the README states both, so the percentage cannot
+/// be read as a quarter of the wrong budget without the sentence beside it.
+constexpr std::uint32_t kSoakBlockUs = 128u * 1000000u / 22050u;
+
+}  // namespace
+
+void DoomScene::runAudioSoak() {
+    const std::uint32_t now = sampleMicros();
+    if (!soakStarted_) {
+        soakStarted_ = true;
+        soakStartUs_ = now;
+        soakWindowStartUs_ = now;
+        soakLastTic_ = ticClock_.tic();
+    }
+    ++soakWindowFrames_;
+
+    // The SFX load. Four distinct sector tokens, because `one sound per origin`
+    // means one token per voice: the same token re-fired would stop its own cue
+    // first and the four voices would not stay busy. A sector token is also
+    // never distance-culled (s_sound.c's documented cost), so the cues play at
+    // full volume wherever the player stands. A round never fires more often
+    // than every four tics; a slow frame can only skip one.
+    const std::uint32_t tic = ticClock_.tic();
+    if (tic - soakLastTic_ >= kSoakTicInterval) {
+        soakLastTic_ = tic;
+        for (int index = 0; index < kSoakVoices; ++index) {
+            S_StartSoundAtVolume(S_SectorOrigin(static_cast<uint16_t>(index)),
+                                 kSoakCues[index], S_MAX_VOLUME);
+        }
+    }
+
+    // One line per whole minute reached. A stalled frame can reach two minutes
+    // at once and print two lines back to back; `t=` is the truth, and the run
+    // is not re-timed by it.
+    const std::uint32_t elapsed = now - soakStartUs_;
+    const std::uint32_t dueMinutes = elapsed / kSoakReportMicros;
+    while (soakMinutes_ < kSoakMinutes && soakMinutes_ < dueMinutes) {
+        ++soakMinutes_;
+
+        // The window's own frame rate: frames over the minute it took, in
+        // tenths, the same unit `SHOW,frame` reports.
+        const std::uint32_t windowUs = now - soakWindowStartUs_;
+        const std::uint32_t fpsX10 =
+            windowUs != 0u
+                ? static_cast<std::uint32_t>(
+                      static_cast<std::uint64_t>(soakWindowFrames_) * 10000000ull / windowUs)
+                : 0u;
+        soakWindowFrames_ = 0u;
+        soakWindowStartUs_ = now;
+
+        const doomc::DoomAudioStats& stats = doomc::doomAudioStats();
+        doomc::DoomAudioTelemetry telemetry = {0u, 0u};
+        const bool haveTelemetry = doomc::doomAudioReadTelemetry(&telemetry);
+        char line[224];
+
+        if (haveTelemetry) {
+            std::snprintf(line, sizeof line,
+                          "SHOW,audio,soak,t=%u,plays=%u,steals=%u,refused=%u,"
+                          "active=%d,underruns=%u,worst_us=%u,fps_x10=%u\n",
+                          static_cast<unsigned>(soakMinutes_ * kSoakReportSeconds),
+                          static_cast<unsigned>(stats.plays),
+                          static_cast<unsigned>(stats.steals),
+                          static_cast<unsigned>(stats.refused),
+                          doomc::doomAudioActiveVoices(),
+                          static_cast<unsigned>(telemetry.underruns),
+                          static_cast<unsigned>(telemetry.worstUs),
+                          static_cast<unsigned>(fpsX10));
+        } else {
+            // No source is a state, not a zero: the soak environment installs
+            // one, so this arm exists for a copy of the build that does not.
+            std::snprintf(line, sizeof line,
+                          "SHOW,audio,soak,t=%u,plays=%u,steals=%u,refused=%u,"
+                          "active=%d,underruns=-,worst_us=-,fps_x10=%u\n",
+                          static_cast<unsigned>(soakMinutes_ * kSoakReportSeconds),
+                          static_cast<unsigned>(stats.plays),
+                          static_cast<unsigned>(stats.steals),
+                          static_cast<unsigned>(stats.refused),
+                          doomc::doomAudioActiveVoices(),
+                          static_cast<unsigned>(fpsX10));
+        }
+        writeConsoleLine(line);
+
+        if (soakMinutes_ < kSoakMinutes) {
+            continue;
+        }
+
+        // The closing record. `resets=0` is the soak's own restart count: the
+        // window runs once and nothing restarts it, while a board reset ends
+        // the capture at a boot line instead of incrementing a field here.
+        if (haveTelemetry) {
+            std::snprintf(
+                line, sizeof line,
+                "SHOW,audio,soak,end,minutes=%u,underruns=%u,worst_us=%u,plays=%u,"
+                "steals=%u,refused=%u,resets=0\n",
+                static_cast<unsigned>(kSoakMinutes),
+                static_cast<unsigned>(telemetry.underruns),
+                static_cast<unsigned>(telemetry.worstUs),
+                static_cast<unsigned>(stats.plays),
+                static_cast<unsigned>(stats.steals),
+                static_cast<unsigned>(stats.refused));
+        } else {
+            std::snprintf(
+                line, sizeof line,
+                "SHOW,audio,soak,end,minutes=%u,underruns=-,worst_us=-,plays=%u,"
+                "steals=%u,refused=%u,resets=0\n",
+                static_cast<unsigned>(kSoakMinutes),
+                static_cast<unsigned>(stats.plays),
+                static_cast<unsigned>(stats.steals),
+                static_cast<unsigned>(stats.refused));
+        }
+        writeConsoleLine(line);
+
+        // The block's share, as a tenth of a percent: `getWorstRenderUs()` says
+        // nothing on its own, and the deadline is what it is measured against.
+        if (haveTelemetry) {
+            const std::uint32_t percentX10 = telemetry.worstUs * 1000u / kSoakBlockUs;
+            std::snprintf(line, sizeof line,
+                          "SHOW,audio,soak,budget,block_us=%u,worst_us=%u,pct_x10=%u\n",
+                          static_cast<unsigned>(kSoakBlockUs),
+                          static_cast<unsigned>(telemetry.worstUs),
+                          static_cast<unsigned>(percentX10));
+            writeConsoleLine(line);
+        }
+    }
+}
+
+#endif  // DOOM_AUDIO_SOAK
 
 #endif  // DOOM_AUDIO
 

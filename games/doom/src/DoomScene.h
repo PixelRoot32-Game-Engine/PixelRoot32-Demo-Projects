@@ -191,10 +191,10 @@ private:
      * `SHOW,audio,plays=..,steals=..,refused=..,unknown=..,voices=..,active=..,
      * underruns=..,worst_us=..`, followed by the transport's
      * `SHOW,music,event=periodic,track=..,notes=../../../..,beats=..,playing=..,
-     * paused=..,underruns=..,worst_us=..`. The telemetry fields come from the
-     * source T48 installs; until then they print `-`, which is the honest
-     * state: this port's pinned APU branch does not expose
-     * getUnderrunCount() yet.
+     * paused=..,underruns=..,worst_us=..`. The two telemetry fields come from the
+     * source the platform header installs (T48); a build with no source prints
+     * `-`, which is that build's honest state (the native simulator compiles the
+     * sound layer out entirely, and its SDL2 backend has no counters).
      */
     void reportAudio();
 
@@ -214,6 +214,42 @@ private:
 
     std::uint32_t audioScriptStep_ = 0;
     std::uint32_t audioScriptLastUs_ = 0;
+#endif
+
+#if defined(DOOM_AUDIO_SOAK)
+    /**
+     * @brief D6.5's soak (T48): four music voices plus four SFX voices for ten
+     *        minutes, with one line a minute.
+     *
+     * A diagnostic, never the shipped image: it exists to prove 0 underruns and
+     * to record `getWorstRenderUs()` with the APU's whole load on, which no host
+     * gate can measure. E1M1 already plays from level load (T47); this adds the
+     * four SFX voices with `S_StartSoundAtVolume` every four tics from four
+     * distinct `S_SectorOrigin()` tokens.
+     *
+     * One line a minute, then the closing pair:
+     * `SHOW,audio,soak,t=60,plays=..,steals=..,refused=..,active=..,
+     * underruns=..,worst_us=..,fps_x10=..`, then
+     * `SHOW,audio,soak,end,minutes=10,underruns=..,worst_us=..,plays=..,
+     * steals=..,refused=..,resets=0` and
+     * `SHOW,audio,soak,budget,block_us=5804,worst_us=..,pct_x10=..`.
+     */
+    void runAudioSoak();
+
+    /// Whether the window started, and the micros both windows are measured from.
+    bool soakStarted_ = false;
+    std::uint32_t soakStartUs_ = 0;
+    std::uint32_t soakWindowStartUs_ = 0;
+
+    /// Whole minutes already reported, never past the run's length.
+    std::uint32_t soakMinutes_ = 0;
+
+    /// Frames drawn in the open minute: the `fps_x10` of the next line.
+    std::uint32_t soakWindowFrames_ = 0;
+
+    /// The tic the four cues were last fired at, so the load is tic-paced and
+    /// not frame-paced.
+    std::uint32_t soakLastTic_ = 0;
 #endif
 #endif
 

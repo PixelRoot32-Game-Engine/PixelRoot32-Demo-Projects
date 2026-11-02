@@ -124,8 +124,6 @@ bool gMusicTempoSet = false;
 Voice gVoices[kLogicalSlots] = {};
 std::int32_t gNextHandle = 1;
 DoomAudioStats gStats = {0u, 0u, 0u, 0u, -1};
-DoomAudioTelemetrySource gTelemetrySource = nullptr;
-void* gTelemetryUser = nullptr;
 std::uint32_t gPlayLogCount = 0u;
 
 Voice* voiceForHandle(std::int32_t handle) {
@@ -442,18 +440,6 @@ int doomAudioActiveVoices() {
     return active;
 }
 
-void doomAudioSetTelemetrySource(DoomAudioTelemetrySource source, void* user) {
-    gTelemetrySource = source;
-    gTelemetryUser = user;
-}
-
-bool doomAudioReadTelemetry(DoomAudioTelemetry* out) {
-    if (gTelemetrySource == nullptr || out == nullptr) {
-        return false;
-    }
-    return gTelemetrySource(gTelemetryUser, out);
-}
-
 void doomMusicReport(const char* event) {
     const MusicTrack* tracks[4] = {gMusicTrack, nullptr, nullptr, nullptr};
     if (gMusicTrack != nullptr) {
@@ -490,8 +476,9 @@ void doomMusicReport(const char* event) {
             static_cast<unsigned>(telemetry.underruns),
             static_cast<unsigned>(telemetry.worstUs));
     } else {
-        // No telemetry source until T48: `-` is the state this branch can
-        // prove, and it matches the SHOW,audio line.
+        // No telemetry source is a state of its own: `-` is what this build
+        // can prove, and it matches the SHOW,audio line. The SDL2 backend has
+        // no counters, so the simulator takes this arm.
         std::snprintf(
             line, sizeof line,
             "SHOW,music,event=%s,track=%s,notes=%u/%u/%u/%u,"
@@ -567,16 +554,6 @@ const DoomAudioStats& doomAudioStats() {
 int doomAudioVoiceCount() { return kSfxVoices; }
 
 int doomAudioActiveVoices() { return 0; }
-
-void doomAudioSetTelemetrySource(DoomAudioTelemetrySource source, void* user) {
-    (void)source;
-    (void)user;
-}
-
-bool doomAudioReadTelemetry(DoomAudioTelemetry* out) {
-    (void)out;
-    return false;
-}
 
 void doomMusicReport(const char* event) { (void)event; }
 

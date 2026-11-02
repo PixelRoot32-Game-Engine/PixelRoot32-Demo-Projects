@@ -81,12 +81,17 @@ int doomAudioVoiceCount();
 int doomAudioActiveVoices();
 
 /**
- * @brief Installs the APU telemetry source (T48), or clears it with NULL.
+ * @brief Installs the APU telemetry source, or clears it with NULL.
  *
- * Until one is installed `doomAudioReadTelemetry()` answers false and the
- * `SHOW,audio` line prints `-` for `underruns`/`worst_us`, which is this
- * task's honest state: the branch this port pins does not expose
- * `getUnderrunCount()` yet.
+ * The board installs one in `src/platforms/esp32_dev_ILI9341.h` after
+ * `engine.init()`, reading `getUnderrunCount()`/`getWorstRenderUs()` from the
+ * I2S backend. Until a source is installed (or when it answers false)
+ * `doomAudioReadTelemetry()` answers false and the `SHOW,audio` line prints `-`
+ * for `underruns`/`worst_us` -- the native SDL2 backend exposes no counters, so
+ * the simulator keeps its dashes honestly.
+ *
+ * The store is defined in `src/doomc/AudioTelemetry.cpp`, outside the
+ * `DOOM_AUDIO` gate: a build with no sound still owns a real (empty) one.
  */
 void doomAudioSetTelemetrySource(DoomAudioTelemetrySource source, void* user);
 

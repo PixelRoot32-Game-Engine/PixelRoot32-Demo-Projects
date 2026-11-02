@@ -40,6 +40,7 @@
 #include "sounds.h"
 #pragma GCC diagnostic pop
 
+#include "doomc/AudioTelemetry.h"
 #include "doomc/SfxBank.h"
 #include "doomc/SfxCueEvent.h"
 #include "doomc/MusicBank.h"
@@ -58,6 +59,10 @@ using doom::doomc::sfxBankPreset;
 using doom::doomc::SfxVoiceScratch;
 using doom::doomc::sfxCueEvent;
 using doom::doomc::musicBankTrack;
+using doom::doomc::DoomAudioStats;
+using doom::doomc::DoomAudioTelemetry;
+using doom::doomc::kAudioReportLineBytes;
+using doom::doomc::formatAudioReportLine;
 using pixelroot32::audio::AudioEvent;
 using pixelroot32::audio::InstrumentPreset;
 using pixelroot32::audio::MusicTrack;
@@ -732,6 +737,108 @@ void test_the_music_bank_ships_only_e1m1(void) {
     TEST_ASSERT_GREATER_THAN(0, drums);
 }
 
+// --- The APU telemetry seam (T48, D6.5) ------------------------------------
+//
+// The two numbers the soak exists to prove are read through a source the
+// platform installs. The seam is engine-free, so all of its behaviour is
+// observable here: no source answers false and the line keeps its dashes, and
+// an installed one puts its numbers on the line and is called once per read.
+
+namespace {
+
+struct TelemetrySource {
+    std::uint32_t underruns;
+    std::uint32_t worstUs;
+    bool answer;
+    int calls;
+};
+
+bool readTelemetry(void* user, DoomAudioTelemetry* out) {
+    TelemetrySource* source = static_cast<TelemetrySource*>(user);
+    ++source->calls;
+    if (!source->answer) {
+        return false;
+    }
+    out->underruns = source->underruns;
+    out->worstUs = source->worstUs;
+    return true;
+}
+
+/// The counters the line is formatted from; the values are distinct so a
+/// swapped field shows up in the expected string.
+DoomAudioStats sampleStats() { return DoomAudioStats{12u, 3u, 4u, 5u, 7}; }
+
+}  // namespace
+
+void test_no_telemetry_source_prints_dashes(void) {
+    doom::doomc::doomAudioSetTelemetrySource(nullptr, nullptr);
+    DoomAudioTelemetry telemetry = {0u, 0u};
+    TEST_ASSERT_FALSE(doom::doomc::doomAudioReadTelemetry(&telemetry));
+
+    char line[kAudioReportLineBytes];
+    const std::size_t length =
+        formatAudioReportLine(line, sizeof line, sampleStats(), 4, 2, false, telemetry);
+    TEST_ASSERT_GREATER_THAN(0, (int)length);
+    TEST_ASSERT_EQUAL_STRING(
+        "SHOW,audio,plays=12,steals=3,refused=4,unknown=5,voices=4,active=2,"
+        "underruns=-,worst_us=-\n",
+        line);
+}
+
+void test_an_installed_source_reaches_the_line(void) {
+    TelemetrySource source = {7u, 1234u, true, 0};
+    doom::doomc::doomAudioSetTelemetrySource(readTelemetry, &source);
+
+    DoomAudioTelemetry telemetry = {0u, 0u};
+    TEST_ASSERT_TRUE(doom::doomc::doomAudioReadTelemetry(&telemetry));
+    TEST_ASSERT_EQUAL_UINT32(7u, telemetry.underruns);
+    TEST_ASSERT_EQUAL_UINT32(1234u, telemetry.worstUs);
+    // Read on request, never polled: one read is one call, so nothing in the
+    // seam can spin on the counters.
+    TEST_ASSERT_EQUAL_INT(1, source.calls);
+
+    char line[kAudioReportLineBytes];
+    TEST_ASSERT_GREATER_THAN(
+        0, (int)formatAudioReportLine(line, sizeof line, sampleStats(), 4, 2, true, telemetry));
+    TEST_ASSERT_EQUAL_STRING(
+        "SHOW,audio,plays=12,steals=3,refused=4,unknown=5,voices=4,active=2,"
+        "underruns=7,worst_us=1234\n",
+        line);
+}
+
+void test_a_source_that_answers_false_keeps_the_dashes(void) {
+    TelemetrySource source = {9u, 99u, false, 0};
+    doom::doomc::doomAudioSetTelemetrySource(readTelemetry, &source);
+
+    DoomAudioTelemetry telemetry = {0u, 0u};
+    TEST_ASSERT_FALSE(doom::doomc::doomAudioReadTelemetry(&telemetry));
+    TEST_ASSERT_EQUAL_INT(1, source.calls);
+
+    // A source may answer "not available" -- a backend that lost its counters,
+    // say. The line must then keep `-` rather than print the untouched zeros.
+    char line[kAudioReportLineBytes];
+    TEST_ASSERT_GREATER_THAN(
+        0, (int)formatAudioReportLine(line, sizeof line, sampleStats(), 4, 2, false, telemetry));
+    TEST_ASSERT_EQUAL_STRING(
+        "SHOW,audio,plays=12,steals=3,refused=4,unknown=5,voices=4,active=2,"
+        "underruns=-,worst_us=-\n",
+        line);
+
+    // Clearing the source unmounts it: the same values are no longer asked for.
+    doom::doomc::doomAudioSetTelemetrySource(nullptr, nullptr);
+    TEST_ASSERT_FALSE(doom::doomc::doomAudioReadTelemetry(&telemetry));
+    TEST_ASSERT_EQUAL_INT(1, source.calls);
+}
+
+void test_a_line_that_does_not_fit_is_not_half_written(void) {
+    DoomAudioTelemetry telemetry = {1u, 2u};
+    char line[8];
+    std::memset(line, 'x', sizeof line);
+    TEST_ASSERT_EQUAL_UINT32(
+        0u, (unsigned)formatAudioReportLine(line, sizeof line, sampleStats(), 4, 2, true, telemetry));
+    TEST_ASSERT_EQUAL_CHAR('\0', line[0]);
+}
+
 // --- The runner ------------------------------------------------------------
 //
 // Unity's runner is explicit here, as in the other suites in this project: a
@@ -764,6 +871,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_no_class_combination_steals_a_reserved_voice);
     RUN_TEST(test_update_sounds_ticks_and_frees_a_finished_channel);
     RUN_TEST(test_the_music_bank_ships_only_e1m1);
+    RUN_TEST(test_no_telemetry_source_prints_dashes);
+    RUN_TEST(test_an_installed_source_reaches_the_line);
+    RUN_TEST(test_a_source_that_answers_false_keeps_the_dashes);
+    RUN_TEST(test_a_line_that_does_not_fit_is_not_half_written);
 
     return UNITY_END();
 }
