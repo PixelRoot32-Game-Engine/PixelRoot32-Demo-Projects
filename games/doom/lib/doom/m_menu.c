@@ -16,9 +16,12 @@
  *     files, no help screens and nothing to quit to. No episode screen:
  *     shareware has one episode. No "are you sure?" for nightmare: the board
  *     has no Y/N keys, so ENTER on the nightmare row starts the game.
- *   - The options screen is the port's "setup-lite": skill, sound volume and
- *     gamma, drawn with the HU font (M_WriteText) and the thermometer patches.
- *     Upstream has no gamma row (F11 cycled it); the table is v_video.c's.
+ *   - The options screen is the port's "setup-lite": skill, sound volume,
+ *     gamma and mute, drawn with the HU font (M_WriteText) and the thermometer
+ *     patches. Upstream has no gamma row (F11 cycled it); the table is
+ *     v_video.c's. The mute row is a slider with two positions (OFF/ON) rather
+ *     than a new row type: the state machine already has "a value with a low
+ *     and a high", and a second kind of row would be a second code path to gate.
  *   - Settings are plain bytes with a checksummed stored form (m_settings_*),
  *     because the menu's owner persists them and this file must stay free of any
  *     storage API.
@@ -75,6 +78,7 @@ static const m_row_t kOptionsRows[] = {
     {ROW_SLIDER, NULL},  /* skill */
     {ROW_SLIDER, NULL},  /* sound volume */
     {ROW_SLIDER, NULL},  /* gamma */
+    {ROW_SLIDER, NULL},  /* mute, a slider with a range of one (OFF/ON) */
 };
 
 #define OPTIONS_Y0 40
@@ -105,6 +109,7 @@ void m_settings_default(m_settings_t* settings) {
     settings->skill = M_SKILL_DEFAULT;
     settings->volume = M_VOLUME_DEFAULT;
     settings->gamma = M_GAMMA_DEFAULT;
+    settings->muted = 0;
 }
 
 void m_settings_clamp(m_settings_t* settings) {
@@ -119,6 +124,9 @@ void m_settings_clamp(m_settings_t* settings) {
     }
     if (settings->gamma > M_GAMMA_MAX) {
         settings->gamma = M_GAMMA_MAX;
+    }
+    if (settings->muted > M_MUTE_MAX) {
+        settings->muted = M_MUTE_MAX;
     }
 }
 
@@ -149,7 +157,9 @@ void m_settings_encode(const m_settings_t* settings, uint8_t blob[M_SETTINGS_BLO
     blob[3] = clean.skill;
     blob[4] = clean.volume;
     blob[5] = clean.gamma;
-    blob[6] = 0;
+    /* The reserved byte is the mute flag (T49). An older record holds 0 here,
+     * which is "not muted", so nothing a board already stored is invalidated. */
+    blob[6] = clean.muted ? 1u : 0u;
     blob[7] = blobChecksum(blob);
 }
 
@@ -161,7 +171,7 @@ int m_settings_decode(const uint8_t* blob, size_t size, m_settings_t* out) {
     if (blob == NULL || size != M_SETTINGS_BLOB_SIZE) {
         return 0;
     }
-    if (blob[0] != 'D' || blob[1] != 'M' || blob[2] != 1 || blob[6] != 0
+    if (blob[0] != 'D' || blob[1] != 'M' || blob[2] != 1 || blob[6] > M_MUTE_MAX
         || blob[7] != blobChecksum(blob)) {
         return 0;
     }
@@ -171,6 +181,7 @@ int m_settings_decode(const uint8_t* blob, size_t size, m_settings_t* out) {
     out->skill = blob[3];
     out->volume = blob[4];
     out->gamma = blob[5];
+    out->muted = blob[6];
     return 1;
 }
 
@@ -226,9 +237,15 @@ static void slide(m_menu_t* menu, int row, int direction) {
             value = &menu->settings.volume;
             high = M_VOLUME_MAX;
             break;
-        default:
+        case 2:
             value = &menu->settings.gamma;
             high = M_GAMMA_MAX;
+            break;
+        default:
+            /* The mute row: a slider with two positions, so the same clamp and
+             * the same "only a moved value reports a change" rule apply. */
+            value = &menu->settings.muted;
+            high = M_MUTE_MAX;
             break;
     }
     next = (int)*value + direction;
@@ -584,17 +601,24 @@ int m_menu_draw(const m_menu_t* menu, st_lump_fn lump, void* context, uint8_t* s
         const int y0 = OPTIONS_Y0;
         const int y1 = OPTIONS_Y0 + OPTIONS_STEP;
         const int y2 = OPTIONS_Y0 + 2 * OPTIONS_STEP;
+        const int y3 = OPTIONS_Y0 + 3 * OPTIONS_STEP;
 
         missing += writeText(lump, context, def->x, y0, "SKILL LEVEL", surface, stride);
         missing += writeText(lump, context, def->x, y0 + OPTIONS_VALUE_DY,
                              m_skill_name(menu->settings.skill), surface, stride);
-        missing += writeText(lump, context, def->x, y1, "SOUND VOLUME (NO SOUND YET)", surface,
-                             stride);
+        /* No "(NO SOUND YET)" any more: T49 wires this slider to the APU, so the
+         * label is the plain truth (same words as upstream's M_SFXVOL row). */
+        missing += writeText(lump, context, def->x, y1, "SOUND VOLUME", surface, stride);
         missing += drawThermo(lump, context, def->x, y1 + OPTIONS_VALUE_DY, M_VOLUME_MAX + 1,
                               menu->settings.volume, surface, stride);
         missing += writeText(lump, context, def->x, y2, "GAMMA CORRECTION", surface, stride);
         missing += drawThermo(lump, context, def->x, y2 + OPTIONS_VALUE_DY, M_GAMMA_MAX + 1,
                               menu->settings.gamma, surface, stride);
+        /* Two positions, so text rather than a two-dot thermometer: the value is
+         * the word, the same way the skill row draws its own value. */
+        missing += writeText(lump, context, def->x, y3, "SOUND MUTE", surface, stride);
+        missing += writeText(lump, context, def->x, y3 + OPTIONS_VALUE_DY,
+                             menu->settings.muted ? "ON" : "OFF", surface, stride);
         skullX = def->x + SKULLXOFF;
         skullY = OPTIONS_Y0 - 5 + menu->itemOn[M_SCREEN_OPTIONS] * OPTIONS_STEP;
     }

@@ -13,10 +13,15 @@ ways so a wrong C file cannot agree with its own mistake:
   (it shares no code with the C), replaying 3,000 pseudo-random button frames; the
   C and the model must print the same state after every frame.
 
-It also pins the persisted form (golden bytes, and eight kinds of damage that must
+It also pins the persisted form (golden bytes, and twelve kinds of damage that must
 fall back to the DEFAULTS rather than be half-trusted), the clamping, and the gamma
 table (level 0 is the identity, every level is monotonic and brighter than the one
 before, and each equals ``round(255 * (i / 255) ** (1 - g / 8))``).
+
+Since T49 the record's byte 6 is the mute flag rather than a reserved zero, and the
+options screen has a fourth slider row (mute, OFF/ON). Both are stated here from the
+spec, not read out of the C: the flag round-trips, an older record with that byte
+zero decodes as "not muted", and the mute row clamps at both ends.
 
 Run it:
 
@@ -47,11 +52,11 @@ ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / "lib" / "doom"
 
 UP, DOWN, LEFT, RIGHT, A, B, START = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40
-DEFAULTS = (2, 8, 0)
-SKILLS, VOLUME_MAX, GAMMA_MAX = 5, 15, 4
+DEFAULTS = (2, 8, 0, 0)
+SKILLS, VOLUME_MAX, GAMMA_MAX, MUTE_MAX = 5, 15, 4, 1
 
 # screen -> number of rows
-ROWS = {0: 2, 1: 5, 2: 3}
+ROWS = {0: 2, 1: 5, 2: 4}
 
 
 # --- The reference model (no code shared with the C) ------------------------------
@@ -60,7 +65,7 @@ class Model:
     """m_menu.c's menu_t / M_Responder rules, restated from the spec."""
 
     def __init__(self, settings=DEFAULTS, perturb=False):
-        self.skill, self.volume, self.gamma = (self._clamp(settings))
+        self.skill, self.volume, self.gamma, self.muted = (self._clamp(settings))
         self.perturb = perturb
         self.active = 0
         self.screen = 0
@@ -74,12 +79,14 @@ class Model:
 
     @staticmethod
     def _clamp(settings):
-        s, v, g = settings
-        return (min(s, SKILLS - 1), min(v, VOLUME_MAX), min(g, GAMMA_MAX))
+        s, v, g, m = settings
+        return (min(s, SKILLS - 1), min(v, VOLUME_MAX), min(g, GAMMA_MAX),
+                min(m, MUTE_MAX))
 
     def line(self, world=None):
         text = (f"STATE active={self.active} screen={self.screen} item={self.item[self.screen]}"
-                f" skull={self.skull} skill={self.skill} volume={self.volume} gamma={self.gamma}")
+                f" skull={self.skull} skill={self.skill} volume={self.volume} gamma={self.gamma}"
+                f" mute={self.muted}")
         if world is not None:
             text += f" world=0x{world:02X}"
         return text
@@ -100,21 +107,27 @@ class Model:
         elif row == 1:
             new = self.volume + direction
             low, high = 0, VOLUME_MAX
-        else:
+        elif row == 2:
             new = self.gamma + direction
             low, high = 0, GAMMA_MAX
+        else:
+            # The mute row is the same slider with a range of one (OFF/ON).
+            new = self.muted + direction
+            low, high = 0, MUTE_MAX
         if self.perturb:
             high += 1  # the injected bug: one step past the top
         new = max(low, min(high, new))
-        old = (self.skill, self.volume, self.gamma)[row]
+        old = (self.skill, self.volume, self.gamma, self.muted)[row]
         if new != old:
             self.changed = 1
             if row == 0:
                 self.skill = new
             elif row == 1:
                 self.volume = new
-            else:
+            elif row == 2:
                 self.gamma = new
+            else:
+                self.muted = new
 
     def key(self, key):
         if not self.active:
@@ -204,9 +217,10 @@ class Run:
         self.expected.append(expected)
 
 
-def state(active=0, screen=0, item=0, skull=0, skill=2, volume=8, gamma=0, world=None):
+def state(active=0, screen=0, item=0, skull=0, skill=2, volume=8, gamma=0, mute=0,
+          world=None):
     text = (f"STATE active={active} screen={screen} item={item} skull={skull}"
-            f" skill={skill} volume={volume} gamma={gamma}")
+            f" skill={skill} volume={volume} gamma={gamma} mute={mute}")
     if world is not None:
         text += f" world=0x{world:02X}"
     return text
@@ -235,7 +249,7 @@ def anchors() -> Run:
     add("buttons 0x00", state(active=1, item=0, world=0))
     add("buttons 0x01", state(active=1, item=1, world=0))
     add("buttons 0x00", state(active=1, item=1, world=0))
-    # OPTIONS, then the three rows in order, each reachable.
+    # OPTIONS, then the four rows in order, each reachable.
     add("buttons 0x10", state(active=1, screen=2, item=0, world=0))
     add("buttons 0x00", state(active=1, screen=2, item=0, world=0))
     add("buttons 0x02", state(active=1, screen=2, item=1, world=0))
@@ -251,6 +265,18 @@ def anchors() -> Run:
     add("buttons 0x08", state(active=1, screen=2, item=2, gamma=4, world=0))
     add("buttons 0x00", state(active=1, screen=2, item=2, gamma=4, world=0))
     add("take", "TAKE newgame=0 skill=-1 changed=0")
+    # MUTE is the fourth row: DOWN reaches it, RIGHT turns it on, one more clamps
+    # (the slider's range is one), and LEFT turns it off again.
+    add("buttons 0x02", state(active=1, screen=2, item=3, gamma=4, world=0))
+    add("buttons 0x00", state(active=1, screen=2, item=3, gamma=4, world=0))
+    add("buttons 0x08", state(active=1, screen=2, item=3, gamma=4, mute=1, world=0))
+    add("buttons 0x00", state(active=1, screen=2, item=3, gamma=4, mute=1, world=0))
+    add("take", "TAKE newgame=0 skill=-1 changed=1")
+    add("buttons 0x08", state(active=1, screen=2, item=3, gamma=4, mute=1, world=0))
+    add("buttons 0x00", state(active=1, screen=2, item=3, gamma=4, mute=1, world=0))
+    add("take", "TAKE newgame=0 skill=-1 changed=0")
+    add("buttons 0x04", state(active=1, screen=2, item=3, gamma=4, mute=0, world=0))
+    add("buttons 0x00", state(active=1, screen=2, item=3, gamma=4, mute=0, world=0))
     # BACK returns to MAIN with the cursor where it was (OPTIONS), BACK closes.
     add("buttons 0x20", state(active=1, screen=0, item=1, gamma=4, world=0))
     add("buttons 0x00", state(active=1, screen=0, item=1, gamma=4, world=0))
@@ -330,6 +356,8 @@ def sliders(perturb: bool) -> Run:
     plan += ["down"] + ["right"] * 9 + ["enter"]   # volume: 8 -> 15 (clamp), enter at the top
     plan += ["left"] * 17 + ["enter", "enter"]     # volume: down to 0 (clamp), enter steps up
     plan += ["down"] + ["left"] * 2 + ["enter"] * 6  # gamma: 0 (clamp), then up to 4 (clamp)
+    plan += ["down"] + ["right"] * 2 + ["enter"]   # mute: 0 -> 1 (clamp), enter at the top
+    plan += ["left"] * 2 + ["enter"]               # mute: back to 0, enter steps up
     plan += ["down", "up", "up", "back", "back"]
     for key in plan:
         model.key(key)
@@ -360,22 +388,33 @@ def checksum(body: bytes) -> int:
     return (0xA5 + sum(body)) & 0xFF
 
 
-def blob(skill, volume, gamma) -> bytes:
-    body = bytes([0x44, 0x4D, 1, skill, volume, gamma, 0])
+def blob(skill, volume, gamma, muted=0) -> bytes:
+    """The 8-byte record. Byte 6 is the mute flag since T49; before it the byte was
+    reserved-and-zero, which is why an older record reads as "not muted"."""
+    body = bytes([0x44, 0x4D, 1, skill, volume, gamma, muted])
     return body + bytes([checksum(body)])
 
 
 def codec_run(perturb: bool) -> Run:
     run = Run()
     add = run.add
-    default_line = "DECODE ok=0 skill=2 volume=8 gamma=0"
-    for settings in ((3, 12, 2), (2, 8, 0), (0, 0, 0), (4, 15, 4)):
+    default_line = "DECODE ok=0 skill=2 volume=8 gamma=0 mute=0"
+    for settings in ((3, 12, 2, 0), (2, 8, 0, 0), (0, 0, 0, 0), (4, 15, 4, 0),
+                     (3, 5, 2, 1)):
         encoded = blob(*settings).hex().upper()
-        add(f"encode {settings[0]} {settings[1]} {settings[2]}", f"BLOB {encoded}")
-        add(f"decode {encoded}", f"DECODE ok=1 skill={settings[0]} volume={settings[1]} gamma={settings[2]}")
-    # Golden bytes, computed by hand: 'D' 'M' v1 skill vol gamma 0 + (0xA5 + sum).
-    add("encode 3 12 2", "BLOB 444D01030C020048")
-    add("encode 2 8 0", "BLOB 444D010208000041")
+        add("encode " + " ".join(str(value) for value in settings), f"BLOB {encoded}")
+        add(f"decode {encoded}",
+            f"DECODE ok=1 skill={settings[0]} volume={settings[1]}"
+            f" gamma={settings[2]} mute={settings[3]}")
+    # Golden bytes, computed by hand: 'D' 'M' v1 skill vol gamma mute + (0xA5 + sum).
+    add("encode 3 12 2 0", "BLOB 444D01030C020048")
+    add("encode 2 8 0 0", "BLOB 444D010208000041")
+    # The same record with mute on: only byte 6 and the checksum move, so a board
+    # that stored (3, 12, 2) keeps its skill, volume and gamma.
+    add("encode 3 12 2 1", "BLOB 444D01030C020149")
+    # The eight bytes an older board wrote -- reserved byte zero -- decode as "not
+    # muted" without a version bump.
+    add("decode 444D01030C020048", "DECODE ok=1 skill=3 volume=12 gamma=2 mute=0")
     good = blob(3, 12, 2)
     damaged = {
         "empty": "-",
@@ -387,14 +426,17 @@ def codec_run(perturb: bool) -> Run:
         "skill_out_of_range": blob(5, 8, 0).hex(),
         "volume_out_of_range": blob(2, 16, 0).hex(),
         "gamma_out_of_range": blob(2, 8, 5).hex(),
+        # 0 and 1 are the flag's values; 2 carries a valid checksum and must still
+        # be refused, so this is the range test doing the work.
+        "mute_out_of_range": blob(2, 8, 0, 2).hex(),
         "erased_flash": ("FF" * 8),
         "zeros": ("00" * 8),
     }
     for name, hexed in damaged.items():
         add(f"decode {hexed}", default_line if not perturb or name != "checksum"
-            else "DECODE ok=1 skill=3 volume=12 gamma=2")
-    add("clamp 9 99 9", "CLAMP skill=4 volume=15 gamma=4")
-    add("clamp 1 2 3", "CLAMP skill=1 volume=2 gamma=3")
+            else "DECODE ok=1 skill=3 volume=12 gamma=2 mute=0")
+    add("clamp 9 99 9 9", "CLAMP skill=4 volume=15 gamma=4 mute=1")
+    add("clamp 1 2 3 0", "CLAMP skill=1 volume=2 gamma=3 mute=0")
     return run
 
 

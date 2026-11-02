@@ -8,7 +8,7 @@
  *
  * Script lines (blank lines and '#' lines are ignored):
  *
- *   init S V G          m_menu_init with those settings
+ *   init S V G [M]      m_menu_init with those settings (M = mute, default 0)
  *   open                m_menu_open
  *   key NAME            up down left right enter back
  *   tick N              m_menu_tick
@@ -172,11 +172,14 @@ int main(int argc, char** argv) {
             int s;
             int v;
             int g;
-            if (sscanf(line + consumed, "%d %d %d", &s, &v, &g) == 3) {
+            int m = 0;
+            const int values = sscanf(line + consumed, "%d %d %d %d", &s, &v, &g, &m);
+            if (values >= 3) {
                 m_settings_t settings;
                 settings.skill = (uint8_t)s;
                 settings.volume = (uint8_t)v;
                 settings.gamma = (uint8_t)g;
+                settings.muted = values >= 4 ? (uint8_t)m : 0u;
                 m_menu_init(&g_menu, &settings);
             } else {
                 m_menu_init(&g_menu, NULL);

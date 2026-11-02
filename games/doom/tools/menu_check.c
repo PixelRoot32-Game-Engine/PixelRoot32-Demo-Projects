@@ -8,26 +8,26 @@
  *
  * Script lines (blank lines and '#' lines are ignored):
  *
- *   init [SKILL VOLUME GAMMA]   m_menu_init (no arguments = defaults)
+ *   init [SKILL VOLUME GAMMA [MUTE]]   m_menu_init (no arguments = defaults)
  *   open                        m_menu_open
  *   buttons 0xNN                m_menu_buttons: one frame's held bits
  *   key NAME                    up down left right enter back
  *   tick N                      m_menu_tick
  *   take                        both take functions
  *   state                       print the state only
- *   encode S V G                m_settings_encode
+ *   encode S V G [M]            m_settings_encode
  *   decode HEX                  m_settings_decode over the bytes ("-" = none)
- *   clamp S V G                 m_settings_clamp
+ *   clamp S V G [M]             m_settings_clamp
  *   gamma L V                   m_gamma_correct
  *   gammadump L                 the 256 values of level L
  *
  * Output, one line per command:
  *
- *   STATE active=A screen=S item=I skull=K skill=S volume=V gamma=G [world=0xNN]
+ *   STATE active=A screen=S item=I skull=K skill=S volume=V gamma=G mute=M [world=0xNN]
  *   TAKE newgame=N skill=S changed=C
  *   BLOB hex
- *   DECODE ok=N skill=S volume=V gamma=G
- *   CLAMP skill=S volume=V gamma=G
+ *   DECODE ok=N skill=S volume=V gamma=G mute=M
+ *   CLAMP skill=S volume=V gamma=G mute=M
  *   GAMMA level=L value=V out=O
  *   GAMMADUMP level=L v0 v1 ... v255
  *
@@ -68,14 +68,32 @@
 static m_menu_t g_menu;
 
 static void printState(int withWorld, unsigned world) {
-    printf("STATE active=%d screen=%d item=%d skull=%d skill=%d volume=%d gamma=%d",
+    printf("STATE active=%d screen=%d item=%d skull=%d skill=%d volume=%d gamma=%d mute=%d",
            (int)g_menu.active, (int)g_menu.screen, (int)g_menu.itemOn[g_menu.screen],
            (int)g_menu.whichSkull, (int)g_menu.settings.skill, (int)g_menu.settings.volume,
-           (int)g_menu.settings.gamma);
+           (int)g_menu.settings.gamma, (int)g_menu.settings.muted);
     if (withWorld) {
         printf(" world=0x%02X", world);
     }
     printf("\n");
+}
+
+/// Reads "S V G" or "S V G M"; returns the number of values read (0..4).
+static int parseSettings(const char* text, m_settings_t* settings) {
+    int s = 0;
+    int v = 0;
+    int g = 0;
+    int m = 0;
+    const int values = sscanf(text, "%d %d %d %d", &s, &v, &g, &m);
+
+    if (values < 3) {
+        return 0;
+    }
+    settings->skill = (uint8_t)s;
+    settings->volume = (uint8_t)v;
+    settings->gamma = (uint8_t)g;
+    settings->muted = values >= 4 ? (uint8_t)m : 0u;
+    return values;
 }
 
 static int parseKey(const char* name, m_key_t* key) {
@@ -357,14 +375,8 @@ int main(int argc, char** argv) {
         rest = line + consumed;
 
         if (strcmp(command, "init") == 0) {
-            int s;
-            int v;
-            int g;
-            if (sscanf(rest, "%d %d %d", &s, &v, &g) == 3) {
-                m_settings_t settings;
-                settings.skill = (uint8_t)s;
-                settings.volume = (uint8_t)v;
-                settings.gamma = (uint8_t)g;
+            m_settings_t settings;
+            if (parseSettings(rest, &settings) != 0) {
                 m_menu_init(&g_menu, &settings);
             } else {
                 m_menu_init(&g_menu, NULL);
@@ -397,16 +409,10 @@ int main(int argc, char** argv) {
         } else if (strcmp(command, "state") == 0) {
             printState(0, 0);
         } else if (strcmp(command, "encode") == 0) {
-            int s;
-            int v;
-            int g;
-            if (sscanf(rest, "%d %d %d", &s, &v, &g) == 3) {
-                m_settings_t settings;
+            m_settings_t settings;
+            if (parseSettings(rest, &settings) != 0) {
                 uint8_t blob[M_SETTINGS_BLOB_SIZE];
                 size_t index;
-                settings.skill = (uint8_t)s;
-                settings.volume = (uint8_t)v;
-                settings.gamma = (uint8_t)g;
                 m_settings_encode(&settings, blob);
                 printf("BLOB ");
                 for (index = 0; index < M_SETTINGS_BLOB_SIZE; ++index) {
@@ -425,20 +431,14 @@ int main(int argc, char** argv) {
                 size = parseHex(hex, blob, sizeof blob);
             }
             ok = m_settings_decode(size == 0 ? NULL : blob, size, &out);
-            printf("DECODE ok=%d skill=%d volume=%d gamma=%d\n", ok, (int)out.skill,
-                   (int)out.volume, (int)out.gamma);
+            printf("DECODE ok=%d skill=%d volume=%d gamma=%d mute=%d\n", ok, (int)out.skill,
+                   (int)out.volume, (int)out.gamma, (int)out.muted);
         } else if (strcmp(command, "clamp") == 0) {
-            int s;
-            int v;
-            int g;
-            if (sscanf(rest, "%d %d %d", &s, &v, &g) == 3) {
-                m_settings_t settings;
-                settings.skill = (uint8_t)s;
-                settings.volume = (uint8_t)v;
-                settings.gamma = (uint8_t)g;
+            m_settings_t settings;
+            if (parseSettings(rest, &settings) != 0) {
                 m_settings_clamp(&settings);
-                printf("CLAMP skill=%d volume=%d gamma=%d\n", (int)settings.skill,
-                       (int)settings.volume, (int)settings.gamma);
+                printf("CLAMP skill=%d volume=%d gamma=%d mute=%d\n", (int)settings.skill,
+                       (int)settings.volume, (int)settings.gamma, (int)settings.muted);
             }
         } else if (strcmp(command, "gamma") == 0) {
             int l;

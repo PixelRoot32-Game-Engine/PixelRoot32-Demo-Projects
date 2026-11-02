@@ -17,10 +17,11 @@ model in ``menu_check.py``, which shares no code with the C either. It is a seco
 implementation of the same rules, NOT a run of vanilla DOOM (no binary is available),
 so it rules out transcription slips, not a shared misreading of the source.
 
-Ten scripted states cover every screen, the first and last row of each, both skull
-frames and the closed menu (which must paint nothing). The surface starts as the
-sentinel 0xEE so a pixel written outside a patch's footprint shows up. A state that
-paints nothing when it should is itself a failure, so two blank surfaces cannot pass.
+Eleven scripted states cover every screen, the first and last row of each (the mute
+row of the setup-lite screen is the last one), both skull frames and the closed menu
+(which must paint nothing). The surface starts as the sentinel 0xEE so a pixel
+written outside a patch's footprint shows up. A state that paints nothing when it
+should is itself a failure, so two blank surfaces cannot pass.
 
     python tools/menu_draw_check.py --wad tools/DOOM1.WAD
     python tools/menu_draw_check.py --wad tools/DOOM1.WAD --perturb   # must FAIL
@@ -81,22 +82,31 @@ key down
 key enter
 draw options_skill
 # setup-lite, volume row with every slider at its top
-init 4 15 4
+init 4 15 4 0
 open
 key down
 key enter
 key down
 draw options_volume_max
 # setup-lite, gamma row with every slider at its bottom
-init 0 0 0
+init 0 0 0 0
 open
 key down
 key enter
 key down
 key down
 draw options_gamma_zero
+# setup-lite, the fourth row (mute) ON: the value is the word, not a thermometer
+init 2 8 0 1
+open
+key down
+key enter
+key down
+key down
+key down
+draw options_mute_on
 # setup-lite, mid values, second skull frame
-init 1 7 2
+init 1 7 2 0
 open
 key down
 key enter
@@ -197,10 +207,13 @@ class Drawer:
             self.patch(surface, "M_OPTTTL", 108, 15)
             self.write_text(surface, 60, 40, "SKILL LEVEL")
             self.write_text(surface, 60, 40 + 14, SKILL_NAMES[model.skill])
-            self.write_text(surface, 60, 76, "SOUND VOLUME (NO SOUND YET)")
+            self.write_text(surface, 60, 76, "SOUND VOLUME")
             self.thermo(surface, 60, 76 + 14, 16, model.volume)
             self.write_text(surface, 60, 112, "GAMMA CORRECTION")
             self.thermo(surface, 60, 112 + 14, 5, model.gamma)
+            # T49's fourth row: a slider with two positions, drawn as the word.
+            self.write_text(surface, 60, 148, "SOUND MUTE")
+            self.write_text(surface, 60, 148 + 14, "ON" if model.muted else "OFF")
             skull_x, skull_y = 60 - 32, 40 - 5 + item * 36
         if self.perturb:
             skull_y += 1  # the injected bug: the cursor one pixel low
@@ -217,7 +230,9 @@ def run_oracle(wad: Wad, script: str, perturb: bool) -> list[tuple[str, bytes]]:
         if not words or words[0].startswith("#"):
             continue
         if words[0] == "init":
-            model = menu_check.Model((int(words[1]), int(words[2]), int(words[3])))
+            values = [int(word) for word in words[1:4]]
+            muted = int(words[4]) if len(words) > 4 else 0
+            model = menu_check.Model((values[0], values[1], values[2], muted))
         elif words[0] == "open":
             model.open()
         elif words[0] == "key":

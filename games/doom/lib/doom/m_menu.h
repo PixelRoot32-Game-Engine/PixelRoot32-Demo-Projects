@@ -39,7 +39,7 @@ extern "C" {
  *                                         shareware has one episode and its
  *                                         other rows only show the "registered
  *                                         version" notice)
- *   OPTIONS   skill, volume, gamma       (setup-lite)
+ *   OPTIONS   skill, volume, gamma, mute  (setup-lite)
  *
  * KEYS, and the buttons they come from
  *
@@ -62,12 +62,18 @@ extern "C" {
 #define M_VOLUME_DEFAULT 8
 #define M_GAMMA_MAX 4       /* usegamma: 5 levels, 0 is the identity */
 #define M_GAMMA_DEFAULT 0
+#define M_MUTE_MAX 1        /* the mute row is a slider with two positions */
 
-/* The three persisted values. */
+/* The four persisted values. */
 typedef struct m_settings {
     uint8_t skill;   /* 0..M_SKILL_COUNT-1 */
     uint8_t volume;  /* 0..M_VOLUME_MAX */
     uint8_t gamma;   /* 0..M_GAMMA_MAX */
+    /*
+     * 0 or 1 (T49). A separate field, not a zero volume: the player's slider
+     * position has to survive being muted, or unmuting could not restore it.
+     */
+    uint8_t muted;
 } m_settings_t;
 
 /* --- Settings and their stored form ------------------------------------- */
@@ -88,8 +94,14 @@ void m_settings_clamp(m_settings_t* settings);
  *   3  skill
  *   4  volume
  *   5  gamma
- *   6  0              reserved
+ *   6  mute flag      0 = off, 1 = on
  *   7  checksum       (0xA5 + the sum of bytes 0..6) modulo 256
+ *
+ * Byte 6 was "reserved, must be 0" before T49, which is exactly why the flag
+ * lives there: a record an older board wrote decodes as "not muted" with no
+ * version bump and without touching a saved skill, volume or gamma. The
+ * checksum already covers it, so a damaged flag byte is caught twice -- by the
+ * checksum and by the 0..1 range test.
  */
 #define M_SETTINGS_BLOB_SIZE 8u
 
