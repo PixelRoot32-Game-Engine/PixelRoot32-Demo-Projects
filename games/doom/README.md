@@ -802,6 +802,83 @@ twin framebuffer needs. A 20-line block only renders cleanly with
 `PIXELROOT32_DRAIN_PRESENT` defined, which closes each frame's transfer instead
 of leaving its tail in flight into the next frame.
 
+## Saves (D7.1)
+
+A save is one level's mutable world, written by the port itself. Vanilla's
+`p_saveg.c` archives a memory image: a flat copy of `player_t`, every `mobj_t`
+and every sector thinker, with pointers stored as offsets into a 32-bit DOS build
+of the same structs. That cannot load here -- this port's thinkers live in a
+caller-owned arena whose addresses differ on every load, and `doom_map` is a
+zero-copy view over (on the board) a mapped flash page -- so the record is
+self-describing and index-based instead. `src/doomc/SaveGame.{h,cpp}` is that
+record: engine-free, allocation-free, no floating point, no stdio.
+
+**What one record holds.** A fixed 48-byte header -- magic, version, schema, map
+number, skill, `leveltime`, kill count, map fingerprint, a 15-character label
+(`E1M1 HURT 03:12`) and the body's length and checksum -- which is all the slot
+menu reads. Then the player record (health, armour, ammo, weapons, powers, the
+weapon/psprite state, the view height and the screen-flash counters, with the
+avatar and the attacker as mobj indices), the level counters and the `M_Random`
+position, the sector and linedef deltas, every thinker in list order, the
+`P_NoiseAlert` targets by mobj index, and the scroll offsets.
+
+**Why deltas and indices, not a full dump.** S18/L55 derive a 3,072-byte payload
+from the 32 KB `saves` partition (eight slots, one 4 KB NVS page each). A full
+sector dump is 2,210 B for E1M1's 85 sectors and a full mobj dump is ~90 B for
+each of the 116 things at nightmare; neither leaves room. So sectors are stored
+only where floor/ceiling height, flat, light, special or tag moved -- plus every
+sector whose WAD special is nonzero, because `P_SpawnSpecials()` rewrites
+`special` and the record must pin the result -- and each mobj carries a mask of
+the fields that still equal what a fresh `p_spawn_mobj()` of the same type would
+produce. A monster asleep in its spawn state costs 16 B; one mid-chase costs
+about 64 B. The state is a `statenum_t` index, `target`/`tracer` are indices into
+the mobj list (`0xFFFF` for none), and the thinker list is written in order so a
+restore reproduces the order RNG draws and collision walks happen in.
+
+**Measured.** `pio test -e save_test` prints its numbers:
+
+```text
+SAVE_BUDGET mobjs=116 bytes=2607 max=3072
+SAVE_BUDGET_AFTER_55_TICS mobjs=117 bytes=3035 max=3072
+```
+
+116 is the most things E1M1 can spawn (nightmare and hard share option bit 4;
+medium spawns 92). The first line is that state at tic 0, the worst case in mobj
+count: 2,607 B. The second is the same world after 55 tics of the suite's script:
+3,035 B, 37 B of headroom, because the monsters that woke carry their full live
+state. That second number is the honest limitation: the record is bounded, and a
+save taken when enough monsters are awake answers `TooLarge` and says so rather
+than dropping a field. It does not corrupt or silently truncate.
+
+**What the differential proves.** A round trip compares the writer with its own
+reader; a field the writer forgot is absent from both sides and the comparison is
+still equal. So the gate is a differential: save world A at tic 20, run A 35 more
+tics with a fixed script (turn, fire, walk), snapshot every observable; build
+world B the same way, restore the payload at tic 20, run B the same 35 tics, and
+require player position/angle/health/armour/ammo/weapon, the mobj count and each
+mobj's position/health/state/reference, the sector heights and the RNG position to
+match. A failure names the observable and both values. The same differential runs
+with a door mid-motion. One more case deliberately restores *without* the RNG and
+must diverge -- that case is what makes the gate's silence about the RNG mean
+something.
+
+**What is not archived, and why.** `r_mobj_t::spawnpoint` is written by
+`P_SpawnMapThing()` and read by nothing in this port (there is no
+item/nightmare respawn path yet); the moment a respawn path reads it, the record
+must grow. `sprite`/`frame` are exactly `states[state]`, `subsector`/`sector` are
+recomputed from `x`/`y` at spawn, and `radius`/`height` come from `mobjinfo[type]`.
+`p_level_t::animFrames`, the per-sector animation frames and the sound flood's
+epoch are recomputed from `leveltime`/geometry on the next tic, and
+`P_UpdateSpecials()` runs before any draw. The full list, with the reason for
+each, is the header comment in [`src/doomc/SaveGame.h`](src/doomc/SaveGame.h).
+
+**Running the gate.** `pio test -e save_test` needs `tools/DOOM1.WAD` (or
+`DOOM_WAD` pointing at one): a differential against a synthetic map would not
+exercise 116 mobjs. That WAD is shareware data and is not committed. T53 wraps
+this payload in the engine's `RecordCodec` (CRC-32 envelope) and wires it to the
+`saves` partition; the checksum in this record is the save layer's own guard so
+the host gate can prove the rejection today.
+
 ## What the scaffold proves
 
 - The engine links from the tracker branch, not from a released version.
