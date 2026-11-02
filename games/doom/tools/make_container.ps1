@@ -67,6 +67,11 @@
     project does not use. Flash the app image too, because the table is part of
     it.
 
+    T39 (D5.2) adds the menu: 17 M_* patches and the HU font STCFN033..095, kept raw
+    by name through --raw-list tools/menu_lumps.txt (generated and drift-checked by
+    gen_menu_lumps.py, proved by menu_check.py --container). The partition table is
+    unchanged, so NVS (where the menu keeps its settings) survives the reflash.
+
     The WAD is copyrighted shareware data and is never committed. tools/ is
     git-ignored for both DOOM1.WAD and DOOM1.whd.
 
@@ -143,11 +148,12 @@ try {
         "--sprite-list", "tools/e1m1_sprites.inc",
         "--raw-list", "tools/hud_lumps.txt",
         "--raw-list", "tools/weapon_lumps.txt",
+        "--raw-list", "tools/menu_lumps.txt",
         "--budget", $Budget,
         "--baked-capacity", $BakedCapacity
     )
 
-    Write-Host "== encode: nine levels, every sprite, the HUD and weapon art, union bake, 3,473,408 B budget, $BakedCapacity manifest entries =="
+    Write-Host "== encode: nine levels, every sprite, the HUD, weapon and menu art, union bake, 3,473,408 B budget, $BakedCapacity manifest entries =="
     & python tools/whd_encode.py $Wad -o $Out --force @EncodeArgs --stats
     if ($LASTEXITCODE -ne 0) {
         throw "whd_encode.py exited $LASTEXITCODE"
@@ -195,6 +201,16 @@ try {
     & python tools/weapon_check.py --container $Out --wad $Wad
     if ($LASTEXITCODE -ne 0) {
         throw "weapon_check.py exited $LASTEXITCODE"
+    }
+
+    Write-Host "== prove: the menu patches and the HU font are raw, aligned and equal to the WAD's =="
+    & python tools/gen_menu_lumps.py --wad $Wad --check
+    if ($LASTEXITCODE -ne 0) {
+        throw "gen_menu_lumps.py --check exited $LASTEXITCODE"
+    }
+    & python tools/menu_check.py --container $Out --wad $Wad
+    if ($LASTEXITCODE -ne 0) {
+        throw "menu_check.py --container exited $LASTEXITCODE"
     }
 
     if ($Flash) {
