@@ -223,6 +223,27 @@ private:
 
     /// Rebuilds the PLAYPAL tables at the menu's gamma and hands them to the panel.
     void applyMenuGamma();
+
+#if defined(DOOM_PALFLASH)
+    /**
+     * @brief Builds the panel's tables from PLAYPAL page @p page at @p gamma (D5.3).
+     *
+     * Page 0 is resident; any other page is decoded from the container for the
+     * duration of the call. Hands the (unchanged) table pointer to the panel
+     * again. Returns false, leaving the panel as it was, when the page cannot be
+     * read.
+     */
+    bool applyPalette(int page, std::uint8_t gamma);
+
+    /**
+     * @brief ST_doPaletteStuff, once per rendered frame: the damage, pickup and
+     *        radiation-suit flashes.
+     *
+     * Asks the world which page the player's counters call for and re-applies the
+     * palette only when that page differs from the one on the screen.
+     */
+    void updatePaletteFlash();
+#endif
 #endif
 
     /**
@@ -252,6 +273,10 @@ private:
     bool settingsDirty_ = false;
     /// The gamma level the panel's palette was last built for.
     std::uint8_t gammaApplied_ = 0;
+#if defined(DOOM_PALFLASH)
+    /// The PLAYPAL page the panel's palette was last built from (0 = normal).
+    std::uint8_t paletteApplied_ = 0;
+#endif
     /// Frames the scripted-input diagnostic has played (DOOM_MENU_SCRIPT only).
     std::uint32_t menuScriptFrame_ = 0;
 #endif

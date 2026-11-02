@@ -135,10 +135,29 @@ without the face widget), kept for the case the full bar misses its frame rate.
 sector, full bright for the flash frames); its patches are the raw lumps of
 `tools/weapon_lumps.txt`. `esp32dev_ILI9341_hud_noweapon` is the same build
 without that call, kept only to measure what the weapon costs. Not drawn: the
-damage/bonus palette flashes, the invisibility fuzz and the deathmatch frags.
+invisibility fuzz and the deathmatch frags (the palette flashes are below).
 `python tools/hud_draw_check.py --wad DOOM1.WAD` and
 `python tools/weapon_draw_check.py --wad DOOM1.WAD` compare the bar and the
 weapon with independent oracles pixel by pixel.
+
+### The palette flashes (D5.3)
+
+`-D DOOM_PALFLASH=1` (on in `esp32dev_ILI9341_hud`, needs `DOOM_MENU` for the gamma)
+ports `ST_doPaletteStuff`: once per rendered frame the scene asks
+`lib/doom/palflash.c` which of PLAYPAL's 14 pages the player's counters call for
+(red 1-8 for damage and the berserk fade, gold 9-12 for a pickup, green 13 for the
+radiation suit and its blink) and re-applies the palette only when the page or the
+gamma changes. Berserk is the strength POWER, not the wielded weapon; red page 1 is
+never chosen (upstream's `(cnt + 7) >> 3` is 0 only when there is no flash). A flash
+page is decoded from the container for the one call that builds the tables (the
+lump is deflated, so that is a transient 10,752 B heap block and about 8.6 ms on
+the CYD, once per page change; page 0 is resident). Gamma is applied to each page.
+`python tools/palflash_check.py --wad DOOM1.WAD --container DOOM1.whd` compares
+the page selection, the 14 pages at five gamma levels and the decay on the real
+world with an independent oracle (`--perturb` must fail).
+`esp32dev_ILI9341_hud_palflashtest` plays a scripted damage and pickups into the
+real player state and prints every switch (`SHOW,palette,...`); a diagnostic, never
+the shipped image. `esp32dev_ILI9341_hud_nopalflash` compiles the feature out for A/B.
 
 ### The menu and the settings (D5.2)
 

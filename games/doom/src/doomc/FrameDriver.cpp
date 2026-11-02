@@ -456,6 +456,10 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 #include "p_setup.h"
 #include "p_spec.h"
 #include "p_user.h"
+#include "palflash.h"
+#if defined(DOOM_PALFLASH_SCRIPT)
+#include "p_inter.h"
+#endif
 #include "r_bsp.h"
 #include "r_data.h"
 #include "r_defs.h"
@@ -3671,6 +3675,90 @@ bool frameLevelPlayer(LevelPlayer* out) {
 
 const std::uint8_t* frameLevelPlaypal() { return gPlaypalValid ? gPlaypal : nullptr; }
 
+int frameLevelPaletteIndex() {
+    return gWorld.open ? palflash_index(&gWorld.level.playerState) : 0;
+}
+
+bool frameLevelPlaypalPage(int page, std::uint8_t* out) {
+    if (out == nullptr || page < 0 || page >= PALFLASH_NUMPALS) {
+        return false;
+    }
+    if (page == 0) {
+        // Palette 0 stays resident (768 B): the normal picture is every frame
+        // that has no flash and every gamma change at rest, so it must cost no
+        // flash read.
+        if (!gPlaypalValid) {
+            return false;
+        }
+        std::memcpy(out, gPlaypal, kPlaypalBytes);
+        return true;
+    }
+    // The container keeps PLAYPAL deflated and the reader has no partial-decode
+    // entry point, so a flash page costs one transient decode of the whole lump
+    // (10,752 B), released before this returns. Nothing is held between
+    // switches; if the heap cannot lend the block the caller keeps the page it
+    // has.
+    const int lump = doom_whd_source_lump_index(&gWhd, "PLAYPAL");
+    if (lump < 0) {
+        return false;
+    }
+    const std::int32_t lumpBytes = doom_whd_source_lump_size(&gWhd, lump);
+    const std::size_t need = (static_cast<std::size_t>(page) + 1u) * kPlaypalBytes;
+    if (lumpBytes < static_cast<std::int32_t>(need)) {
+        return false;
+    }
+    std::uint8_t* decode = static_cast<std::uint8_t*>(
+        heap_caps_malloc(static_cast<std::size_t>(lumpBytes), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (decode == nullptr) {
+        return false;
+    }
+    std::uint32_t decoded = 0u;
+    const bool ok =
+        doom_whd_source_read_lump(&gWhd, lump, decode, static_cast<std::size_t>(lumpBytes), &decoded)
+            == DOOM_WHD_SOURCE_OK
+        && decoded >= need;
+    if (ok) {
+        std::memcpy(out, decode + static_cast<std::size_t>(page) * kPlaypalBytes, kPlaypalBytes);
+    }
+    heap_caps_free(decode);
+    return ok;
+}
+
+#if defined(DOOM_PALFLASH_SCRIPT)
+bool frameLevelPalflashScript(int step) {
+    if (!gWorld.open || gWorld.level.player == nullptr) {
+        return false;
+    }
+    p_level_t& level = gWorld.level;
+    // The same two real paths the host gate drives: P_DamageMobj on the avatar,
+    // and P_TouchSpecialThing on an item placed 20 units ahead of it.
+    mobjtype_t item = MT_MISC2;
+    switch (step) {
+        case 0:
+            p_damage_mobj(&level.context, level.player, nullptr, nullptr, 40);
+            return true;
+        case 1:
+            item = MT_MISC2;
+            break;
+        case 2:
+            p_damage_mobj(&level.context, level.player, nullptr, nullptr, 15);
+            return true;
+        case 3:
+            item = MT_MISC14;
+            break;
+        default:
+            return false;
+    }
+    r_mobj_t* special = p_spawn_mobj(&level.context, level.player->x,
+                                     level.player->y + 20 * FRACUNIT, ONFLOORZ, item, nullptr);
+    if (special == nullptr) {
+        return false;
+    }
+    p_touch_special_thing(&level.context, special, level.player);
+    return true;
+}
+#endif
+
 std::size_t frameLevelFormatMemory(char* out, std::size_t capacity) {
     if (out == nullptr || capacity == 0u) {
         return 0u;
@@ -3958,6 +4046,21 @@ bool frameLevelPlayer(LevelPlayer* out) {
 void frameLevelClose() {}
 
 const std::uint8_t* frameLevelPlaypal() { return nullptr; }
+
+int frameLevelPaletteIndex() { return 0; }
+
+bool frameLevelPlaypalPage(int page, std::uint8_t* out) {
+    (void)page;
+    (void)out;
+    return false;
+}
+
+#if defined(DOOM_PALFLASH_SCRIPT)
+bool frameLevelPalflashScript(int step) {
+    (void)step;
+    return false;
+}
+#endif
 
 std::size_t frameLevelFormatMemory(char* out, std::size_t capacity) {
     if (out != nullptr && capacity > 0u) {

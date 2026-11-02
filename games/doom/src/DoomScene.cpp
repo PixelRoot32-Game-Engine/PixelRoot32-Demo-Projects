@@ -25,6 +25,10 @@
 #error "DOOM_MENU belongs to the game build: define PIXELROOT32_DOOM_SHOW_E1M1 too"
 #endif
 
+#if defined(DOOM_PALFLASH) && !defined(DOOM_MENU)
+#error "DOOM_PALFLASH needs DOOM_MENU: it composes with the menu's gamma"
+#endif
+
 #if defined(DOOM_MENU)
 #include "doomc/InputMap.h"
 #include "doomc/SceneRenderer.h"
@@ -1193,9 +1197,79 @@ void DoomScene::runWorldTics(std::uint8_t buttons) {
 
 void DoomScene::applyMenuGamma() {
     gammaApplied_ = menu_.settings.gamma;
+#if defined(DOOM_PALFLASH)
+    // The gamma changes under whatever flash is on the screen.
+    if (!applyPalette(paletteApplied_, gammaApplied_)) {
+        applyPalette(0, gammaApplied_);
+        paletteApplied_ = 0;
+    }
+#else
     palette::applyGamma(sceneRenderer_.playpal(), gammaApplied_);
     engine.getRenderer().getDrawSurface().setPalette8(palette::playpal565Table());
+#endif
 }
+
+#if defined(DOOM_PALFLASH)
+
+bool DoomScene::applyPalette(int page, std::uint8_t gamma) {
+    std::uint8_t bytes[palette::kRgb888Bytes];
+    const std::uint8_t* source = sceneRenderer_.playpal();
+    if (page != 0) {
+        if (!doomc::frameLevelPlaypalPage(page, bytes)) {
+            return false;
+        }
+        source = bytes;
+    }
+    if (source == nullptr) {
+        return false;
+    }
+    palette::applyGamma(source, gamma);
+    engine.getRenderer().getDrawSurface().setPalette8(palette::playpal565Table());
+    return true;
+}
+
+void DoomScene::updatePaletteFlash() {
+#if defined(DOOM_PALFLASH_SCRIPT)
+    // Diagnostic build only: a fixed script plays damage and pickups into the real
+    // player state (P_DamageMobj, P_TouchSpecialThing). Never in a shipped image.
+    {
+        int step = -1;
+        if (showFrame_ == 60u) step = 0;
+        if (showFrame_ == 140u) step = 1;
+        if (showFrame_ == 220u) step = 2;
+        if (showFrame_ == 300u) step = 3;
+        if (step >= 0) {
+            const bool played = doomc::frameLevelPalflashScript(step);
+            char event[96];
+            std::snprintf(event, sizeof event, "SHOW,palscript,step=%d,frame=%u,played=%d\n", step,
+                          static_cast<unsigned>(showFrame_), played ? 1 : 0);
+            writeConsoleLine(event);
+        }
+    }
+#endif
+    const int page = doomc::frameLevelPaletteIndex();
+    if (page == paletteApplied_) {
+        return;
+    }
+#if defined(DOOM_PALFLASH_SCRIPT)
+    const std::uint32_t startUs = sampleMicros();
+#endif
+    const bool applied = applyPalette(page, gammaApplied_);
+    if (applied) {
+        paletteApplied_ = static_cast<std::uint8_t>(page);
+    }
+#if defined(DOOM_PALFLASH_SCRIPT)
+    const std::uint32_t costUs = sampleMicros() - startUs;
+    char line[128];
+    std::snprintf(line, sizeof line,
+                  "SHOW,palette,frame=%u,tic=%u,page=%d,gamma=%d,us=%u,applied=%d\n",
+                  static_cast<unsigned>(showFrame_), static_cast<unsigned>(showPlayer_.tics), page,
+                  static_cast<int>(gammaApplied_), static_cast<unsigned>(costUs), applied ? 1 : 0);
+    writeConsoleLine(line);
+#endif
+}
+
+#endif  // DOOM_PALFLASH
 
 std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
 #if defined(DOOM_MENU_SCRIPT)
@@ -1360,6 +1434,11 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
     // written at the top of the *next* draw, and every field on it describes the
     // frame it reports.
     showPlayer_ = sceneRenderer_.player();
+#if defined(DOOM_PALFLASH)
+    // ST_Drawer's ST_doPaletteStuff: before the frame is drawn, so the present that
+    // follows already expands the indices through the right page.
+    updatePaletteFlash();
+#endif
     bool rendered = false;
 
     // The refusal diagnostic outlives the two surface branches below. A refused

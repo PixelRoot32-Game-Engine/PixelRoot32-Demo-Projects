@@ -769,6 +769,31 @@ bool frameLevelPlayer(LevelPlayer* out);
 const std::uint8_t* frameLevelPlaypal();
 
 /**
+ * @brief ST_doPaletteStuff's choice (D5.3): which PLAYPAL page the screen shows.
+ *
+ * `palflash_index()` over the open world's player counters; 0 when no world is
+ * open. The scene calls it once per rendered frame and re-applies the palette
+ * only when the answer (or the gamma) changes.
+ */
+int frameLevelPaletteIndex();
+
+/**
+ * @brief Copies PLAYPAL page @p page (0..13) into @p out (768 bytes).
+ *
+ * Page 0 is resident; the others are decoded from the container into a
+ * transient heap block that is freed before the call returns. Returns false
+ * (leaving @p out untouched) when the page is out of range, the lump is short
+ * or the heap cannot lend the block.
+ */
+bool frameLevelPlaypalPage(int page, std::uint8_t* out);
+
+#if defined(DOOM_PALFLASH_SCRIPT)
+/// Diagnostic build only: plays one scripted event into the real player state
+/// (0 damage 40, 1 health-bonus pickup, 2 damage 15, 3 radiation-suit pickup).
+bool frameLevelPalflashScript(int step);
+#endif
+
+/**
  * @brief Formats one `SHOW,mem,...` line for the open session.
  *
  * The same numbers `FRAMEPROF,mem` prints -- `sizeof` of every static block, the
