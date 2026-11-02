@@ -685,7 +685,7 @@ to find the branch in the serial log.
 
 | `reason=` | Title | What it means | What to do |
 | --- | --- | --- | --- |
-| `partition_missing` | NO WAD SPACE | the image has no `wad` partition | flash a table that has one |
+| `partition_missing` | NO WAD SLOT | the image has no `wad` partition | flash a table that has one |
 | `partition_map_failed` | WAD UNREADABLE | the partition exists but did not map | reflash and retry |
 | `container_invalid` | BAD CONTAINER | the header or its length is not a container | reflash `DOOM1.WHD` |
 | `unavailable` | NO FLASH ACCESS | this build has no flash mapping | use the board build |
@@ -730,6 +730,46 @@ exact text and fields; the boot line only adds the screen's own classification.
 capture for `SHOW,boot,screen=error,reason=<name>,code=<n>` where `<name>` is the
 title's meaning from the table above. The third line, when present, names the
 lump or baked error that failed.
+
+**Proving the failure screens.** The host gate proves the painter's bytes; the
+board proves the two WAD-missing branches, because those are the failures a
+person can actually create.
+
+*A table with no `wad` row.* Build and flash the diagnostic environment, which
+is the shipped image over `partitions_nowad.csv`:
+
+```text
+pio run -e esp32dev_ILI9341_hud_nowad -t upload --upload-port COM4
+```
+
+It proves `ERR_PARTITION_MISSING`: `esp_partition_find_first("wad")` returns
+null, the serial keeps `SHOW,setup,status=fail,reason=open,code=3` and adds
+`SHOW,boot,screen=error,reason=partition_missing,code=3,detail=`, and the panel
+shows `NO WAD SLOT`. The environment is a diagnostic, never the shipped image.
+
+*An erased container over the shipped table.* This one destroys the container on
+the board, so the restore is part of the proof, not a cleanup step:
+
+```text
+esptool.py --chip esp32 --port COM4 --baud 921600 erase_region 0xB0000 0x350000
+esptool.py --chip esp32 --port COM4 --baud 921600 write_flash 0xB0000 tools/DOOM1.whd
+esptool.py --chip esp32 --port COM4 --baud 921600 verify_flash 0xB0000 tools/DOOM1.whd
+```
+
+(On this machine `esptool.py` is
+`%USERPROFILE%\.platformio\packages\tool-esptoolpy\esptool.py`, run with the
+PlatformIO venv's `python.exe`.) The erase proves `ERR_CONTAINER_INVALID`, not
+`ERR_PARTITION_MISSING`: the table still has the partition, so the open gets past
+`esp_partition_find_first()` and fails on the header instead -- the erased bytes
+are `0xFF`, which read as a container size of `0xFFFFFFFF`, larger than the
+partition. The serial prints `reason=open,code=5` and
+`SHOW,boot,screen=error,reason=container_invalid,code=5,detail=`, and the panel
+shows `BAD CONTAINER`.
+
+**The board cannot play until the container is restored.** Until the
+`write_flash` (and a `verify_flash` that reports `verify OK`) succeed, every boot
+lands on `BAD CONTAINER`; the app image itself is untouched by the erase, so the
+restore is a container write and nothing else.
 
 **Gate.** `python tools/boot_check.py` compiles `BootScreen.cpp` and
 `LevelFailure.cpp` with the system `g++` and hashes every screen state's
