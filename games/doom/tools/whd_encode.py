@@ -74,13 +74,15 @@ DEFLATE_WINDOW_BITS = -15
 DEFLATE_MEMORY_LEVEL = 9
 
 # The partition the shipped container is written to: partitions_wad.csv gives
-# `wad` 0x0B0000..0x400000 (T38), 3,473,408 B. D3.11 shrank the app slot to
-# 768 KB so the container gained 196,608 B without dropping a single Phase-5
-# lump; T36 took another 65,536 B from the app (720,896 B) for the HUD art and T38
-# another 65,536 B (now 655,360 B) for the weapon art.
+# `wad` 0x0C0000..0x3F8000 (T53b), 3,375,104 B. D3.11 shrank the app slot to
+# 768 KB so the container gained 196,608 B; T36 took another 65,536 B from the app
+# (720,896 B) for the HUD art and T38 another 65,536 B (now 655,360 B) for the
+# weapon art. T53 took 32 KB off the `wad` top for the save slots and T53b trimmed
+# the container (--drop-unused-sprites) and gave 64 KB back to the app, so the row
+# starts at 0x0C0000 and ends at the `saves` row.
 # --budget overrides it for a probe of some other layout; every answer below is
 # measured against whatever it is given.
-FLASH_BUDGET = 3_473_408
+FLASH_BUDGET = 3_375_104
 
 WAD_HEADER_SIZE = 12
 WAD_DIRECTORY_ENTRY_SIZE = 16
@@ -298,15 +300,21 @@ def select_dropped(lumps: list[Lump], patterns: list[str], levels: list[str]) ->
     return frozenset(dropped)
 
 
-def select_unused_sprites(lumps: list[Lump], names: list[str]) -> frozenset[int]:
+def select_unused_sprites(lumps: list[Lump], required: list[str]) -> frozenset[int]:
     """The sprite lump indices a bake does not name, from S_START to S_END.
 
     The shareware WAD carries 483 sprite lumps; one episode level's sprite table
     names 36 of them. The rest are animation frames this port cannot address yet
     (the fixture is frame 0), and at 493 KB compressed they are what makes the
     whole-episode container too large for the `wad` partition. Dropping them is
-    explicit, never implicit: the names that stay are exactly the ones the bakery
-    marked raw, so the renderer cannot ask for one that was removed.
+    explicit, never implicit: the names that stay are exactly the ones the sprite
+    list names AND the ones any raw list requires, so the renderer cannot ask for
+    one that was removed.
+
+    @p required is every name that must survive, not just the sprite fixture: the
+    weapon patches (`--raw-list tools/weapon_lumps.txt`: PISG/PISF/SHTG/CHGG/...)
+    live inside S_START..S_END and are raw by name, so dropping them before the
+    raw selection made the encode fail with "the WAD has no lump named CHGFA0".
     """
     start = next((index for index, lump in enumerate(lumps)
                   if lump.name.upper() == "S_START"), -1)
@@ -317,9 +325,9 @@ def select_unused_sprites(lumps: list[Lump], names: list[str]) -> frozenset[int]
     if end < 0:
         raise InputError("--drop-unused-sprites: the WAD has no S_END after S_START")
 
-    kept = {name.strip().upper()[:NAME_SIZE] for name in names}
+    kept = {name.strip().upper()[:NAME_SIZE] for name in required}
     if not kept:
-        raise InputError("--drop-unused-sprites: the sprite list is empty")
+        raise InputError("--drop-unused-sprites: no sprite or raw name to keep")
     return frozenset(index for index in range(start + 1, end)
                      if lumps[index].name.upper()[:NAME_SIZE] not in kept)
 
@@ -1105,8 +1113,8 @@ dropping and baking (both default off; the command records the choice):
   --sky NAME          the sky texture to bake (default SKY1).
 
 budget and proofs:
-  --budget BYTES   the wad partition the container must fit (default 3,473,408 B,
-                   the shipped partitions_wad.csv: 0x0B0000..0x400000). --stats
+  --budget BYTES   the wad partition the container must fit (default 3,375,104 B,
+                   the shipped partitions_wad.csv: 0x0C0000..0x3F8000). --stats
                    reports total, spare and what each level would cost if it
                    were baked alone.
   --baked-capacity ENTRIES
@@ -1478,7 +1486,10 @@ def main(argv: list[str] | None = None) -> int:
             if not sprite_names:
                 raise InputError("--drop-unused-sprites needs --sprite-list: it is the "
                                  "only list of the sprite lumps that stay")
-            dropped = dropped | select_unused_sprites(lumps, sprite_names)
+            # The raw names are as load-bearing as the sprite fixture: weapon
+            # patches (PISG, CHGFA0, ...) are sprite-range lumps kept raw by name,
+            # and dropping one of those fails the raw selection a few lines below.
+            dropped = dropped | select_unused_sprites(lumps, sprite_names + raw_names)
 
         kept = [lump for index, lump in enumerate(lumps) if index not in dropped]
         kept_wad_indices = [index for index in range(len(lumps)) if index not in dropped]

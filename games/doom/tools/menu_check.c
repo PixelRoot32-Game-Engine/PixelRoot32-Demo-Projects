@@ -13,8 +13,10 @@
  *   buttons 0xNN                m_menu_buttons: one frame's held bits
  *   key NAME                    up down left right enter back
  *   tick N                      m_menu_tick
- *   take                        both take functions
+ *   take                        both take functions and the slot action
  *   state                       print the state only
+ *   slots L0|L1|L2|L3|L4|L5   m_menu_set_slot_labels; "-" is a NULL row
+ *                              (labels keep their spaces, "E1M1 HURT 03:12")
  *   encode S V G [M]            m_settings_encode
  *   decode HEX                  m_settings_decode over the bytes ("-" = none)
  *   clamp S V G [M]             m_settings_clamp
@@ -24,10 +26,11 @@
  * Output, one line per command:
  *
  *   STATE active=A screen=S item=I skull=K skill=S volume=V gamma=G mute=M [world=0xNN]
- *   TAKE newgame=N skill=S changed=C
+ *   TAKE newgame=N skill=S changed=C action=A slot=I
  *   BLOB hex
  *   DECODE ok=N skill=S volume=V gamma=G mute=M
  *   CLAMP skill=S volume=V gamma=G mute=M
+ *   SLOTS ok=N
  *   GAMMA level=L value=V out=O
  *   GAMMADUMP level=L v0 v1 ... v255
  *
@@ -403,9 +406,57 @@ int main(int argc, char** argv) {
             printState(0, 0);
         } else if (strcmp(command, "take") == 0) {
             int skill = -1;
+            int slot = -1;
             const int started = m_menu_take_new_game(&g_menu, &skill);
             const int changed = m_menu_take_settings_changed(&g_menu);
-            printf("TAKE newgame=%d skill=%d changed=%d\n", started, started ? skill : -1, changed);
+            const int action = m_menu_take_slot_action(&g_menu, &slot);
+            printf("TAKE newgame=%d skill=%d changed=%d action=%d slot=%d\n", started,
+                   started ? skill : -1, changed, action, action == 0 ? -1 : slot);
+        } else if (strcmp(command, "slots") == 0) {
+            /* Six labels separated by '|', so a label keeps its spaces
+             * ("E1M1 HURT 03:12"); "-" is a NULL (the owner could not build
+             * one, which the menu reads as EMPTY). */
+            const char* labels[M_SLOT_COUNT];
+            char storage[M_SLOT_COUNT][M_SLOT_LABEL_SIZE];
+            char fields[M_SLOT_COUNT][M_SLOT_LABEL_SIZE + 1];
+            size_t index = 0u;
+            const char* cursor = rest;
+            int values = 0;
+
+            memset(fields, 0, sizeof fields);
+            /* The rest pointer starts at the separator after the command word; a
+             * leading space would become part of the first label (and shift it 4
+             * px when drawn), so only that one is skipped. */
+            while (*cursor == ' ' || *cursor == '\t') {
+                ++cursor;
+            }
+            while (index < M_SLOT_COUNT && *cursor != '\0') {
+                size_t at = 0u;
+                while (*cursor != '\0' && *cursor != '|' && *cursor != '\n'
+                       && *cursor != '\r' && at < M_SLOT_LABEL_SIZE) {
+                    fields[index][at++] = *cursor++;
+                }
+                fields[index][at] = '\0';
+                while (*cursor != '\0' && *cursor != '|' && *cursor != '\n'
+                       && *cursor != '\r') {
+                    ++cursor;
+                }
+                if (*cursor == '|') {
+                    ++cursor;
+                }
+                ++index;
+                ++values;
+            }
+            for (index = 0; index < M_SLOT_COUNT; ++index) {
+                if (index < (size_t)values && strcmp(fields[index], "-") != 0) {
+                    memcpy(storage[index], fields[index], M_SLOT_LABEL_SIZE);
+                    labels[index] = storage[index];
+                } else {
+                    labels[index] = NULL;
+                }
+            }
+            m_menu_set_slot_labels(&g_menu, labels);
+            printf("SLOTS ok=%d\n", values == M_SLOT_COUNT ? 1 : 0);
         } else if (strcmp(command, "state") == 0) {
             printState(0, 0);
         } else if (strcmp(command, "encode") == 0) {

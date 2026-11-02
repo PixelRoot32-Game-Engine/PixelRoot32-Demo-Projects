@@ -169,6 +169,14 @@
 
 #include "doomc/LevelFailure.h"
 
+#if DOOM_PERSISTENCE
+// D7.1 (T53): the save record's writer/reader, and the status the two entry
+// points below return. Including the format here is what keeps the scene from
+// ever naming `gWorld`: it asks this driver to archive the live world, not the
+// struct behind it.
+#include "doomc/SaveGame.h"
+#endif
+
 #if defined(DOOM_MENU)
 struct m_menu;  // lib/doom/m_menu.h
 #endif
@@ -767,6 +775,47 @@ bool frameLevelArenaStats(std::uint32_t* inUse, std::uint32_t* freeBytes,
 /// The name of the last picture a resolver could not find ("" if none), for the
 /// refusal diagnostic.
 const char* frameLevelLastMissing();
+#endif
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && DOOM_PERSISTENCE
+/**
+ * @brief D7.1 (T53): archives the live world into @p out.
+ *
+ * The scene never sees `gWorld`; this is the one seam that turns it into the
+ * engine's bytes. `levelNumber` is E1M1's 1 -- the session opens one map and a
+ * `p_level_t` does not carry its number.
+ *
+ * @param out      Destination; the caller owns it (the persistence layer's
+ *                 payload buffer, not the stack).
+ * @param capacity Bytes available at @p out.
+ * @param written  Out: bytes written on Ok; untouched on failure.
+ * @return Ok, TooLarge, BadField, or WrongLevel when no world is open.
+ */
+SaveStatus frameLevelSave(std::uint8_t* out, std::size_t capacity, std::size_t& written);
+
+/**
+ * @brief D7.1 (T53): reloads @p levelNumber at @p skill, then applies @p in.
+ *
+ * The reload is the same path a New Game drives (`g_demo_reborn()`: the rules'
+ * skill, a cleared random position, `p_level_init()` + `p_spawn_specials()` over
+ * the world's own arena) -- there is no second loader. `saveApply()` then
+ * overwrites only the mutable state, which is why the record is applied to a
+ * *fresh* world.
+ *
+ * If the reload is refused the function answers `ApplyFailed` and the world is
+ * whatever `frameLevelNewGame()` leaves on its own refusal path. If the apply
+ * fails, the world is laid out fresh again before returning, so a caller never
+ * sees a half-restored level; any non-Ok means "the world is a fresh copy of the
+ * map", never "the world is damaged".
+ *
+ * @param in          The record's payload (already envelope-checked).
+ * @param size        Bytes at @p in.
+ * @param levelNumber The map the record names (1 for E1M1).
+ * @param skill       0 (baby) .. 4 (nightmare), the record's skill.
+ * @return Ok or the save layer's status.
+ */
+SaveStatus frameLevelLoad(const std::uint8_t* in, std::size_t size,
+                          std::uint8_t levelNumber, std::uint8_t skill);
 #endif
 
 #if defined(DOOM_HUD)

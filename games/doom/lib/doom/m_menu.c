@@ -12,10 +12,16 @@
  *     skips status -1 rows, steps a slider with left/right, enters on ENTER and
  *     goes back (or closes, from the main screen) on BACK. The keys are the
  *     board's buttons, not a keyboard; see m_menu.h.
- *   - No LOAD GAME, SAVE GAME, READ THIS or QUIT GAME: the port has no save
- *     files, no help screens and nothing to quit to. No episode screen:
- *     shareware has one episode. No "are you sure?" for nightmare: the board
- *     has no Y/N keys, so ENTER on the nightmare row starts the game.
+ *   - No READ THIS or QUIT GAME: the port has no help screens and nothing to
+ *     quit to. No episode screen: shareware has one episode. No "are you sure?"
+ *     for nightmare: the board has no Y/N keys, so ENTER on the nightmare row
+ *     starts the game.
+ *   - LOAD GAME and SAVE GAME exist since T53, in upstream's order after
+ *     OPTIONS, each a six-row slot screen. Their titles and rows are TEXT, not
+ *     `M_LOADG`/`M_SAVEG` patches: those two lumps are 2,332 B and 2,364 B and
+ *     the container has 1,164 B of spare in the `wad` row (S18), so drawing them
+ *     would mean a container and partition change for two pictures the HU font
+ *     already spells. The rest of the main screen keeps its patch rows.
  *   - The options screen is the port's "setup-lite": skill, sound volume,
  *     gamma and mute, drawn with the HU font (M_WriteText) and the thermometer
  *     patches. Upstream has no gamma row (F11 cycled it); the table is
@@ -24,7 +30,7 @@
  *     and a high", and a second kind of row would be a second code path to gate.
  *   - Settings are plain bytes with a checksummed stored form (m_settings_*),
  *     because the menu's owner persists them and this file must stay free of any
- *     storage API.
+ *     storage API. Slot labels are strings the owner fills for the same reason.
  *   - The state is a caller-owned struct, not file-scope globals.
  */
 #include "m_menu.h"
@@ -48,6 +54,7 @@ enum { ROW_GAP = -1, ROW_ENTER = 1, ROW_SLIDER = 2 };
 typedef struct m_row {
     int8_t status;
     const char* patch;  /* the row's picture, or NULL for a text row */
+    const char* text;   /* the row's text when `patch` is NULL */
 } m_row_t;
 
 typedef struct m_def {
@@ -58,27 +65,43 @@ typedef struct m_def {
     int16_t y;
 } m_def_t;
 
-/* MainMenu[] / MainDef */
+/* MainMenu[] / MainDef: upstream's order, less READ THIS and QUIT. LOAD GAME and
+ * SAVE GAME are text rows (see the file comment); the first two keep their
+ * patches. */
 static const m_row_t kMainRows[] = {
-    {ROW_ENTER, "M_NGAME"},
-    {ROW_ENTER, "M_OPTION"},
+    {ROW_ENTER, "M_NGAME", NULL},
+    {ROW_ENTER, "M_OPTION", NULL},
+    {ROW_ENTER, NULL, "LOAD GAME"},
+    {ROW_ENTER, NULL, "SAVE GAME"},
 };
 
 /* NewGameMenu[] / NewDef: the skill levels, baby to nightmare. */
 static const m_row_t kNewGameRows[M_SKILL_COUNT] = {
-    {ROW_ENTER, "M_JKILL"},
-    {ROW_ENTER, "M_ROUGH"},
-    {ROW_ENTER, "M_HURT"},
-    {ROW_ENTER, "M_ULTRA"},
-    {ROW_ENTER, "M_NMARE"},
+    {ROW_ENTER, "M_JKILL", NULL},
+    {ROW_ENTER, "M_ROUGH", NULL},
+    {ROW_ENTER, "M_HURT", NULL},
+    {ROW_ENTER, "M_ULTRA", NULL},
+    {ROW_ENTER, "M_NMARE", NULL},
 };
 
 /* The setup-lite rows are text, so they carry no patch name. */
 static const m_row_t kOptionsRows[] = {
-    {ROW_SLIDER, NULL},  /* skill */
-    {ROW_SLIDER, NULL},  /* sound volume */
-    {ROW_SLIDER, NULL},  /* gamma */
-    {ROW_SLIDER, NULL},  /* mute, a slider with a range of one (OFF/ON) */
+    {ROW_SLIDER, NULL, NULL},  /* skill */
+    {ROW_SLIDER, NULL, NULL},  /* sound volume */
+    {ROW_SLIDER, NULL, NULL},  /* gamma */
+    {ROW_SLIDER, NULL, NULL},  /* mute, a slider with a range of one (OFF/ON) */
+};
+
+/* LoadDef / SaveDef: six rows, each the owner's label for that slot. Vanilla
+ * draws them with M_WriteText at x 80, y 54 and a 16 px line height, which is
+ * what these rows and kSlotTitleY repeat. */
+#define SLOT_SCREEN_X 80
+#define SLOT_SCREEN_Y 54
+#define SLOT_TITLE_X 120
+#define SLOT_TITLE_Y 24
+static const m_row_t kSlotRows[M_SLOT_COUNT] = {
+    {ROW_ENTER, NULL, NULL}, {ROW_ENTER, NULL, NULL}, {ROW_ENTER, NULL, NULL},
+    {ROW_ENTER, NULL, NULL}, {ROW_ENTER, NULL, NULL}, {ROW_ENTER, NULL, NULL},
 };
 
 #define OPTIONS_Y0 40
@@ -93,6 +116,10 @@ static const m_def_t kMenus[M_SCREEN_COUNT] = {
     /* The setup-lite screen; its rows sit OPTIONS_STEP apart. */
     {sizeof kOptionsRows / sizeof kOptionsRows[0], M_SCREEN_MAIN, kOptionsRows, 60,
      OPTIONS_Y0},
+    /* LoadDef: x 80, y 54 (T53) */
+    {M_SLOT_COUNT, M_SCREEN_MAIN, kSlotRows, SLOT_SCREEN_X, SLOT_SCREEN_Y},
+    /* SaveDef: the same geometry, the same rows */
+    {M_SLOT_COUNT, M_SCREEN_MAIN, kSlotRows, SLOT_SCREEN_X, SLOT_SCREEN_Y},
 };
 
 static const char* const kSkillNames[M_SKILL_COUNT] = {
@@ -201,6 +228,14 @@ void m_menu_init(m_menu_t* menu, const m_settings_t* settings) {
     menu->itemOn[M_SCREEN_NEWGAME] = menu->settings.skill;
     menu->skullCounter = SKULL_ANIM_FIRST;
     menu->pendingSkill = -1;
+    /* T53: nothing is owed and no slot is named until the owner fills the labels
+     * and an activation happens. An unfilled row reads EMPTY, so a menu that is
+     * opened before the owner filled anything cannot load a slot. */
+    menu->pendingAction = (int8_t)M_ACTION_NONE;
+    menu->slot = 0u;
+    for (uint8_t index = 0; index < M_SLOT_COUNT; ++index) {
+        strcpy((char*)menu->slotLabels[index], M_SLOT_EMPTY);
+    }
 }
 
 void m_menu_open(m_menu_t* menu) {
@@ -266,7 +301,7 @@ int m_menu_key(m_menu_t* menu, m_key_t key) {
     uint8_t* itemOn;
 
     if (menu == NULL || !menu->active) {
-        return 0;
+        return (int)M_ACTION_NONE;
     }
     def = &kMenus[menu->screen];
     itemOn = &menu->itemOn[menu->screen];
@@ -294,8 +329,13 @@ int m_menu_key(m_menu_t* menu, m_key_t key) {
                     /* M_NewGame -> NewDef, cursor on the saved skill. */
                     menu->itemOn[M_SCREEN_NEWGAME] = menu->settings.skill;
                     menu->screen = M_SCREEN_NEWGAME;
-                } else {
+                } else if (*itemOn == 1u) {
                     menu->screen = M_SCREEN_OPTIONS;
+                } else {
+                    /* LoadDef / SaveDef (T53): the owner has already filled the
+                     * six labels, so the screen opens with its rows readable. */
+                    menu->itemOn[*itemOn == 2u ? M_SCREEN_LOAD : M_SCREEN_SAVE] = 0u;
+                    menu->screen = *itemOn == 2u ? M_SCREEN_LOAD : M_SCREEN_SAVE;
                 }
             } else if (menu->screen == M_SCREEN_NEWGAME) {
                 /* M_ChooseSkill: G_DeferedInitNew(choice) then M_ClearMenus(). */
@@ -305,6 +345,22 @@ int m_menu_key(m_menu_t* menu, m_key_t key) {
                     menu->settingsChanged = 1;
                 }
                 m_menu_close(menu);
+            } else if (menu->screen == M_SCREEN_LOAD || menu->screen == M_SCREEN_SAVE) {
+                /* A LOAD row with no record does nothing and leaves the screen
+                 * open, so a mistyped press cannot close the menu over a world
+                 * that did not change. A SAVE over any row is the owner's to
+                 * perform: there is no confirm dialog here (m_menu.h). */
+                const int load = menu->screen == M_SCREEN_LOAD;
+                const int empty =
+                    strcmp((const char*)menu->slotLabels[*itemOn], M_SLOT_EMPTY) == 0;
+                if (load && empty) {
+                    break;
+                }
+                menu->slot = *itemOn;
+                menu->pendingAction =
+                    (int8_t)(load ? M_ACTION_LOAD_SLOT : M_ACTION_SAVE_SLOT);
+                m_menu_close(menu);
+                return (int)menu->pendingAction;
             } else if (def->items[*itemOn].status == ROW_SLIDER) {
                 slide(menu, *itemOn, 1);  /* upstream: routine(1) */
             }
@@ -319,7 +375,7 @@ int m_menu_key(m_menu_t* menu, m_key_t key) {
         default:
             break;
     }
-    return 1;
+    return (int)M_ACTION_KEY;
 }
 
 uint8_t m_menu_buttons(m_menu_t* menu, uint8_t held) {
@@ -415,6 +471,44 @@ int m_menu_take_settings_changed(m_menu_t* menu) {
     changed = menu->settingsChanged;
     menu->settingsChanged = 0;
     return changed;
+}
+
+void m_menu_set_slot_labels(m_menu_t* menu, const char* const labels[M_SLOT_COUNT]) {
+    uint8_t index;
+
+    if (menu == NULL) {
+        return;
+    }
+    for (index = 0; index < M_SLOT_COUNT; ++index) {
+        const char* label = labels != NULL ? labels[index] : NULL;
+        size_t length;
+
+        /* A NULL row (or a label the owner could not build) reads as EMPTY: the
+         * menu never shows a blank row, which a player reads as a bug. */
+        if (label == NULL) {
+            label = M_SLOT_EMPTY;
+        }
+        length = strlen(label);
+        if (length >= M_SLOT_LABEL_SIZE) {
+            length = M_SLOT_LABEL_SIZE - 1u;
+        }
+        memcpy(menu->slotLabels[index], label, length);
+        menu->slotLabels[index][length] = '\0';
+    }
+}
+
+int m_menu_take_slot_action(m_menu_t* menu, int* slot) {
+    int action;
+
+    if (menu == NULL || menu->pendingAction == (int8_t)M_ACTION_NONE) {
+        return (int)M_ACTION_NONE;
+    }
+    action = menu->pendingAction;
+    menu->pendingAction = (int8_t)M_ACTION_NONE;
+    if (slot != NULL) {
+        *slot = (int)menu->slot;
+    }
+    return action;
 }
 
 const char* m_skill_name(int skill) {
@@ -584,20 +678,17 @@ int m_menu_draw(const m_menu_t* menu, st_lump_fn lump, void* context, uint8_t* s
         /* M_DrawNewGame */
         missing += !drawPatch(lump, context, "M_NEWG", 96, 14, surface, stride, NULL);
         missing += !drawPatch(lump, context, "M_SKILL", 54, 38, surface, stride, NULL);
-    } else {
+    } else if (menu->screen == M_SCREEN_OPTIONS) {
         missing += !drawPatch(lump, context, "M_OPTTTL", 108, 15, surface, stride, NULL);
+    } else {
+        /* M_DrawLoad / M_DrawSave draw M_LOADG / M_SAVEG here in vanilla; this
+         * port spells them with the HU font (see the file comment). */
+        missing += writeText(lump, context, SLOT_TITLE_X, SLOT_TITLE_Y,
+                             menu->screen == M_SCREEN_LOAD ? "LOAD GAME" : "SAVE GAME",
+                             surface, stride);
     }
 
-    if (menu->screen != M_SCREEN_OPTIONS) {
-        for (index = 0; index < def->rows; ++index) {
-            if (def->items[index].patch != NULL) {
-                missing += !drawPatch(lump, context, def->items[index].patch, def->x,
-                                      def->y + index * LINEHEIGHT, surface, stride, NULL);
-            }
-        }
-        skullX = def->x + SKULLXOFF;
-        skullY = def->y - 5 + menu->itemOn[menu->screen] * LINEHEIGHT;
-    } else {
+    if (menu->screen == M_SCREEN_OPTIONS) {
         const int y0 = OPTIONS_Y0;
         const int y1 = OPTIONS_Y0 + OPTIONS_STEP;
         const int y2 = OPTIONS_Y0 + 2 * OPTIONS_STEP;
@@ -621,6 +712,29 @@ int m_menu_draw(const m_menu_t* menu, st_lump_fn lump, void* context, uint8_t* s
                              menu->settings.muted ? "ON" : "OFF", surface, stride);
         skullX = def->x + SKULLXOFF;
         skullY = OPTIONS_Y0 - 5 + menu->itemOn[M_SCREEN_OPTIONS] * OPTIONS_STEP;
+    } else if (menu->screen == M_SCREEN_LOAD || menu->screen == M_SCREEN_SAVE) {
+        /* The six rows are the owner's labels, EMPTY included. A text row is at
+         * the same baseline a patch row would have, which is what makes the
+         * skull's y agree with upstream's SaveDef/LoadDef. */
+        for (index = 0; index < def->rows; ++index) {
+            missing += writeText(lump, context, def->x, def->y + index * LINEHEIGHT,
+                                 (const char*)menu->slotLabels[index], surface, stride);
+        }
+        skullX = def->x + SKULLXOFF;
+        skullY = def->y - 5 + menu->itemOn[menu->screen] * LINEHEIGHT;
+    } else {
+        for (index = 0; index < def->rows; ++index) {
+            const m_row_t* row = &def->items[index];
+            if (row->patch != NULL) {
+                missing += !drawPatch(lump, context, row->patch, def->x,
+                                      def->y + index * LINEHEIGHT, surface, stride, NULL);
+            } else if (row->text != NULL) {
+                missing += writeText(lump, context, def->x, def->y + index * LINEHEIGHT,
+                                     row->text, surface, stride);
+            }
+        }
+        skullX = def->x + SKULLXOFF;
+        skullY = def->y - 5 + menu->itemOn[menu->screen] * LINEHEIGHT;
     }
 
     /* The skull cursor, last, so it sits over everything. */

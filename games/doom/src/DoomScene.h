@@ -430,6 +430,24 @@ private:
     bool settingsDirty_ = false;
     /// The gamma level the panel's palette was last built for.
     std::uint8_t gammaApplied_ = 0;
+    /// The screen the menu showed on the previous frame, so entering LOAD/SAVE
+    /// is noticed once and the six labels are read from the medium then (T53).
+    std::uint8_t menuScreenLast_ = M_SCREEN_MAIN;
+
+#if DOOM_PERSISTENCE
+    /// Fills `menu_`'s six slot labels through the persistence layer (T53).
+    void refreshSlotLabels();
+
+    /**
+     * @brief Performs the menu's pending LOAD or SAVE (T53).
+     *
+     * A load reloads the level the record names at its skill and applies it; a
+     * save archives the live world into the row. Both print their own
+     * `SHOW,save` / `SHOW,load` line from `DoomPersistence`, and both refresh the
+     * labels so the next open shows what the medium now holds.
+     */
+    void handleSlotAction(int action, int slot);
+#endif
 
     /// Fade steps a level load runs: eight frames at the shipped rate is ~0.5 s.
     static constexpr std::uint8_t kFadeSteps = 8u;

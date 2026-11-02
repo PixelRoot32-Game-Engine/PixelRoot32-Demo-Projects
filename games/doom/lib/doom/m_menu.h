@@ -32,14 +32,29 @@ extern "C" {
  *
  * SCREENS
  *
- *   MAIN      NEW GAME, OPTIONS          (MainDef; LOAD/SAVE/READ THIS/QUIT are
- *                                         not here: the port has no save files,
- *                                         no help screens and nothing to quit to)
+ *   MAIN      NEW GAME, OPTIONS, LOAD GAME, SAVE GAME
+ *                                     (MainDef, in upstream's order; READ THIS
+ *                                     and QUIT are not here: the port has no help
+ *                                     screens and nothing to quit to)
  *   NEWGAME   the five skill levels      (NewDef; the episode screen is skipped,
  *                                         shareware has one episode and its
  *                                         other rows only show the "registered
  *                                         version" notice)
  *   OPTIONS   skill, volume, gamma, mute  (setup-lite)
+ *   LOAD      six slot rows               (T53; a slot label or EMPTY)
+ *   SAVE      six slot rows               (T53; same rows, same labels)
+ *
+ * The two slot screens are drawn from `menu->slotLabels`, which the owner fills
+ * before opening them (`m_menu_set_slot_labels`). This file never reads a store:
+ * it does not know what a save slot is made of, which is why it stays C and
+ * engine-free. An activation is reported to the owner as a distinct action
+ * (`m_menu_take_slot_action`, and `m_menu_key`'s return value), and the owner
+ * does the load or the save.
+ *
+ * A LOAD row whose label is "EMPTY" does nothing and keeps the screen open.
+ * A SAVE over a used row saves immediately: vanilla asks "are you sure?", and
+ * this port has no confirm dialog -- adding one is a screen and two keys on a
+ * six-button pad, out of T53's scope, so a save is one key press, like New Game.
  *
  * KEYS, and the buttons they come from
  *
@@ -63,6 +78,18 @@ extern "C" {
 #define M_GAMMA_MAX 4       /* usegamma: 5 levels, 0 is the identity */
 #define M_GAMMA_DEFAULT 0
 #define M_MUTE_MAX 1        /* the mute row is a slider with two positions */
+
+/*
+ * LOAD GAME / SAVE GAME (T53).
+ *
+ * Six is vanilla's own slot count and the most this board's 32 KB `saves`
+ * partition holds honestly (S18/L56). A label is at most 15 characters plus the
+ * terminator -- the record's own header field, "E1M1 HURT 03:12" -- so the menu
+ * can draw it without knowing where it came from.
+ */
+#define M_SLOT_COUNT 6
+#define M_SLOT_LABEL_SIZE 16
+#define M_SLOT_EMPTY "EMPTY"
 
 /* The four persisted values. */
 typedef struct m_settings {
@@ -126,7 +153,9 @@ typedef enum m_screen {
     M_SCREEN_MAIN = 0,
     M_SCREEN_NEWGAME = 1,
     M_SCREEN_OPTIONS = 2,
-    M_SCREEN_COUNT = 3
+    M_SCREEN_LOAD = 3,
+    M_SCREEN_SAVE = 4,
+    M_SCREEN_COUNT = 5
 } m_screen_t;
 
 typedef enum m_key {
@@ -137,6 +166,21 @@ typedef enum m_key {
     M_KEY_ENTER = 4,
     M_KEY_BACK = 5
 } m_key_t;
+
+/*
+ * What a key meant to the menu's OWNER.
+ *
+ * M_ACTION_KEY is 1 so `m_menu_key` keeps its old contract for every path that
+ * existed before T53 ("nonzero = the menu was open and spent the key"). The two
+ * slot actions are distinct values above it; the owner's `m_menu_take_slot_action`
+ * reports them once, together with the row in `menu->slot`.
+ */
+typedef enum m_action {
+    M_ACTION_NONE = 0,       /* the menu was closed: the key was never seen */
+    M_ACTION_KEY = 1,        /* the menu spent the key and nothing is owed */
+    M_ACTION_LOAD_SLOT = 2,  /* LOAD GAME confirmed on row `menu->slot` */
+    M_ACTION_SAVE_SLOT = 3   /* SAVE GAME confirmed on row `menu->slot` */
+} m_action_t;
 
 /* The button bits m_menu_buttons() reads: src/doomc/InputMap.h's order, restated
  * here because this is C; the C++ side static_asserts the two agree. */
@@ -159,6 +203,16 @@ typedef struct m_menu {
     uint8_t settingsChanged;         /* a persisted value moved since last take */
     int8_t pendingSkill;             /* -1, or a New Game the owner must start */
     int16_t skullCounter;            /* skullAnimCounter */
+    /*
+     * T53: the six slot labels the owner filled, and the row an activation
+     * named. The labels live here rather than behind a callback so the menu
+     * never reads a store and a closed menu costs no call. `pendingAction` is
+     * M_ACTION_NONE until an activation; `slot` is that row (0..5) and stays
+     * readable after the action is taken.
+     */
+    uint8_t slotLabels[M_SLOT_COUNT][M_SLOT_LABEL_SIZE];
+    uint8_t slot;
+    int8_t pendingAction;            /* M_ACTION_NONE or a slot action */
 } m_menu_t;
 
 /* Closed menu, MAIN selected, @p settings as the initial values (NULL = defaults). */
@@ -170,7 +224,10 @@ void m_menu_open(m_menu_t* menu);
 /* M_ClearMenus(): closes the menu. */
 void m_menu_close(m_menu_t* menu);
 
-/* M_Responder() for one key. Returns 1 when the menu was open (the key is spent). */
+/* M_Responder() for one key. Returns M_ACTION_NONE when the menu was closed (the
+ * key was never seen), M_ACTION_KEY when it was open and spent the key, and a
+ * slot action when an activation is owed; a caller that only tests "nonzero" is
+ * as correct as it was before T53. */
 int m_menu_key(m_menu_t* menu, m_key_t key);
 
 /*
@@ -191,6 +248,25 @@ int m_menu_take_new_game(m_menu_t* menu, int* skill);
 
 /* Returns 1 once after a persisted value changed. */
 int m_menu_take_settings_changed(m_menu_t* menu);
+
+/* --- The save slots (T53) ---------------------------------------------------- */
+
+/*
+ * Fills the six slot labels the LOAD and SAVE screens draw. The owner calls it
+ * before opening either screen (one label per row; "EMPTY" for a row with no
+ * usable record), so the menu itself never reads a store. Each label is copied
+ * and clipped to M_SLOT_LABEL_SIZE - 1 characters; a NULL label reads as
+ * "EMPTY".
+ */
+void m_menu_set_slot_labels(m_menu_t* menu, const char* const labels[M_SLOT_COUNT]);
+
+/*
+ * A pending LOAD/SAVE: returns M_ACTION_LOAD_SLOT or M_ACTION_SAVE_SLOT once and
+ * stores the row in @p slot, or M_ACTION_NONE when there is nothing to do. The
+ * menu has already closed itself for a confirmed activation; the world is the
+ * caller's to reload or write.
+ */
+int m_menu_take_slot_action(m_menu_t* menu, int* slot);
 
 /* --- Drawing ------------------------------------------------------------- */
 

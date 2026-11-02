@@ -8,20 +8,23 @@ runs the SAME script through an independent drawer and compares the two byte for
 byte.
 
 The drawer is written from linuxdoom's ``m_menu.c`` and ``v_video.c``:
-``M_Drawer`` (the title patch, each row's picture 16 px apart, the skull at
-``x - 32, y - 5 + itemOn * 16`` and its two-frame animation), ``M_DrawNewGame``
-(``M_NEWG`` at 96,14 and ``M_SKILL`` at 54,38), ``M_WriteText`` (the HU font,
-a space advancing 4) and ``M_DrawThermo`` (left cap, middle pieces, right cap, dot).
+``M_Drawer`` (the title patch, each row's picture 16 px apart -- and, since T53, the
+two text rows LOAD GAME / SAVE GAME), ``M_DrawNewGame`` (``M_NEWG`` at 96,14 and
+``M_SKILL`` at 54,38), ``M_DrawLoad``/``M_DrawSave`` (T53: a text title and six slot
+labels at 80,54, the label the owner set), ``M_WriteText`` (the HU font, a space
+advancing 4) and ``M_DrawThermo`` (left cap, middle pieces, right cap, dot).
 It has its own patch reader and blitter; the key handling comes from the reference
 model in ``menu_check.py``, which shares no code with the C either. It is a second
 implementation of the same rules, NOT a run of vanilla DOOM (no binary is available),
 so it rules out transcription slips, not a shared misreading of the source.
 
-Eleven scripted states cover every screen, the first and last row of each (the mute
-row of the setup-lite screen is the last one), both skull frames and the closed menu
-(which must paint nothing). The surface starts as the sentinel 0xEE so a pixel
-written outside a patch's footprint shows up. A state that paints nothing when it
-should is itself a failure, so two blank surfaces cannot pass.
+Thirteen scripted states cover every screen, the first and last row of each (the mute
+row of the setup-lite screen and the sixth slot row are the last ones), both skull
+frames, the closed menu (which must paint nothing) and T53's two slot screens: LOAD
+with two used rows and four EMPTY ones, and SAVE over the same labels. The surface
+starts as the sentinel 0xEE so a pixel written outside a patch's footprint shows up.
+A state that paints nothing when it should is itself a failure, so two blank surfaces
+cannot pass.
 
     python tools/menu_draw_check.py --wad tools/DOOM1.WAD
     python tools/menu_draw_check.py --wad tools/DOOM1.WAD --perturb   # must FAIL
@@ -112,6 +115,24 @@ key down
 key enter
 tick 10
 draw options_mid_skull2
+# T53: LOAD GAME with two used slots and four EMPTY ones
+init 2 8 0
+slots E1M1 HURT 03:12|E1M1 MED 00:07|EMPTY|EMPTY|EMPTY|EMPTY
+open
+key down
+key down
+key enter
+draw load_two_used
+# T53: SAVE GAME, the same labels, the last row (sixth slot) selected
+init 2 8 0
+slots E1M1 HURT 03:12|E1M1 MED 00:07|EMPTY|EMPTY|EMPTY|EMPTY
+open
+key down
+key down
+key down
+key enter
+key up
+draw save_slot6
 # a closed menu paints nothing
 init 2 8 0
 draw closed
@@ -192,18 +213,23 @@ class Drawer:
         if not model.active:
             return bytes(surface)
         item = model.item[model.screen]
-        if model.screen == 0:
+        if model.screen == menu_check.MAIN:
             self.patch(surface, "M_DOOM", 94, 2)
-            for index, name in enumerate(("M_NGAME", "M_OPTION")):
-                self.patch(surface, name, 97, 64 + 16 * index)
+            rows = ("M_NGAME", "M_OPTION", None, None)
+            texts = (None, None, "LOAD GAME", "SAVE GAME")
+            for index, (patch, text) in enumerate(zip(rows, texts)):
+                if patch is not None:
+                    self.patch(surface, patch, 97, 64 + 16 * index)
+                else:
+                    self.write_text(surface, 97, 64 + 16 * index, text)
             skull_x, skull_y = 97 - 32, 64 - 5 + item * 16
-        elif model.screen == 1:
+        elif model.screen == menu_check.NEWGAME:
             self.patch(surface, "M_NEWG", 96, 14)
             self.patch(surface, "M_SKILL", 54, 38)
             for index, name in enumerate(("M_JKILL", "M_ROUGH", "M_HURT", "M_ULTRA", "M_NMARE")):
                 self.patch(surface, name, 48, 63 + 16 * index)
             skull_x, skull_y = 48 - 32, 63 - 5 + item * 16
-        else:
+        elif model.screen == menu_check.OPTIONS:
             self.patch(surface, "M_OPTTTL", 108, 15)
             self.write_text(surface, 60, 40, "SKILL LEVEL")
             self.write_text(surface, 60, 40 + 14, SKILL_NAMES[model.skill])
@@ -215,6 +241,14 @@ class Drawer:
             self.write_text(surface, 60, 148, "SOUND MUTE")
             self.write_text(surface, 60, 148 + 14, "ON" if model.muted else "OFF")
             skull_x, skull_y = 60 - 32, 40 - 5 + item * 36
+        else:
+            # T53's LOAD/SAVE screens: a text title at 120,24 and the six labels
+            # at 80,54, one 16 px line apart. No M_LOADG/M_SAVEG patch is drawn.
+            title = "LOAD GAME" if model.screen == menu_check.LOAD else "SAVE GAME"
+            self.write_text(surface, 120, 24, title)
+            for index, label in enumerate(model.slot_labels):
+                self.write_text(surface, 80, 54 + 16 * index, label)
+            skull_x, skull_y = 80 - 32, 54 - 5 + item * 16
         if self.perturb:
             skull_y += 1  # the injected bug: the cursor one pixel low
         self.patch(surface, "M_SKULL2" if model.skull else "M_SKULL1", skull_x, skull_y)
@@ -239,6 +273,10 @@ def run_oracle(wad: Wad, script: str, perturb: bool) -> list[tuple[str, bytes]]:
             model.key(words[1])
         elif words[0] == "tick":
             model.tick(int(words[1]))
+        elif words[0] == "slots":
+            # The labels are the rest of the line, '|' separated, spaces kept.
+            raw = line.split(None, 1)[1] if len(line.split(None, 1)) > 1 else ""
+            model.set_labels(raw.split("|"))
         elif words[0] == "draw":
             out.append((words[1], drawer.draw(model)))
     return out

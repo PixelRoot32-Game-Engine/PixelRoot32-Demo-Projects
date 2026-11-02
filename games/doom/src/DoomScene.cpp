@@ -41,6 +41,10 @@
 #error "DOOM_PALFLASH needs DOOM_MENU: it composes with the menu's gamma"
 #endif
 
+#if DOOM_PERSISTENCE && !defined(DOOM_MENU)
+#error "DOOM_PERSISTENCE is wired to the menu's LOAD/SAVE screens: define DOOM_MENU too"
+#endif
+
 #if defined(DOOM_MENU) || defined(DOOM_HUD)
 #include "doomc/InputMap.h"  /* the button bits the menu and the automap read */
 #endif
@@ -48,7 +52,9 @@
 #include "doomc/AudioLevels.h"  /* the volume/mute -> audio level mapping (T49) */
 #include "doomc/SceneRenderer.h"
 #include "doomc/SettingsStore.h"
-#if defined(ARDUINO)
+#if DOOM_PERSISTENCE
+#include "doomc/DoomPersistence.h"
+#elif defined(ARDUINO)
 #include "platforms/PreferencesStore.h"
 #endif
 #endif
@@ -794,12 +800,23 @@ void reportZoneProbe() {
 
 #if defined(DOOM_MENU)
 
-/// The store the settings live in: the board's NVS through Preferences, or RAM on
-/// the desktop mirror. The game code only ever sees the doomc::SettingsStore seam.
+/// The store the settings live in: the board's NVS, or RAM on the desktop mirror.
+/// The game code only ever sees the doomc::SettingsStore seam.
+#if DOOM_PERSISTENCE
+/// D7.1 (T53): the engine's persistence layer owns both media -- the settings in
+/// `nvs` (the same namespace and key the `Preferences` store used, so the record
+/// survives byte for byte) and the six slots in the `saves` partition.
+doomc::DoomPersistence gPersistence;
+
+doomc::SettingsStore& settingsStore() { return gPersistence.settingsStore(); }
+#else
 #if defined(ARDUINO)
 platforms::PreferencesStore gSettingsStore;
 #else
 doomc::MemorySettingsStore gSettingsStore;
+#endif
+
+doomc::SettingsStore& settingsStore() { return gSettingsStore; }
 #endif
 
 static_assert(M_BTN_UP == doomc::kButtonUp && M_BTN_DOWN == doomc::kButtonDown
@@ -828,7 +845,10 @@ static_assert(M_BTN_UP == doomc::kButtonUp && M_BTN_DOWN == doomc::kButtonDown
  *      frames of the new world are in the log. The last one leaves skill 3. The main
  *      screen remembers its cursor (upstream's lastOn), which step 2 left on OPTIONS,
  *      so the first one moves it back to NEW GAME with one UP.
- * End state: skill 3, volume 5, gamma 3, mute ON, menu closed.
+ *   5. D7.1 (T53): SAVE GAME on row 0, then LOAD GAME on the same row, so the
+ *      boot log carries one `SHOW,save` and one `SHOW,load` through the real menu.
+ * End state: skill 3, volume 5, gamma 3, mute ON, menu closed, slot 0 holding a
+ * fresh New Game's world.
  */
 struct ScriptStep {
     std::uint8_t buttons;
@@ -867,6 +887,21 @@ const ScriptStep kMenuScript[] = {
     NEWGAME_AT(TAP(M_BTN_DOWN)),               // 3 -> 4
     NEWGAME_AT(TAP(M_BTN_UP)),                 // 4 -> 3
     WAIT(120),
+#if DOOM_PERSISTENCE
+    /*
+     * D7.1 (T53): the two slot screens driven through the real menu path.
+     *
+     * The New Games leave MAIN's cursor on NEW GAME, so three DOWNs reach SAVE
+     * GAME (NEW GAME, OPTIONS, LOAD GAME, SAVE GAME). A opens the six-row screen,
+     * A again saves over row 0 -- EMPTY on a fresh partition, and this port has no
+     * confirm dialog. The save closes the menu; OPEN_MENU, UP, A, A then loads the
+     * same row back. The `SHOW,save` and `SHOW,load` lines are the record; a
+     * partition that is not there reports `status=unavailable` and the script
+     * still finishes, which is the honest shape on an old table.
+     */
+    OPEN_MENU, DOWN3, TAP(M_BTN_A), WAIT(40), TAP(M_BTN_A), WAIT(60),
+    OPEN_MENU, TAP(M_BTN_UP), TAP(M_BTN_A), WAIT(40), TAP(M_BTN_A), WAIT(120),
+#endif
 };
 
 /// The buttons the script holds on @p frame, or 0 once it has ended.
@@ -971,6 +1006,13 @@ void DoomScene::init() {
     // partition, rejected container) still has a well-formed one. The real
     // settings replace it below, once the level is open.
     m_menu_init(&menu_, nullptr);
+#if DOOM_PERSISTENCE
+    // D7.1 (T53): the two media before anything that reads the menu's settings,
+    // so the load below never runs against an uninitialised store. A failure is
+    // printed once here and the game continues: settings default, slots answer
+    // unavailable.
+    (void)gPersistence.init();
+#endif
 #endif
 
     // Builds the index -> RGB332 table once. It is the port's whole palette
@@ -1142,7 +1184,7 @@ void DoomScene::init() {
         // in New Game, not the first level's skill.
         {
             m_settings_t stored;
-            const bool fromStore = doomc::loadSettings(gSettingsStore, &stored);
+            const bool fromStore = doomc::loadSettings(settingsStore(), &stored);
             m_menu_init(&menu_, &stored);
             settingsDirty_ = false;
             menuScriptFrame_ = 0;
@@ -1801,6 +1843,24 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
     const bool active = m_menu_active(&menu_) != 0;
     char line[160];
 
+#if DOOM_PERSISTENCE
+    // The LOAD/SAVE screens draw labels the menu never reads itself, and the
+    // labels are read from the medium on entry, not on every frame: six
+    // loadRecord() calls are six NVS reads, and a menu is exactly the safe point
+    // the engine's guide allows a write (or a batch of reads) at.
+    if (menu_.screen != menuScreenLast_
+        && (menu_.screen == M_SCREEN_LOAD || menu_.screen == M_SCREEN_SAVE)) {
+        refreshSlotLabels();
+    }
+    menuScreenLast_ = menu_.screen;
+
+    int slot = -1;
+    const int slotAction = m_menu_take_slot_action(&menu_, &slot);
+    if (slotAction != M_ACTION_NONE) {
+        handleSlotAction(slotAction, slot);
+    }
+#endif
+
     if (active != wasActive) {
 #if defined(DOOM_AUDIO)
         // Upstream's menu pause: P_Pause calls S_PauseSound, P_Unpause calls
@@ -1858,7 +1918,7 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
     // Written once the player leaves the options screen (or the menu), not on every
     // step of a slider: NVS commits are slow and the flash wears.
     if (settingsDirty_ && (!active || menu_.screen != M_SCREEN_OPTIONS)) {
-        const bool saved = doomc::saveSettings(gSettingsStore, menu_.settings);
+        const bool saved = doomc::saveSettings(settingsStore(), menu_.settings);
         settingsDirty_ = false;
         std::snprintf(line, sizeof line,
                       "SHOW,menu,saved=%s,skill=%d,volume=%d,gamma=%d,mute=%d\n",
@@ -1870,6 +1930,44 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
     }
     return worldButtons;
 }
+
+#if DOOM_PERSISTENCE
+void DoomScene::refreshSlotLabels() {
+    // Six buffers on the stack, then the pointer array the menu's signature asks
+    // for: the menu copies them at once, so nothing here outlives the call.
+    char labels[M_SLOT_COUNT][M_SLOT_LABEL_SIZE];
+    const char* pointers[M_SLOT_COUNT];
+
+    gPersistence.readSlotLabels(labels);
+    for (int index = 0; index < M_SLOT_COUNT; ++index) {
+        pointers[index] = labels[index];
+    }
+    m_menu_set_slot_labels(&menu_, pointers);
+}
+
+void DoomScene::handleSlotAction(int action, int slot) {
+    if (action == M_ACTION_SAVE_SLOT) {
+        (void)gPersistence.saveSlot(slot);
+        // The row the player just wrote has a new clock, so the next open shows
+        // it without waiting for a screen change to force a re-read.
+        refreshSlotLabels();
+        return;
+    }
+    if (action != M_ACTION_LOAD_SLOT) {
+        return;
+    }
+    if (!gPersistence.loadSlot(slot)) {
+        // The failure is already on its own line; the world is either the fresh
+        // level the driver leaves (a rejected record) or untouched (an unreadable
+        // slot), so the menu's claim "nothing happened" is true.
+        return;
+    }
+    // A load is a level load: the tics that elapsed during the reload are not
+    // replayed, and D5.4's fade runs from black exactly as a New Game's does.
+    worldTic_ = ticClock_.tic();
+    startFade();
+}
+#endif  // DOOM_PERSISTENCE
 
 #endif  // DOOM_MENU
 

@@ -18,6 +18,9 @@
 #else
 
 #include <Arduino.h>
+#include <cstdlib>  /* malloc: the heap objects T53 moved out of .bss */
+#include <cstring>  /* memset: the zero-initialisation a static object gets */
+#include <new>      /* placement new over that block (an inline operator) */
 #include <drivers/esp32/TFT_eSPI_Drawer.h>
 #include <drivers/esp32/ESP32_I2S_AudioBackend.h>
 #include <core/Engine.h>
@@ -78,9 +81,33 @@ pr32::input::InputConfig inputConfig(BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_
 
 pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate());
 
+/*
+ * The scene is a HEAP object, not .bss (T53b, D7.1's flash).
+ *
+ * `dram0_0_seg` is the binding constraint this image has always had, and the
+ * persistence layer is the first feature that needed more of it than the last
+ * build left. Measured: with the engine and the scene both static the link came
+ * out 891 B over the region; the scene alone is 744 B, which is what makes it
+ * fit with ~1.1 KB to spare. Nothing is given up by moving it: it is created
+ * once in setup() and lives until reset, the allocator returns internal DRAM,
+ * and every buffer it owns is allocated exactly as before.
+ *
+ * The ENGINE stays a global object on purpose. `DoomScene.cpp` declares
+ * `extern pixelroot32::core::Engine engine;` -- a global variable's symbol is its
+ * name, not its type, so a `Engine* engine` definition here would silently bind
+ * that declaration to a pointer and every `engine.getRenderer()` would read a
+ * pointer's bytes as an object. The first board run of that shape panicked in
+ * `MusicPlayer::isPlaying()` (LoadProhibited at 0x28); this comment is the
+ * cheapest possible regression test.
+ *
+ * The scene is placed with malloc + placement new, deliberately NOT with plain
+ * `new`: that pulls libstdc++'s operator-new/exception tail into this image,
+ * which measured +45 KB of flash. Placement new is an inline operator and costs
+ * nothing, and the block is zeroed first because a static object is
+ * zero-initialised before its constructor runs while malloc is not.
+ */
 pr32::core::Engine engine(config, inputConfig, audioConfig);
-
-doom::DoomScene doomScene;
+doom::DoomScene* doomScene = nullptr;
 
 // D6.5 (T48): the two numbers the APU already keeps -- blocks whose DMA ring
 // had drained, and the worst synthesis time of one block. The seam asks for
@@ -98,11 +125,21 @@ static bool readApuTelemetry(void* user, doom::doomc::DoomAudioTelemetry* out) {
 }
 
 void setup() {
+    // The scene block: malloc + placement new, zeroed first (see the comment
+    // above the pointers). A null block is the only failure mode, and there is no
+    // console line to print before the engine exists, so an empty loop() is the
+    // honest outcome of a heap that cannot hold 744 B at boot.
+    void* sceneBlock = malloc(sizeof(doom::DoomScene));
+    if (sceneBlock == nullptr) {
+        return;
+    }
+    memset(sceneBlock, 0, sizeof(doom::DoomScene));
+    doomScene = new (sceneBlock) doom::DoomScene();
     engine.init();
     // After init(), because that is what starts the audio task the counters
     // belong to: before it, both would read a backend that has rendered nothing.
     doom::doomc::doomAudioSetTelemetrySource(readApuTelemetry, &audioBackend);
-    engine.setScene(&doomScene);
+    engine.setScene(doomScene);
 }
 
 void loop() {

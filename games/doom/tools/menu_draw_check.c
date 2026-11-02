@@ -12,6 +12,7 @@
  *   open                m_menu_open
  *   key NAME            up down left right enter back
  *   tick N              m_menu_tick
+ *   slots L0|..|L5      m_menu_set_slot_labels ('-' is a NULL row)
  *   draw NAME           clear the surface to 0xEE, m_menu_draw, dump
  *
  * Output: `DRAW NAME active=A screen=S item=I skull=K missing=N` followed by 200
@@ -194,6 +195,45 @@ int main(int argc, char** argv) {
             }
         } else if (strcmp(command, "tick") == 0) {
             m_menu_tick(&g_menu, (uint32_t)strtoul(line + consumed, NULL, 10));
+        } else if (strcmp(command, "slots") == 0) {
+            /* Six labels separated by '|' (see menu_check.c). */
+            const char* labels[M_SLOT_COUNT];
+            char storage[M_SLOT_COUNT][M_SLOT_LABEL_SIZE];
+            char fields[M_SLOT_COUNT][M_SLOT_LABEL_SIZE + 1];
+            const char* cursor = line + consumed;
+            size_t index = 0u;
+
+            memset(fields, 0, sizeof fields);
+            /* Skip the one separator space after the command word; a leading
+             * space inside the first label would shift it 4 px when drawn. */
+            while (*cursor == ' ' || *cursor == '\t') {
+                ++cursor;
+            }
+            while (index < M_SLOT_COUNT && *cursor != '\0') {
+                size_t at = 0u;
+                while (*cursor != '\0' && *cursor != '|' && *cursor != '\n'
+                       && *cursor != '\r' && at < M_SLOT_LABEL_SIZE) {
+                    fields[index][at++] = *cursor++;
+                }
+                fields[index][at] = '\0';
+                while (*cursor != '\0' && *cursor != '|' && *cursor != '\n'
+                       && *cursor != '\r') {
+                    ++cursor;
+                }
+                if (*cursor == '|') {
+                    ++cursor;
+                }
+                ++index;
+            }
+            for (index = 0; index < M_SLOT_COUNT; ++index) {
+                if (fields[index][0] != '\0' && strcmp(fields[index], "-") != 0) {
+                    memcpy(storage[index], fields[index], M_SLOT_LABEL_SIZE);
+                    labels[index] = storage[index];
+                } else {
+                    labels[index] = NULL;
+                }
+            }
+            m_menu_set_slot_labels(&g_menu, labels);
         } else if (strcmp(command, "draw") == 0) {
             char name[64];
             if (sscanf(line + consumed, "%63s", name) == 1) {

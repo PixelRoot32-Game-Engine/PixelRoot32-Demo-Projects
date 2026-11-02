@@ -19,6 +19,14 @@
  *   - the volume and mute become DOOM's 0..127 level exactly once (`audioLevel`):
  *     silence at 0, S_MAX_VOLUME at M_VOLUME_MAX, and mute silences without
  *     touching the stored volume
+ *   - T53 (D7.1): LOAD GAME / SAVE GAME are the main screen's last two rows and
+ *     open six-row slot screens; an activation reports its own action and row
+ *     (`M_ACTION_LOAD_SLOT` / `M_ACTION_SAVE_SLOT`), an EMPTY row does nothing and
+ *     keeps the screen open, and a save over any row is immediate
+ *   - T53: the settings record keeps its eight bytes when it moves onto the
+ *     engine's `IKeyValueStore` -- `KeyValueSettingsStore` writes and reads the
+ *     same blob `MemorySettingsStore` did, and a medium that refuses leaves the
+ *     old record in place
  */
 #include <cstdint>
 
@@ -31,6 +39,11 @@
 #include "doomc/SettingsStore.h"
 #include "m_menu.h"
 #pragma GCC diagnostic pop
+
+#if DOOM_PERSISTENCE
+#include "persistence/MemoryStores.h"
+#endif
+
 #include "palette/DoomPalette.h"
 
 #include "../../test_config.h"
@@ -292,6 +305,198 @@ void test_the_mute_row_is_the_fourth_options_row(void) {
     TEST_ASSERT_TRUE(m_menu_take_settings_changed(&menu) == 0);
 }
 
+// --- LOAD GAME / SAVE GAME (T53, D7.1) ---------------------------------------
+
+namespace {
+
+/// The labels a fresh partition produces: two used rows, four empty ones.
+void setSlotLabels(m_menu_t& menu, const char* first = "E1M1 HURT 03:12",
+                   const char* second = "E1M1 MED 00:07") {
+    const char* labels[M_SLOT_COUNT] = {first, second, nullptr, nullptr, nullptr, nullptr};
+    m_menu_set_slot_labels(&menu, labels);
+}
+
+/// MAIN's cursor to @p row with DOWN presses (the menu opens on row 0).
+void moveMainTo(m_menu_t& menu, int row) {
+    for (int index = 0; index < row; ++index) {
+        (void)m_menu_key(&menu, M_KEY_DOWN);
+    }
+}
+
+}  // namespace
+
+void test_the_slot_screens_are_main_s_last_two_rows(void) {
+    m_menu_t menu;
+    m_menu_init(&menu, nullptr);
+    m_menu_open(&menu);
+
+    // Vanilla's order after OPTIONS: LOAD GAME, then SAVE GAME. MAIN has four
+    // rows, so UP from NEW GAME wraps to SAVE GAME.
+    (void)m_menu_key(&menu, M_KEY_UP);
+    TEST_ASSERT_EQUAL_UINT8(3, menu.itemOn[M_SCREEN_MAIN]);
+    (void)m_menu_key(&menu, M_KEY_DOWN);
+    TEST_ASSERT_EQUAL_UINT8(0, menu.itemOn[M_SCREEN_MAIN]);
+    moveMainTo(menu, 2);
+    TEST_ASSERT_EQUAL_INT(1, m_menu_key(&menu, M_KEY_ENTER));
+    TEST_ASSERT_EQUAL_UINT8(M_SCREEN_LOAD, menu.screen);
+    TEST_ASSERT_EQUAL_UINT8(0, menu.itemOn[M_SCREEN_LOAD]);
+
+    // BACK returns to MAIN with the cursor still on LOAD GAME.
+    TEST_ASSERT_EQUAL_INT(1, m_menu_key(&menu, M_KEY_BACK));
+    TEST_ASSERT_EQUAL_UINT8(M_SCREEN_MAIN, menu.screen);
+    TEST_ASSERT_EQUAL_UINT8(2, menu.itemOn[M_SCREEN_MAIN]);
+
+    (void)m_menu_key(&menu, M_KEY_DOWN);
+    TEST_ASSERT_EQUAL_INT(1, m_menu_key(&menu, M_KEY_ENTER));
+    TEST_ASSERT_EQUAL_UINT8(M_SCREEN_SAVE, menu.screen);
+
+    // Six rows, wrapping both ways.
+    for (int index = 0; index < 5; ++index) {
+        (void)m_menu_key(&menu, M_KEY_DOWN);
+    }
+    TEST_ASSERT_EQUAL_UINT8(5, menu.itemOn[M_SCREEN_SAVE]);
+    (void)m_menu_key(&menu, M_KEY_DOWN);
+    TEST_ASSERT_EQUAL_UINT8(0, menu.itemOn[M_SCREEN_SAVE]);
+    (void)m_menu_key(&menu, M_KEY_UP);
+    TEST_ASSERT_EQUAL_UINT8(5, menu.itemOn[M_SCREEN_SAVE]);
+}
+
+void test_an_empty_slot_does_nothing_and_keeps_the_screen_open(void) {
+    m_menu_t menu;
+    m_menu_init(&menu, nullptr);
+    setSlotLabels(menu);
+    m_menu_open(&menu);
+    moveMainTo(menu, 2);
+    (void)m_menu_key(&menu, M_KEY_ENTER);  // LOAD GAME
+
+    // Row 2 is EMPTY: ENTER is spent by the menu and nothing is owed.
+    (void)m_menu_key(&menu, M_KEY_DOWN);
+    (void)m_menu_key(&menu, M_KEY_DOWN);
+    TEST_ASSERT_EQUAL_INT(M_ACTION_KEY, m_menu_key(&menu, M_KEY_ENTER));
+    TEST_ASSERT_EQUAL_UINT8(M_SCREEN_LOAD, menu.screen);
+    TEST_ASSERT_TRUE(m_menu_active(&menu) != 0);
+    int slot = -1;
+    TEST_ASSERT_EQUAL_INT(M_ACTION_NONE, m_menu_take_slot_action(&menu, &slot));
+}
+
+void test_a_used_slot_reports_its_action_and_row(void) {
+    m_menu_t menu;
+    m_menu_init(&menu, nullptr);
+    setSlotLabels(menu);
+    m_menu_open(&menu);
+    moveMainTo(menu, 2);
+    (void)m_menu_key(&menu, M_KEY_ENTER);  // LOAD GAME, row 0 (used)
+
+    // The action is the return value and the pending take, once, and the menu
+    // closes over the world it is about to replace.
+    TEST_ASSERT_EQUAL_INT(M_ACTION_LOAD_SLOT, m_menu_key(&menu, M_KEY_ENTER));
+    TEST_ASSERT_TRUE(m_menu_active(&menu) == 0);
+    int slot = -1;
+    TEST_ASSERT_EQUAL_INT(M_ACTION_LOAD_SLOT, m_menu_take_slot_action(&menu, &slot));
+    TEST_ASSERT_EQUAL_INT(0, slot);
+    TEST_ASSERT_EQUAL_INT(M_ACTION_NONE, m_menu_take_slot_action(&menu, &slot));
+
+    // SAVE over an EMPTY row is immediate too: there is no confirm dialog.
+    // The menu reopens on MAIN with its cursor still on LOAD GAME (2).
+    m_menu_open(&menu);
+    (void)m_menu_key(&menu, M_KEY_DOWN);  // LOAD GAME -> SAVE GAME
+    TEST_ASSERT_EQUAL_UINT8(3, menu.itemOn[M_SCREEN_MAIN]);
+    (void)m_menu_key(&menu, M_KEY_ENTER);
+    TEST_ASSERT_EQUAL_UINT8(M_SCREEN_SAVE, menu.screen);
+    for (int index = 0; index < 3; ++index) {
+        (void)m_menu_key(&menu, M_KEY_DOWN);
+    }
+    TEST_ASSERT_EQUAL_INT(M_ACTION_SAVE_SLOT, m_menu_key(&menu, M_KEY_ENTER));
+    TEST_ASSERT_EQUAL_INT(M_ACTION_SAVE_SLOT, m_menu_take_slot_action(&menu, &slot));
+    TEST_ASSERT_EQUAL_INT(3, slot);
+    TEST_ASSERT_TRUE(m_menu_active(&menu) == 0);
+}
+
+void test_a_null_slot_label_reads_empty_and_labels_are_clipped(void) {
+    m_menu_t menu;
+    m_menu_init(&menu, nullptr);
+
+    const char* labels[M_SLOT_COUNT] = {
+        "E1M1 HURT 03:12", "0123456789ABCDEFGHIJ", nullptr, "", "E1M1 NGT 99:59", "x"};
+    m_menu_set_slot_labels(&menu, labels);
+
+    // 15 characters plus the terminator is the field: nothing overflows it.
+    TEST_ASSERT_EQUAL_STRING("E1M1 HURT 03:12", (const char*)menu.slotLabels[0]);
+    TEST_ASSERT_EQUAL_STRING("0123456789ABCDE", (const char*)menu.slotLabels[1]);
+    TEST_ASSERT_EQUAL_STRING(M_SLOT_EMPTY, (const char*)menu.slotLabels[2]);
+    TEST_ASSERT_EQUAL_STRING("", (const char*)menu.slotLabels[3]);
+    TEST_ASSERT_EQUAL_STRING("E1M1 NGT 99:59", (const char*)menu.slotLabels[4]);
+
+    // A fresh menu has six EMPTY rows, so a screen opened before the owner filled
+    // anything cannot load a slot.
+    m_menu_t fresh;
+    m_menu_init(&fresh, nullptr);
+    for (int index = 0; index < M_SLOT_COUNT; ++index) {
+        TEST_ASSERT_EQUAL_STRING(M_SLOT_EMPTY, (const char*)fresh.slotLabels[index]);
+    }
+}
+
+#if DOOM_PERSISTENCE
+void test_the_eight_bytes_survive_the_move_onto_the_engine_store(void) {
+    // The medium the board uses is the engine's NVS adapter, whose blob is
+    // byte-compatible with Preferences. On the host the same interface is the
+    // in-RAM table, so this proves the seam, the key and the bytes.
+    pixelroot32::persistence::MemoryKeyValueStore<4, 64> medium;
+    doom::doomc::KeyValueSettingsStore store(medium);
+
+    m_settings_t settings = {3, 12, 2, 1};
+    TEST_ASSERT_TRUE(saveSettings(store, settings));
+
+    // The record is exactly the eight bytes the old store wrote.
+    std::uint8_t blob[M_SETTINGS_BLOB_SIZE];
+    std::size_t stored = 0u;
+    TEST_ASSERT_EQUAL(pixelroot32::persistence::StoreResult::Ok,
+                      medium.getBlob("cfg", blob, sizeof blob, stored));
+    TEST_ASSERT_EQUAL_UINT32(M_SETTINGS_BLOB_SIZE, stored);
+    const std::uint8_t golden[M_SETTINGS_BLOB_SIZE] = {0x44, 0x4D, 1, 3, 12, 2, 1, 0x49};
+    for (unsigned index = 0; index < M_SETTINGS_BLOB_SIZE; ++index) {
+        TEST_ASSERT_EQUAL_HEX8(golden[index], blob[index]);
+    }
+
+    // A "reboot": a second adapter over the same medium decodes the same values.
+    doom::doomc::KeyValueSettingsStore rebooted(medium);
+    m_settings_t loaded;
+    TEST_ASSERT_TRUE(loadSettings(rebooted, &loaded));
+    assertSettings(3, 12, 2, loaded, 1);
+
+    // A record the old store wrote still decodes through the new one.
+    pixelroot32::persistence::MemoryKeyValueStore<4, 64> oldMedium;
+    TEST_ASSERT_EQUAL(pixelroot32::persistence::StoreResult::Ok,
+                      oldMedium.setBlob("cfg", kOldRecord, sizeof kOldRecord));
+    doom::doomc::KeyValueSettingsStore oldStore(oldMedium);
+    TEST_ASSERT_TRUE(loadSettings(oldStore, &loaded));
+    assertSettings(3, 12, 2, loaded, 0);
+}
+
+void test_a_failed_engine_store_write_keeps_the_old_record(void) {
+    pixelroot32::persistence::MemoryKeyValueStore<4, 64> medium;
+    doom::doomc::KeyValueSettingsStore store(medium);
+    m_settings_t first = {1, 5, 1, 0};
+    TEST_ASSERT_TRUE(saveSettings(store, first));
+
+    medium.setFailWrites(true);
+    m_settings_t second = {4, 15, 4, 1};
+    TEST_ASSERT_FALSE(saveSettings(store, second));
+
+    doom::doomc::KeyValueSettingsStore rebooted(medium);
+    m_settings_t loaded;
+    TEST_ASSERT_TRUE(loadSettings(rebooted, &loaded));
+    assertSettings(1, 5, 1, loaded, 0);
+
+    // A missing record is "no record", not a corrupt one: the caller gets the
+    // defaults and says so.
+    pixelroot32::persistence::MemoryKeyValueStore<4, 64> empty;
+    doom::doomc::KeyValueSettingsStore emptyStore(empty);
+    TEST_ASSERT_FALSE(loadSettings(emptyStore, &loaded));
+    assertSettings(M_SKILL_DEFAULT, M_VOLUME_DEFAULT, M_GAMMA_DEFAULT, loaded, 0);
+}
+#endif  // DOOM_PERSISTENCE
+
 namespace {
 
 // A recognisable PLAYPAL: entry i is (i, 255 - i, i / 2).
@@ -370,6 +575,14 @@ int main(int argc, char** argv) {
     RUN_TEST(test_volume_maps_onto_dooms_0_127_scale);
     RUN_TEST(test_mute_silences_without_touching_the_stored_volume);
     RUN_TEST(test_the_mute_row_is_the_fourth_options_row);
+    RUN_TEST(test_the_slot_screens_are_main_s_last_two_rows);
+    RUN_TEST(test_an_empty_slot_does_nothing_and_keeps_the_screen_open);
+    RUN_TEST(test_a_used_slot_reports_its_action_and_row);
+    RUN_TEST(test_a_null_slot_label_reads_empty_and_labels_are_clipped);
+#if DOOM_PERSISTENCE
+    RUN_TEST(test_the_eight_bytes_survive_the_move_onto_the_engine_store);
+    RUN_TEST(test_a_failed_engine_store_write_keeps_the_old_record);
+#endif
 
     return UNITY_END();
 }

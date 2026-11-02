@@ -23,6 +23,13 @@ options screen has a fourth slider row (mute, OFF/ON). Both are stated here from
 spec, not read out of the C: the flag round-trips, an older record with that byte
 zero decodes as "not muted", and the mute row clamps at both ends.
 
+Since T53 the main screen has four rows -- NEW GAME, OPTIONS, LOAD GAME, SAVE GAME --
+and the last two open six-row slot screens drawn from labels the owner set through
+``m_menu_set_slot_labels``. The model restates the activation rules from the spec:
+a LOAD row labelled EMPTY does nothing and keeps the screen open, a LOAD of a used
+row and a SAVE of any row report a distinct action with the row number and close the
+menu.
+
 Run it:
 
     python tools/menu_check.py                         # state machine, codec, gamma
@@ -54,9 +61,17 @@ LIB = ROOT / "lib" / "doom"
 UP, DOWN, LEFT, RIGHT, A, B, START = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40
 DEFAULTS = (2, 8, 0, 0)
 SKILLS, VOLUME_MAX, GAMMA_MAX, MUTE_MAX = 5, 15, 4, 1
+SLOTS = 6
+
+# The five screens in m_menu.h's order: MAIN, NEWGAME, OPTIONS, LOAD, SAVE.
+MAIN, NEWGAME, OPTIONS, LOAD, SAVE = 0, 1, 2, 3, 4
 
 # screen -> number of rows
-ROWS = {0: 2, 1: 5, 2: 4}
+ROWS = {MAIN: 4, NEWGAME: 5, OPTIONS: 4, LOAD: SLOTS, SAVE: SLOTS}
+
+# What m_menu_set_slot_labels() is given in the slot runs: two used rows, four
+# empty ones. The format is the save record's own header label, 15 characters.
+SLOT_LABELS = ["E1M1 HURT 03:12", "E1M1 MED 00:07", "EMPTY", "EMPTY", "EMPTY", "EMPTY"]
 
 
 # --- The reference model (no code shared with the C) ------------------------------
@@ -69,13 +84,16 @@ class Model:
         self.perturb = perturb
         self.active = 0
         self.screen = 0
-        self.item = [0, self.skill, 0]
+        self.item = [0, self.skill, 0, 0, 0]
         self.skull = 0
         self.counter = 10
         self.latched = 0
         self.prev = 0
         self.changed = 0
         self.pending = -1
+        self.slot_labels = ["EMPTY"] * SLOTS
+        self.slot = 0
+        self.pending_action = 0
 
     @staticmethod
     def _clamp(settings):
@@ -139,28 +157,48 @@ class Model:
         elif key == "up":
             self.item[self.screen] = (current - 1) % rows
         elif key in ("left", "right"):
-            if self.screen == 2:
+            if self.screen == OPTIONS:
                 self._slide(current, -1 if key == "left" else 1)
         elif key == "enter":
-            if self.screen == 0:
+            if self.screen == MAIN:
                 if current == 0:
-                    self.screen = 1
-                    self.item[1] = self.skill
+                    self.screen = NEWGAME
+                    self.item[NEWGAME] = self.skill
+                elif current == 1:
+                    self.screen = OPTIONS
                 else:
-                    self.screen = 2
-            elif self.screen == 1:
+                    # LOAD GAME / SAVE GAME: the six-row slot screen, cursor on
+                    # row 0 (m_menu_key sets itemOn for the new screen).
+                    self.screen = LOAD if current == 2 else SAVE
+                    self.item[self.screen] = 0
+            elif self.screen == NEWGAME:
                 self.pending = current
                 if self.skill != current:
                     self.skill = current
                     self.changed = 1
                 self.close()
+            elif self.screen == LOAD:
+                # An EMPTY row does nothing and the screen stays open.
+                if self.slot_labels[current] != "EMPTY":
+                    self.slot = current
+                    self.pending_action = 2
+                    self.close()
+            elif self.screen == SAVE:
+                # Saving over a used row is immediate: no confirm dialog here.
+                self.slot = current
+                self.pending_action = 3
+                self.close()
             else:
                 self._slide(current, 1)
         elif key == "back":
-            if self.screen == 0:
+            if self.screen == MAIN:
                 self.close()
             else:
-                self.screen = 0
+                self.screen = MAIN
+
+    def set_labels(self, labels):
+        """m_menu_set_slot_labels(): copy, clip to 15 and read NULL as EMPTY."""
+        self.slot_labels = [("EMPTY" if label is None else label[:15]) for label in labels]
 
     def buttons(self, held):
         rising = held & ~self.prev
@@ -202,7 +240,11 @@ class Model:
         self.pending = -1
         changed = self.changed
         self.changed = 0
-        return f"TAKE newgame={int(started)} skill={skill if started else -1} changed={changed}"
+        action = self.pending_action
+        self.pending_action = 0
+        slot = self.slot if action else -1
+        return (f"TAKE newgame={int(started)} skill={skill if started else -1}"
+                f" changed={changed} action={action} slot={slot}")
 
 
 # --- A scripted run: commands in, expected lines out -------------------------------
@@ -242,13 +284,37 @@ def anchors() -> Run:
     add("buttons 0x40", state(active=1, world=0))
     add("buttons 0x40", state(active=1, world=0))
     add("buttons 0x00", state(active=1, world=0))
-    # DOWN moves to OPTIONS, DOWN again wraps to NEW GAME, UP wraps back.
+    # DOWN steps through MAIN's four rows -- OPTIONS, LOAD GAME, SAVE GAME -- and
+    # wraps to NEW GAME; UP walks back the same way.
     add("buttons 0x02", state(active=1, item=1, world=0))
     add("buttons 0x00", state(active=1, item=1, world=0))
+    add("buttons 0x02", state(active=1, item=2, world=0))
+    add("buttons 0x00", state(active=1, item=2, world=0))
+    add("buttons 0x02", state(active=1, item=3, world=0))
+    add("buttons 0x00", state(active=1, item=3, world=0))
     add("buttons 0x02", state(active=1, item=0, world=0))
     add("buttons 0x00", state(active=1, item=0, world=0))
-    add("buttons 0x01", state(active=1, item=1, world=0))
-    add("buttons 0x00", state(active=1, item=1, world=0))
+    add("buttons 0x01", state(active=1, item=3, world=0))
+    add("buttons 0x00", state(active=1, item=3, world=0))
+    add("buttons 0x01", state(active=1, item=2, world=0))
+    add("buttons 0x00", state(active=1, item=2, world=0))
+    # LOAD GAME opens the six-row slot screen (screen 3); BACK returns to MAIN
+    # with the cursor still on the row that opened it.
+    add("buttons 0x10", state(active=1, screen=3, item=0, world=0))
+    add("buttons 0x00", state(active=1, screen=3, item=0, world=0))
+    add("buttons 0x20", state(active=1, screen=0, item=2, world=0))
+    add("buttons 0x00", state(active=1, screen=0, item=2, world=0))
+    # SAVE GAME opens its own six-row screen (screen 4).
+    add("buttons 0x02", state(active=1, screen=0, item=3, world=0))
+    add("buttons 0x00", state(active=1, screen=0, item=3, world=0))
+    add("buttons 0x10", state(active=1, screen=4, item=0, world=0))
+    add("buttons 0x00", state(active=1, screen=4, item=0, world=0))
+    add("buttons 0x20", state(active=1, screen=0, item=3, world=0))
+    add("buttons 0x00", state(active=1, screen=0, item=3, world=0))
+    add("buttons 0x01", state(active=1, screen=0, item=2, world=0))
+    add("buttons 0x00", state(active=1, screen=0, item=2, world=0))
+    add("buttons 0x01", state(active=1, screen=0, item=1, world=0))
+    add("buttons 0x00", state(active=1, screen=0, item=1, world=0))
     # OPTIONS, then the four rows in order, each reachable.
     add("buttons 0x10", state(active=1, screen=2, item=0, world=0))
     add("buttons 0x00", state(active=1, screen=2, item=0, world=0))
@@ -260,21 +326,21 @@ def anchors() -> Run:
     for value in (1, 2, 3, 4):
         add("buttons 0x08", state(active=1, screen=2, item=2, gamma=value, world=0))
         add("buttons 0x00", state(active=1, screen=2, item=2, gamma=value, world=0))
-    add("take", "TAKE newgame=0 skill=-1 changed=1")
-    add("take", "TAKE newgame=0 skill=-1 changed=0")
+    add("take", "TAKE newgame=0 skill=-1 changed=1 action=0 slot=-1")
+    add("take", "TAKE newgame=0 skill=-1 changed=0 action=0 slot=-1")
     add("buttons 0x08", state(active=1, screen=2, item=2, gamma=4, world=0))
     add("buttons 0x00", state(active=1, screen=2, item=2, gamma=4, world=0))
-    add("take", "TAKE newgame=0 skill=-1 changed=0")
+    add("take", "TAKE newgame=0 skill=-1 changed=0 action=0 slot=-1")
     # MUTE is the fourth row: DOWN reaches it, RIGHT turns it on, one more clamps
     # (the slider's range is one), and LEFT turns it off again.
     add("buttons 0x02", state(active=1, screen=2, item=3, gamma=4, world=0))
     add("buttons 0x00", state(active=1, screen=2, item=3, gamma=4, world=0))
     add("buttons 0x08", state(active=1, screen=2, item=3, gamma=4, mute=1, world=0))
     add("buttons 0x00", state(active=1, screen=2, item=3, gamma=4, mute=1, world=0))
-    add("take", "TAKE newgame=0 skill=-1 changed=1")
+    add("take", "TAKE newgame=0 skill=-1 changed=1 action=0 slot=-1")
     add("buttons 0x08", state(active=1, screen=2, item=3, gamma=4, mute=1, world=0))
     add("buttons 0x00", state(active=1, screen=2, item=3, gamma=4, mute=1, world=0))
-    add("take", "TAKE newgame=0 skill=-1 changed=0")
+    add("take", "TAKE newgame=0 skill=-1 changed=0 action=0 slot=-1")
     add("buttons 0x04", state(active=1, screen=2, item=3, gamma=4, mute=0, world=0))
     add("buttons 0x00", state(active=1, screen=2, item=3, gamma=4, mute=0, world=0))
     # BACK returns to MAIN with the cursor where it was (OPTIONS), BACK closes.
@@ -307,17 +373,113 @@ def anchors() -> Run:
     add("buttons 0x02", state(active=1, screen=1, item=3, world=0))
     add("buttons 0x00", state(active=1, screen=1, item=3, world=0))
     add("buttons 0x10", state(active=0, screen=0, item=0, skill=3, world=0))
-    add("take", "TAKE newgame=1 skill=3 changed=1")
-    add("take", "TAKE newgame=0 skill=-1 changed=0")
+    add("take", "TAKE newgame=1 skill=3 changed=1 action=0 slot=-1")
+    add("take", "TAKE newgame=0 skill=-1 changed=0 action=0 slot=-1")
     return run
+
+
+def slots_run(perturb: bool) -> Run:
+    """LOAD GAME / SAVE GAME: the six rows, the activation rules (T53).
+
+    Hand-written expectations for the rules the spec states, then the same model
+    replay the other runs use, so a row that is off by one cannot agree with
+    itself. Two rows are used and four are EMPTY, exactly the labels the board
+    produces for a fresh partition.
+    """
+    run = Run()
+    add = run.add
+    add("init", state())
+    add("slots " + "|".join(SLOT_LABELS), "SLOTS ok=1")
+    add("open", state(active=1))
+    # MAIN -> LOAD GAME (row 2).
+    add("buttons 0x02", state(active=1, item=1, world=0))
+    add("buttons 0x00", state(active=1, item=1, world=0))
+    add("buttons 0x02", state(active=1, item=2, world=0))
+    add("buttons 0x00", state(active=1, item=2, world=0))
+    add("buttons 0x10", state(active=1, screen=3, item=0, world=0))
+    add("buttons 0x00", state(active=1, screen=3, item=0, world=0))
+    # An EMPTY row (2) does nothing and the screen stays open. The cursor wraps
+    # from row 0 up to row 5 and down again, so all six rows are reachable.
+    add("buttons 0x01", state(active=1, screen=3, item=5, world=0))
+    add("buttons 0x00", state(active=1, screen=3, item=5, world=0))
+    add("buttons 0x02", state(active=1, screen=3, item=0, world=0))
+    add("buttons 0x00", state(active=1, screen=3, item=0, world=0))
+    add("buttons 0x02", state(active=1, screen=3, item=1, world=0))
+    add("buttons 0x00", state(active=1, screen=3, item=1, world=0))
+    add("buttons 0x02", state(active=1, screen=3, item=2, world=0))
+    add("buttons 0x00", state(active=1, screen=3, item=2, world=0))
+    add("buttons 0x10", state(active=1, screen=3, item=2, world=0))
+    add("buttons 0x00", state(active=1, screen=3, item=2, world=0))
+    add("take", "TAKE newgame=0 skill=-1 changed=0 action=0 slot=-1")
+    # A used row (1) reports LOAD with its number; the menu closes.
+    add("buttons 0x01", state(active=1, screen=3, item=1, world=0))
+    add("buttons 0x00", state(active=1, screen=3, item=1, world=0))
+    add("buttons 0x10", state(active=0, screen=0, item=2, world=0))
+    add("take", "TAKE newgame=0 skill=-1 changed=0 action=2 slot=1")
+    add("take", "TAKE newgame=0 skill=-1 changed=0 action=0 slot=-1")
+    # SAVE GAME (row 3) saves over a used row immediately, and over an EMPTY row
+    # too: there is no confirm dialog in this port. The release frame is what
+    # clears the latch a closing menu leaves behind.
+    add("buttons 0x00", state(active=0, screen=0, item=2, world=0))
+    add("buttons 0x40", state(active=1, screen=0, item=2, world=0))
+    add("buttons 0x00", state(active=1, screen=0, item=2, world=0))
+    add("buttons 0x02", state(active=1, screen=0, item=3, world=0))
+    add("buttons 0x00", state(active=1, screen=0, item=3, world=0))
+    add("buttons 0x10", state(active=1, screen=4, item=0, world=0))
+    add("buttons 0x00", state(active=1, screen=4, item=0, world=0))
+    add("buttons 0x10", state(active=0, screen=0, item=3, world=0))
+    add("take", "TAKE newgame=0 skill=-1 changed=0 action=3 slot=0")
+    add("buttons 0x00", state(active=0, screen=0, item=3, world=0))
+    add("buttons 0x40", state(active=1, screen=0, item=3, world=0))
+    add("buttons 0x00", state(active=1, screen=0, item=3, world=0))
+    add("buttons 0x10", state(active=1, screen=4, item=0, world=0))
+    add("buttons 0x00", state(active=1, screen=4, item=0, world=0))
+    add("buttons 0x02", state(active=1, screen=4, item=1, world=0))
+    add("buttons 0x00", state(active=1, screen=4, item=1, world=0))
+    add("buttons 0x02", state(active=1, screen=4, item=2, world=0))
+    add("buttons 0x00", state(active=1, screen=4, item=2, world=0))
+    add("buttons 0x10", state(active=0, screen=0, item=3, world=0))
+    add("take", "TAKE newgame=0 skill=-1 changed=0 action=3 slot=2")
+    # The model replay of the same rules, with a label set of its own.
+    model = Model(perturb=perturb)
+    model.set_labels(SLOT_LABELS)
+    replay = Run()
+    replay.add("init", model.line())
+    replay.add("slots " + "|".join(SLOT_LABELS), "SLOTS ok=1")
+    model.open()
+    replay.add("open", model.line())
+    plan = ["down", "down", "enter"]            # MAIN -> LOAD, row 0
+    plan += ["up", "enter"]                     # row 5 (EMPTY) does nothing
+    plan += ["up", "up", "up", "up"]            # 5 -> 4 -> 3 -> 2 -> 1
+    plan += ["enter"]                           # row 1 is used: LOAD
+    for key in plan:
+        model.key(key)
+        replay.add(f"key {key}", model.line())
+    replay.add("take", model.take())
+    replay.add("take", model.take())
+    return RunCombined(run, replay)
+
+
+class RunCombined(Run):
+    """Two scripts appended in order: the two halves share the C process state, so
+    the second begins with its own `init` (and its own labels) in the same run."""
+
+    def __init__(self, first: Run, second: Run) -> None:
+        super().__init__()
+        self.commands = first.commands + second.commands
+        self.expected = first.expected + second.expected
 
 
 def fuzz(seed: int, frames: int, perturb: bool) -> Run:
     """Random button frames and ticks, mirrored by the model."""
     rng = random.Random(seed)
     model = Model(perturb=perturb)
+    model.set_labels(SLOT_LABELS)
     run = Run()
     run.add("init", model.line())
+    # The labels are set once here, so a random walk that reaches LOAD/SAVE has
+    # used and empty rows to activate, not six EMPTY ones.
+    run.add("slots " + "|".join(SLOT_LABELS), "SLOTS ok=1")
     held = 0
     for _ in range(frames):
         roll = rng.random()
@@ -521,6 +683,7 @@ def state_machine(arguments) -> int:
             "anchors": anchors(),
             "skull": skull_run(arguments.perturb),
             "sliders": sliders(arguments.perturb),
+            "slots": slots_run(arguments.perturb),
             "codec": codec_run(arguments.perturb),
         }
         for seed in range(1, 7):

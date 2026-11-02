@@ -37,15 +37,19 @@
                                TEXTURE1/TEXTURE2/PNAMES/COLORMAP, a level lump
                                or any manifest target -- the flats in particular
                                ARE their manifest payloads and stay.
-      (no --drop-unused-sprites)
-                               every S_START..S_END lump stays in the container:
-                               483 sprite lumps, 614,436 B stored. The fixture
-                               names 216 of them for the bake -- the frames
-                               E1M1's THINGS can show plus every state chain the
-                               map's mobj types and the simulation's puff, blood,
-                               rocket, imp fireball and teleport fog can enter;
-                               the other 267 are compressed frames no E1M1 frame
-                               can name, which is the point of D3.11.
+      --drop-unused-sprites    T53b: remove the S_START..S_END lumps no list can
+                               name. The fixture names 216 for the bake, the
+                               weapon raw list names 28 (PISG/PISF, SHTG/SHTF,
+                               CHGG/CHGF, MISG/MISF, PUNG, SAWG) and the tool
+                               never drops a name any raw list requires; the
+                               other 239 frames are unreachable and go. They are
+                               264,819 B stored (402,464 B uncompressed) and
+                               271,532 B of container once their directory and
+                               name entries are counted. The renderer's sprite
+                               table is built from the nine levels' THINGS and
+                               the union bake, so no removed frame was ever
+                               addressable: this is the S3-profile trim (L51)
+                               taken early because D7.1 needed the app flash.
       --stats                  total, spare against the partitions_wad.csv `wad`
                                row, the dropped-by-kind trade, the sprite count
                                and what each level would cost baked alone.
@@ -59,18 +63,24 @@
     SOURCE WAD's patches -- the container no longer carries them, and a
     container agreeing with itself would prove nothing.
 
-    The container is flashed to 0x0B0000, the `wad` partition of
+    The container is flashed to 0x0C0000, the `wad` partition of
     partitions_wad.csv (D3.11, moved again by T36 and T38). The offset went
     0x100000 -> 0x0D0000 when the app slot shrank to 768 KB, 0x0D0000 ->
-    0x0C0000 when it shrank to 720,896 B for the HUD art and 0x0C0000 ->
-    0x0B0000 when it shrank to 655,360 B for the weapon art; flashing a new partition table erases NVS, which this
-    project does not use. Flash the app image too, because the table is part of
-    it.
+    0x0C0000 when it shrank to 720,896 B for the HUD art, 0x0C0000 -> 0x0B0000
+    when it shrank to 655,360 B for the weapon art, and T53b moved it back to
+    0x0C0000 with a 720,896 B app row because the trimmed container needs only
+    3,167,944 B. The `wad` row is 3,375,104 B: T53 took 32 KB off its top for
+    the `saves` partition and T53b moved its start 64 KB up, so the budget below
+    is that row's size. Flash the app image too, because the table is part of it.
+    The uploader writes boot_app0.bin at 0xE000 on every upload (the last page of
+    `nvs`, where the menu's settings live), so a reflash can lose that record;
+    the `saves` row at 0x3F8000 is not touched.
 
     T39 (D5.2) adds the menu: 17 M_* patches and the HU font STCFN033..095, kept raw
     by name through --raw-list tools/menu_lumps.txt (generated and drift-checked by
-    gen_menu_lumps.py, proved by menu_check.py --container). The partition table is
-    unchanged, so NVS (where the menu keeps its settings) survives the reflash.
+    gen_menu_lumps.py, proved by menu_check.py --container). T53 keeps the menu's
+    settings in `nvs` at the same 0x009000..0x00F000, so a table change that only
+    moves `factory`/`wad`/`saves` leaves that record where it is.
 
     The WAD is copyrighted shareware data and is never committed. tools/ is
     git-ignored for both DOOM1.WAD and DOOM1.whd.
@@ -109,9 +119,15 @@ $ErrorActionPreference = "Stop"
 if (-not $Wad) { $Wad = Join-Path $PSScriptRoot "DOOM1.WAD" }
 if (-not $Out) { $Out = Join-Path $PSScriptRoot "DOOM1.whd" }
 
-# The container is written at this offset in the `wad` partition (D3.11).
-$ContainerOffset = "0x0B0000"
-$Budget = 3473408
+# The container is written at this offset in the `wad` partition (T53b moved it
+# back up 64 KB; the `wad` row starts there in partitions_wad.csv).
+$ContainerOffset = "0x0C0000"
+# The `wad` row's size in partitions_wad.csv. T53 took 32 KB off its top for the
+# `saves` partition and T53b moved its start from 0x0B0000 to 0x0C0000, so this
+# number is the budget whd_encode.py checks: keeping it at an older, larger value
+# would let a future rebuild write past 0x3F8000 and over the save slots, which
+# the container's own header would not notice.
+$Budget = 3375104
 $Levels = "E1M1,E1M2,E1M3,E1M4,E1M5,E1M6,E1M7,E1M8,E1M9"
 $Root = Split-Path -Parent $PSScriptRoot
 
@@ -149,11 +165,16 @@ try {
         "--raw-list", "tools/hud_lumps.txt",
         "--raw-list", "tools/weapon_lumps.txt",
         "--raw-list", "tools/menu_lumps.txt",
+        # T53b: the 239 sprite frames no list can name. The tool protects every
+        # name the sprite list and the three raw lists carry, so the weapon
+        # patches survive; without that protection the raw selection failed with
+        # "the WAD has no lump named CHGFA0".
+        "--drop-unused-sprites",
         "--budget", $Budget,
         "--baked-capacity", $BakedCapacity
     )
 
-    Write-Host "== encode: nine levels, every sprite, the HUD, weapon and menu art, union bake, 3,473,408 B budget, $BakedCapacity manifest entries =="
+    Write-Host "== encode: nine levels, the named sprite frames, the HUD, weapon and menu art, union bake, 3,375,104 B budget, $BakedCapacity manifest entries =="
     & python tools/whd_encode.py $Wad -o $Out --force @EncodeArgs --stats
     if ($LASTEXITCODE -ne 0) {
         throw "whd_encode.py exited $LASTEXITCODE"

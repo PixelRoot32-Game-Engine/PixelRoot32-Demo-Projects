@@ -99,7 +99,7 @@
  *
  * WHAT THE HEADER IS FOR
  *
- * The slot menu (T53) shows eight rows without decoding a body: the level, the
+ * The slot menu (T53) shows six rows without decoding a body: the level, the
  * skill, the clock, the kill count and a 15-character label. saveReadHeader()
  * reads only those bytes. Correctness does not rest on them: the body carries a
  * map fingerprint (a hash of THINGS plus the line/sector counts) and a
@@ -130,14 +130,24 @@ namespace doomc {
 /*
  * One record's payload budget.
  *
- * S18/L55: the `saves` partition is 32 KB of NVS, eight slots, and an NVS page
- * is 4,096 B with 32 B of page/entry overhead. A slot can therefore carry at
- * most one page's worth; 3,072 B leaves room for the engine's 16-byte
- * RecordCodec envelope and for NVS's own chunk headers with margin. The value is
- * a contract with T53, so it is stated here once and the budget test measures
- * against it.
+ * S18/L56, on the maintainer's decision: the `saves` partition is 32 KB of NVS,
+ * six slots, and a slot must stay inside ONE NVS page so it never spills and the
+ * partition keeps pages for metadata and garbage collection. A page is 126
+ * entries of 32 B, so the largest blob is (126 - 2) x 32 = 3,968 B. Six of those
+ * use 756 of the partition's 1,008 entries (24.2 KB) and leave two pages for the
+ * collector; eight at the same size would use all 1,008 with no slack, which is
+ * why S18 records six. T52's measured peak is 3,393 B (10 minutes of combat, 120
+ * live mobjs), so this budget keeps 575 B (17 %) of margin over a real world.
+ *
+ * The engine's RecordCodec envelope (16 B, T53) is part of the same slot: the
+ * slot store's record budget is kSavePayloadMax B, so a payload above
+ * kSavePayloadMax - 16 is refused by the save path with TooLarge rather than by
+ * NVS. The analytic bound (15,662 B) stays beyond any slot this partition can
+ * hold, so TooLarge remains a real, reported outcome and never a silent drop.
+ * The value is a contract with T53, so it is stated here once and the budget
+ * test measures against it.
  */
-constexpr std::size_t kSavePayloadMax = 3072;
+constexpr std::size_t kSavePayloadMax = 3968;
 
 /* Status codes. Every rejection names its own cause, because a menu that says
  * "could not load" for a wrong-skill record is a menu nobody can debug. */

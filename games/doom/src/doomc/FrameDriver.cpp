@@ -499,8 +499,11 @@ static_assert(DOOM_WHD_SOURCE_ERR_UNAVAILABLE == 6,
 #if !defined(DOOM_HUD)
 #error "DOOM_MENU draws over the HUD build: define DOOM_HUD too"
 #endif
-#include "g_game.h"
 #include "m_menu.h"
+#endif
+#if defined(DOOM_MENU) || DOOM_PERSISTENCE
+// G_InitNew/G_DoReborn: the reload a New Game and a loaded save share (T53).
+#include "g_game.h"
 #endif
 
 // The E1M1 sprite fixture: the DoomEd number -> frame-0 lump table
@@ -3931,32 +3934,45 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
     return true;
 }
 
-#if defined(DOOM_MENU)
-bool frameLevelNewGame(int skill) {
-    if (!gWorld.open || skill < 0 || skill >= M_SKILL_COUNT) {
+#if defined(DOOM_MENU) || DOOM_PERSISTENCE
+/*
+ * G_InitNew()'s reload, shared by the menu's New Game and by a loaded save (T53).
+ *
+ * The skill goes into the rules, the random position is cleared (M_ClearRandom),
+ * then G_DoLoadLevel's reload of E1M1 over the same arena -- the path the demo
+ * gate already proves (`g_demo_reborn()`). Every THING is run again from the
+ * map's own records under the new skill, the player is G_PlayerReborn's,
+ * leveltime is 0.
+ *
+ * The renderer's live reader is UNBOUND for the reload and bound again after.
+ * The reload copies the map's sectors with doom_map_get_sector(), which answers
+ * through a bound reader (p_level_read_sector) -- and the level it would read is
+ * the one being rebuilt, so with the reader bound the copy is stack garbage (the
+ * first board run of this menu refused every frame after the first New Game,
+ * FLAT_MISSING, with 85 of 85 sectors wrong). tools/menu_check.py --arena
+ * reproduces that with --perturb.
+ *
+ * A refused reload leaves the level zeroed (p_setup.h), so the fallback lays it
+ * out again at the default skill, or closes the world so the frame keeps its
+ * last picture. tools/menu_check.py --arena proves E1M1 fits at every skill in
+ * this arena; the fallback is for a build whose measurement was changed.
+ *
+ * This does NOT run the idle tic a New Game needs: a save is applied to the
+ * freshly built world first, and its restored state must not advance (T53).
+ */
+static bool reloadWorldAtSkill(int skill) {
+    if (!gWorld.open || skill < 0 || skill > P_SKILL_NIGHTMARE) {
         return false;
     }
     p_level_t& level = gWorld.level;
-
-    // G_InitNew(): the skill into the rules, the random position cleared
-    // (M_ClearRandom), then G_DoLoadLevel's reload of E1M1 over the same arena --
-    // the path the demo gate already proves (g_demo_reborn). Every THING is run
-    // again from the map's own records under the new skill, the player is
-    // G_PlayerReborn's, leveltime is 0.
-    //
-    // The renderer's live reader is UNBOUND for the reload and bound again after.
-    // The reload copies the map's sectors with doom_map_get_sector(), which answers
-    // through a bound reader (p_level_read_sector) -- and the level it would read is
-    // the one being rebuilt, so with the reader bound the copy is stack garbage (the
-    // first board run of this menu refused every frame after the first New Game,
-    // FLAT_MISSING, with 85 of 85 sectors wrong). tools/menu_check.py --arena
-    // reproduces that with --perturb.
     doom_map_t* map = &gSession.driver->map;
+
     level.rules.skill = static_cast<p_skill_t>(skill);
     std::memset(&level.random, 0, sizeof level.random);
     p_level_unbind_render(map);
     const bool reloaded = g_demo_reborn(&level) == G_DEMO_OK;
     p_level_bind_render(&level, map);
+
     if (reloaded) {
         hudStart();
 #if defined(DOOM_HUD)
@@ -3971,16 +3987,9 @@ bool frameLevelNewGame(int skill) {
         S_SetListener(level.playerState.mo);
         S_Start();
 #endif
-        // One idle tic, so the player's eye height (viewz, computed by the first
-        // P_PlayerThink) exists before the first frame of the new game is drawn.
-        (void)frameLevelRunTics(1u, 0u);
         return true;
     }
 
-    // A refused load leaves the level zeroed (p_setup.h). tools/menu_check.py
-    // --arena proves E1M1 fits at every skill in this arena, so this is the
-    // recovery for a build whose measurement was changed: lay the level out again
-    // at the default skill, or close the world so the frame keeps its last picture.
     zone_stats_t unused;
     gFrameWorld = nullptr;
     p_level_unbind_render(map);
@@ -3995,6 +4004,18 @@ bool frameLevelNewGame(int skill) {
         gWorld.open = false;
     }
     return false;
+}
+#endif  // DOOM_MENU || DOOM_PERSISTENCE
+
+#if defined(DOOM_MENU)
+bool frameLevelNewGame(int skill) {
+    if (!reloadWorldAtSkill(skill)) {
+        return false;
+    }
+    // One idle tic, so the player's eye height (viewz, computed by the first
+    // P_PlayerThink) exists before the first frame of the new game is drawn.
+    (void)frameLevelRunTics(1u, 0u);
+    return true;
 }
 
 void frameLevelSetMenu(const m_menu* menu) { gMenu = menu; }
@@ -4018,6 +4039,47 @@ bool frameLevelArenaStats(std::uint32_t* inUse, std::uint32_t* freeBytes,
 
 const char* frameLevelLastMissing() { return gFailTexture; }
 #endif  // DOOM_MENU
+
+#if DOOM_PERSISTENCE
+/// The one map this session opens (see frameLevelSave). Stated once so the save
+/// layer's level number and the menu's label cannot drift.
+constexpr std::uint8_t kPersistenceLevelNumber = 1u;
+
+SaveStatus frameLevelSave(std::uint8_t* out, std::size_t capacity, std::size_t& written) {
+    if (!gWorld.open) {
+        // No world is not a save: a menu opened over a failed boot must report a
+        // refusal rather than archive a zeroed level.
+        return SaveStatus::ApplyFailed;
+    }
+    // E1M1 is the session's one map, and `p_level_t` does not carry its number.
+    return saveWrite(gWorld.level, gWorld.level.playerState, kPersistenceLevelNumber, out,
+                     capacity, written);
+}
+
+SaveStatus frameLevelLoad(const std::uint8_t* in, std::size_t size, std::uint8_t levelNumber,
+                          std::uint8_t skill) {
+    if (!gWorld.open || in == nullptr) {
+        return SaveStatus::ApplyFailed;
+    }
+    if (!reloadWorldAtSkill(static_cast<int>(skill))) {
+        return SaveStatus::ApplyFailed;
+    }
+    const SaveStatus status =
+        saveApply(in, size, levelNumber, gWorld.level, gWorld.level.playerState);
+    if (status != SaveStatus::Ok) {
+        // saveApply() documents that a value which only fails while it is being
+        // consumed leaves the level partially rebuilt. The caller is promised a
+        // *freshly loaded* level on any failure, so lay it out again through the
+        // same path -- never a second loader, and never a half-restored world.
+        (void)reloadWorldAtSkill(static_cast<int>(skill));
+        return status;
+    }
+    // The restored leveltime and player are what the status bar starts from; the
+    // reload above ran hudStart() against the fresh level (leveltime 0).
+    hudStart();
+    return SaveStatus::Ok;
+}
+#endif  // DOOM_PERSISTENCE
 
 bool frameLevelPlayer(LevelPlayer* out) {
     if (out == nullptr) {
