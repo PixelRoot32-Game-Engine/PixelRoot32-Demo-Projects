@@ -419,7 +419,8 @@ entries, third ch1 712, bass ch2 263, percussion 513). `D_INTRO` is 80 notes =
 memory, but only E1M1 is committed. The title would fit the remaining flash
 (no scene requests `mus_intro`), the intermission does not: the post-T47
 `_hud` image is 641,881 B of 655,360, leaving **13,479 B**, and `D_INTER`
-alone is 63,600 B.
+alone is 63,600 B. T48's telemetry wiring adds 44 B, so the shipped image is
+641,925 B and the headroom 13,435 B.
 
 **The gate.** `tools/music_check.py` converts `D_INTRO`, `D_INTER` and
 `D_E1M1` in memory, re-derives every press's pitch and grid start from the
@@ -440,9 +441,86 @@ tick (E1M1: 1,920 ticks = 480.000 stored beats = 96.0 s). At 22,050 Hz the
 by all four tracks, so it cannot desynchronise them. A finer grid would need a
 higher `TICKS_PER_BEAT` in the APU; the BPM clamp is the API's ceiling.
 
+**Telemetry (D6.5, T48).** The `SHOW,audio` line now ends in real numbers on the
+CYD. `underruns=` and `worst_us=` are read once a second through
+`doomAudioSetTelemetrySource()`, which `src/platforms/esp32_dev_ILI9341.h`
+installs after `engine.init()` with the I2S backend it owns:
+
+- `underruns` -- `ESP32_I2S_AudioBackend::getUnderrunCount()`: blocks whose
+  `i2s_write` barely waited (less than a tenth of the block, meaning the DMA ring
+  was already empty), failed, or came back short, after the ten warm-up blocks
+  that prime the ring. It is the number that says the render task missed its
+  deadline; one is a defect, not a jitter figure.
+- `worst_us` -- `getWorstRenderUs()`: the longest `generateSamples()` of one
+  block over every block since boot. It says what the voices actually cost.
+
+The seam is engine-free (`src/doomc/AudioTelemetry.{h,cpp}`): one function
+pointer plus one user pointer in `.bss`, asked for once a second by the scene's
+report and never from the frame path, so an audio subsystem nobody listens to
+costs the loop nothing. `pio test -e sound_test` proves both arms -- no source (or
+a source that answers false) keeps the line at `underruns=-,worst_us=-`, and an
+installed one puts its numbers on it -- with no engine and no APU. A build with
+no source keeps the dashes; the native simulator takes that state (it compiles
+the sound layer out entirely, and the SDL2 backend exposes no counters anyway),
+because a zero would claim a measurement nobody took.
+
+**The soak.** `esp32dev_ILI9341_hud_soak` is the shipped HUD build plus
+`-D DOOM_AUDIO_SOAK=1`. E1M1 plays from level load, and every four tics the scene
+submits all four longest one-shots -- `barexp`, `telept`, `rlaunc`, `pldeth` --
+from four distinct `S_SectorOrigin()` tokens. Each token re-fires its own origin,
+so re-arming a cue never has to steal a voice, and four sequencer tracks plus
+four SFX voices synthesise continuously (about 30 submits a second at the
+shipped frame rate, because a round runs at most once per frame). Once a minute
+it prints
+
+```
+SHOW,audio,soak,t=60,plays=..,steals=..,refused=..,active=..,underruns=..,worst_us=..,fps_x10=..
+```
+
+and after ten minutes the closing pair
+
+```
+SHOW,audio,soak,end,minutes=10,underruns=..,worst_us=..,plays=..,steals=..,refused=..,resets=0
+SHOW,audio,soak,budget,block_us=5804,worst_us=..,pct_x10=..
+```
+
+`resets` is the soak's own restart count: 0 by construction, because the window
+runs once and a board reset ends the capture at a boot line instead of
+incrementing a field. `pct_x10` is `worst_us` in tenths of a percent of the
+**5.80 ms 128-sample block at 22 050 Hz**, the reference the task names (the DMA
+granularity). The engine's render block is **512 samples, 23.22 ms**, so divide
+that percentage by four to read it against the deadline an underrun is measured
+against.
+
+Recorded baseline, CYD, one 10-minute run
+(`pio run -e esp32dev_ILI9341_hud_soak -t upload`, whole log captured outside
+the tree):
+
+- `underruns` **0** at every minute and at the end -- the acceptance S16 asks for.
+- `worst_us` 5,938 -> **5,971**, i.e. 102.8 % of the 5.80 ms reference and
+  **25.7 %** of the real 23.22 ms block.
+- `plays` 18,092 at the ten-minute mark (18,956 by the end of the 10.5-minute
+  capture), `steals` 0, `refused` 0, `active` 4 every minute.
+- `fps_x10` 145-167 across the ten one-minute windows, mean 151.5. The first
+  window reads 145 because it includes boot and the level load; a frame line
+  inside the same run reads 150-155, the shipped band.
+- `resets` 0, and the theme is still `playing=1` at the end.
+
+The shipped `_hud` build prints the same two counters with music alone
+(`underruns=0,worst_us=5314`), so the 5.97 ms is what four music voices plus four
+SFX voices cost, not what the soak's serial writes cost. The script, its
+counters and its lines live entirely inside `DOOM_AUDIO_SOAK`; the shipped HUD
+build carries none of it, and the telemetry wiring itself costs 44 B of flash
+(641,881 -> 641,925 B of 655,360, headroom 13,435 B).
+
+**The profile is `Legacy`, and nothing switches it.** `Legacy` is the engine's
+default and the only profile this port runs. There is no `setSoundProfile` call
+and no `SET_SOUND_PROFILE` anywhere in `games/doom/` (S4); the counters above are
+read instead of a profile being tried. `Nes` and `Hybrid` are out of scope for
+v1.
+
 The menu's volume slider still drives nothing (T49) and its "NO SOUND YET"
-label is unchanged; the APU telemetry is T48, so the music line prints
-`underruns=-,worst_us=-`. `S_StartMusic` (looping = 0) is never called by the
+label is unchanged. `S_StartMusic` (looping = 0) is never called by the
 port; the shipped track loops, and a non-looping view would need a second
 `MusicTrack` struct per asset. The listening pass is the maintainer's: the
 board log proves the transport, not the timbre. Two earlier caveats stand: the
@@ -457,21 +535,22 @@ vanilla's priority and origin rules still apply. The APU has four SFX voices:
 an idle voice is taken first, otherwise the least important sounding cue is
 stolen, and when every voice holds a Reserved cue (the player's pain, the
 player's weapon, the boss family) the newcomer is refused rather than stealing
-one. `steals` and `refused` are counted, and `pio test -e sound_test` (20 cases,
-including the preset/cue consistency, the shared event translation and the
-music bank's one shipped track) proves the selector never names a Reserved cue
-as a victim, for every class combination.
+one. `steals` and `refused` are counted, and `pio test -e sound_test` (24 cases,
+including the preset/cue consistency, the shared event translation, the
+telemetry seam's two arms and the music bank's one shipped track) proves the
+selector never names a Reserved cue as a victim, for every class
+combination.
 
 **Log.** At boot: `SHOW,audio,init,status=ok,bank=108,mode=legacy`, then
 `SHOW,music,event=init,track=none,...`; when `S_Start` loads E1M1,
 `SHOW,music,event=start,track=e1m1,notes=657/712/263/513,
-beats=480.00/480.00/480.00/480.00,playing=1,paused=0,underruns=-,worst_us=-`
+beats=480.00/480.00/480.00/480.00,playing=1,paused=0,underruns=0,worst_us=1013`
 (480 stored beats at 300 BPM is the original 96 s; at 120 BPM the same score
 would read 192). Once a second beside `SHOW,frame`:
 `SHOW,audio,plays=..,steals=..,refused=..,unknown=..,voices=4,active=..,
-underruns=-,worst_us=-` and the same `SHOW,music,event=periodic,...
-` line (the two `-` fields are T48's APU telemetry; this branch does not
-expose it yet).
+underruns=0,worst_us=..` and the same `SHOW,music,event=periodic,...` line. Both
+trailing fields are the APU's own counters (see Telemetry above); a build with no
+source -- the native simulator -- prints `-` there.
 
 **How to hear it.** `esp32dev_ILI9341_hud_audiotest` is the shipped build plus
 `-D DOOM_AUDIO_SCRIPT=1`: at boot it plays twelve cues -- pistol, shotgun,
