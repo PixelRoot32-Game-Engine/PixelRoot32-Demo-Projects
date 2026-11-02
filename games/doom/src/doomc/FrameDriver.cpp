@@ -3608,7 +3608,11 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
             if (mapFrame) {
                 // D5.3 diagnostic build only: the automap's own numbers, so a
                 // board picture that disagrees with tools/am_check.py can be
-                // localised to the window, the mapped set or the drawing.
+                // localised to the window, the mapped set or the drawing. This is
+                // how the boot frame-00 verification was caught marking six lines
+                // the player never saw: the second line dumps the shadow bitmap
+                // itself, LSB first, capped at 64 bytes -- E1M1's 60 all fit,
+                // E1M2's 130 would truncate, and only E1M1 is a game level here.
                 std::uint32_t marked = 0u;
                 for (std::uint32_t line = 0u; line < gMap.lineCount; ++line) {
                     if (am_mapped(&gMap, line) != 0) {
