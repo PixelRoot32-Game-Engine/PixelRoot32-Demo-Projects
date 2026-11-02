@@ -203,38 +203,56 @@ from the pin to GND is the fix if it ever becomes annoying.
 cursor starts on the saved skill); choosing a row reloads E1M1 at that skill over
 the world's own arena (rules, random position and every THING run again). OPTIONS
 is the setup-lite screen: **skill** (the one New Game starts on), **sound volume**
-(0-15, a thermometer) and **gamma** (0-4, a thermometer). There is no LOAD, SAVE,
-READ THIS or QUIT (no save files, help screens or anything to quit to), no episode
-screen (shareware has one episode) and no nightmare "are you sure?" (the board
-has no Y/N keys).
+(0-15, a thermometer), **gamma** (0-4, a thermometer) and **mute** (OFF/ON, the
+same slider row with a range of one). There is no LOAD, SAVE, READ THIS or QUIT
+(no save files, help screens or anything to quit to), no episode screen
+(shareware has one episode) and no nightmare "are you sure?" (the board has no
+Y/N keys).
 
 **What each setting does today.** Gamma changes the palette for real: the PLAYPAL
 tables are rebuilt through `gammatable` (`lib/doom/m_gamma.c`) and handed to the
 panel with `setPalette8()` again, live while you move the thermometer. Skill takes
-effect when a New Game starts. **Volume still drives nothing**: the APU sound layer
-now exists (see "Sound" below), but the menu's 0..15 value is not wired to it yet
-(T49), so it is stored and shown (the screen still says "no sound yet").
+effect when a New Game starts. **Volume and mute drive the APU, live** (D6.6):
+the 0..15 slider and the mute row are mapped onto DOOM's own 0..127 level
+(`0 -> silence`, `15 -> 127`, mute `-> 0`) in `src/doomc/AudioLevels.h`, and that
+level is applied once, as the engine's master gain, so the four SFX voices and
+the music tracks are scaled by the same number. It is not applied to DOOM's
+`snd_SfxVolume` as well: `S_StartSoundAtVolume()` already multiplies every event
+by its own 0..127 volume, so a second app there would attenuate SFX by the
+*product* of the two (at 1/15 that is -43 dB) while the music saw only one. Mute
+is a separate stored field, never `volume = 0`, so unmuting restores the slider's
+position.
 
-**Persistence.** The three values live in NVS (namespace `doom`, key `cfg`, 8
+**Persistence.** The four values live in NVS (namespace `doom`, key `cfg`, 8
 bytes: magic, version, the values, a checksum) through the Arduino `Preferences`
 API in `src/platforms/PreferencesStore.h`, behind the small seam
 `src/doomc/SettingsStore.h`; no new partition. They are written when you leave
 the options screen or close the menu, not on every step. A missing, short, damaged
-or out-of-range record falls back to the defaults (skill 2, volume 8, gamma 0).
-Boot always starts E1M1 at medium skill, as before; the stored skill is where the
-New Game cursor starts. Reflashing with the same partition table keeps NVS. On a
-board whose NVS has never been written, the read logs one
+or out-of-range record falls back to the defaults (skill 2, volume 8, gamma 0,
+mute off). Boot always starts E1M1 at medium skill, as before; the stored skill is
+where the New Game cursor starts. Reflashing with the same partition table keeps
+NVS. On a board whose NVS has never been written, the read logs one
 `nvs_open failed: NOT_FOUND` line: that is the record not existing yet, and the
 boot line then says `settings=default`. `SHOW,menu,settings=nvs|default,...` is
-that boot line.
+that boot line; it ends `...,mute=0|1,level=0..127`, which is the value the engine
+was actually given.
+
+The mute flag rides in byte 6, which was the record's *reserved, must be zero*
+byte before D6.6. That is why nothing stored on a board was invalidated: an older
+record holds 0 there, 0 means "not muted", and the version is still 1. Skill,
+volume and gamma keep their bytes (and a board that stored `444D01030C020048`
+still reads skill 3, volume 12, gamma 2, mute off). Byte 6 is 0 or 1 and nothing
+else; any other value rejects the whole record, and the checksum covers it too.
 
 **Gates.** `python tools/menu_check.py` (the state machine against an independent
 model, the stored form, the gamma table), `python tools/menu_check.py --arena
 tools/DOOM1.whd` (New Game fits the board's arena at all five skills; under
 `DOOM_MENU` the arena is sized at nightmare), `python tools/menu_check.py
 --container tools/DOOM1.whd --wad DOOM1.WAD` (the menu art is raw and equal to
-the WAD's), `python tools/menu_draw_check.py --wad DOOM1.WAD` (ten menu screens
-against an independent drawer, pixel by pixel) and `pio test -e menu_test`.
+the WAD's), `python tools/menu_draw_check.py --wad DOOM1.WAD` (eleven menu screens
+against an independent drawer, pixel by pixel, the mute row included) and
+`pio test -e menu_test` (15 cases, the mute codec and the volume mapping among
+them).
 `esp32dev_ILI9341_hud_menutest` plays a fixed input script into the real button
 path so the board can be driven without pressing anything; it is a diagnostic,
 never the shipped image.
@@ -519,10 +537,64 @@ and no `SET_SOUND_PROFILE` anywhere in `games/doom/` (S4); the counters above ar
 read instead of a profile being tried. `Nes` and `Hybrid` are out of scope for
 v1.
 
-The menu's volume slider still drives nothing (T49) and its "NO SOUND YET"
-label is unchanged. `S_StartMusic` (looping = 0) is never called by the
-port; the shipped track loops, and a non-looping view would need a second
-`MusicTrack` struct per asset. The listening pass is the maintainer's: the
+**Volume and mute (D6.6).** The menu's slider and its mute row reach the APU.
+`src/doomc/AudioLevels.h` owns the one conversion in the port -- the menu's 0..15
+and its mute flag onto DOOM's 0..127 level, `volume * 127 / M_VOLUME_MAX`, muted
+-> 0 -- and the scene hands that level to `AudioEngine::setMasterVolume()` as
+`level / 127` from its settings load at boot and from `runMenu()` every frame
+(the first statement is the comparison, so only a moved value costs a call).
+
+The application point is deliberate, and it is the reason the brief's
+`S_SetSfxVolume` mapping is not used for gain: `MusicPlayer::setMasterVolume()`
+only forwards to `AudioEngine::setMasterVolume()`, and the engine applies the
+master *to the accumulated mix* (`ApuCore` sums all eight voices and multiplies
+once, before the soft clip). It is therefore not a music level: it is the only
+level that can scale SFX and music together, and applying the menu value there
+**and** through `S_SetSfxVolume` would attenuate SFX by the square of the setting
+(volume 8 would be -11 dB, volume 1 about -43 dB) while the music saw one factor.
+So `snd_SfxVolume` stays at `S_MAX_VOLUME` (127), each event keeps upstream's own
+`volume / 127` from `S_StartSoundAtVolume()`, and the one gain the player moves is
+the master. Mute is `master = 0`, which silences both, and it does not touch the
+stored volume.
+
+`S_StartMusic` (looping = 0) is never called by the port; the shipped track
+loops, and a non-looping view would need a second `MusicTrack` struct per asset.
+
+**Gates and board proof.** `pio test -e menu_test` (15 cases) proves the encoded
+flag -- an old 8-byte record with the reserved byte zero decodes as "not muted",
+the flag round-trips through the store, a flag byte of 2 is refused even with a
+valid checksum -- and the mapping (`0 -> 0`, `M_VOLUME_MAX -> 127`, `8 -> 67`,
+mute `-> 0` while `settings.volume` is unchanged). `tools/menu_check.py` carries
+the fourth row and the flag in its model and its golden bytes (`444D01030C020149`
+is `(3, 12, 2)` muted), and `tools/menu_draw_check.py` a fifth options state
+(mute ON); both still fail under `--perturb`.
+
+Recorded on the board (COM4, CYD), NVS erased first:
+
+- shipped `_hud`, nothing stored:
+  `SHOW,menu,settings=default,skill=2,volume=8,gamma=0,mute=0,level=67` -- the
+  default 8 of 15 is level 67 of 127, so the master gain is 0.527.
+- `esp32dev_ILI9341_hud_menutest`, one full script: the OPTIONS save reads
+  `SHOW,menu,saved=ok,skill=2,volume=5,gamma=3,mute=1`, the five New Games keep
+  `volume=5,gamma=3,mute=1`, and the last one leaves `skill=3`.
+- RTS reset of that image:
+  `SHOW,menu,settings=nvs,skill=3,volume=5,gamma=3,mute=1,level=0` -- the
+  volume, gamma and mute came back from NVS, the slider's stored value is 5 and
+  the level the engine was given is 0, i.e. silence.
+- the shipped `_hud` flashed over it reads the same record
+  (`nvs,...,volume=5,gamma=3,mute=1,level=0`; `skill` in that line is whatever
+  the diagnostic's script had reached last), `frame00`
+  `1d8b3849ab3f76750056937f2827bf2bcbb2b98e82976fb3a7ce263d5273c9d3` unchanged,
+  `seg_free` 700 B, app **642,305 B** of 655,360 (13,055 B headroom, +380 B over
+  T48's 641,925 B).
+- `fps_x10` 151-158, means 153.7 / 153.8 / 153.9 over three runs (27, 33 and 48
+  reported frames); every sample is >= 150, and the 157-158 samples are the
+  flash-layout noise T38 and L44 already record (the same tree measured
+  149-156 at T48). `render_us` 29.4-30.5 ms and `present_us` 27.0 ms are
+  unchanged.
+
+NVS was erased after the captures, so the next boot is the defaults: a shipped
+image left muted would be silent, and that would read as a broken audio path. The listening pass is the maintainer's: the
 board log proves the transport, not the timbre. Two earlier caveats stand: the
 `Legacy` profile's release is capped at 100 ms, so a cue whose original tail is
 longer decays inside its own duration; and sector-originated cues (doors,

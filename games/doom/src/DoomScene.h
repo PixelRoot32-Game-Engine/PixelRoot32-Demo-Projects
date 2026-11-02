@@ -326,10 +326,32 @@ private:
      * Feeds the sampled buttons to the menu state machine and returns what the
      * WORLD may see (nothing while the menu is open or latched). Then carries out
      * what the menu asked for: a New Game reload, a gamma change on the palette,
-     * and the write of the settings when the player leaves the options screen.
-     * The menu being open pauses the 35 Hz world tic, in `runWorldTics()`.
+     * a volume/mute change on the audio engine, and the write of the settings
+     * when the player leaves the options screen. The menu being open pauses the
+     * 35 Hz world tic, in `runWorldTics()`.
      */
     std::uint8_t runMenu(std::uint8_t buttons);
+
+#if defined(DOOM_AUDIO)
+    /**
+     * @brief Hands the menu's volume and mute to the engine (T49, D6.6).
+     *
+     * `doomc/audioLevel()` (src/doomc/AudioLevels.h) maps 0..M_VOLUME_MAX and the
+     * mute flag onto DOOM's 0..127 scale, and `audioMasterVolume()` turns that
+     * into the ratio `AudioEngine::setMasterVolume()` takes. The master gain is
+     * the engine's only level control and it is applied to the accumulated mix,
+     * so SFX and music each see it exactly once; per-event volumes stay DOOM's
+     * own (`S_SetSfxVolume` is at `S_MAX_VOLUME`) and are not scaled again.
+     *
+     * Called from the settings load at boot and from `runMenu()` every frame;
+     * the first thing it does is compare, so only a moved value reaches the
+     * engine.
+     */
+    void applyAudioLevels();
+
+    /// The level the master gain was last set to, -1 before the first call.
+    int audioLevelApplied_ = -1;
+#endif
 
     /// Rebuilds the PLAYPAL tables at the menu's gamma and hands them to the panel.
     void applyMenuGamma();
@@ -402,7 +424,7 @@ private:
     std::uint32_t reportedTic_ = kNoTic;
 
 #if defined(DOOM_MENU)
-    /// The menu and the settings it edits: skill, volume, gamma (D5.2). ~24 bytes.
+    /// The menu and the settings it edits: skill, volume, gamma, mute (D5.2, T49).
     m_menu_t menu_;
     /// A persisted value changed and has not been written yet.
     bool settingsDirty_ = false;

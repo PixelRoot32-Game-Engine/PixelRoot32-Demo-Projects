@@ -175,7 +175,13 @@ void S_ResumeSound(void);
  */
 void S_UpdateSounds(const r_mobj_t* listener);
 
-/** @brief Sets the two volumes; 0..127, clamped. */
+/** @brief Sets the two volumes; 0..127, clamped.
+ *
+ * `S_SetSfxVolume()` is a real gain: `S_StartSoundAtVolume()` multiplies every
+ * event by it. `S_SetMusicVolume()` is upstream's global only -- the port's
+ * music level is the engine's post-mix master, applied by `DoomScene` (T49,
+ * `src/doomc/AudioLevels.h`), because the APU has no music-only gain and
+ * scaling a track twice would be worse than not scaling it here. */
 void S_SetMusicVolume(int volume);
 void S_SetSfxVolume(int volume);
 

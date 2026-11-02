@@ -22,6 +22,7 @@
 
 #include "palette/DoomPalette.h"
 #if defined(DOOM_AUDIO)
+#include "audio/AudioEngine.h"  /* AudioEngine::setMasterVolume (T49) */
 #include "doomc/DoomAudio.h"
 #include "doomc/SfxBank.h"
 #include "s_sound.h"
@@ -40,6 +41,7 @@
 #include "doomc/InputMap.h"  /* the button bits the menu and the automap read */
 #endif
 #if defined(DOOM_MENU)
+#include "doomc/AudioLevels.h"  /* the volume/mute -> audio level mapping (T49) */
 #include "doomc/SceneRenderer.h"
 #include "doomc/SettingsStore.h"
 #if defined(ARDUINO)
@@ -811,16 +813,17 @@ static_assert(M_BTN_UP == doomc::kButtonUp && M_BTN_DOWN == doomc::kButtonDown
  *
  * What the script does, in order, and why each part is there:
  *   1. wait, then Start: the Start edge opens the main menu (menu-open fps window)
- *   2. DOWN, A: OPTIONS. Skill is driven to 0 then to 2, volume to 0 then to 5 and
- *      gamma to 0 then to 3 (the clamps are exercised, and the end values are the
- *      same whatever the stored ones were, so a second boot can be compared).
+ *   2. DOWN, A: OPTIONS. Skill is driven to 0 then to 2, volume to 0 then to 5,
+ *      gamma to 0 then to 3 and mute to OFF then ON (the clamps are exercised, and
+ *      the end values are the same whatever the stored ones were, so a second boot
+ *      can be compared).
  *   3. B, B: back to main, then close: the settings are written to NVS
  *   4. NEW GAME at skills 0, 1, 2, 3, 4 and 3 again: each is a Start press, A, a cursor
  *      move from the saved skill and A, then a wait so the reload and the first
  *      frames of the new world are in the log. The last one leaves skill 3. The main
  *      screen remembers its cursor (upstream's lastOn), which step 2 left on OPTIONS,
  *      so the first one moves it back to NEW GAME with one UP.
- * End state: skill 3, volume 5, gamma 3, menu closed.
+ * End state: skill 3, volume 5, gamma 3, mute ON, menu closed.
  */
 struct ScriptStep {
     std::uint8_t buttons;
@@ -847,6 +850,7 @@ const ScriptStep kMenuScript[] = {
     TAP(M_BTN_LEFT),                           // skill 2
     TAP(M_BTN_DOWN), LEFT16, RIGHT3, TAP(M_BTN_RIGHT), TAP(M_BTN_RIGHT),  // volume 0, then 5
     TAP(M_BTN_DOWN), LEFT5, RIGHT3,            // gamma 0, then 3
+    TAP(M_BTN_DOWN), TAP(M_BTN_LEFT), TAP(M_BTN_RIGHT),  // mute OFF (clamp), then ON
     WAIT(40),
     TAP(M_BTN_B), WAIT(10), TAP(M_BTN_B),      // main, then closed: the write happens
     WAIT(50),
@@ -1096,12 +1100,20 @@ void DoomScene::init() {
             gammaApplied_ = menu_.settings.gamma;
             palette::applyGamma(sceneRenderer_.playpal(), gammaApplied_);
             sceneRenderer_.setMenu(&menu_);
-            char line[96];
+#if defined(DOOM_AUDIO)
+            // T49: the stored volume and mute reach the APU before the first
+            // frame. The level is DOOM's 0..127; see doomc/AudioLevels.h for
+            // why it is applied once, at the engine's master gain.
+            applyAudioLevels();
+#endif
+            char line[128];
             std::snprintf(line, sizeof line,
-                          "SHOW,menu,settings=%s,skill=%d,volume=%d,gamma=%d,volume_drives=nothing\n",
+                          "SHOW,menu,settings=%s,skill=%d,volume=%d,gamma=%d,mute=%d,level=%d\n",
                           fromStore ? "nvs" : "default", static_cast<int>(menu_.settings.skill),
                           static_cast<int>(menu_.settings.volume),
-                          static_cast<int>(menu_.settings.gamma));
+                          static_cast<int>(menu_.settings.gamma),
+                          static_cast<int>(menu_.settings.muted),
+                          doomc::audioLevel(menu_.settings.volume, menu_.settings.muted != 0));
             writeConsoleLine(line);
         }
 #endif
@@ -1567,6 +1579,28 @@ void DoomScene::runAudioSoak() {
 
 #if defined(DOOM_MENU)
 
+#if defined(DOOM_AUDIO)
+void DoomScene::applyAudioLevels() {
+    // One comparison per frame, and only a moved setting costs an engine call.
+    // `audioLevelApplied_` holds the level the master gain was set to, not the
+    // raw volume, because two different settings can produce the same audible
+    // level (volume 0 and mute) and re-submitting that command buys nothing.
+    const int level = doomc::audioLevel(menu_.settings.volume, menu_.settings.muted != 0);
+    if (level == audioLevelApplied_) {
+        return;
+    }
+    audioLevelApplied_ = level;
+    // The engine's master gain is applied to the accumulated mix -- the four
+    // SFX voices and the four music tracks together -- which is the one place a
+    // single "volume" can scale both without scaling either twice. Naming the
+    // engine rather than `MusicPlayer::setMasterVolume()` is deliberate: the
+    // player's setter only forwards here (DoomAudio.h's header says the same).
+    engine.getAudioEngine().setMasterVolume(doomc::audioMasterVolume(
+        menu_.settings.volume, menu_.settings.muted != 0));
+}
+
+#endif  // DOOM_AUDIO
+
 void DoomScene::applyMenuGamma() {
     gammaApplied_ = menu_.settings.gamma;
     if (fadeActive_) {
@@ -1765,16 +1799,24 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
         // while choosing it.
         applyMenuGamma();
     }
+#if defined(DOOM_AUDIO)
+    // T49: the volume and the mute row follow the same rule as the gamma row --
+    // live while they move, from the menu's own per-frame turn rather than a
+    // second poll in update(). The method's first statement is the comparison.
+    applyAudioLevels();
+#endif
 
     // Written once the player leaves the options screen (or the menu), not on every
     // step of a slider: NVS commits are slow and the flash wears.
     if (settingsDirty_ && (!active || menu_.screen != M_SCREEN_OPTIONS)) {
         const bool saved = doomc::saveSettings(gSettingsStore, menu_.settings);
         settingsDirty_ = false;
-        std::snprintf(line, sizeof line, "SHOW,menu,saved=%s,skill=%d,volume=%d,gamma=%d\n",
+        std::snprintf(line, sizeof line,
+                      "SHOW,menu,saved=%s,skill=%d,volume=%d,gamma=%d,mute=%d\n",
                       saved ? "ok" : "fail", static_cast<int>(menu_.settings.skill),
                       static_cast<int>(menu_.settings.volume),
-                      static_cast<int>(menu_.settings.gamma));
+                      static_cast<int>(menu_.settings.gamma),
+                      static_cast<int>(menu_.settings.muted));
         writeConsoleLine(line);
     }
     return worldButtons;

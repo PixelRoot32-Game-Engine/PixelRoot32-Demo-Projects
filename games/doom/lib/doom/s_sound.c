@@ -449,8 +449,15 @@ void S_UpdateSounds(const r_mobj_t* listener) {
 void S_SetMusicVolume(int volume) {
     /* Upstream calls I_Error outside 0..127 and then double-sets the DMX
      * volume as a workaround. There is no abort path and no DMX mixer here, so
-     * the value is clamped and stored; T49 turns it into an APU master
-     * volume. */
+     * the value is clamped and stored.
+     *
+     * This is NOT the port's music gain. The engine's music transport has no
+     * per-track volume -- its only runtime level is the post-mix master, which
+     * scales SFX and music together -- so DoomScene applies the menu's volume
+     * there, once (T49, src/doomc/AudioLevels.h). Storing the same number here
+     * keeps upstream's global truthful for a future music-only path; scaling a
+     * track with it today would need a second gain stage the APU does not
+     * have. */
     if (volume < 0) {
         volume = 0;
     } else if (volume > S_MAX_VOLUME_LOCAL) {
