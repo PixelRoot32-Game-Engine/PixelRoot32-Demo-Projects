@@ -106,11 +106,11 @@ constexpr std::uint8_t kStartIndex = 6;
 /// never packed into the world's bits, so `kButtonCount` stays 6.
 constexpr std::uint8_t kSelectIndex = 7;
 
-/// How many consecutive frames Up+Down must be held to toggle the automap on the
-/// shipped build: about 200 ms at the shipped frame rate, long enough that no
-/// single mistaken press opens the map. GPIO 35 is not the trigger there because
-/// it floats on this board (no pull-up); `DOOM_MAP_SELECT` compiles that key in.
-constexpr std::uint8_t kMapChordFrames = 3;
+/// The scripted-input build's Select bit. The engine never sets bit 7 of the
+/// button byte (the six game bits are 0..5), and the menu's Start is 0x40, so a
+/// diagnostic script reaches `runMap()` through the same byte the real sample
+/// fills without the menu reading it as Start.
+constexpr std::uint8_t kMapScriptSelect = 0x80u;
 
 /// The scripted-input build's map chord. The engine never sets bit 7 of the
 /// button byte (the six game bits are 0..5), and the menu's Start is 0x40, so a
@@ -872,23 +872,23 @@ std::uint8_t menuScriptButtons(std::uint32_t frame) {
 /*
  * DOOM_MAP_SCRIPT (env esp32dev_ILI9341_hud_mapcheck): the board's buttons cannot
  * be pressed from the build host, so this diagnostic plays a fixed input script
- * into the same path a real press takes -- the sampled button byte `runMap()`
- * reads -- and the serial log shows what the automap did. Each step holds
- * `buttons` for `frames` frames; a chord is four frames held and six released,
- * which is the shipped Up+Down trigger (kMapChordFrames), not a private path.
+ * into the same path a real press takes -- the sampled buttons plus the Select
+ * bit, both read by `runMap()` -- and the serial log shows what the automap did.
+ * Each step holds `buttons` for `frames` frames; a tap is one frame down and two
+ * up, so every press is its own rising edge (Select's toggle is edge-triggered).
  *
  * What it does, in order, and why each part is there:
- *   1. Up+Down: the map opens at the entry scale, following the player, nothing
+ *   1. Select: the map opens at the entry scale, following the player, nothing
  *      mapped yet -- the state tools/am_check.py pins as `spawn`.
  *   2. A held: zoom in (one 1.02x step per tic). B held: back out.
  *   3. RIGHT then UP held: pan, which cancels the follow; the window stops where
  *      the level's edge clamps it.
- *   4. Up+Down: the map closes and the world frame comes back.
+ *   4. Select: the map closes and the world frame comes back.
  *   5. UP held: the player walks forward, so the wall pass marks more lines.
- *   6. Up+Down: the map opens again (the follow stays off, as upstream's static
+ *   6. Select: the map opens again (the follow stays off, as upstream's static
  *      does), with the lines walked in step 5 drawn.
  *   7. B held: zoom out to the whole level (the min_scale_mtof clamp).
- *   8. Up+Down: closed, and the log goes back to SHOW,frame lines.
+ *   8. Select: closed, and the log goes back to SHOW,frame lines.
  *
  * The grid is not in the script: upstream toggles it with 'g', the board has no
  * button for it, and inventing one is not this task's call.
@@ -900,12 +900,11 @@ struct MapScriptStep {
 
 #define MTAP(button) {(button), 1}, {0, 2}
 #define MHOLD(button, count) {(button), (count)}, {0, 4}
-#define MCHORD() {(doomc::kButtonUp | doomc::kButtonDown), 4}, {0, 6}
 #define MWAIT(count) {0, (count)}
 
 const MapScriptStep kMapScript[] = {
     MWAIT(40),
-    MCHORD(),                               // the map opens, following, full scale
+    MTAP(kMapScriptSelect),                 // the map opens, following, full scale
     MWAIT(30),
     MHOLD(doomc::kButtonA, 24),             // zoom in
     MWAIT(6),
@@ -915,15 +914,15 @@ const MapScriptStep kMapScript[] = {
     MWAIT(6),
     MHOLD(doomc::kButtonUp, 20),            // pan up
     MWAIT(12),
-    MCHORD(),                               // the map closes
+    MTAP(kMapScriptSelect),                 // the map closes
     MWAIT(20),
     MHOLD(doomc::kButtonUp, 30),            // the player walks
     MWAIT(20),
-    MCHORD(),                               // the map opens again, panned
+    MTAP(kMapScriptSelect),                 // the map opens again, panned
     MWAIT(30),
     MHOLD(doomc::kButtonB, 40),             // zoom out to the whole level
     MWAIT(16),
-    MCHORD(),                               // closed again
+    MTAP(kMapScriptSelect),                 // closed again
     MWAIT(20),
 };
 
@@ -1157,6 +1156,7 @@ void DoomScene::pollTicClock() {
 }
 
 void DoomScene::update(unsigned long deltaTime) {
+
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
     // The frame measurement needs the scene's own update time: the engine calls
     // update() before draw(), and its present() runs after draw(), so this sample
@@ -1525,17 +1525,14 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
  * map. The board has no 'f', so the d-pad is always the map's while the map is
  * up, and the first press is what stops the follow (am_map.c's am_pan()).
  *
- * The menu wins: while it is open, the map's key is recorded but changes nothing,
- * so a press that belonged to the menu does not toggle the map when it closes.
+ * The menu wins: while it is open, Select is recorded but changes nothing, so a
+ * press that belonged to the menu does not toggle the map when the menu closes.
  *
- * THE KEY, and why it is a chord. Upstream toggles on TAB. This board has no TAB:
- * GPIO 35 is wired as Select but has no pull-up and floats (measured: reads held
- * at boot, changes level every ~1.5 s), so a key that trusts it opens the map by
- * itself. The shipped build therefore toggles on **Up+Down held together for
- * kMapChordFrames frames** -- both are real pull-up'd keys, and upstream adds then
- * subtracts the pair, so the world sees forwardmove 0. `DOOM_MAP_SELECT` swaps
- * Select back in for a board that has the 10 kOhm pull-up fitted; the scripted
- * diagnostic build presses its own bit through the same code path.
+ * THE KEY is Select (GPIO 35), as upstream's TAB: the reference board has a
+ * 10 kOhm pull-up on it, so it reads high when released. Measured at 5 kHz over
+ * five seconds: 0-25 short low pulses, almost all under 1 ms -- electrical noise
+ * on the wire, which the engine's 100 ms debounce absorbs. The arming latch
+ * (`mapSelectArmed_`) is what keeps a genuinely stuck-low pin from toggling.
  */
 std::uint8_t DoomScene::runMap(std::uint8_t buttons, bool menuOpen) {
     static_assert(AM_PAN_UP == doomc::kButtonUp && AM_PAN_DOWN == doomc::kButtonDown
@@ -1546,33 +1543,21 @@ std::uint8_t DoomScene::runMap(std::uint8_t buttons, bool menuOpen) {
                       && AM_ZOOM_RELEASE == doomc::kMapZoomRelease,
                   "the automap's zoom directions are the driver's");
 
-#if defined(DOOM_MAP_SELECT)
-    // GPIO 35 as the map key, for a board that has the 10 kOhm pull-up fitted.
-    // Measured without it: the pin reads held at boot and changes level every
-    // ~1.5 s, so this path is compiled out of every shipped environment.
+#if defined(DOOM_MAP_SCRIPT)
+    // Diagnostic build: the script's own Select bit, so the board's electrical
+    // noise on a real pin cannot scramble the scripted states.
+    const bool select = (buttons & kMapScriptSelect) != 0u;
+#else
+    // Select (GPIO 35) has a 10 kOhm pull-up on the reference board and reads
+    // high when released (measured at 5 kHz: 0-25 short low pulses per 5 s, almost
+    // all under 1 ms -- electrical noise the engine's 100 ms debounce absorbs).
+    // It is armed only after being seen released once: that costs nothing on a
+    // healthy pin and disables a stuck-low one instead of toggling forever (D5.3).
     const bool physical = engine.getInputManager().isButtonDown(kSelectIndex);
     if (!physical) {
         mapSelectArmed_ = true;
     }
     const bool select = mapSelectArmed_ && physical;
-#else
-    // The shipped chord: Up and Down held together for kMapChordFrames frames.
-    // Both are real pull-up'd gameplay keys, and upstream adds then subtracts
-    // them, so the world sees forwardmove 0 and the chord costs the player
-    // nothing; the sole cost is the one tic a mismatched press can move.
-    const bool chord = (buttons & static_cast<std::uint8_t>(doomc::kButtonUp | doomc::kButtonDown))
-                       == static_cast<std::uint8_t>(doomc::kButtonUp | doomc::kButtonDown);
-    bool select = false;
-    if (chord) {
-        if (mapChordArmed_ && ++mapChordFrames_ >= kMapChordFrames) {
-            select = true;
-            mapChordArmed_ = false;
-            mapChordFrames_ = 0;
-        }
-    } else {
-        mapChordArmed_ = true;
-        mapChordFrames_ = 0;
-    }
 #endif
     if (select != mapSelectHeld_) {
         mapSelectHeld_ = select;
@@ -1589,19 +1574,7 @@ std::uint8_t DoomScene::runMap(std::uint8_t buttons, bool menuOpen) {
         return buttons;
     }
 
-    const std::uint8_t held = [&]() {
-        std::uint8_t bits = static_cast<std::uint8_t>(buttons & 0x3Fu);
-        // The chord is a key, not a pan (D5.3): while Up+Down are held together
-        // the map's d-pad must not see them, or opening the map would cancel the
-        // follow before its first frame. Measured before this guard: the entry
-        // frame printed follow=0 instead of following the player.
-        const std::uint8_t mask =
-            static_cast<std::uint8_t>(doomc::kButtonUp | doomc::kButtonDown);
-        if ((bits & mask) == mask) {
-            bits = static_cast<std::uint8_t>(bits & ~mask);
-        }
-        return bits;
-    }();
+    const std::uint8_t held = static_cast<std::uint8_t>(buttons & 0x3Fu);
     (void)sceneRenderer_.mapPan(
         static_cast<std::uint8_t>(held & (AM_PAN_UP | AM_PAN_DOWN | AM_PAN_LEFT | AM_PAN_RIGHT)));
     if ((held & doomc::kButtonA) != 0u) {

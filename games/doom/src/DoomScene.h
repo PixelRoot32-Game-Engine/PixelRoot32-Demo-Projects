@@ -234,28 +234,13 @@ private:
     bool mapSelectHeld_ = false;
 
     /**
-     * @brief The shipped Up+Down chord's latch and frame count (D5.3).
-     *
-     * GPIO 35 has no pull-up on this board and floats, so the shipped build
-     * toggles the map on Up+Down held together for `kMapChordFrames` frames: both
-     * are real pull-up'd keys, and upstream adds then subtracts them, so the
-     * world sees `forwardmove 0`. `mapChordArmed_` is cleared when the chord
-     * fires and set again only when a key is released, so one hold is one toggle.
-     */
-    bool mapChordArmed_ = true;
-    std::uint8_t mapChordFrames_ = 0;
-
-    /**
      * @brief Whether Select has been seen released since boot (D5.3).
      *
-     * Only `DOOM_MAP_SELECT` builds read the physical pin. GPIO 35 is input-only
-     * on this SoC and has no internal pull-up, so `INPUT_PULLUP` does nothing
-     * there and a floating pin reads LOW -- "held" -- from the first sample (this
-     * board's own log: the map opened at boot with no press, then toggled every
-     * ~1.5 s as the pin drifted). A control that opened the map on a floating pin
-     * and could never close it is worse than no control, so Select is armed only
-     * after it has been read released once: a stuck-low pin is then simply dead,
-     * which is what a missing pull-up deserves. The README says so.
+     * Select (GPIO 35) is input-only on this SoC, so it relies on the board's
+     * external 10 kOhm pull-up -- which the reference board has (measured: high
+     * when released, with sub-millisecond noise the engine's 100 ms debounce
+     * absorbs). The latch costs nothing on such a pin and keeps a stuck-low one
+     * from toggling the map forever, which is worth more than it costs.
      */
     bool mapSelectArmed_ = false;
 
