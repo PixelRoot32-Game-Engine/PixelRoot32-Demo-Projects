@@ -230,6 +230,277 @@ void runTics(World& world, int count) {
     }
 }
 
+/* --- The long run (T52 follow-up measurement) ----------------------------- */
+
+/*
+ * The script the 21,000-tic measurement uses. Its job is not to be good at
+ * DOOM; it is to keep as much of E1M1 awake as a deterministic script can:
+ *
+ *   - BT_ATTACK held every tic, so the weapon fires and every shot floods the
+ *     sound sectors (P_NoiseAlert), waking monsters through open doors;
+ *   - forward and back on a 60-tic square wave, with a constant turn whose sign
+ *     flips every 420 tics, so the avatar walks a rosette through the level
+ *     instead of into one wall;
+ *   - BT_USE held for four tics out of every forty, which is one press per
+ *     latch cycle -- the door script the door gate uses, without its geometry.
+ *
+ * Everything is a function of `leveltime`, so the two worlds of the final
+ * differential run the same 35 tics.
+ */
+void commandForLongRun(std::int32_t tic, p_ticcmd_t* cmd) {
+    std::memset(cmd, 0, sizeof *cmd);
+    cmd->buttons = BT_ATTACK;
+    cmd->forwardmove = ((tic / 60) % 2) == 0 ? 0x19 : -0x19;
+    cmd->angleturn = ((tic / 420) % 2) == 0 ? 640 : -640;
+    if ((tic % 40) < 4) {
+        cmd->buttons = static_cast<std::uint8_t>(cmd->buttons | BT_USE);
+    }
+}
+
+/*
+ * The measurement fixture: keep the avatar alive.
+ *
+ * A dead player runs P_DeathThink and the level stops being played, so a
+ * ten-minute run would measure a corpse, not the load the record has to carry.
+ * The avatar is topped up at the start of every tic. This is not part of the
+ * record and not part of the game: both worlds of the differential get it, the
+ * archived health is whatever the fixture leaves, and the point of the number is
+ * the size of a world with the monsters awake.
+ */
+void keepPlayerAlive(World& world) {
+    p_player_t& p = world.level.playerState;
+
+    if (p.mo == nullptr) {
+        return;
+    }
+    if (p.health < 1000) {
+        p.health = 1000;
+    }
+    if (p.mo->health < 1000) {
+        p.mo->health = 1000;
+    }
+}
+
+void runLongTics(World& world, int count) {
+    for (int i = 0; i < count; ++i) {
+        p_ticcmd_t cmd;
+
+        keepPlayerAlive(world);
+        commandForLongRun(world.level.leveltime, &cmd);
+        (void)p_level_tic(&world.level, &cmd, nullptr);
+    }
+}
+
+/*
+ * The byte size the writer produces, computed from the same field widths.
+ *
+ * Needed because saveWrite refuses a record over kSavePayloadMax and reports no
+ * size: once the measured world passes 3,072 B the only way to say *how far*
+ * past it is, without changing the constant, is to size the same state with the
+ * writer's arithmetic. Every sample whose saveWrite succeeds cross-checks this
+ * against `written`; a drift is a test failure, not a silent second format.
+ */
+std::size_t playerRecordBytes() {
+    return 2u   /* mo */
+           + 1u /* playerstate */ + 1u + 1u + 2u + 1u /* cmd */
+           + 16u                                    /* viewz..bob */
+           + 6u                                     /* health/armour/type */
+           + 8u + 8u                                /* ammo, maxammo */
+           + 24u                                    /* powers */
+           + 2u                                     /* pending/ready */
+           + 24u                                    /* psprites */
+           + 9u + 6u + 1u                           /* weapons/cards/backpack */
+           + 2u                                     /* attackdown/usedown */
+           + 2u                                     /* refire */
+           + 6u                                     /* kill/item/secret */
+           + 4u                                     /* damage/bonus */
+           + 2u                                     /* extralight/fixedcolormap */
+           + 2u                                     /* attacker */
+           + 4u;                                    /* four flags */
+}
+
+std::int16_t longRunReactionTime(const p_level_t& level, std::int16_t type) {
+    if (level.rules.skill == P_SKILL_NIGHTMARE) {
+        return 0;
+    }
+    return static_cast<std::int16_t>(mobjinfo[type].reactiontime);
+}
+
+std::size_t mobjWireBytes(const p_level_t& level, const r_mobj_t* m) {
+    std::uint8_t mask = 0u;
+
+    if (m->z == m->floorz) mask |= 0x01u;
+    if ((m->angle % ANG45) == 0u) mask |= 0x02u;
+    if (m->momx == 0 && m->momy == 0 && m->momz == 0) mask |= 0x04u;
+    if (m->sector < level.sectorCount &&
+        level.sectors[m->sector].floorHeight == m->floorz &&
+        level.sectors[m->sector].ceilingHeight == m->ceilingz) {
+        mask |= 0x08u;
+    }
+    if (m->health == mobjinfo[m->type].spawnhealth) mask |= 0x10u;
+    if (m->flags == mobjinfo[m->type].flags) mask |= 0x20u;
+    if (m->target == nullptr && m->tracer == nullptr) mask |= 0x40u;
+    if (m->reactiontime == longRunReactionTime(level, m->type) &&
+        m->movedir == 0 && m->movecount == 0 && m->threshold == 0) {
+        mask |= 0x80u;
+    }
+    std::size_t bytes = 1u /* kind */ + 1u /* type */ + 1u /* mask */ + 4u + 4u +
+                        2u /* state */ + 2u /* tics */ + 1u /* lastlook */;
+
+    if ((mask & 0x01u) == 0u) bytes += 4u;
+    bytes += (mask & 0x02u) != 0u ? 1u : 4u;
+    if ((mask & 0x04u) == 0u) bytes += 12u;
+    if ((mask & 0x08u) == 0u) bytes += 8u;
+    if ((mask & 0x10u) == 0u) bytes += 4u;
+    if ((mask & 0x20u) == 0u) bytes += 4u;
+    if ((mask & 0x40u) == 0u) bytes += 4u;
+    if ((mask & 0x80u) == 0u) bytes += 8u;
+    return bytes;
+}
+
+std::size_t moverWireBytes(const p_thinker_t* node) {
+    switch (node->kind) {
+        case P_THINKER_DOOR: return 1u + 22u;
+        case P_THINKER_CEILING: return 1u + 24u;
+        case P_THINKER_FLOOR: return 1u + 26u;
+        case P_THINKER_PLAT: return 1u + 32u;
+        case P_THINKER_LIGHTFLASH: return 1u + 34u;
+        default: return 0u;
+    }
+}
+
+struct DeltaCounts {
+    std::uint16_t sectors;
+    std::uint16_t lines;
+    std::uint16_t movers;
+    std::uint32_t alive;
+};
+
+DeltaCounts worldDeltas(const World& world) {
+    DeltaCounts out{0u, 0u, 0u, 0u};
+
+    for (std::uint16_t i = 0u; i < world.level.sectorCount; ++i) {
+        doom_sector_t base;
+        const p_sector_t& s = world.level.sectors[i];
+
+        doom_map_get_sector(&world.map, i, &base);
+        if (s.floorHeight != base.floorHeight ||
+            s.ceilingHeight != base.ceilingHeight || s.floorPic != base.floorPic ||
+            s.ceilingPic != base.ceilingPic || s.lightLevel != base.lightLevel ||
+            s.special != base.special || base.special != 0 || s.tag != base.tag) {
+            ++out.sectors;
+        }
+    }
+    for (std::uint16_t i = 0u; i < world.level.lineCount; ++i) {
+        if (world.level.lineSpecial[i] != p_line_special(world.level.map, i)) {
+            ++out.lines;
+        }
+    }
+    for (const p_thinker_t* node = p_thinker_first(&world.level.thinkers);
+         node != nullptr; node = p_thinker_next(node)) {
+        if (node->kind != P_THINKER_MOBJ) {
+            ++out.movers;
+        }
+    }
+    for (const r_mobj_t* m = p_level_first_mobj(&world.level); m != nullptr;
+         m = p_level_next_mobj(m)) {
+        if ((m->flags & MF_CORPSE) == 0u) {
+            ++out.alive;
+        }
+    }
+    return out;
+}
+
+std::size_t wireSizeOf(const World& world) {
+    const p_level_t& level = world.level;
+    const p_player_t& p = level.playerState;
+    std::size_t bytes = 48u; /* header */
+
+    bytes += 2u;             /* mobjCount */
+    bytes += 1u;             /* playerPresent */
+    if (p.mo != nullptr) {
+        bytes += playerRecordBytes();
+    }
+    bytes += 21u; /* totalKills/Items/Secrets, exitRequest, animTime, random */
+
+    for (std::uint16_t i = 0u; i < level.sectorCount; ++i) {
+        doom_sector_t base;
+        const p_sector_t& s = level.sectors[i];
+
+        doom_map_get_sector(&world.map, i, &base);
+        std::uint8_t mask = 0u;
+
+        if (s.floorHeight != base.floorHeight) mask |= 0x01u;
+        if (s.ceilingHeight != base.ceilingHeight) mask |= 0x02u;
+        if (s.floorPic != base.floorPic) mask |= 0x04u;
+        if (s.ceilingPic != base.ceilingPic) mask |= 0x08u;
+        if (s.lightLevel != base.lightLevel) mask |= 0x10u;
+        if (s.special != base.special || base.special != 0) mask |= 0x20u;
+        if (s.tag != base.tag) mask |= 0x40u;
+        if (mask == 0u) {
+            continue;
+        }
+        bytes += 2u + 1u;
+        if ((mask & 0x01u) != 0u) bytes += 4u;
+        if ((mask & 0x02u) != 0u) bytes += 4u;
+        if ((mask & 0x04u) != 0u) bytes += 8u;
+        if ((mask & 0x08u) != 0u) bytes += 8u;
+        if ((mask & 0x10u) != 0u) bytes += 2u;
+        if ((mask & 0x20u) != 0u) bytes += 2u;
+        if ((mask & 0x40u) != 0u) bytes += 2u;
+    }
+    bytes += 2u; /* sector count */
+
+    std::uint16_t lineEntries = 0u;
+
+    for (std::uint16_t i = 0u; i < level.lineCount; ++i) {
+        if (level.lineSpecial[i] != p_line_special(level.map, i)) {
+            ++lineEntries;
+        }
+    }
+    bytes += 2u + static_cast<std::size_t>(lineEntries) * 4u;
+
+    std::uint16_t thinkers = 0u;
+
+    for (const p_thinker_t* node = p_thinker_first(&level.thinkers);
+         node != nullptr; node = p_thinker_next(node)) {
+        ++thinkers;
+        if (node->kind == P_THINKER_MOBJ) {
+            bytes += mobjWireBytes(level, p_mobj_of_const(node));
+        } else {
+            bytes += moverWireBytes(node);
+        }
+    }
+    bytes += 2u; /* thinker count */
+
+    std::uint16_t soundEntries = 0u;
+
+    if (level.context.sectorSound != nullptr) {
+        for (std::uint16_t i = 0u; i < level.context.sectorSoundCount; ++i) {
+            const r_mobj_t* target = level.context.sectorSound[i].soundTarget;
+
+            if (target == nullptr) {
+                continue;
+            }
+            bool found = false;
+
+            for (const r_mobj_t* m = p_level_first_mobj(&level); m != nullptr;
+                 m = p_level_next_mobj(m)) {
+                if (m == target) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) {
+                ++soundEntries;
+            }
+        }
+    }
+    bytes += 2u + static_cast<std::size_t>(soundEntries) * 4u;
+    bytes += 2u + static_cast<std::size_t>(level.scrollCount) * 4u;
+    return bytes;
+}
+
 /* --- Snapshots ------------------------------------------------------------ */
 
 struct MobjSnap {
@@ -1082,6 +1353,250 @@ void test_budget_worst_case_fits(void) {
     destroyWorld(gA);
 }
 
+/*
+ * The analytic bound: the maximum each section of this record can occupy at
+ * E1M1's own limits, computed from the field widths in SaveGame.cpp (not from a
+ * run). The inputs are the map's real counts -- 85 sectors, 475 linedefs -- and
+ * two facts about the code:
+ *
+ *   movers   Every tag-driven mover (EV_DoDoor/Floor/Ceiling/Plat and the manual
+ *            door) tests `sector->specialdata` and refuses a second one on the
+ *            same sector, so at most 85 can exist at once. Light thinkers do not
+ *            set `specialdata`, and E1M1's sector specials spawn exactly four
+ *            (one flash, two glows, one strobe), so the bound is 85 + 4 = 89.
+ *   mobjs    116 is the largest count E1M1 can spawn (nightmare and hard share
+ *            option bit 4).
+ *
+ * Every entry is deliberately assumed to carry every optional field: that is
+ * what makes it a bound rather than a second measurement.
+ */
+void printAnalyticBound(std::size_t empiricalMax) {
+    constexpr std::size_t kSectors = 85u;
+    constexpr std::size_t kLines = 475u;
+    constexpr std::size_t kMobjs = 116u;
+    constexpr std::size_t kScrolls = 8u;
+    constexpr std::size_t kTagMovers = kSectors; /* one per sector, by specialdata */
+    constexpr std::size_t kLights = 4u;          /* E1M1's load-time light thinkers */
+    constexpr std::size_t kMobjMax = 64u;        /* every optional field present */
+    constexpr std::size_t kPlatMax = 1u + 32u;   /* widest tag-driven mover */
+    constexpr std::size_t kLightMax = 1u + 34u;
+    constexpr std::size_t kSectorEntryMax = 2u + 1u + 4u + 4u + 8u + 8u + 2u + 2u + 2u;
+    constexpr std::size_t kLineEntryMax = 2u + 2u;
+
+    const std::size_t header = 48u;
+    const std::size_t fixed = 2u + 1u + playerRecordBytes() + 21u;
+    const std::size_t sectors = 2u + kSectors * kSectorEntryMax;
+    const std::size_t lines = 2u + kLines * kLineEntryMax;
+    const std::size_t thinkers =
+        2u + kMobjs * kMobjMax + kLights * kLightMax + kTagMovers * kPlatMax;
+    const std::size_t sound = 2u + kSectors * 4u;
+    const std::size_t scrolls = 2u + kScrolls * 4u;
+    const std::size_t total =
+        header + fixed + sectors + lines + thinkers + sound + scrolls;
+
+    std::printf("SAVE_BOUND section=header bytes=%u\n",
+                static_cast<unsigned>(header));
+    std::printf("SAVE_BOUND section=fixed bytes=%u\n",
+                static_cast<unsigned>(fixed));
+    std::printf("SAVE_BOUND section=sectors bytes=%u\n",
+                static_cast<unsigned>(sectors));
+    std::printf("SAVE_BOUND section=lines bytes=%u\n",
+                static_cast<unsigned>(lines));
+    std::printf("SAVE_BOUND section=thinkers bytes=%u\n",
+                static_cast<unsigned>(thinkers));
+    std::printf("SAVE_BOUND section=sound bytes=%u\n",
+                static_cast<unsigned>(sound));
+    std::printf("SAVE_BOUND section=scrolls bytes=%u\n",
+                static_cast<unsigned>(scrolls));
+    std::printf("SAVE_BOUND section=total bytes=%u\n",
+                static_cast<unsigned>(total));
+
+    const long long delta =
+        static_cast<long long>(kSavePayloadMax) - static_cast<long long>(empiricalMax);
+    long long tenths = delta * 1000 / static_cast<long long>(kSavePayloadMax);
+    const char* sign = tenths < 0 ? "-" : "";
+    if (tenths < 0) {
+        tenths = -tenths;
+    }
+    char margin[128];
+
+    std::snprintf(margin, sizeof margin,
+                  "SAVE_MARGIN max=%u bound=%u budget=%u headroom=%s%lld.%lld%%",
+                  static_cast<unsigned>(empiricalMax), static_cast<unsigned>(total),
+                  static_cast<unsigned>(kSavePayloadMax), sign, tenths / 10,
+                  tenths % 10);
+    std::printf("%s\n", margin);
+    TEST_MESSAGE(margin);
+}
+
+/*
+ * The long-run measurement and its deep differential.
+ *
+ * The earlier budget case measures the two ends the task named; this one runs
+ * the world for ten minutes with a script that keeps the level awake and samples
+ * the record every 50 s. `wireSizeOf()` is the same state sized by the writer's
+ * field widths, cross-checked against `written` on every sample that fits,
+ * because saveWrite refuses an over-budget record and reports no length.
+ *
+ * The final save is the input to the differential: run 35 more tics, restore a
+ * fresh world, run the same 35 tics, compare every observable with the helper
+ * the other differential cases use.
+ */
+void test_long_run_budget_and_deep_differential(void) {
+    constexpr int kSampleEvery = 1750;
+    constexpr int kSamples = 12; /* 12 x 1750 = 21,000 tics = 10 minutes */
+    constexpr int kDifferentialTics = 35;
+
+    std::uint8_t payload[kSavePayloadMax + 64];
+    std::size_t written = 0u;
+    std::size_t maxBytes = 0u;
+    int maxTic = 0;
+    std::uint32_t maxMobjs = 0u;
+    std::uint32_t maxAlive = 0u;
+    int lastFitTic = 0;
+    std::size_t lastFitBytes = 0u;
+
+    TEST_ASSERT_TRUE(beginWorld(gA, "E1M1", P_SKILL_NIGHTMARE));
+    TEST_ASSERT_EQUAL_UINT16(85u, gA.level.sectorCount);
+    TEST_ASSERT_EQUAL_UINT16(475u, gA.level.lineCount);
+    TEST_ASSERT_EQUAL_UINT16(8u, gA.level.scrollCount);
+    TEST_ASSERT_EQUAL_UINT32(116u, p_level_mobj_count(&gA.level));
+
+    /*
+     * The maximum is tracked on every tic, not only on the twelve samples: a
+     * record grows with a puff in flight or a missile that will be gone next
+     * tic, and a 50-second sample grid can walk past that state. The printed
+     * samples stay at 1,750 tics as asked; the max line reports the tic it
+     * actually happened on.
+     */
+    for (int tic = 1; tic <= kSamples * kSampleEvery; ++tic) {
+        runLongTics(gA, 1);
+        const std::size_t instant = wireSizeOf(gA);
+
+        if (instant > maxBytes) {
+            maxBytes = instant;
+            maxTic = static_cast<int>(gA.level.leveltime);
+            maxMobjs = p_level_mobj_count(&gA.level);
+            maxAlive = worldDeltas(gA).alive;
+        }
+        if ((tic % kSampleEvery) != 0) {
+            continue;
+        }
+        const DeltaCounts deltas = worldDeltas(gA);
+        const std::size_t measured = instant;
+        SaveStatus status = saveWrite(gA.level, gA.level.playerState, 1, payload,
+                                      sizeof payload, written);
+
+        if (status == SaveStatus::Ok) {
+            /* The sizer and the writer must describe the same bytes. */
+            TEST_ASSERT_EQUAL_UINT32(static_cast<std::uint32_t>(measured),
+                                     static_cast<std::uint32_t>(written));
+            lastFitTic = static_cast<int>(gA.level.leveltime);
+            lastFitBytes = measured;
+        }
+        /* The writer's budget rule, stated as an identity. */
+        TEST_ASSERT_EQUAL_INT(status == SaveStatus::Ok ? 1 : 0,
+                              measured <= kSavePayloadMax ? 1 : 0);
+        {
+            char line[160];
+
+            std::snprintf(
+                line, sizeof line,
+                "SAVE_LONGRUN t=%d mobjs=%u alive=%u bytes=%u sectors=%u lines=%u movers=%u",
+                static_cast<int>(gA.level.leveltime),
+                static_cast<unsigned>(p_level_mobj_count(&gA.level)),
+                static_cast<unsigned>(deltas.alive),
+                static_cast<unsigned>(measured),
+                static_cast<unsigned>(deltas.sectors),
+                static_cast<unsigned>(deltas.lines),
+                static_cast<unsigned>(deltas.movers));
+            std::printf("%s\n", line);
+            TEST_MESSAGE(line);
+        }
+    }
+    {
+        char line[160];
+
+        std::snprintf(line, sizeof line,
+                      "SAVE_LONGRUN_MAX bytes=%u t=%d mobjs=%u alive=%u",
+                      static_cast<unsigned>(maxBytes), maxTic,
+                      static_cast<unsigned>(maxMobjs),
+                      static_cast<unsigned>(maxAlive));
+        std::printf("%s\n", line);
+        TEST_MESSAGE(line);
+    }
+    printAnalyticBound(maxBytes);
+
+    /*
+     * The deep differential. It wants the end-of-run state; when that record is
+     * over budget there is no payload to restore, so the test replays the same
+     * deterministic script to the latest sample that did fit and runs the
+     * differential there, saying which tic it used. That is the honest
+     * degradation: refusing to lie about a payload is the finding itself.
+     */
+    const std::size_t endMeasured = wireSizeOf(gA);
+    std::size_t endWritten = 0u;
+    const SaveStatus endStatus =
+        saveWrite(gA.level, gA.level.playerState, 1, payload, sizeof payload,
+                  endWritten);
+    World* diffSource = &gA;
+    int diffTic = static_cast<int>(gA.level.leveltime);
+    std::size_t diffBytes = endMeasured;
+
+    if (endStatus != SaveStatus::Ok) {
+        char line[160];
+
+        std::snprintf(line, sizeof line,
+                      "SAVE_DEEPDIFF t=%d bytes=%u status=too_large fallback=%d",
+                      static_cast<int>(gA.level.leveltime),
+                      static_cast<unsigned>(endMeasured), lastFitTic);
+        std::printf("%s\n", line);
+        TEST_MESSAGE(line);
+        TEST_ASSERT_TRUE(lastFitTic > 0);
+        TEST_ASSERT_TRUE(beginWorld(gC, "E1M1", P_SKILL_NIGHTMARE));
+        runLongTics(gC, lastFitTic);
+        endWritten = 0u;
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(SaveStatus::Ok),
+                              static_cast<int>(saveWrite(
+                                  gC.level, gC.level.playerState, 1, payload,
+                                  sizeof payload, endWritten)));
+        diffSource = &gC;
+        diffTic = lastFitTic;
+        diffBytes = lastFitBytes;
+        /* The replay must land on the state the sample measured. */
+        TEST_ASSERT_EQUAL_UINT32(static_cast<std::uint32_t>(lastFitBytes),
+                                 static_cast<std::uint32_t>(endWritten));
+    }
+    {
+        char line[160];
+
+        std::snprintf(line, sizeof line,
+                      "SAVE_DEEPDIFF t=%d bytes=%u status=ok", diffTic,
+                      static_cast<unsigned>(diffBytes));
+        std::printf("%s\n", line);
+        TEST_MESSAGE(line);
+    }
+    runLongTics(*diffSource, kDifferentialTics);
+
+    TEST_ASSERT_TRUE(beginWorld(gB, "E1M1", P_SKILL_NIGHTMARE));
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(SaveStatus::Ok),
+        static_cast<int>(saveApply(payload, endWritten, 1, gB.level,
+                                   gB.level.playerState)));
+    TEST_ASSERT_EQUAL_INT32(diffTic, gB.level.leveltime);
+    runLongTics(gB, kDifferentialTics);
+
+    WorldSnap a;
+    WorldSnap b;
+
+    snapshot(*diffSource, a);
+    snapshot(gB, b);
+    assertSnapshotsEqual(a, b, "long-run differential");
+    destroyWorld(gA);
+    destroyWorld(gB);
+    destroyWorld(gC);
+}
+
 void test_writing_twice_is_byte_identical(void) {
     std::uint8_t first[kSavePayloadMax + 64];
     std::uint8_t second[kSavePayloadMax + 64];
@@ -1118,6 +1633,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_missing_rng_must_diverge);
     RUN_TEST(test_rejections_leave_the_world_untouched);
     RUN_TEST(test_budget_worst_case_fits);
+    RUN_TEST(test_long_run_budget_and_deep_differential);
     RUN_TEST(test_writing_twice_is_byte_identical);
 
     return UNITY_END();
