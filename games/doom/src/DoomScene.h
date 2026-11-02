@@ -185,12 +185,16 @@ private:
 
 #if defined(DOOM_AUDIO)
     /**
-     * @brief Prints the sound layer's counters, once a second.
+     * @brief Prints the sound layer's counters and the music transport, once
+     *        a second.
      *
      * `SHOW,audio,plays=..,steals=..,refused=..,unknown=..,voices=..,active=..,
-     * underruns=..,worst_us=..`. The last two come from the telemetry source
-     * T48 installs; until then they print `-`, which is the honest state:
-     * this port's pinned APU branch does not expose getUnderrunCount() yet.
+     * underruns=..,worst_us=..`, followed by the transport's
+     * `SHOW,music,event=periodic,track=..,notes=../../../..,beats=..,playing=..,
+     * paused=..,underruns=..,worst_us=..`. The telemetry fields come from the
+     * source T48 installs; until then they print `-`, which is the honest
+     * state: this port's pinned APU branch does not expose
+     * getUnderrunCount() yet.
      */
     void reportAudio();
 

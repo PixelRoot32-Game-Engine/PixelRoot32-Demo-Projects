@@ -26,6 +26,7 @@
 namespace pixelroot32 {
 namespace audio {
 class AudioEngine;
+class MusicPlayer;
 }  // namespace audio
 }  // namespace pixelroot32
 
@@ -60,10 +61,15 @@ using DoomAudioTelemetrySource = bool (*)(void* user, DoomAudioTelemetry* out);
 /**
  * @brief Installs the engine the seam plays through. Called once by the scene.
  *
+ * `engine` owns the SFX voices; `music` is the engine's `MusicPlayer`, which
+ * owns the four sequencer tracks. Both are references to the engine the scene
+ * already constructs, so no lifetime is introduced here.
+ *
  * Clears the voice table and the counters: a second call is a fresh audio
  * session, not a second engine.
  */
-void doomAudioInit(pixelroot32::audio::AudioEngine& engine);
+void doomAudioInit(pixelroot32::audio::AudioEngine& engine,
+                   pixelroot32::audio::MusicPlayer& music);
 
 /// The counters, in place; valid for the process's life.
 const DoomAudioStats& doomAudioStats();
@@ -86,6 +92,16 @@ void doomAudioSetTelemetrySource(DoomAudioTelemetrySource source, void* user);
 
 /// Reads the installed source's numbers; false when there is none.
 bool doomAudioReadTelemetry(DoomAudioTelemetry* out);
+
+/**
+ * @brief Writes one `SHOW,music` line: the bank's current track, its note
+ *        counts and beats, `isPlaying`, and the APU telemetry.
+ *
+ * `event` names the caller ("init", "start", "periodic") so a boot log can
+ * tell the three apart. Under `!DOOM_AUDIO` it writes nothing: there is no
+ * transport and no line to print.
+ */
+void doomMusicReport(const char* event);
 
 }  // namespace doomc
 }  // namespace doom

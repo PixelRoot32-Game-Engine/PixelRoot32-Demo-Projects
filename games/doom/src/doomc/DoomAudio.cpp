@@ -61,7 +61,12 @@
 
 #include "doomc/SfxCueEvent.h"
 
-#include <audio/AudioEngine.h>
+#include "audio/AudioEngine.h"
+#include "audio/MusicPlayer.h"
+
+#include <pixelroot32/apu/AudioMusicTypes.h>
+
+#include "doomc/MusicBank.h"
 
 namespace {
 
@@ -76,6 +81,8 @@ using pixelroot32::audio::AudioCommand;
 using pixelroot32::audio::AudioCommandType;
 using pixelroot32::audio::AudioEngine;
 using pixelroot32::audio::AudioEvent;
+using pixelroot32::audio::MusicPlayer;
+using pixelroot32::audio::MusicTrack;
 
 /// ApuCore::SFX_VOICE_BASE: the first slot a PLAY_EVENT may use. Written as a
 /// literal because the APU's constants live in the synthesis library and this
@@ -110,6 +117,10 @@ struct Voice {
 };
 
 AudioEngine* gEngine = nullptr;
+MusicPlayer* gMusicPlayer = nullptr;
+const MusicTrack* gMusicTrack = nullptr;
+std::int32_t gMusicId = -1;
+bool gMusicTempoSet = false;
 Voice gVoices[kLogicalSlots] = {};
 std::int32_t gNextHandle = 1;
 DoomAudioStats gStats = {0u, 0u, 0u, 0u, -1};
@@ -182,6 +193,27 @@ void logPlay(std::int32_t sfxId, std::int32_t slot, std::int32_t volume,
 #else
 void logPlay(std::int32_t, std::int32_t, std::int32_t, std::int32_t, float) {}
 #endif
+
+/// The sequencer advance of one track, in beats. The four tracks share this
+/// number by construction (the converter closes each to the score end); the
+/// report prints all four so a regression is visible.
+float trackBeats(const MusicTrack& track) {
+    float beats = 0.0f;
+    for (std::size_t index = 0; index < track.count; ++index) {
+        beats += track.notes[index].duration;
+    }
+    return beats;
+}
+
+/// `S_music[id].name`, or "none" when nothing is loaded. `sounds.h`'s table is
+/// the same name the converter resolved to a `d_` lump.
+const char* musicName(std::int32_t musicId) {
+    if (musicId <= 0 || musicId >= NUMMUSIC) {
+        return "none";
+    }
+    const char* name = S_music[musicId].name;
+    return name != nullptr ? name : "none";
+}
 
 }  // namespace
 
@@ -319,22 +351,75 @@ extern "C" void doom_sound_tick(void) {
 }
 
 extern "C" bool doom_music_start(int32_t music_id, bool looping) {
-    // T47 converts MUS into APU tracks and owns the transport. Until then a
-    // request is answered honestly instead of pretending to play.
-    (void)music_id;
+    // The shipped asset is a looping track (`loop = true` in the generated
+    // MusicTrack). `S_StartMusic` (looping = 0) is never called by this port;
+    // a non-looping view would need a second MusicTrack struct for every
+    // asset, so the request is accepted and the track loops. Recorded in the
+    // task log rather than silently dropped.
     (void)looping;
-    return false;
+
+    const MusicTrack* track = doom::doomc::musicBankTrack(static_cast<int>(music_id));
+    if (track == nullptr || gMusicPlayer == nullptr) {
+        return false;
+    }
+
+    // A repeat of the current track is a no-op (s_sound.c guards it too, so
+    // this only covers a direct seam call or a race).
+    if (gMusicTrack == track) {
+        if (gMusicPlayer->isPlaying()) {
+            return true;
+        }
+    } else if (gMusicTrack != nullptr) {
+        gMusicPlayer->stop();
+    }
+
+    // The converter's grid: ApuCore clamps tempoBPM to 300, so 300 BPM is the
+    // finest sequencer grid the API allows -- one beat is 0.2 s and one tick
+    // is 0.05 s, exactly 7 MUS ticks. `mus2tracks.py` writes each duration as
+    // integer ticks / 4 and rounds every start to that grid; at any other BPM
+    // the same durations would mean a different grid and the tracks would
+    // stretch.
+    if (!gMusicTempoSet) {
+        gMusicPlayer->setBPM(300.0f);
+        gMusicTempoSet = true;
+    }
+
+    gMusicPlayer->play(*track);
+    gMusicTrack = track;
+    gMusicId = music_id;
+    doom::doomc::doomMusicReport("start");
+    return true;
 }
 
-extern "C" void doom_music_stop(void) {}
+extern "C" void doom_music_stop(void) {
+    if (gMusicPlayer != nullptr) {
+        gMusicPlayer->stop();
+    }
+    gMusicTrack = nullptr;
+    gMusicId = -1;
+}
 
-extern "C" void doom_music_pause(bool paused) { (void)paused; }
+extern "C" void doom_music_pause(bool paused) {
+    if (gMusicPlayer == nullptr) {
+        return;
+    }
+    if (paused) {
+        gMusicPlayer->pause();
+    } else {
+        gMusicPlayer->resume();
+    }
+}
 
 namespace doom {
 namespace doomc {
 
-void doomAudioInit(pixelroot32::audio::AudioEngine& engine) {
+void doomAudioInit(pixelroot32::audio::AudioEngine& engine,
+                   pixelroot32::audio::MusicPlayer& music) {
     gEngine = &engine;
+    gMusicPlayer = &music;
+    gMusicTrack = nullptr;
+    gMusicId = -1;
+    gMusicTempoSet = false;
     for (int index = 0; index < kLogicalSlots; ++index) {
         gVoices[index] = Voice{};
     }
@@ -367,6 +452,57 @@ bool doomAudioReadTelemetry(DoomAudioTelemetry* out) {
         return false;
     }
     return gTelemetrySource(gTelemetryUser, out);
+}
+
+void doomMusicReport(const char* event) {
+    const MusicTrack* tracks[4] = {gMusicTrack, nullptr, nullptr, nullptr};
+    if (gMusicTrack != nullptr) {
+        tracks[1] = gMusicTrack->secondVoice;
+        tracks[2] = gMusicTrack->thirdVoice;
+        tracks[3] = gMusicTrack->percussion;
+    }
+
+    std::uint32_t notes[4] = {0u, 0u, 0u, 0u};
+    float beats[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    for (int index = 0; index < 4; ++index) {
+        if (tracks[index] != nullptr) {
+            notes[index] = static_cast<std::uint32_t>(tracks[index]->count);
+            beats[index] = trackBeats(*tracks[index]);
+        }
+    }
+
+    const bool playing = gMusicPlayer != nullptr && gMusicPlayer->isPlaying();
+    const bool paused = gEngine != nullptr && gEngine->isMusicPaused();
+    DoomAudioTelemetry telemetry = {0u, 0u};
+    const bool haveTelemetry = doomAudioReadTelemetry(&telemetry);
+    char line[224];
+
+    if (haveTelemetry) {
+        std::snprintf(
+            line, sizeof line,
+            "SHOW,music,event=%s,track=%s,notes=%u/%u/%u/%u,"
+            "beats=%.2f/%.2f/%.2f/%.2f,playing=%d,paused=%d,"
+            "underruns=%u,worst_us=%u\n",
+            event != nullptr ? event : "-", musicName(gMusicId), notes[0], notes[1],
+            notes[2], notes[3], static_cast<double>(beats[0]),
+            static_cast<double>(beats[1]), static_cast<double>(beats[2]),
+            static_cast<double>(beats[3]), playing ? 1 : 0, paused ? 1 : 0,
+            static_cast<unsigned>(telemetry.underruns),
+            static_cast<unsigned>(telemetry.worstUs));
+    } else {
+        // No telemetry source until T48: `-` is the state this branch can
+        // prove, and it matches the SHOW,audio line.
+        std::snprintf(
+            line, sizeof line,
+            "SHOW,music,event=%s,track=%s,notes=%u/%u/%u/%u,"
+            "beats=%.2f/%.2f/%.2f/%.2f,playing=%d,paused=%d,"
+            "underruns=-,worst_us=-\n",
+            event != nullptr ? event : "-", musicName(gMusicId), notes[0], notes[1],
+            notes[2], notes[3], static_cast<double>(beats[0]),
+            static_cast<double>(beats[1]), static_cast<double>(beats[2]),
+            static_cast<double>(beats[3]), playing ? 1 : 0, paused ? 1 : 0);
+    }
+    doom::doomc::writeLine(line);
 }
 
 }  // namespace doomc
@@ -417,7 +553,11 @@ extern "C" void doom_music_pause(bool paused) { (void)paused; }
 namespace doom {
 namespace doomc {
 
-void doomAudioInit(pixelroot32::audio::AudioEngine& engine) { (void)engine; }
+void doomAudioInit(pixelroot32::audio::AudioEngine& engine,
+                   pixelroot32::audio::MusicPlayer& music) {
+    (void)engine;
+    (void)music;
+}
 
 const DoomAudioStats& doomAudioStats() {
     static const DoomAudioStats kZero = {0u, 0u, 0u, 0u, -1};
@@ -437,6 +577,8 @@ bool doomAudioReadTelemetry(DoomAudioTelemetry* out) {
     (void)out;
     return false;
 }
+
+void doomMusicReport(const char* event) { (void)event; }
 
 }  // namespace doomc
 }  // namespace doom

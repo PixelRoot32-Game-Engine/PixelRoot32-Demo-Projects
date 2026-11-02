@@ -42,6 +42,7 @@
 
 #include "doomc/SfxBank.h"
 #include "doomc/SfxCueEvent.h"
+#include "doomc/MusicBank.h"
 
 #include "../../test_config.h"
 
@@ -56,8 +57,12 @@ using doom::doomc::kSfxVoices;
 using doom::doomc::sfxBankPreset;
 using doom::doomc::SfxVoiceScratch;
 using doom::doomc::sfxCueEvent;
+using doom::doomc::musicBankTrack;
 using pixelroot32::audio::AudioEvent;
 using pixelroot32::audio::InstrumentPreset;
+using pixelroot32::audio::MusicTrack;
+using pixelroot32::audio::Note;
+using pixelroot32::audio::WaveType;
 using pixelroot32::audio::WaveType;
 
 namespace {
@@ -667,6 +672,66 @@ void test_update_sounds_ticks_and_frees_a_finished_channel(void) {
     S_StopChannel(0);
 }
 
+// --- The music bank --------------------------------------------------------
+
+void test_the_music_bank_ships_only_e1m1(void) {
+    // Only the level theme is converted into a board asset (T47). Every other
+    // id -- the dummy row, the intermission, the title, past NUMMUSIC -- is
+    // answered nullptr so S_ChangeMusic leaves the level quiet instead of
+    // holding a request that never plays.
+    TEST_ASSERT_NULL(musicBankTrack(mus_None));
+    TEST_ASSERT_NULL(musicBankTrack(mus_inter));
+    TEST_ASSERT_NULL(musicBankTrack(mus_intro));
+    TEST_ASSERT_NULL(musicBankTrack((int)NUMMUSIC));
+
+    const MusicTrack* track = musicBankTrack(mus_e1m1);
+    TEST_ASSERT_NOT_NULL(track);
+    TEST_ASSERT_TRUE(track->loop);
+    TEST_ASSERT_EQUAL((int)WaveType::PULSE, (int)track->channelType);
+    TEST_ASSERT_EQUAL_FLOAT(0.5f, track->duty);
+    TEST_ASSERT_NOT_NULL(track->notes);
+    TEST_ASSERT_GREATER_THAN(0, (int)track->count);
+
+    // The four-voice shape: melody on the main track, the third voice and the
+    // bass on the APU's parallel sub-tracks, and one percussion track.
+    TEST_ASSERT_NOT_NULL(track->secondVoice);
+    TEST_ASSERT_NOT_NULL(track->thirdVoice);
+    TEST_ASSERT_NOT_NULL(track->percussion);
+    TEST_ASSERT_EQUAL((int)WaveType::PULSE, (int)track->secondVoice->channelType);
+    TEST_ASSERT_EQUAL_FLOAT(0.125f, track->secondVoice->duty);
+    TEST_ASSERT_EQUAL((int)WaveType::TRIANGLE, (int)track->thirdVoice->channelType);
+    TEST_ASSERT_EQUAL((int)WaveType::NOISE, (int)track->percussion->channelType);
+
+    // Every track closes on the score's 480.000 stored beats (1,920 APU ticks
+    // at 300 BPM = the original 96 s), so the four loops stay aligned. This is
+    // the property the offline gate measures from the MUS.
+    auto beats = [](const MusicTrack& value) {
+        float total = 0.0f;
+        for (std::size_t index = 0; index < value.count; ++index) {
+            total += value.notes[index].duration;
+        }
+        return total;
+    };
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 480.0f, beats(*track));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 480.0f, beats(*track->secondVoice));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 480.0f, beats(*track->thirdVoice));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 480.0f, beats(*track->percussion));
+
+    // A drum is Rest + a duty-0 preset; ApuCore rejects any other shape.
+    int drums = 0;
+    for (std::size_t index = 0; index < track->percussion->count; ++index) {
+        const pixelroot32::audio::MusicNote& note = track->percussion->notes[index];
+        if (note.preset == nullptr) {
+            TEST_ASSERT_EQUAL((int)Note::Rest, (int)note.note);
+            continue;
+        }
+        ++drums;
+        TEST_ASSERT_EQUAL((int)Note::Rest, (int)note.note);
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, note.preset->duty);
+    }
+    TEST_ASSERT_GREATER_THAN(0, drums);
+}
+
 // --- The runner ------------------------------------------------------------
 //
 // Unity's runner is explicit here, as in the other suites in this project: a
@@ -698,6 +763,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_voice_selection_prefers_idle_then_the_least_important);
     RUN_TEST(test_no_class_combination_steals_a_reserved_voice);
     RUN_TEST(test_update_sounds_ticks_and_frees_a_finished_channel);
+    RUN_TEST(test_the_music_bank_ships_only_e1m1);
 
     return UNITY_END();
 }

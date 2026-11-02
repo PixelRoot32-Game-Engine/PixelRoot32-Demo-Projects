@@ -973,7 +973,7 @@ void DoomScene::init() {
     // talk to. `S_Init` takes upstream's volumes (0..127); the menu's 0..15 is
     // T49's, and until then the layer runs at full scale. `mode=legacy` is a
     // literal on purpose: this port never sends SET_SOUND_PROFILE (S4).
-    doomc::doomAudioInit(engine.getAudioEngine());
+    doomc::doomAudioInit(engine.getAudioEngine(), engine.getMusicPlayer());
     S_Init(S_MAX_VOLUME, S_MAX_VOLUME);
     {
         char audioLine[72];
@@ -982,6 +982,9 @@ void DoomScene::init() {
                       static_cast<unsigned>(doomc::sfxBankSize()));
         writeConsoleLine(audioLine);
     }
+    // One line before any level is loaded: the bank and the transport, so a
+    // quiet boot is visibly "no track" rather than a missing log.
+    doomc::doomMusicReport("init");
     audioLastReportUs_ = sampleMicros();
 #if defined(DOOM_AUDIO_SCRIPT)
     audioScriptLastUs_ = sampleMicros();
@@ -1374,6 +1377,11 @@ void DoomScene::reportAudio() {
                       doomc::doomAudioActiveVoices());
     }
     writeConsoleLine(line);
+
+    // The transport beside the counters: S_Start asks for E1M1 at level load,
+    // so this line is the board proof that the converted track reached an APU
+    // sequencer and stayed there.
+    doomc::doomMusicReport("periodic");
 }
 
 #if defined(DOOM_AUDIO_SCRIPT)
