@@ -6,7 +6,7 @@ line of state per command. This file holds the expectation, and it is built two
 ways so a wrong C file cannot agree with its own mistake:
 
 * **anchors** -- literal expected lines, written by hand from linuxdoom's
-  ``m_menu.c`` rules: the chord opens the menu, the cursor wraps, BACK closes the
+  ``m_menu.c`` rules: the Start edge opens and closes the menu, the cursor wraps, BACK closes the
   main screen, a New Game reports its skill once, a slider clamps at both ends and
   reports a change only when the value moved;
 * **a reference model** -- an independent Python implementation of the same rules
@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / "lib" / "doom"
 
-UP, DOWN, LEFT, RIGHT, A, B = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20
+UP, DOWN, LEFT, RIGHT, A, B, START = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40
 DEFAULTS = (2, 8, 0)
 SKILLS, VOLUME_MAX, GAMMA_MAX = 5, 15, 4
 
@@ -157,11 +157,15 @@ class Model:
                 self.latched = 0
             return 0
         if not self.active:
-            if (held & (LEFT | RIGHT)) == (LEFT | RIGHT) and rising & (LEFT | RIGHT):
+            if rising & START:
                 self.open()
                 self.latched = 1
                 return 0
-            return held
+            return held & ~START
+        if rising & START:
+            self.close()
+            self.latched = 1
+            return 0
         if (rising & (LEFT | RIGHT)) == (LEFT | RIGHT):
             rising &= ~(LEFT | RIGHT)
         for mask, name in ((UP, "up"), (DOWN, "down"), (LEFT, "left"), (RIGHT, "right"),
@@ -216,9 +220,13 @@ def anchors() -> Run:
     # LEFT alone is the game's: the world sees it and the menu stays shut.
     add("buttons 0x04", state(world=LEFT))
     add("buttons 0x00", state(world=0))
-    # The chord opens the menu on the main screen and the world sees nothing.
-    add("buttons 0x0C", state(active=1, world=0))
-    add("buttons 0x0C", state(active=1, world=0))
+    # The LEFT+RIGHT chord is the game's now (both cancel to no turn): it does not open.
+    add("buttons 0x0C", state(world=LEFT | RIGHT))
+    add("buttons 0x00", state(world=0))
+    # Start opens the menu on the main screen and the world sees nothing; holding it
+    # is no second edge, and the open menu stays open.
+    add("buttons 0x40", state(active=1, world=0))
+    add("buttons 0x40", state(active=1, world=0))
     add("buttons 0x00", state(active=1, world=0))
     # DOWN moves to OPTIONS, DOWN again wraps to NEW GAME, UP wraps back.
     add("buttons 0x02", state(active=1, item=1, world=0))
@@ -251,6 +259,20 @@ def anchors() -> Run:
     add("buttons 0x20", state(active=0, screen=0, item=1, gamma=4, world=0))
     add("buttons 0x00", state(active=0, screen=0, item=1, gamma=4, world=0))
     add("buttons 0x20", state(active=0, screen=0, item=1, gamma=4, world=B))
+    # Start closes an open menu from any screen (Esc toggles in DOOM), once per press,
+    # and the world sees nothing until it is released.
+    add("init", state())
+    add("buttons 0x40", state(active=1, world=0))
+    add("buttons 0x00", state(active=1, world=0))
+    add("buttons 0x10", state(active=1, screen=1, item=2, world=0))
+    add("buttons 0x00", state(active=1, screen=1, item=2, world=0))
+    add("buttons 0x40", state(active=0, screen=0, item=0, world=0))
+    add("buttons 0x40", state(active=0, screen=0, item=0, world=0))
+    add("buttons 0x00", state(active=0, screen=0, item=0, world=0))
+    # Start with a game button in the same frame: the menu opens, the world sees nothing.
+    add("buttons 0x50", state(active=1, screen=0, item=0, world=0))
+    add("buttons 0x00", state(active=1, screen=0, item=0, world=0))
+    add("init", state())
     # New Game: the skill row starts on the saved skill, DOWN moves, ENTER starts.
     add("init 2 8 0", state())
     add("open", state(active=1))
@@ -279,17 +301,17 @@ def fuzz(seed: int, frames: int, perturb: bool) -> Run:
             run.add(f"tick {tics}", model.line())
         elif roll < 0.12:
             run.add("take", model.take())
-        elif roll < 0.15 and not model.active:
-            held = LEFT | RIGHT
+        elif roll < 0.15:
+            held = START
             world = model.buttons(held)
             run.add(f"buttons 0x{held:02X}", model.line(world))
         else:
             if rng.random() < 0.55:
                 held = 0
             else:
-                held = 1 << rng.randint(0, 5)
+                held = 1 << rng.randint(0, 6)
                 if rng.random() < 0.2:
-                    held |= 1 << rng.randint(0, 5)
+                    held |= 1 << rng.randint(0, 6)
             world = model.buttons(held)
             run.add(f"buttons 0x{held:02X}", model.line(world))
     run.add("take", model.take())

@@ -146,12 +146,16 @@ weapon with independent oracles pixel by pixel.
 linuxdoom's `m_menu.c` (`lib/doom/m_menu.c`), drawn over the finished frame with
 the container's own `M_*` patches and the HU font.
 
-**Buttons.** The board's six buttons are all the game uses, and a Start button is
-not known to be wired, so the menu opens on **LEFT + RIGHT held together** (the one
-pair the game never needs: they cancel to no turn). While it is open:
+**Buttons.** The six game buttons keep their mapping. **Start** (GPIO 34) opens
+the menu on its press edge (a held Start does not flicker it) and, while the menu
+is open, closes it from any screen, as Esc toggles DOOM's menu. Start is never a
+game button: the world never sees it. LEFT + RIGHT held together is the game's
+again (both cancel to no turn) and no longer opens anything. Select (GPIO 35) is
+not mapped. While the menu is open:
 
 | Button | Does |
 | --- | --- |
+| Start | close the menu (from any screen) |
 | Up / Down | move the cursor (wraps) |
 | Left / Right | on a slider row, one step down / up |
 | A | enter the screen; on a skill row, start the new game at that skill; on a slider row, one step up |
@@ -159,8 +163,19 @@ pair the game never needs: they cancel to no turn). While it is open:
 
 Opening the menu **pauses the 35 Hz world** (the tic clock keeps running, nothing
 is replayed when it closes) and the world is handed no buttons until every button
-has been released, so the chord does not turn the player and the B that closed the
-menu does not become a use.
+has been released, so the Start press does not reach the game and the B that
+closed the menu does not become a use.
+
+**Wiring note for GPIO 34 (not verified on hardware).** The engine's input layer
+(`InputManager::init()`) calls `pinMode(pin, INPUT_PULLUP)` on every configured
+pin and reads a button as pressed when `digitalRead() == LOW` (active low, with a
+100 ms debounce). GPIO 34 is input-only on the ESP32 and has **no internal
+pull-up or pull-down**, so `INPUT_PULLUP` does nothing there: the Start button
+needs an **external pull-up** (typically 10 kOhm from GPIO 34 to 3V3) with the
+switch between GPIO 34 and GND. Without that resistor the pin floats and can read
+as spurious Start presses (the menu would open and close by itself). Whether the
+maintainer's Start button has that resistor is an open hardware question; the
+electrical path has only been exercised by a scripted press, never by a real one.
 
 **Screens.** NEW GAME and OPTIONS. NEW GAME is linuxdoom's skill screen (the
 cursor starts on the saved skill); choosing a row reloads E1M1 at that skill over

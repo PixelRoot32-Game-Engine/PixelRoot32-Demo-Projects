@@ -323,8 +323,8 @@ uint8_t m_menu_buttons(m_menu_t* menu, uint8_t held) {
     menu->prevButtons = held;
 
     /* After opening or closing, the world sees nothing until every button is up:
-     * the chord's own presses must not turn the player, and the B that backed out
-     * must not become a USE. */
+     * the Start press that opened or closed must not reach the game, and the B that
+     * backed out must not become a USE. */
     if (menu->latched) {
         if (held == 0u) {
             menu->latched = 0;
@@ -333,13 +333,20 @@ uint8_t m_menu_buttons(m_menu_t* menu, uint8_t held) {
     }
 
     if (!menu->active) {
-        const uint8_t chord = (uint8_t)(M_BTN_LEFT | M_BTN_RIGHT);
-        if ((held & chord) == chord && (rising & chord) != 0u) {
+        /* The Start edge opens it; Start is never a game button. */
+        if ((rising & M_BTN_START) != 0u) {
             m_menu_open(menu);
             menu->latched = 1;
             return 0;
         }
-        return held;
+        return (uint8_t)(held & ~M_BTN_START);
+    }
+
+    /* Start closes it from any screen (Esc toggles the menu in DOOM). */
+    if ((rising & M_BTN_START) != 0u) {
+        m_menu_close(menu);
+        menu->latched = 1;
+        return 0;
     }
 
     /* Both horizontal buttons pressed in the same frame cancel, as they do for

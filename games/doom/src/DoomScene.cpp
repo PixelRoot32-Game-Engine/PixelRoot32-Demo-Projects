@@ -87,6 +87,11 @@ using pixelroot32::graphics::Renderer;
 /// comment in DoomScene.h).
 constexpr int kButtonCount = 6;
 
+/// The engine's `InputConfig` index of Start (GPIO 34 on the CYD): after the six
+/// game buttons, so the shell, the INPUT line and the on-screen slots never see it.
+/// Only the menu reads it (D5.2); Select (index 7) stays unmapped.
+constexpr std::uint8_t kStartIndex = 6;
+
 // --- Shell geometry ---------------------------------------------------------
 
 /// Side of a corner orientation marker, in logical pixels.
@@ -773,12 +778,12 @@ static_assert(M_BTN_UP == doomc::kButtonUp && M_BTN_DOWN == doomc::kButtonDown
  * own rising edge.
  *
  * What the script does, in order, and why each part is there:
- *   1. wait, then LEFT+RIGHT: the chord opens the main menu (menu-open fps window)
+ *   1. wait, then Start: the Start edge opens the main menu (menu-open fps window)
  *   2. DOWN, A: OPTIONS. Skill is driven to 0 then to 2, volume to 0 then to 5 and
  *      gamma to 0 then to 3 (the clamps are exercised, and the end values are the
  *      same whatever the stored ones were, so a second boot can be compared).
  *   3. B, B: back to main, then close: the settings are written to NVS
- *   4. NEW GAME at skills 0, 1, 2, 3, 4 and 3 again: each is a chord, A, a cursor
+ *   4. NEW GAME at skills 0, 1, 2, 3, 4 and 3 again: each is a Start press, A, a cursor
  *      move from the saved skill and A, then a wait so the reload and the first
  *      frames of the new world are in the log. The last one leaves skill 3. The main
  *      screen remembers its cursor (upstream's lastOn), which step 2 left on OPTIONS,
@@ -791,10 +796,10 @@ struct ScriptStep {
 };
 
 #define TAP(button) {(button), 1}, {0, 2}
-#define CHORD {static_cast<std::uint8_t>(M_BTN_LEFT | M_BTN_RIGHT), 1}, {0, 3}
+#define OPEN_MENU {M_BTN_START, 1}, {0, 3}  /* the Start press that opens the menu */
 #define WAIT(count) {0, (count)}
-#define NEWGAME_AT(downs) CHORD, TAP(M_BTN_A), downs, TAP(M_BTN_A), WAIT(60)
-#define NEWGAME_FIRST(downs) CHORD, TAP(M_BTN_UP), TAP(M_BTN_A), downs, TAP(M_BTN_A), WAIT(60)
+#define NEWGAME_AT(downs) OPEN_MENU, TAP(M_BTN_A), downs, TAP(M_BTN_A), WAIT(60)
+#define NEWGAME_FIRST(downs) OPEN_MENU, TAP(M_BTN_UP), TAP(M_BTN_A), downs, TAP(M_BTN_A), WAIT(60)
 #define DOWN3 TAP(M_BTN_DOWN), TAP(M_BTN_DOWN), TAP(M_BTN_DOWN)
 #define LEFT5 TAP(M_BTN_LEFT), TAP(M_BTN_LEFT), TAP(M_BTN_LEFT), TAP(M_BTN_LEFT), TAP(M_BTN_LEFT)
 #define RIGHT3 TAP(M_BTN_RIGHT), TAP(M_BTN_RIGHT), TAP(M_BTN_RIGHT)
@@ -802,7 +807,7 @@ struct ScriptStep {
 
 const ScriptStep kMenuScript[] = {
     WAIT(40),
-    CHORD,
+    OPEN_MENU,
     WAIT(60),                                  // main menu open
     TAP(M_BTN_DOWN), TAP(M_BTN_A),             // OPTIONS
     WAIT(60),                                  // setup-lite open
@@ -1111,7 +1116,11 @@ void DoomScene::update(unsigned long deltaTime) {
 #if defined(DOOM_MENU)
     // D5.2: the menu sees the raw buttons and answers with what the world may
     // see. Open or latched, that is nothing, and runWorldTics() does not tick.
-    runWorldTics(runMenu(buttons));
+    std::uint8_t menuButtons = buttons;
+    if (input.isButtonDown(kStartIndex)) {
+        menuButtons = static_cast<std::uint8_t>(menuButtons | M_BTN_START);
+    }
+    runWorldTics(runMenu(menuButtons));
 #else
     runWorldTics(buttons);
 #endif

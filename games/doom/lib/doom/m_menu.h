@@ -134,6 +134,7 @@ typedef enum m_key {
 #define M_BTN_RIGHT 0x08u
 #define M_BTN_A 0x10u
 #define M_BTN_B 0x20u
+#define M_BTN_START 0x40u /* the board's GPIO 34; menu-only, never reaches the world */
 
 typedef struct m_menu {
     m_settings_t settings;
@@ -161,9 +162,9 @@ void m_menu_close(m_menu_t* menu);
 int m_menu_key(m_menu_t* menu, m_key_t key);
 
 /*
- * One frame's held buttons. Opens the menu on the LEFT+RIGHT chord, feeds each
- * rising edge to m_menu_key() while it is open, and returns the buttons the
- * WORLD may see: the held bits when the menu is closed and unlatched, otherwise
+ * One frame's held buttons. The Start rising edge opens the menu, and closes it
+ * while it is open; each other rising edge is fed to m_menu_key() while it is
+ * open. Returns the buttons the WORLD may see (never the Start bit): the held bits when the menu is closed and unlatched, otherwise
  * 0. Use m_menu_active() to decide whether the world tic runs.
  */
 uint8_t m_menu_buttons(m_menu_t* menu, uint8_t held);

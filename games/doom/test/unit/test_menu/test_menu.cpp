@@ -58,6 +58,9 @@ void test_the_menu_reads_the_input_maps_bits(void) {
     TEST_ASSERT_EQUAL_UINT8(doom::doomc::kButtonRight, M_BTN_RIGHT);
     TEST_ASSERT_EQUAL_UINT8(doom::doomc::kButtonA, M_BTN_A);
     TEST_ASSERT_EQUAL_UINT8(doom::doomc::kButtonB, M_BTN_B);
+    // Start is the menu's alone: a bit outside the six game bits.
+    TEST_ASSERT_EQUAL_UINT8(0x40u, M_BTN_START);
+    TEST_ASSERT_EQUAL_UINT8(0u, M_BTN_START & 0x3Fu);
 }
 
 void test_an_empty_store_gives_the_defaults_and_says_so(void) {
