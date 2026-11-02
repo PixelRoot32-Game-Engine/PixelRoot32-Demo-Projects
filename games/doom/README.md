@@ -335,13 +335,45 @@ pickups (`itemup`/`wpnup`/`getpow`) and the teleporter. The "one sound per
 origin", `S_sfx[]` priority/`link`, distance culling and `M_Random` pitch
 jitter are upstream's rules, statement for statement.
 
-**What does not.** The *timbre* is not DOOM's: each id resolves to a
-placeholder cue grouped by character (a weapon crack, a monster growl, a door
-creak), and T46 replaces those numbers with values derived from the WAD's
-`DS*` lumps and gates them against the originals. Music is not wired yet: the
-transport exists and `doom_music_start()` answers "no track" until T47. The
-menu's volume slider still drives nothing (T49) and its "NO SOUND YET" label is
-unchanged. Sector-originated cues (doors, lifts, floors) are non-local at full
+**The timbre is fitted, not asserted.** T46 replaces T45's character-grouped
+placeholders with values derived from the WAD's 55 `DS*` lumps:
+`tools/sfx_design.py` parses `S_sfx[]`, resolves `DS` + uppercase(name), reads
+the DMX sample, and fits each cue's frequency, 4-point pitch/duty contour and
+ADSR to the original's 16-segment RMS envelope, ZCR/2 centroid contour and
+autocorrelation pitch track. The 53 ids the shareware WAD has no lump for
+(Doom 2's monsters and weapons, the super shotgun, the boss family) are fitted
+from the closest relative in the same family; `tools/sfx_fit.txt` names the
+donor and the reason for every one. The generator is deterministic: the same
+WAD produces a byte-identical `SfxBankTable.inc`.
+
+`AudioEvent` has no envelope field, so the bank carries its ADSR as 109
+`InstrumentPreset` rows generated from the same table and looks one up per
+cue; `src/doomc/SfxCueEvent.h` is the single cue -> event translation shared
+by `DoomAudio.cpp` and the host gate. Nothing else about the runtime moves:
+one logical cue per APU voice, still 8 -> 4, still no allocation. The 109
+presets cost **9,252 B** of flash (app 596,313 -> 605,565 B of 655,360).
+
+**The gate.** `python tools/sfx_check.py --wad tools/DOOM1.WAD` compiles
+`tools/sfx_render.cpp` with the system `g++` against the real ApuCore, renders
+every cue through it at 22050 Hz, and compares duration (5 % / 25 ms), the
+16-segment envelope (Pearson >= 0.80), class, centroid (factor 2) and pitch
+(1.5 semitones) with the original. All 108 cues are measured: the 55 ids with a
+shareware lump compare against it, and the 53 donor cues compare against the
+donor's original (the cue they copied). Of the 55 originals, 30 pass every
+check and 25 are recorded as `accepted-deviation` with the measured number and
+a reason (a multi-lobe RMS contour one ADSR cannot follow, or the 8-bit
+original's broadband grit putting its ZCR centroid 3-4x its fundamental); the
+donor copies inherit their source's result, so the whole run is 49 pass and 59
+recorded, 0 failed. `--perturb` (frequency x1.5) and `--stub` (a fixed 440 Hz
+square) must both fail. The gate proves the cue **is** the sound it claims to
+be; whether it is pleasant is the listening pass.
+
+**What is still not.** Music is not wired yet: the transport exists and
+`doom_music_start()` answers "no track" until T47. The menu's volume slider
+still drives nothing (T49) and its "NO SOUND YET" label is unchanged. The
+`Legacy` profile's release is capped at 100 ms, so a cue whose original tail is
+longer decays inside its own duration instead; that is one of the recorded
+deviations. Sector-originated cues (doors, lifts, floors) are non-local at full
 volume, because this port's `p_sector_t` has no `soundorg` field; their
 sector-index token keeps one-sound-per-sector and `S_StopSound` working. A few
 one-shot specials the port counts as "deferred switch textures" are doors that
@@ -353,9 +385,10 @@ vanilla's priority and origin rules still apply. The APU has four SFX voices:
 an idle voice is taken first, otherwise the least important sounding cue is
 stolen, and when every voice holds a Reserved cue (the player's pain, the
 player's weapon, the boss family) the newcomer is refused rather than stealing
-one. `steals` and `refused` are counted, and `tools`-free `pio test -e
-sound_test` proves the selector never names a Reserved cue as a victim, for
-every class combination.
+one. `steals` and `refused` are counted, and `pio test -e sound_test` (19 cases,
+including the preset/cue consistency and the shared event translation) proves
+the selector never names a Reserved cue as a victim, for every class
+combination.
 
 **Log.** At boot: `SHOW,audio,init,status=ok,bank=108,mode=legacy`. Once a
 second beside `SHOW,frame`:
@@ -368,8 +401,9 @@ branch does not expose it yet).
 door open, door close, switch, lift, imp sight, player pain, item pickup,
 teleport, barrel explosion, player death -- one every 700 ms through the real
 `S_StartSound` path, and prints a `SHOW,audio,play,id=..,name=..,voice=..,
-vol=..,pitch=..` line for each. Flash it with
-`pio run -e esp32dev_ILI9341_hud_audiotest -t upload`. It is a diagnostic,
+vol=..,pitch=..,dur_ms=..` line for each. The `dur_ms` is the fitted duration, so
+the board log can be checked against `tools/sfx_fit.txt` without ears. Flash it
+with `pio run -e esp32dev_ILI9341_hud_audiotest -t upload`. It is a diagnostic,
 never the shipped image.
 
 ### The level transition's fade (D5.4)
