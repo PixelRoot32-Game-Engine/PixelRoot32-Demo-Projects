@@ -147,6 +147,31 @@ static r_segs_error_t preflight_texture(const r_tex_source_t* textures, r_name_t
     return R_SEGS_OK;
 }
 
+/*
+ * R_StoreWallRange's third statement, `linedef->flags |= ML_MAPPED`, into the
+ * caller's shadow bitmap (r_bsp.h). One bit per linedef, LSB first; a line past
+ * the caller's block is not written, which is a caller that allocated less than
+ * `(numlines+7)/8` and not a condition the pass can diagnose. A NULL bitmap is a
+ * no-op: the automap and every caller that does not draw one pay one compare per
+ * stored fragment.
+ */
+static void mark_mapped(r_view_state_t* state, uint16_t seg) {
+    doom_seg_t record;
+    r_view_storage_t* storage = &state->storage;
+    uint32_t line;
+
+    if (storage->mapped == NULL || state->map == NULL) {
+        return;
+    }
+    doom_map_get_seg(state->map, seg, &record);
+    line = (uint32_t)record.linedef;
+    if (line / 8u >= storage->mappedBytes) {
+        return;
+    }
+    storage->mapped[line / 8u] =
+        (uint8_t)(storage->mapped[line / 8u] | (uint8_t)(1u << (line % 8u)));
+}
+
 /* --- Pool demand (D3.4 / D4.2h) ------------------------------------------ */
 
 /*
@@ -648,6 +673,9 @@ r_segs_error_t r_wall_draw(r_view_state_t* state, r_draw_surface_t* surface,
         if (R_PROBE_HAS(state)) {
             R_PROBE_OF(state)->wallOpenCycle += R_PROBE_NOW() - openStart;
         }
+        /* R_StoreWallRange's third statement: this range is stored, so its
+         * linedef is visible on the automap from now on (r_segs.h). */
+        mark_mapped(state, drawseg->seg);
         masked = fragment.hasBack && r_has_name(fragment.midTexture) ? 1 : 0;
         if (masked) {
             if (!reserve_clip_run(state, &nextEntry, span, &offset)) {

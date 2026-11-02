@@ -9509,6 +9509,580 @@ def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
 
 # --- Command line -----------------------------------------------------------
 
+# --- The automap (D5.3) -------------------------------------------------------
+#
+# linuxdoom-1.10's am_map.c, reimplemented here from the same source: the
+# window and its scale, AM_findMinMaxBoundaries, the outcode clipper, the
+# Bresenham rasteriser, the flat-aligned grid, AM_drawWalls' colour ladder, the
+# single-player arrow and the crosshair. It shares the fixed-point helpers and
+# the fine-sine table above and nothing else, so what this rules out is a
+# transcription slip in the C -- not a misreading of upstream's layout that both
+# sides would repeat.
+#
+# It draws into a caller-supplied surface exactly as the C does: rows 0..167,
+# stride bytes between rows, and nothing outside them.
+
+AM_WINDOW_WIDTH = SCREEN_WIDTH
+AM_WINDOW_HEIGHT = SCREEN_HEIGHT - 32
+
+AM_RED = 256 - 5 * 16
+AM_REDRANGE = 16
+AM_GREENS = 7 * 16
+AM_GREENRANGE = 16
+AM_GRAYS = 6 * 16
+AM_GRAYSRANGE = 16
+AM_BROWNS = 4 * 16
+AM_BROWNRANGE = 16
+AM_YELLOWS = 256 - 32 + 7
+AM_YELLOWRANGE = 1
+AM_BLACK = 0
+AM_WHITE = 256 - 47
+
+AM_BACKGROUND = AM_BLACK
+AM_YOURCOLORS = AM_WHITE
+AM_WALLCOLORS = AM_RED
+AM_WALLRANGE = AM_REDRANGE
+AM_TSWALLCOLORS = AM_GRAYS
+AM_TSWALLRANGE = AM_GRAYSRANGE
+AM_FDWALLCOLORS = AM_BROWNS
+AM_FDWALLRANGE = AM_BROWNRANGE
+AM_CDWALLCOLORS = AM_YELLOWS
+AM_CDWALLRANGE = AM_YELLOWRANGE
+AM_SECRETWALLCOLORS = AM_WALLCOLORS
+AM_SECRETWALLRANGE = AM_WALLRANGE
+AM_GRIDCOLORS = AM_GRAYS + AM_GRAYSRANGE // 2
+AM_XHAIRCOLORS = AM_GRAYS
+
+# Upstream's double expressions, written as the integers they truncate to:
+# (int)(0.2*FRACUNIT), (int)(1.02*FRACUNIT), (int)(FRACUNIT/1.02) and
+# (int)(0.7*FRACUNIT).
+AM_INITSCALEMTOF = FRACUNIT * 2 // 10
+AM_M_ZOOMIN = FRACUNIT * 102 // 100
+AM_M_ZOOMOUT = FRACUNIT * 100 // 102
+AM_ENTRYSCALE = FRACUNIT * 7 // 10
+AM_PAN_STEP = 4
+
+MAPBLOCKUNITS = 128
+PLAYERRADIUS = 16 * FRACUNIT
+ML_SECRET = 32
+ML_DONTDRAW = 128
+ML_MAPPED = 256
+
+AM_PAN_UP = 0x01
+AM_PAN_DOWN = 0x02
+AM_PAN_LEFT = 0x04
+AM_PAN_RIGHT = 0x08
+
+AM_ZOOM_RELEASE = 0
+AM_ZOOM_IN = 1
+AM_ZOOM_OUT = -1
+
+_AM_R = (8 * PLAYERRADIUS) // 7
+PLAYER_ARROW = (
+    ((-_AM_R + _AM_R // 8, 0), (_AM_R, 0)),
+    ((_AM_R, 0), (_AM_R - _AM_R // 2, _AM_R // 4)),
+    ((_AM_R, 0), (_AM_R - _AM_R // 2, -_AM_R // 4)),
+    ((-_AM_R + _AM_R // 8, 0), (-_AM_R - _AM_R // 8, _AM_R // 4)),
+    ((-_AM_R + _AM_R // 8, 0), (-_AM_R - _AM_R // 8, -_AM_R // 4)),
+    ((-_AM_R + 3 * _AM_R // 8, 0), (-_AM_R + _AM_R // 8, _AM_R // 4)),
+    ((-_AM_R + 3 * _AM_R // 8, 0), (-_AM_R + _AM_R // 8, -_AM_R // 4)),
+)
+
+
+def c_mod(value: int, modulus: int) -> int:
+    """C's %: the sign follows the dividend, unlike Python's floor modulo."""
+    return value - trunc_div(value, modulus) * modulus
+
+
+def blockmap_origin(lumps: list[Lump], map_name: str) -> tuple[int, int]:
+    """P_LoadBlockMap's bmaporgx/bmaporgy: the first two int16 of BLOCKMAP."""
+    marker = first_index(lumps, map_name)
+    if marker < 0:
+        raise InputError(f"{map_name}: map marker not found")
+    data = lumps[marker + len(BSP_MAP_LUMPS)].data
+    if len(data) < 4:
+        return (0, 0)
+    return (_fixed16(_i16(data, 0)), _fixed16(_i16(data, 2)))
+
+
+class Automap:
+    """AM_LevelInit / AM_Start / AM_Ticker / AM_Drawer over a BspMap."""
+
+    def __init__(self, bsp: BspMap, origin: tuple[int, int] = (0, 0)) -> None:
+        self.bsp = bsp
+        self.mapped = set()
+        self.bmaporgx, self.bmaporgy = origin
+        # The gate's --perturb hooks: two constants a caller may move, and
+        # nothing else in this implementation is parameterised.
+        self.entry_scale = AM_ENTRYSCALE
+        self.floor_color = AM_FDWALLCOLORS
+        self.f_x = 0
+        self.f_y = 0
+        self.f_w = AM_WINDOW_WIDTH
+        self.f_h = AM_WINDOW_HEIGHT
+        self.automapactive = False
+        self.stopped = True
+        self.grid = False
+        self.lightlev = 0
+        self.amclock = 0
+        self.m_paninc = [0, 0]
+        self.mtof_zoommul = FRACUNIT
+        self.ftom_zoommul = FRACUNIT
+        self.m_x = self.m_y = 0
+        self.m_x2 = self.m_y2 = 0
+        self.m_w = self.m_h = 0
+        self.min_x = self.min_y = 0
+        self.max_x = self.max_y = 0
+        self.max_w = self.max_h = 0
+        self.min_w = self.min_h = 0
+        self.min_scale_mtof = 0
+        self.max_scale_mtof = 0
+        self.scale_mtof = AM_INITSCALEMTOF
+        self.scale_ftom = FRACUNIT
+        self.old_m_w = self.old_m_h = 0
+        self.old_m_x = self.old_m_y = 0
+        self.f_oldloc = [INT32_MAX, INT32_MAX]
+        self.followplayer = True
+        self.player = [0, 0]
+        self.player_angle = 0
+        self.allmap = False
+        self.light_nexttic = 0
+        self.light_count = 0
+        self.drawn = 0
+        self.out_of_range = 0
+        self.fb = None
+        self.stride = AM_WINDOW_WIDTH
+
+    # --- AM_LevelInit ---------------------------------------------------
+
+    def find_min_max_boundaries(self) -> None:
+        min_x = min_y = INT32_MAX
+        max_x = max_y = -INT32_MAX
+        for vertex in self.bsp.vertexes:
+            if vertex["x"] < min_x:
+                min_x = vertex["x"]
+            elif vertex["x"] > max_x:
+                max_x = vertex["x"]
+            if vertex["y"] < min_y:
+                min_y = vertex["y"]
+            elif vertex["y"] > max_y:
+                max_y = vertex["y"]
+        self.min_x, self.min_y, self.max_x, self.max_y = min_x, min_y, max_x, max_y
+        self.max_w = max_x - min_x
+        self.max_h = max_y - min_y
+        self.min_w = 2 * PLAYERRADIUS
+        self.min_h = 2 * PLAYERRADIUS
+        a = fixed_div(self.f_w << FRACBITS, self.max_w)
+        b = fixed_div(self.f_h << FRACBITS, self.max_h)
+        self.min_scale_mtof = a if a < b else b
+        self.max_scale_mtof = fixed_div(self.f_h << FRACBITS, 2 * PLAYERRADIUS)
+
+    def level_init(self) -> None:
+        self.f_x = 0
+        self.f_y = 0
+        self.f_w = AM_WINDOW_WIDTH
+        self.f_h = AM_WINDOW_HEIGHT
+        self.find_min_max_boundaries()
+        self.scale_mtof = fixed_div(self.min_scale_mtof, self.entry_scale)
+        if self.scale_mtof > self.max_scale_mtof:
+            self.scale_mtof = self.min_scale_mtof
+        self.scale_ftom = fixed_div(FRACUNIT, self.scale_mtof)
+
+    # --- the two coordinate transforms ----------------------------------
+
+    def ftom(self, value: int) -> int:
+        return fixed_mul(value << FRACBITS, self.scale_ftom)
+
+    def mtof(self, value: int) -> int:
+        return fixed_mul(value, self.scale_mtof) >> FRACBITS
+
+    def cxtof(self, x: int) -> int:
+        return self.f_x + self.mtof(x - self.m_x)
+
+    def cytof(self, y: int) -> int:
+        return self.f_y + (self.f_h - self.mtof(y - self.m_y))
+
+    # --- AM_Start / AM_Stop / the window --------------------------------
+
+    def start(self, px: int, py: int) -> None:
+        self.automapactive = True
+        self.stopped = False
+        self.f_oldloc = [INT32_MAX, INT32_MAX]
+        self.amclock = 0
+        self.lightlev = 0
+        self.m_paninc = [0, 0]
+        self.ftom_zoommul = FRACUNIT
+        self.mtof_zoommul = FRACUNIT
+        self.m_w = self.ftom(self.f_w)
+        self.m_h = self.ftom(self.f_h)
+        self.m_x = px - self.m_w // 2
+        self.m_y = py - self.m_h // 2
+        self.change_window_loc()
+        self.old_m_x = self.m_x
+        self.old_m_y = self.m_y
+        self.old_m_w = self.m_w
+        self.old_m_h = self.m_h
+
+    def stop(self) -> None:
+        self.automapactive = False
+        self.stopped = True
+
+    def activate_new_scale(self) -> None:
+        self.m_x += self.m_w // 2
+        self.m_y += self.m_h // 2
+        self.m_w = self.ftom(self.f_w)
+        self.m_h = self.ftom(self.f_h)
+        self.m_x -= self.m_w // 2
+        self.m_y -= self.m_h // 2
+        self.m_x2 = self.m_x + self.m_w
+        self.m_y2 = self.m_y + self.m_h
+
+    def min_out_window_scale(self) -> None:
+        self.scale_mtof = self.min_scale_mtof
+        self.scale_ftom = fixed_div(FRACUNIT, self.scale_mtof)
+        self.activate_new_scale()
+
+    def max_out_window_scale(self) -> None:
+        self.scale_mtof = self.max_scale_mtof
+        self.scale_ftom = fixed_div(FRACUNIT, self.scale_mtof)
+        self.activate_new_scale()
+
+    def change_window_scale(self) -> None:
+        self.scale_mtof = fixed_mul(self.scale_mtof, self.mtof_zoommul)
+        self.scale_ftom = fixed_div(FRACUNIT, self.scale_mtof)
+        if self.scale_mtof < self.min_scale_mtof:
+            self.min_out_window_scale()
+        elif self.scale_mtof > self.max_scale_mtof:
+            self.max_out_window_scale()
+        else:
+            self.activate_new_scale()
+
+    def change_window_loc(self) -> None:
+        if self.m_paninc[0] or self.m_paninc[1]:
+            self.followplayer = False
+            self.f_oldloc[0] = INT32_MAX
+        self.m_x += self.m_paninc[0]
+        self.m_y += self.m_paninc[1]
+        if self.m_x + self.m_w // 2 > self.max_x:
+            self.m_x = self.max_x - self.m_w // 2
+        elif self.m_x + self.m_w // 2 < self.min_x:
+            self.m_x = self.min_x - self.m_w // 2
+        if self.m_y + self.m_h // 2 > self.max_y:
+            self.m_y = self.max_y - self.m_h // 2
+        elif self.m_y + self.m_h // 2 < self.min_y:
+            self.m_y = self.min_y - self.m_h // 2
+        self.m_x2 = self.m_x + self.m_w
+        self.m_y2 = self.m_y + self.m_h
+
+    def do_follow_player(self) -> None:
+        if self.f_oldloc[0] != self.player[0] or self.f_oldloc[1] != self.player[1]:
+            self.m_x = self.ftom(self.mtof(self.player[0])) - self.m_w // 2
+            self.m_y = self.ftom(self.mtof(self.player[1])) - self.m_h // 2
+            self.m_x2 = self.m_x + self.m_w
+            self.m_y2 = self.m_y + self.m_h
+            self.f_oldloc = [self.player[0], self.player[1]]
+
+    # --- AM_Ticker -------------------------------------------------------
+
+    def ticker(self, px: int, py: int, angle: int) -> None:
+        self.player = [px, py]
+        self.player_angle = u32(angle)
+        if not self.automapactive:
+            return
+        self.amclock += 1
+        if self.followplayer:
+            self.do_follow_player()
+        if self.ftom_zoommul != FRACUNIT:
+            self.change_window_scale()
+        if self.m_paninc[0] or self.m_paninc[1]:
+            self.change_window_loc()
+
+    def update_light_lev(self) -> None:
+        litelevels = (0, 4, 7, 10, 12, 14, 15, 15)
+        if self.amclock > self.light_nexttic:
+            self.lightlev = litelevels[self.light_count]
+            self.light_count += 1
+            if self.light_count == len(litelevels):
+                self.light_count = 0
+            self.light_nexttic = self.amclock + 6 - c_mod(self.amclock, 6)
+
+    # --- the buttons ------------------------------------------------------
+
+    def pan(self, bits: int) -> bool:
+        if not self.automapactive:
+            return False
+        if bits:
+            self.followplayer = False
+        self.m_paninc = [0, 0]
+        step = self.ftom(AM_PAN_STEP)
+        if bits & AM_PAN_RIGHT:
+            self.m_paninc[0] = step
+        if bits & AM_PAN_LEFT:
+            self.m_paninc[0] = -step
+        if bits & AM_PAN_UP:
+            self.m_paninc[1] = step
+        if bits & AM_PAN_DOWN:
+            self.m_paninc[1] = -step
+        return True
+
+    def zoom(self, direction: int) -> bool:
+        if not self.automapactive:
+            return False
+        if direction == AM_ZOOM_IN:
+            self.mtof_zoommul = AM_M_ZOOMIN
+            self.ftom_zoommul = AM_M_ZOOMOUT
+        elif direction == AM_ZOOM_OUT:
+            self.mtof_zoommul = AM_M_ZOOMOUT
+            self.ftom_zoommul = AM_M_ZOOMIN
+        else:
+            self.mtof_zoommul = FRACUNIT
+            self.ftom_zoommul = FRACUNIT
+        return True
+
+    # --- drawing ----------------------------------------------------------
+
+    def clip_mline(self, ml) -> tuple[tuple[int, int], tuple[int, int]] | None:
+        left, right, bottom, top = 1, 2, 4, 8
+        outcode1 = 0
+        outcode2 = 0
+
+        if ml[0][1] > self.m_y2:
+            outcode1 = top
+        elif ml[0][1] < self.m_y:
+            outcode1 = bottom
+        if ml[1][1] > self.m_y2:
+            outcode2 = top
+        elif ml[1][1] < self.m_y:
+            outcode2 = bottom
+        if outcode1 & outcode2:
+            return None
+        if ml[0][0] < self.m_x:
+            outcode1 |= left
+        elif ml[0][0] > self.m_x2:
+            outcode1 |= right
+        if ml[1][0] < self.m_x:
+            outcode2 |= left
+        elif ml[1][0] > self.m_x2:
+            outcode2 |= right
+        if outcode1 & outcode2:
+            return None
+
+        ax, ay = self.cxtof(ml[0][0]), self.cytof(ml[0][1])
+        bx, by = self.cxtof(ml[1][0]), self.cytof(ml[1][1])
+
+        def outcode(x: int, y: int) -> int:
+            code = 0
+            if y < 0:
+                code |= top
+            elif y >= self.f_h:
+                code |= bottom
+            if x < 0:
+                code |= left
+            elif x >= self.f_w:
+                code |= right
+            return code
+
+        outcode1 = outcode(ax, ay)
+        outcode2 = outcode(bx, by)
+        if outcode1 & outcode2:
+            return None
+
+        while outcode1 | outcode2:
+            outside = outcode1 if outcode1 else outcode2
+            tmp_x = 0
+            tmp_y = 0
+            if outside & top:
+                dy = ay - by
+                dx = bx - ax
+                tmp_x = ax + trunc_div(dx * ay, dy)
+                tmp_y = 0
+            elif outside & bottom:
+                dy = ay - by
+                dx = bx - ax
+                tmp_x = ax + trunc_div(dx * (ay - self.f_h), dy)
+                tmp_y = self.f_h - 1
+            elif outside & right:
+                dy = by - ay
+                dx = bx - ax
+                tmp_y = ay + trunc_div(dy * (self.f_w - 1 - ax), dx)
+                tmp_x = self.f_w - 1
+            elif outside & left:
+                dy = by - ay
+                dx = bx - ax
+                tmp_y = ay + trunc_div(dy * (-ax), dx)
+                tmp_x = 0
+
+            if outside == outcode1:
+                ax, ay = tmp_x, tmp_y
+                outcode1 = outcode(ax, ay)
+            else:
+                bx, by = tmp_x, tmp_y
+                outcode2 = outcode(bx, by)
+            if outcode1 & outcode2:
+                return None
+        return ((ax, ay), (bx, by))
+
+    def draw_fline(self, fl, color: int) -> None:
+        (ax, ay), (bx, by) = fl
+        if (ax < 0 or ax >= self.f_w or ay < 0 or ay >= self.f_h
+                or bx < 0 or bx >= self.f_w or by < 0 or by >= self.f_h):
+            self.out_of_range += 1
+            return
+        dx = bx - ax
+        ax2 = 2 * (dx if dx >= 0 else -dx)
+        sx = -1 if dx < 0 else 1
+        dy = by - ay
+        ay2 = 2 * (dy if dy >= 0 else -dy)
+        sy = -1 if dy < 0 else 1
+        x = ax
+        y = ay
+        fb = self.fb
+        stride = self.stride
+        if ax2 > ay2:
+            d = ay2 - ax2 // 2
+            while True:
+                fb[y * stride + x] = color
+                if x == bx:
+                    return
+                if d >= 0:
+                    y += sy
+                    d -= ax2
+                x += sx
+                d += ay2
+        else:
+            d = ax2 - ay2 // 2
+            while True:
+                fb[y * stride + x] = color
+                if y == by:
+                    return
+                if d >= 0:
+                    x += sx
+                    d -= ay2
+                y += sy
+                d += ax2
+
+    def draw_mline(self, ml, color: int) -> bool:
+        clipped = self.clip_mline(ml)
+        if clipped is None:
+            return False
+        self.draw_fline(clipped, color)
+        return True
+
+    def draw_grid(self, color: int) -> None:
+        block = MAPBLOCKUNITS << FRACBITS
+        start = self.m_x
+        remainder = c_mod(start - self.bmaporgx, block)
+        if remainder:
+            start += block - remainder
+        end = self.m_x + self.m_w
+        ml = [[0, self.m_y], [0, self.m_y + self.m_h]]
+        x = start
+        while x < end:
+            ml[0][0] = x
+            ml[1][0] = x
+            self.draw_mline(ml, color)
+            x += block
+
+        start = self.m_y
+        remainder = c_mod(start - self.bmaporgy, block)
+        if remainder:
+            start += block - remainder
+        end = self.m_y + self.m_h
+        ml = [[self.m_x, 0], [self.m_x + self.m_w, 0]]
+        y = start
+        while y < end:
+            ml[0][1] = y
+            ml[1][1] = y
+            self.draw_mline(ml, color)
+            y += block
+
+    def _sector_of_side(self, side: int) -> dict:
+        return self.bsp.sectors[self.bsp.sidedefs[side]["sector"]]
+
+    def draw_walls(self) -> None:
+        for index, line in enumerate(self.bsp.linedefs):
+            v1 = self.bsp.vertexes[line["v1"]]
+            v2 = self.bsp.vertexes[line["v2"]]
+            ml = [[v1["x"], v1["y"]], [v2["x"], v2["y"]]]
+            if index in self.mapped:
+                if line["flags"] & ML_DONTDRAW:
+                    continue
+                if line["side1"] < 0:
+                    color = AM_WALLCOLORS + self.lightlev
+                else:
+                    if line["special"] == 39:
+                        color = AM_WALLCOLORS + AM_WALLRANGE // 2
+                    elif line["flags"] & ML_SECRET:
+                        color = AM_WALLCOLORS + self.lightlev
+                    elif self._sector_of_side(line["side1"])["floor"] != \
+                            self._sector_of_side(line["side0"])["floor"]:
+                        color = self.floor_color + self.lightlev
+                    elif self._sector_of_side(line["side1"])["ceiling"] != \
+                            self._sector_of_side(line["side0"])["ceiling"]:
+                        color = AM_CDWALLCOLORS + self.lightlev
+                    else:
+                        continue
+                if self.draw_mline(ml, color):
+                    self.drawn += 1
+            elif self.allmap:
+                if not (line["flags"] & ML_DONTDRAW):
+                    if self.draw_mline(ml, AM_GRAYS + 3):
+                        self.drawn += 1
+
+    def rotate(self, x: int, y: int, angle: int) -> tuple[int, int]:
+        index = u32(angle) >> ANGLETOFINESHIFT
+        cosine = FINE_SINE[index + FINEANGLES // 4]
+        sine = FINE_SINE[index]
+        tmpx = fixed_mul(x, cosine) - fixed_mul(y, sine)
+        newy = fixed_mul(x, sine) + fixed_mul(y, cosine)
+        return (tmpx, newy)
+
+    def draw_line_character(self, lineguy, scale: int, angle: int, color: int,
+                            x: int, y: int) -> None:
+        for (lax, lay), (lbx, lby) in lineguy:
+            ax, ay = lax, lay
+            if scale:
+                ax = fixed_mul(scale, ax)
+                ay = fixed_mul(scale, ay)
+            if angle:
+                ax, ay = self.rotate(ax, ay, angle)
+            ax += x
+            ay += y
+            bx, by = lbx, lby
+            if scale:
+                bx = fixed_mul(scale, bx)
+                by = fixed_mul(scale, by)
+            if angle:
+                bx, by = self.rotate(bx, by, angle)
+            bx += x
+            by += y
+            self.draw_mline([[ax, ay], [bx, by]], color)
+
+    def draw_players(self) -> None:
+        self.draw_line_character(PLAYER_ARROW, 0, u32(self.player_angle), AM_WHITE,
+                                 self.player[0], self.player[1])
+
+    def draw_crosshair(self, color: int) -> None:
+        self.fb[((self.f_h + 1) // 2) * self.stride + self.f_w // 2] = color
+
+    def draw(self, surface: bytearray, stride: int = AM_WINDOW_WIDTH) -> tuple[bytes, int]:
+        """AM_Drawer(); returns (the whole surface, the number of lines drawn)."""
+        if not self.automapactive:
+            return (bytes(surface), 0)
+        self.fb = surface
+        self.stride = stride
+        self.out_of_range = 0
+        self.drawn = 0
+        for row in range(self.f_h):
+            surface[row * stride:row * stride + self.f_w] = bytes([AM_BACKGROUND]) * self.f_w
+        if self.grid:
+            self.draw_grid(AM_GRIDCOLORS)
+        self.draw_walls()
+        self.draw_players()
+        self.draw_crosshair(AM_XHAIRCOLORS)
+        return (bytes(surface), self.drawn)
+
+
 def build_parser() -> argparse.ArgumentParser:
     epilog = """\
 exit codes

@@ -189,6 +189,16 @@
  * per distinct texture; the draw loop still resolves every tier, which is what
  * keeps the resolver's lifetime contract local to one fragment.
  *
+ * THE AUTOMAP'S MAPPED BIT (D5.3)
+ *
+ * Upstream's R_StoreWallRange sets `linedef->flags |= ML_MAPPED` as its third
+ * statement -- once per wall range the walk decided to store, and for nothing it
+ * rejected. r_wall_draw() does the same at the top of its per-drawseg loop, into
+ * the caller's shadow bitmap (`r_view_storage_t::mapped`, r_bsp.h): one bit per
+ * linedef, set for every drawseg the pass is about to store pixels for. The
+ * preflight does not mark -- it proves, it does not store -- and a frame the
+ * preflight refuses marks nothing. A NULL bitmap is the old behaviour exactly.
+ *
  * This is C99 only: <stddef.h> and <stdint.h>, no allocation, no globals, no
  * stdio, no floating point.
  */

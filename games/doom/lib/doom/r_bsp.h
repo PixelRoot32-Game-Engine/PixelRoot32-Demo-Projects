@@ -634,6 +634,16 @@ typedef struct r_view_storage {
      * per call, which is the behaviour every earlier revision had. See
      * r_things.h's r_sprite_proofs_t. */
     struct r_sprite_proofs* spriteProofs;
+    /* D5.3: the automap's "mapped" shadow bits, one per linedef, packed LSB
+     * first, or NULL. Upstream sets `linedef->flags |= ML_MAPPED` in
+     * R_StoreWallRange and the automap draws a line only when the bit is set;
+     * this port's LINEDEFS lump is immutable, so the bit lives here and the wall
+     * pass (r_segs.c) sets it for every wall range it stores. NULL keeps every
+     * earlier behaviour exactly: the wall pass writes nothing and the automap
+     * draws an empty map. `mappedBytes` is the block's size, `(numlines+7)/8`
+     * for the level the caller opened. */
+    uint8_t* mapped;
+    uint32_t mappedBytes;
 } r_view_storage_t;
 
 /*
