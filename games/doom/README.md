@@ -283,10 +283,11 @@ followers are not ported (no keyboard, no marks art, no cheats, one player).
 **Rate.** `AM_Ticker` runs once per 35 Hz world tic (not per frame), so a pan is
 140 px a second and a zoom 2x a second whatever the panel's frame rate is.
 
-**What it costs.** On the CYD a map frame costs **0.84-1.02 ms** (measured:
-`us=` on every `SHOW,map` line), against ~30 ms for the world frame; the shadow
-bitmap is 60 bytes of heap taken at level load and freed with the session, and the
-whole `.bss` cost is 240 B (the automap's state and two counters).
+**What it costs.** On the CYD a map frame costs **0.81-1.02 ms** (`us=` on every
+`SHOW,map` line; mean 0.84-0.87 ms across two runs) against ~30 ms for the world
+frame; the shadow bitmap is 60 bytes of heap taken at level load and freed with
+the session, and the whole static cost is 240 B (`static_used` 122,664 ->
+122,904), the automap's state and two counters.
 
 **Log.** While the map is up, each reported frame also prints
 `SHOW,map,us=<map microseconds>,active=1,follow=<0|1>,scale=<scale_mtof>,
