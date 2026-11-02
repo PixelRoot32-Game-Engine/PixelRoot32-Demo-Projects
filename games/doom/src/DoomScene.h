@@ -469,6 +469,17 @@ private:
     /// field on it is.
     doomc::ScenePlayerState showPlayer_;
 
+    /**
+     * @brief Whether `init()`'s level open failed, and what it recorded (D7.2).
+     *
+     * When it failed, `drawSceneFrame()` keeps painting the taxonomy's error
+     * screen instead of the Phase 0 shell: a geometric pattern with no text is
+     * indistinguishable from a hung board. The failure is the session's own
+     * record (a copy, because the driver's static is shared with the probe).
+     */
+    bool bootFailed_ = false;
+    doomc::LevelFailure bootFailure_;
+
     /// Frames rendered since boot, and the ones after which reporting stops.
     /// The scene keeps drawing past the cap; only the serial line ends, so a
     /// capture collected over minutes cannot grow without bound.

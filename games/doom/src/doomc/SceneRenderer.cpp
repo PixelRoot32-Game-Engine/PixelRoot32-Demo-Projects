@@ -24,9 +24,13 @@ bool SceneRenderer::open() {
     if (open_) {
         return true;
     }
+    failure_ = LevelFailure{};
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
     if (!frameLevelOpen("SHOW", marker_)) {
+        // The frame driver classified the branch as it printed its line; the
+        // scene keeps that classification so the panel can say it in words.
+        failure_ = frameLevelFailure();
         return false;
     }
 
@@ -37,6 +41,12 @@ bool SceneRenderer::open() {
     // not the shell's synthetic ramp.
     const std::uint8_t* rgb888 = frameLevelPlaypal();
     if (rgb888 == nullptr) {
+        // The level session opened but the colour table is missing: this is the
+        // one failure the frame-level open cannot classify, so it is recorded
+        // here instead of being left as `None`.
+        failure_.reason = LevelFailureReason::Palette;
+        failure_.code = 0;
+        failure_.detail[0] = '\0';
         writeLine("SHOW,setup,status=fail,reason=playpal\n");
         frameLevelClose();
         marker_[0] = '\0';

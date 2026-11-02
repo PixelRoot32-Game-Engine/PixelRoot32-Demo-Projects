@@ -201,12 +201,26 @@ public:
 
     bool isOpen() const { return open_; }
 
+    /**
+     * @brief The classification of the last failed `open()` (D7.2).
+     *
+     * A copy of the frame driver's record when the level session refused, or
+     * `Palette` when the session opened but PLAYPAL could not supply the colour
+     * table. `None` after a successful open. The scene renders it as the panel's
+     * error screen; the serial line keeps the precise text.
+     *
+     * @return The last failure; `None` before `open()` and after a successful one.
+     */
+    const LevelFailure& failure() const { return failure_; }
+
     /// The level marker the session opened ("E1M1"), empty before `open()`.
     const char* level() const { return marker_; }
 
 private:
     bool open_ = false;
     char marker_[5] = {0, 0, 0, 0, 0};
+    /// The failure `open()` last recorded; `None` when there was none.
+    LevelFailure failure_;
 };
 
 }  // namespace doomc

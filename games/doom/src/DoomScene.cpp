@@ -20,6 +20,10 @@
 #include "doomc/FrameDriver.h"
 #endif
 
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+#include "doomc/BootScreen.h"
+#endif
+
 #include "palette/DoomPalette.h"
 #if defined(DOOM_AUDIO)
 #include "audio/AudioEngine.h"  /* AudioEngine::setMasterVolume (T49) */
@@ -52,6 +56,7 @@
 #include "am_map.h"  /* AM_PAN_* and AM_ZOOM_*: the automap's controls (D5.3) */
 #endif
 
+#include <cassert>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -1077,9 +1082,53 @@ void DoomScene::init() {
     // when it fails the reason is already on the serial line and draw() keeps
     // painting the shell. The measurement counters start here so the first
     // `SHOW,...` line belongs to the first frame this scene drew.
+    bootFailed_ = false;
+    bootFailure_ = doomc::LevelFailure{};
+
+#if !defined(PLATFORM_NATIVE)
+    // D7.2: the loading screen, painted and presented before anything that can
+    // fail runs. This is the one moment the surface is still in its default
+    // RGB332 regime, so the painter's bytes are exactly what the panel shows.
+    // `present()` + `flushPendingTransfers()` is the pair Engine::run() uses: the
+    // driver may leave the last block in flight, and this closes it before the
+    // level loader claims the bus, the heap and the CPU. The desktop mirror skips
+    // this whole block -- it must not swap a window during init.
+    {
+        pixelroot32::graphics::DrawSurface& surface = engine.getRenderer().getDrawSurface();
+        std::uint8_t* pixels = surface.getSpriteBuffer();
+        const int width = engine.getRenderer().getLogicalWidth();
+        const int height = engine.getRenderer().getLogicalHeight();
+        if (pixels != nullptr && width > 0 && height > 0) {
+            const doomc::BootScreen loading = doomc::bootScreenLoading("E1M1");
+            doomc::bootScreenPaint(pixels, width, height, loading);
+            surface.present();
+            surface.flushPendingTransfers();
+            writeConsoleLine("SHOW,boot,screen=loading,level=E1M1\n");
+        }
+    }
+#endif
+
+    const std::uint32_t bootStart = sampleMicros();
     if (!sceneRenderer_.open()) {
+        // The session classified the failure as it printed its line; the same
+        // record becomes the panel screen, so a board on a shelf says why it is
+        // not playing without a serial cable attached.
+        bootFailed_ = true;
+        bootFailure_ = sceneRenderer_.failure();
+        char bootLine[160];
+        std::snprintf(bootLine, sizeof bootLine,
+                      "SHOW,boot,screen=error,reason=%s,code=%d,detail=%s\n",
+                      doomc::levelFailureName(bootFailure_.reason), bootFailure_.code,
+                      bootFailure_.detail);
+        writeConsoleLine(bootLine);
         writeConsoleLine("SHOW,setup,status=fail,reason=scene\n");
     } else {
+        const std::uint32_t openMs = (sampleMicros() - bootStart) / 1000u;
+        char bootLine[96];
+        std::snprintf(bootLine, sizeof bootLine,
+                      "SHOW,boot,screen=game,level=E1M1,open_ms=%u\n",
+                      static_cast<unsigned>(openMs));
+        writeConsoleLine(bootLine);
         // The 8bpp surface holds DOOM palette indices now, so hand the engine
         // the PLAYPAL -> RGB565 table once: the driver expands each index as it
         // presents, one lookup per pixel and no per-frame pass. The call is a
@@ -2125,7 +2174,30 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
         //       once, and leave the picture alone.
         if (!sceneRenderer_.isOpen() || width != kLogicalWidth
             || height != kLogicalHeight) {
-            paintShellFrame(renderer, buttons_);
+            // D7.2: a session that never opened gets the taxonomy's screen, not
+            // the Phase 0 shell. The loading screen is the fallback for the case
+            // where `init()`'s open never ran at all. The open-but-refused case
+            // below is untouched and keeps its last good picture.
+            //
+            // The boot screen is painted only while no session is open: after
+            // `setPalette8()` the same surface byte is a PLAYPAL index, so
+            // painting RGB332 bytes then would lie about every colour. A broken
+            // surface size on an open session therefore keeps the old shell
+            // fallback rather than risking that mix.
+            std::uint8_t* bootPixels = surface.getSpriteBuffer();
+            if (!sceneRenderer_.isOpen() && bootPixels != nullptr) {
+                const doomc::BootScreen screen =
+                    bootFailed_ ? doomc::bootScreenError(bootFailure_, "E1M1")
+                                : doomc::bootScreenLoading("E1M1");
+#if !defined(NDEBUG)
+                // The gate proves this for 320x200; the assert is the board's own
+                // last line of defence against a longer sentence later.
+                assert(doomc::bootScreenFits(screen, width, height));
+#endif
+                doomc::bootScreenPaint(bootPixels, width, height, screen);
+            } else {
+                paintShellFrame(renderer, buttons_);
+            }
         } else {
             ++showRefused_;
             bool seen = false;

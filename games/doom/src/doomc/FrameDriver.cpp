@@ -452,6 +452,23 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 #include "doomc/InputMap.h"
 #include "doomc/WhdSource.h"
 
+/*
+ * `LevelFailure.cpp` restates the adapter's open-path numbers so the taxonomy
+ * compiles without lib/doom (the host gate builds it with `-I src -I src/doomc`
+ * only). This is the one translation unit that sees both vocabularies, so this is
+ * where the restatement is pinned: a renumbered adapter code stops the build
+ * instead of putting the wrong reason on the panel.
+ */
+static_assert(DOOM_WHD_SOURCE_OK == 0, "levelFailureFromWhd: OK must stay 0");
+static_assert(DOOM_WHD_SOURCE_ERR_PARTITION_MISSING == 3,
+              "levelFailureFromWhd: PARTITION_MISSING must stay 3");
+static_assert(DOOM_WHD_SOURCE_ERR_MMAP_FAILED == 4,
+              "levelFailureFromWhd: MMAP_FAILED must stay 4");
+static_assert(DOOM_WHD_SOURCE_ERR_CONTAINER_INVALID == 5,
+              "levelFailureFromWhd: CONTAINER_INVALID must stay 5");
+static_assert(DOOM_WHD_SOURCE_ERR_UNAVAILABLE == 6,
+              "levelFailureFromWhd: UNAVAILABLE must stay 6");
+
 #include "doom_map.h"
 #include "p_setup.h"
 #include "p_spec.h"
@@ -2397,6 +2414,29 @@ LevelSession gSession;
 /// two is what keeps `env:esp32dev_ILI9341_frameram` inside `dram0_0_seg`.
 char gSessionLine[kFrameProfileLineCapacity];
 
+/*
+ * D7.2: the setup's failure taxonomy. Every branch of `openLevelSession()` (and
+ * of the world open it calls) records one value beside the line it already
+ * prints, so the scene can paint the reason on the panel. The serial line keeps
+ * its exact text and fields -- it is the evidence previous phases pinned -- and
+ * this record only adds the machine-readable form the screen consumes.
+ *
+ * `None` is both "no failure yet" and "the open succeeded"; it is reset at the
+ * top of every open and left untouched by a successful one.
+ */
+LevelFailure gLevelFailure;
+
+/// Records one classified failure. @p detail may be NULL; a longer string is
+/// truncated by the record's own fixed capacity, never by a second buffer.
+void recordLevelFailure(LevelFailureReason reason, int code = 0, const char* detail = nullptr) {
+    gLevelFailure = LevelFailure{};
+    gLevelFailure.reason = reason;
+    gLevelFailure.code = code;
+    if (detail != nullptr) {
+        std::snprintf(gLevelFailure.detail, sizeof gLevelFailure.detail, "%s", detail);
+    }
+}
+
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
 /// The game frame's Driver. The probe passes its own stack copy instead; the
 /// two paths never run in one build, and keeping the probe's off .bss is what
@@ -2929,6 +2969,7 @@ bool openWorldSession() {
     std::uint8_t* probeArena = nullptr;
     void* probeBlock = nullptr;
     if (probeBytes < kArenaRoundBytes || !takeArena(probeBytes, &probeArena, &probeBlock)) {
+        recordLevelFailure(LevelFailureReason::World, 0, "heap");
         std::snprintf(line, sizeof line,
                       "SHOW,arena,probe,status=fail,reason=heap,peak=0,used=0,"
                       "arena=%u,heap_free_before=%u,heap_largest_before=%u\n",
@@ -2997,6 +3038,7 @@ bool openWorldSession() {
     heap_caps_free(probeBlock);
 
     if (probeSetup != P_SETUP_OK) {
+        recordLevelFailure(LevelFailureReason::World, static_cast<int>(probeSetup), "probe");
         return false;
     }
 
@@ -3004,6 +3046,7 @@ bool openWorldSession() {
     const std::uint32_t chosenBytes =
         roundArenaUp(zone.peakInUse + zone.peakInUse * kArenaHeadroomPercent / 100u);
     if (chosenBytes == 0u || chosenBytes > largestBefore) {
+        recordLevelFailure(LevelFailureReason::World, 0, "fit");
         std::snprintf(line, sizeof line,
                       "SHOW,arena,fit,status=fail,reason=no_fit,peak=%u,chosen=%u,"
                       "heap_largest_before=%u,heap_largest=%u\n",
@@ -3015,6 +3058,7 @@ bool openWorldSession() {
     }
 
     if (!takeArena(chosenBytes, &gWorld.arena, &gWorld.block)) {
+        recordLevelFailure(LevelFailureReason::World, 0, "alloc");
         std::snprintf(line, sizeof line,
                       "SHOW,arena,fit,status=fail,reason=alloc,peak=%u,chosen=%u,"
                       "heap_free=%u,heap_largest=%u\n",
@@ -3032,6 +3076,7 @@ bool openWorldSession() {
     if (setup != P_SETUP_OK) {
         // The measured peak did not fit its own arena: report both numbers and
         // leave nothing open rather than trimming the renderer to make room.
+        recordLevelFailure(LevelFailureReason::World, static_cast<int>(setup), "fit");
         std::snprintf(line, sizeof line,
                       "SHOW,arena,fit,status=fail,reason=world,setup=%d,peak=%u,chosen=%u,"
                       "arena=%u,heap_free=%u,heap_largest=%u\n",
@@ -3192,6 +3237,9 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     gDecodeDepth = 0;
     gPlaypalValid = false;
     gPlacement = "baked-flash";
+    // A new open starts with no failure recorded: the scene paints an error
+    // screen only when this call (or the palette step that follows it) says so.
+    gLevelFailure = LevelFailure{};
 
     // The reason line writes into the shared session buffer: the setup call
     // graph below already runs near the loop task's stack, and a second 512-byte
@@ -3204,6 +3252,7 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
 
     const int openCode = doom_whd_source_open(&gWhd);
     if (openCode != DOOM_WHD_SOURCE_OK) {
+        gLevelFailure = levelFailureFromWhd(openCode);
         std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=open,code=%d\n", tag,
                       openCode);
         writeLine(line);
@@ -3214,6 +3263,8 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     // without the bake is a reported failure here, not a fallback decode.
     const BakedError baked = gBaked.open(&gWhd);
     if (baked != BakedError::Ok) {
+        recordLevelFailure(LevelFailureReason::Baked, static_cast<int>(baked),
+                           bakedErrorName(baked));
         std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=baked,code=%s\n", tag,
                       bakedErrorName(baked));
         writeLine(line);
@@ -3257,8 +3308,13 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     (void)loadPlaypal;
 #endif
 
-    char mapMarker[5];
+    char mapMarker[5] = {0};
     if (!frameMapMarker(kFrameLevel, mapMarker)) {
+        // `frameMapMarker()` writes nothing on failure; the level number is the
+        // diagnostic, so the detail names the map that could not be spelled.
+        char expected[5];
+        std::snprintf(expected, sizeof expected, "E1M%u", static_cast<unsigned>(kFrameLevel));
+        recordLevelFailure(LevelFailureReason::Level, 0, expected);
         std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=level\n", tag);
         writeLine(line);
         doom_whd_source_close();
@@ -3267,6 +3323,7 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
 
     const int marker = doom_whd_source_lump_index(&gWhd, mapMarker);
     if (marker < 0) {
+        recordLevelFailure(LevelFailureReason::Level, 0, mapMarker);
         std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=marker,level=%s\n", tag,
                       mapMarker);
         writeLine(line);
@@ -3303,6 +3360,10 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     const doom_map_error_t mapError =
         mapFailures == 0 ? doom_map_open(&map, &source) : DOOM_MAP_ERR_REQUIRED_LUMP;
     if (mapFailures != 0 || !directoriesLoaded || mapError != DOOM_MAP_OK) {
+        const char* failedLump = (gFailLump >= 0 && gFailLump < DOOM_MAP_LUMP_COUNT)
+                                     ? kMapLumpNames[gFailLump]
+                                     : (!directoriesLoaded ? "COLORMAP" : "map");
+        recordLevelFailure(LevelFailureReason::MapLump, static_cast<int>(mapError), failedLump);
         std::snprintf(line, sizeof line,
                       "%s,setup,status=fail,reason=lump,map=%s,map_failures=%d,"
                       "fail_lump=%s,not_raw=%u,directories=%d,map_error=%d,"
@@ -3334,6 +3395,7 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
 #endif
 
     if (r_light_init(&gLight, gColormap, gColormapBytes) != R_LIGHT_OK) {
+        recordLevelFailure(LevelFailureReason::Colormap, 0);
         std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=colormap\n", tag);
         writeLine(line);
         doom_whd_source_close();
@@ -3354,6 +3416,7 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     const std::uint32_t spriteSlots = thingCount;
 #endif
     if (thingCount == 0u || thingCount > static_cast<std::uint32_t>(kSpriteCapacity)) {
+        recordLevelFailure(LevelFailureReason::Sprites, static_cast<int>(thingCount), "things");
         std::snprintf(line, sizeof line,
                       "%s,setup,status=fail,reason=sprites,things=%u,capacity=%d\n", tag,
                       static_cast<unsigned>(thingCount), kSpriteCapacity);
@@ -3366,6 +3429,7 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
         heap_caps_malloc(static_cast<std::size_t>(spriteSlots) * sizeof(r_sprite_t),
                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     if (gSprites == nullptr) {
+        recordLevelFailure(LevelFailureReason::Sprites, 0, "heap");
         std::snprintf(line, sizeof line,
                       "%s,setup,status=fail,reason=sprites,need=%u,heap=%u,"
                       "largest=%u\n",
@@ -3404,7 +3468,9 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     gSpriteProofs.count = 0;
     driver->storage.spriteProofs = &gSpriteProofs;
 
-    if (r_bsp_init(&driver->view, &driver->map, &driver->storage) != R_BSP_OK) {
+    const r_bsp_error_t bspCode = r_bsp_init(&driver->view, &driver->map, &driver->storage);
+    if (bspCode != R_BSP_OK) {
+        recordLevelFailure(LevelFailureReason::Storage, static_cast<int>(bspCode));
         std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=storage\n", tag);
         writeLine(line);
         doom_whd_source_close();
@@ -3763,6 +3829,8 @@ bool frameLevelRenderSpawn(std::uint8_t* surface, int width, int height,
 }
 
 void frameLevelClose() { closeLevelSession(); }
+
+const LevelFailure& frameLevelFailure() { return gLevelFailure; }
 
 bool frameLevelRenderView(std::uint8_t* surface, int width, int height, std::int32_t x,
                           std::int32_t y, std::int32_t z, std::uint32_t angle,
@@ -4380,6 +4448,15 @@ void frameLevelLastRefusal(const char** stage, int* code) {
     if (code != nullptr) {
         *code = 0;
     }
+}
+
+const LevelFailure& frameLevelFailure() {
+    // A host build with the game flag has no `wad` partition, so `open()` fails
+    // before anything is classified. The honest record is "no failure in the
+    // level session" -- the scene's own error is the closed session, not a
+    // fabricated container reason.
+    static const LevelFailure kNoFailure;
+    return kNoFailure;
 }
 
 }  // namespace doomc

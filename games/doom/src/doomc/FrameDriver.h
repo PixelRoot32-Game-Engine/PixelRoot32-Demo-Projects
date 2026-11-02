@@ -167,6 +167,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "doomc/LevelFailure.h"
+
 #if defined(DOOM_MENU)
 struct m_menu;  // lib/doom/m_menu.h
 #endif
@@ -675,6 +677,24 @@ bool frameLevelRenderView(std::uint8_t* surface, int width, int height, std::int
  * @param code  Receives the error code; may be NULL.
  */
 void frameLevelLastRefusal(const char** stage, int* code);
+
+/**
+ * @brief The classification of the last failed level open (D7.2).
+ *
+ * Every `openLevelSession()` failure branch records the same machine-readable
+ * `LevelFailure` beside the line it already prints, so the scene can put the
+ * reason on the panel without parsing the serial log. A successful open leaves
+ * it `None`; the record is reset at the top of every open.
+ *
+ * `SceneRenderer::open()` owns the one additional branch the level session
+ * cannot see (the missing PLAYPAL) and copies this record into its own member
+ * when the frame-level open refuses. The returned reference stays valid for the
+ * life of the process.
+ *
+ * @return The last classified failure; `None` after a successful open or before
+ *         the first one.
+ */
+const LevelFailure& frameLevelFailure();
 
 /**
  * @brief The harness's frame-00 viewpoint, for a caller that wants it explicitly.

@@ -665,7 +665,80 @@ must fail; `--perturb` moves the oracle by one scale step and must fail.
 Neither `DOOM1.WAD` nor any `.whd` is committed: `tools/.gitignore` refuses both,
 because a container is a repacked copy of shareware data.
 
-## Hardware
+## Boot and failure screens (D7.2)
+
+A boot that cannot open the container used to print a precise line on the serial
+port and leave the panel on the Phase 0 shell: a geometric pattern with no text,
+indistinguishable from a hung board. D7.2 gives the panel a voice, before any
+level exists.
+
+**The loading screen** is painted and presented from `DoomScene::init()`, before
+the level session opens: title `DOOM`, `PIXELROOT32 ESP32`, `OPENING THE WAD`,
+`E1M1`, and the footer `SHAREWARE DOOM1.WAD`. A maintainer sees the display work
+before the game does, and a boot that dies in the loader is no longer silent.
+
+**The error screen** replaces it when the open fails, and `draw()` keeps painting
+it while the scene runs. The title, one-sentence body and advice come from a
+taxonomy in [`src/doomc/LevelFailure.cpp`](src/doomc/LevelFailure.cpp); the footer
+carries the machine pair (`CODE 3 E1M1`) so a photograph of the panel is enough
+to find the branch in the serial log.
+
+| `reason=` | Title | What it means | What to do |
+| --- | --- | --- | --- |
+| `partition_missing` | NO WAD SPACE | the image has no `wad` partition | flash a table that has one |
+| `partition_map_failed` | WAD UNREADABLE | the partition exists but did not map | reflash and retry |
+| `container_invalid` | BAD CONTAINER | the header or its length is not a container | reflash `DOOM1.WHD` |
+| `unavailable` | NO FLASH ACCESS | this build has no flash mapping | use the board build |
+| `baked` | NO BAKE | the baked-graphics manifest is missing or malformed | rebuild the container |
+| `palette` | NO PALETTE | `PLAYPAL` is absent or too short | check the WAD, rebuild the container |
+| `level` | NO LEVEL | the level marker lump is missing | check the WAD |
+| `map_lump` | MAP LUMP | a required map lump or directory failed | rebuild the map lumps |
+| `colormap` | NO COLORMAP | `COLORMAP` is missing or rejected | check the container |
+| `sprites` | NO SPRITES | the thing list is empty/oversized, or its heap block failed | free memory; rebuild |
+| `storage` | NO RENDERER | the renderer's pools failed to initialise | reboot; rebuild the container |
+| `world` | NO WORLD | the level's arena did not fit | free memory; retry |
+| `surface` | NO DISPLAY | the build has no usable framebuffer | check the display build |
+
+**Why the font is embedded.** The failure it must report includes "the WAD is
+missing", so the message cannot come from a WAD font. `src/doomc/BootScreen.cpp`
+carries a 5x7 column font for ASCII 32..95 -- 64 glyphs, 320 bytes -- which also
+keeps the screen legible at the panel's 0.75 downscale and makes the painter
+host-testable. Uppercase-only is a deliberate limit of that font.
+
+**Why the painter writes RGB332.** The engine's 8bpp surface stores RGB332 bytes
+until `setPalette8()` installs the PLAYPAL expansion table. A boot screen is only
+ever painted before a level session exists, so its bytes are RGB332; once a
+session is open the same byte is a DOOM palette index, and painting a boot screen
+then would lie about every colour. That is why `drawSceneFrame()` paints the boot
+screen only while `isOpen()` is false, and keeps the last good picture (and its
+`SHOW,renderfail` line) for an open session that refuses a viewpoint.
+
+**The serial lines.** Two lines, one per outcome, beside the existing setup line:
+
+```text
+SHOW,boot,screen=loading,level=E1M1
+SHOW,boot,screen=game,level=E1M1,open_ms=142
+SHOW,boot,screen=error,reason=container_invalid,code=5,detail=
+```
+
+The `open_ms` field is the measured `openLevelSession()` plus PLAYPAL cost. On
+failure the pre-existing `SHOW,setup,status=fail,...` line still prints with its
+exact text and fields; the boot line only adds the screen's own classification.
+
+**Reading a photograph of the panel.** The title names the failure in words, and
+`CODE <n> <level>` in the footer joins the picture to the log: search the serial
+capture for `SHOW,boot,screen=error,reason=<name>,code=<n>` where `<name>` is the
+title's meaning from the table above. The third line, when present, names the
+lump or baked error that failed.
+
+**Gate.** `python tools/boot_check.py` compiles `BootScreen.cpp` and
+`LevelFailure.cpp` with the system `g++` and hashes every screen state's
+320x200 RGB332 bytes. It asserts `bootScreenFits()`, the ASCII 32..95 alphabet,
+the 25-character line limit, distinct titles, and the `CODE`/level pair in every
+error footer, then compares the title, lines, footer and hash with
+[`tools/boot_screens.txt`](tools/boot_screens.txt). `--perturb` (one string
+shifted) and `--stub` (a blank surface) must both fail.
+
 
 The CYD is an `esp32dev` module: 240 MHz, dual core, 4 MB flash, no PSRAM. The
 pin map is copied from the pong demo, which is where it was validated; demos in
