@@ -4064,6 +4064,49 @@ bool openSessionMap(std::uint8_t levelNumber, doom_map_t* outMap) {
     return true;
 }
 
+/*
+ * A loaded level has no eye until its first tic, and that frame must not be
+ * frozen.
+ *
+ * p_player_wire() is G_PlayerReborn's `memset (p, 0, sizeof(*p))`, so
+ * `playerState.viewheight` is 0 and `viewz` with it; P_PlayerThink's
+ * P_CalcHeight is what gives the camera a height (and its half-step ramp). Every
+ * load therefore draws its first frame from the sector floor. That is
+ * tolerable only while the frame is a transient under a fade, and it stops
+ * being tolerable the moment something freezes it: S21's victory opens the main
+ * menu on the frame after the reload, the world never ticks while the menu is
+ * up, and the camera stays at z = 0 for as long as the menu is open.
+ *
+ * A camera at the floor is not a low view. The wall pass's clips degenerate,
+ * columns end up uncovered, and the surface's 0xFF prefill shows through as a
+ * magenta band down each edge of the view over a floor stretched to the horizon.
+ * That is the report S25 fixes: the maintainer's panel photo of the menu over
+ * E1M1 after the level walk, two vertical bars plus the stretched floor.
+ *
+ * The value written is the one the level's own tics reach within half a second
+ * and then keep -- P_CalcHeight clamps `viewheight` to P_VIEWHEIGHT and stops
+ * growing it -- so the simulation is unchanged: the ramp simply is not visible
+ * in a frame that never advances. `rsegs_check`'s spawn rule is the same number
+ * (`sector.floorHeight + R_VIEWHEIGHT`), which is why its player-start frames
+ * are drawn from it.
+ */
+static void settleLevelView() {
+    p_level_t& level = gWorld.level;
+    if (level.playerState.mo == nullptr) {
+        return;
+    }
+    fixed_t viewz = level.playerState.mo->z + P_VIEWHEIGHT;
+    const fixed_t ceiling = level.playerState.mo->ceilingz - 4 * FRACUNIT;
+    if (viewz > ceiling) {
+        // P_CalcHeight's own clamp, so a low ceiling lands on the same pixel the
+        // first tic would produce.
+        viewz = ceiling;
+    }
+    level.playerState.viewheight = P_VIEWHEIGHT;
+    level.playerState.deltaviewheight = 0;
+    level.playerState.viewz = viewz;
+}
+
 /**
  * @brief G_DoLoadLevel's presentation reset, for a load that just happened.
  *
@@ -4078,6 +4121,9 @@ bool openSessionMap(std::uint8_t levelNumber, doom_map_t* outMap) {
  * @param differentMap Whether the load bound a map the automap has not seen.
  */
 void restartLevelPresentation(bool differentMap) {
+    // Every caller has just loaded a level and is about to draw it, so the eye
+    // is set here instead of waiting for a tic that a menu may never allow.
+    settleLevelView();
 #if defined(DOOM_HUD)
     hudStart();
     if (differentMap) {
@@ -4521,8 +4567,11 @@ bool frameLevelNewGame(int skill) {
     if (!reloadWorldAtLevel(static_cast<std::uint8_t>(kFrameLevel), skill)) {
         return false;
     }
-    // One idle tic, so the player's eye height (viewz, computed by the first
-    // P_PlayerThink) exists before the first frame of the new game is drawn.
+    // One idle tic, so the level's own first tic has run before the first frame
+    // of the new game: P_PlayerThink is where P_SetupPsprites' deferred call
+    // happens, which is what puts the weapon in hand. The eye no longer depends
+    // on it -- settleLevelView() gives a loaded level its height -- but the
+    // psprite timeline does.
     (void)frameLevelRunTics(1u, 0u);
     return true;
 }
@@ -4643,8 +4692,9 @@ bool frameLevelPlayer(LevelPlayer* out) {
     out->view.x = mobj->x;
     out->view.y = mobj->y;
     // The eye, not the floor: P_CalcHeight's viewz is the mobj's floor height
-    // plus the view height plus the bob. Before the first tic it is 0, which is
-    // the honest answer to "the world has not computed it yet".
+    // plus the view height plus the bob. A load settles it before the first
+    // frame is drawn (settleLevelView()), so 0 only ever means the world has no
+    // player.
     out->view.z = gWorld.level.playerState.viewz;
     out->view.angle = mobj->angle;
     out->health = gWorld.level.playerState.health;
