@@ -528,13 +528,18 @@ is what holds the line, and `analogRead()` remains forbidden there.
   leaves 6.9 KB, the arena still fits (`chosen=18432`), and the boot's heap keeps
   25,912 B free. Any future change that deepens a call chain has to move this
   number with a measurement.
-- **The exit room's visual artifact is open (S26).** With the stack fixed the
-  board no longer crashes there, but the frames still show large fan-shaped
-  tears. The board and the host agree on `drawsegs=37` for the same viewpoint,
-  the live sector table matches the WAD except for a door standing open, and the
-  host render is clean at `-O0/-O2/-Os/-O3`; so the difference is inside the
-  drawing, not the walk. `esp32dev_ILI9341_hud_dump` (diagnostic, never shipped)
-  dumps a frame, the sector table and the walk's counts on A+B for the next pass.
+- **The exit room's visual artifact was a baked mask, and it is fixed (S26).**
+  The panel showed large slat-with-holes shapes across the door. The board's view
+  dump named the record: its baked wall texture for the door's masked mid carried
+  the same pixel hash the host composes (`5DD68D73`, 32x128, masks 31/127) and a
+  mask plane where the renderer has none, and that mask hashed to neither
+  all-opaque (`34E76DC5`) nor all-clear (`76EFDDC5`), so it really punched holes.
+  `TEXTURE1` says `masked=0` for `BRNBIGL/C/R`: an opaque texture's patch gaps are
+  palette 0, which vanilla draws as black, and `bake_graphics.py` was storing post
+  coverage as a mask regardless. The baker now only bakes a mask when `masked !=
+  0`; the container went 3,168,508 -> 3,078,396 B, `BAKECHECK` is 370/370 with 0
+  mismatches, `frame00` is unchanged and the maintainer confirmed the room looks
+  right on the panel.
 - **The listening pass and the panel visual checks are still the maintainer's.**
   `sfx_check` proves a cue *is* the sound it claims to be (49 pass, 59 recorded
   accepted-deviation, 0 fail); whether it sounds good is a listening pass. The
