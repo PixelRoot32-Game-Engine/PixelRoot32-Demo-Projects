@@ -500,6 +500,7 @@ static_assert(DOOM_WHD_SOURCE_ERR_UNAVAILABLE == 6,
 #include "r_segs.h"
 #include "r_tables.h"
 #include "r_things.h"
+#include "r_view_diag.h"
 #if defined(DOOM_AUDIO)
 #include "s_sound.h"
 #endif
@@ -2010,6 +2011,12 @@ void bindSurface(Driver* driver, std::uint8_t* pixels, int width, int height) {
  * caller's work for that pass and is measured with it rather than hidden in
  * `other_us`.
  */
+#if defined(DOOM_FRAME_DUMP)
+/// The submitted sprite count of the last completed frame, for
+/// frameDumpViewDiag(). The view state itself is gSession.driver->view.
+static std::uint16_t gDumpSpriteCount = 0u;
+#endif
+
 bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int width,
                 int height, FrameProfileSample* sample) {
     const std::int64_t frameStart = nowMicros();
@@ -2211,6 +2218,10 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     sample->spritePixels = driver->surface.spritePixels;
     sample->spritesSubmitted = maskedStats.submitted;
     sample->spritesDrawn = maskedStats.drawn;
+#if defined(DOOM_FRAME_DUMP)
+    /* The records this frame was drawn from, for frameDumpViewDiag(). */
+    gDumpSpriteCount = static_cast<std::uint16_t>(spriteCount);
+#endif
     for (std::uint16_t index = 0u; index < maskedStats.drawn; ++index) {
         const r_vissprite_t& vis = driver->view.storage.visSprites[index];
         if (vis.x2 >= vis.x1) {
@@ -4824,6 +4835,52 @@ void frameDumpSectors() {
                       static_cast<int>(sector.special));
         writeLine(line);
     }
+}
+
+void frameDumpViewDiag() {
+    char line[R_VIEW_DIAG_LINE];
+
+    if (!gWorld.open || gSession.driver == nullptr) {
+        writeLine("VD,status=closed\n");
+        return;
+    }
+    {
+        const r_view_state_t& view = gSession.driver->view;
+        std::uint16_t index;
+
+        if (r_view_diag_config(&view.storage, R_VIEW_HEIGHT, R_CENTER_Y, line,
+                               sizeof line) > 0) {
+            writeLine(line);
+            writeLine("\n");
+        }
+        if (r_view_diag_pool(&view, line, sizeof line) > 0) {
+            writeLine(line);
+            writeLine("\n");
+        }
+        for (index = 0u; index < view.drawsegCount; ++index) {
+            if (r_view_diag_drawseg(&view, static_cast<unsigned>(index), line,
+                                    sizeof line) > 0) {
+                writeLine(line);
+                writeLine("\n");
+            }
+        }
+        for (index = 0u; index < view.storage.planes.count; ++index) {
+            if (r_view_diag_plane(&view, static_cast<unsigned>(index), line,
+                                  sizeof line) > 0) {
+                writeLine(line);
+                writeLine("\n");
+            }
+        }
+        for (index = 0u; index < gDumpSpriteCount; ++index) {
+            if (r_view_diag_sprite(gSprites, static_cast<unsigned>(gDumpSpriteCount),
+                                   static_cast<unsigned>(index), line,
+                                   sizeof line) > 0) {
+                writeLine(line);
+                writeLine("\n");
+            }
+        }
+    }
+    writeLine("VD,end\n");
 }
 #endif
 

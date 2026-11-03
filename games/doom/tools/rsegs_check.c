@@ -102,6 +102,7 @@
 #include "r_segs.h"
 #include "r_tables.h"
 #include "r_things.h"
+#include "r_view_diag.h"
 #include "w_wad.h"
 
 /* The E1M1 sprite fixture (D3.4): DoomEd number -> frame-0 sprite lump. This is
@@ -928,6 +929,8 @@ int main(int argc, char** argv) {
     int viewZ = 0;
     unsigned int viewAngle = 0u;
     int viewGiven = 0;
+    int viewDiag = 0;
+    int submittedCount = 0;
     int viewCount = FRAME_COUNT;
     int frame;
     char combined[65];
@@ -960,7 +963,7 @@ int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: rsegs_check <path-to-WAD> [--detail N] "
                         "[--column N,X] [--scroll SIDE,DX] "
-                        "[--view X,Y,Z,ANGLE]\n");
+                        "[--view X,Y,Z,ANGLE] [--viewdiag]\n");
         return 2;
     }
     for (index = 2; index < argc; ++index) {
@@ -977,6 +980,8 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "rsegs_check: --scroll wants SIDE,DX\n");
                 return 2;
             }
+        } else if (strcmp(argv[index], "--viewdiag") == 0) {
+            viewDiag = 1;
         } else if (strcmp(argv[index], "--view") == 0 && index + 1 < argc) {
             if (sscanf(argv[++index], "%d,%d,%d,%u", &viewX, &viewY, &viewZ,
                        &viewAngle) != 4) {
@@ -1222,6 +1227,7 @@ int main(int argc, char** argv) {
 
             memset(g_spriteMask, 0, sizeof g_spriteMask);
             spriteCount = buildSprites(&map, &params, g_sprites, HARNESS_SPRITES);
+            submittedCount = spriteCount;
             if (spriteCount < 0) {
                 printf("ERROR %d\n", -1);
                 freeTextures(&cache);
@@ -1261,6 +1267,35 @@ int main(int argc, char** argv) {
             }
             if (view.openingBlocksUsed > peakOpeningBlocks) {
                 peakOpeningBlocks = view.openingBlocksUsed;
+            }
+        }
+
+        if (viewDiag) {
+            char vd[R_VIEW_DIAG_LINE];
+            int vi;
+
+            if (r_view_diag_config(&view.storage, R_VIEW_HEIGHT, R_CENTER_Y,
+                                   vd, sizeof vd) > 0) {
+                printf("%s\n", vd);
+            }
+            if (r_view_diag_pool(&view, vd, sizeof vd) > 0) {
+                printf("%s\n", vd);
+            }
+            for (vi = 0; vi < (int)view.drawsegCount; ++vi) {
+                if (r_view_diag_drawseg(&view, (unsigned)vi, vd, sizeof vd) > 0) {
+                    printf("%s\n", vd);
+                }
+            }
+            for (vi = 0; vi < (int)view.storage.planes.count; ++vi) {
+                if (r_view_diag_plane(&view, (unsigned)vi, vd, sizeof vd) > 0) {
+                    printf("%s\n", vd);
+                }
+            }
+            for (vi = 0; vi < submittedCount; ++vi) {
+                if (r_view_diag_sprite(g_sprites, (unsigned)submittedCount,
+                                       (unsigned)vi, vd, sizeof vd) > 0) {
+                    printf("%s\n", vd);
+                }
             }
         }
 

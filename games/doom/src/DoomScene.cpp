@@ -2582,6 +2582,12 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
             // record can be corrupt.
             if (remaining == 3) {
                 doomc::frameDumpSectors();
+                // S26: and the records the frame was drawn from -- every drawseg
+                // (scales, masked column block, clip codes), every visplane and
+                // the submitted sprite list -- as `VD,...` lines that
+                // tools/viewdiag_compare.py diffs against the host's render of
+                // the same viewpoint.
+                doomc::frameDumpViewDiag();
             }
             --remaining;
             cooldown = 20;  // ~1.3 s at the shipped frame rate

@@ -1014,6 +1014,24 @@ void frameDumpSurface(const std::uint8_t* pixels, int width, int height, std::ui
  * against the WAD's immutable SECTORS and name the corrupted entry.
  */
 void frameDumpSectors();
+
+/**
+ * @brief Diagnostic: the frame's per-record state, one `VD,...` line each.
+ *
+ * The pixel dump says the frame is wrong; this says *which record and which
+ * field*. The drawing passes' inputs are the drawsegs the walk stored (with the
+ * three scales, the masked texture's column block and the two clip codes the
+ * masked pass reads back), the visplanes the walk allocated (height, picture,
+ * light, and the extrema of the recorded columns) and the submitted sprite
+ * list. `r_view_diag_*` formats them (lib/doom/r_view_diag.h) and
+ * `tools/viewdiag_compare.py` diffs a capture against the host's render of the
+ * same viewpoint -- `rsegs_check --view ... --viewdiag` prints the same lines.
+ *
+ * Prints the LAST COMPLETED frame, so it belongs in the same press handler as
+ * frameDumpSurface(): the records are the ones that frame was drawn from.
+ * Never compiled into a shipped image.
+ */
+void frameDumpViewDiag();
 #endif
 
 /**

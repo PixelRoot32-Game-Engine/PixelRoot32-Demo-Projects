@@ -143,6 +143,7 @@ def compile_harness(workdir: Path, compiler: str) -> Path:
         str(root / "lib" / "doom" / "r_bsp.c"),
         str(root / "lib" / "doom" / "r_plane.c"),
         str(root / "lib" / "doom" / "r_things.c"),
+        str(root / "lib" / "doom" / "r_view_diag.c"),
         str(root / "lib" / "doom" / "r_tables.c"),
         str(root / "lib" / "doom" / "r_data.c"),
         str(root / "lib" / "doom" / "doom_map.c"),
