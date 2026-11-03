@@ -2574,12 +2574,11 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
         }
 #endif
         if (dump) {
-            if (std::uint8_t* pixels = surface.getSpriteBuffer()) {
-                doomc::frameDumpSurface(pixels, width, height, showFrame_);
-            }
-            // The sector table goes out once per burst: a wall drawn with a wrong
-            // ceiling height fans its texture over the frame, and only the live
-            // record can be corrupt.
+            // S26: the per-record answer only. The RLE frame is what pinned the
+            // artifact to the masked pass; from here the useful question is which
+            // field or which texture byte differs, and that costs ~2 KB instead of
+            // the 64,000-byte frame, so a press no longer freezes the game for
+            // twelve seconds and no long capture window is needed.
             if (remaining == 3) {
                 doomc::frameDumpSectors();
                 // S26: and the records the frame was drawn from -- every drawseg

@@ -4837,6 +4837,20 @@ void frameDumpSectors() {
     }
 }
 
+#if defined(DOOM_FRAME_DUMP)
+/* S26: FNV-1a over a texture record's stored bytes. The host draws its own copy
+ * of this loop in tools/rsegs_check.c; the two must agree or the comparison is
+ * meaningless. */
+static std::uint32_t fnv1a32(const std::uint8_t* data, std::size_t size) {
+    std::uint32_t hash = 2166136261u;
+    for (std::size_t index = 0u; index < size; ++index) {
+        hash ^= data[index];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+#endif
+
 void frameDumpViewDiag() {
     char line[R_VIEW_DIAG_LINE];
 
@@ -4863,6 +4877,41 @@ void frameDumpViewDiag() {
                 writeLine(line);
                 writeLine("\n");
             }
+        }
+        // S26: the bytes the masked pass will read. Resolving the fragment's mid
+        // name and hashing the record answers "is the board drawing the same
+        // texture the host composes" without sending the frame.
+        for (index = 0u; index < view.drawsegCount; ++index) {
+            const r_drawseg_t& drawseg = view.storage.drawsegs[index];
+            r_wall_fragment_t fragment;
+            const r_walltex_t* texture;
+            std::uint32_t pixelsHash = 0u;
+            std::uint32_t maskHash = 0u;
+            std::size_t bytes;
+
+            if (drawseg.maskedTextureCol == R_DRAWSEG_NO_BLOCK) {
+                continue;
+            }
+            r_wall_fragment_open(view.map, &view.params, drawseg.seg, &fragment);
+            texture = gSession.driver->textures.resolve(gSession.driver->textures.context,
+                                                        fragment.midTexture);
+            if (texture == nullptr || texture->pixels == nullptr) {
+                std::snprintf(line, sizeof line, "VD,t,%u,0,0,0,0,0,0\n",
+                              static_cast<unsigned>(index));
+                writeLine(line);
+                continue;
+            }
+            bytes = static_cast<std::size_t>(texture->width) *
+                    static_cast<std::size_t>(texture->height);
+            pixelsHash = fnv1a32(texture->pixels, bytes);
+            maskHash = texture->mask != nullptr ? fnv1a32(texture->mask, bytes) : 0u;
+            std::snprintf(line, sizeof line, "VD,t,%u,%08X,%08X,%d,%d,%d,%d\n",
+                          static_cast<unsigned>(index), static_cast<unsigned>(pixelsHash),
+                          static_cast<unsigned>(maskHash), static_cast<int>(texture->width),
+                          static_cast<int>(texture->height),
+                          static_cast<int>(texture->widthMask),
+                          static_cast<int>(texture->heightMask));
+            writeLine(line);
         }
         for (index = 0u; index < view.storage.planes.count; ++index) {
             if (r_view_diag_plane(&view, static_cast<unsigned>(index), line,

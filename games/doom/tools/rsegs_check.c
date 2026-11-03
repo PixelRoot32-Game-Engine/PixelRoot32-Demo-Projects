@@ -897,6 +897,19 @@ static void adjustScrolledSide(void* context, uint16_t index, doom_side_t* side)
     p_scroll_adjust_side(g_scrolls, 1u, index, side);
 }
 
+/* S26: FNV-1a over a texture record's stored bytes; both sides use this exact
+ * loop so the numbers compare. */
+static uint32_t fnv1a32(const uint8_t* data, size_t size) {
+    uint32_t hash = 2166136261u;
+    size_t index;
+
+    for (index = 0u; index < size; ++index) {
+        hash ^= data[index];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
 int main(int argc, char** argv) {
     wad_state_t wad;
     doom_map_source_t source;
@@ -1331,6 +1344,34 @@ int main(int argc, char** argv) {
                 if (r_view_diag_drawseg(&view, (unsigned)vi, vd, sizeof vd) > 0) {
                     printf("%s\n", vd);
                 }
+            }
+            /* S26: the bytes the masked pass will actually read. The board resolves
+             * them from the container's baked record and this harness composes them
+             * from the WAD, so equal records must hash equal; the FNV-1a is over the
+             * stored columns and, when present, the mask. */
+            for (vi = 0; vi < (int)view.drawsegCount; ++vi) {
+                const r_drawseg_t* drawseg = &view.storage.drawsegs[vi];
+                r_wall_fragment_t fragment;
+                const r_walltex_t* texture;
+                uint32_t pixelsHash = 0u;
+                uint32_t maskHash = 0u;
+                size_t bytes;
+
+                if (drawseg->maskedTextureCol == R_DRAWSEG_NO_BLOCK) {
+                    continue;
+                }
+                r_wall_fragment_open(view.map, &view.params, drawseg->seg, &fragment);
+                texture = texSource.resolve(texSource.context, fragment.midTexture);
+                if (texture == NULL || texture->pixels == NULL) {
+                    printf("VD,t,%d,0,0,0,0,0,0\n", vi);
+                    continue;
+                }
+                bytes = (size_t)texture->width * (size_t)texture->height;
+                pixelsHash = fnv1a32(texture->pixels, bytes);
+                maskHash = texture->mask != NULL ? fnv1a32(texture->mask, bytes) : 0u;
+                printf("VD,t,%d,%08X,%08X,%d,%d,%d,%d\n", vi, (unsigned)pixelsHash,
+                       (unsigned)maskHash, (int)texture->width, (int)texture->height,
+                       (int)texture->widthMask, (int)texture->heightMask);
             }
             for (vi = 0; vi < (int)view.storage.planes.count; ++vi) {
                 if (r_view_diag_plane(&view, (unsigned)vi, vd, sizeof vd) > 0) {
