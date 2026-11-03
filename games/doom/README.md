@@ -773,8 +773,8 @@ what turns `viewheight` into `viewz`). Every load therefore states the eye its
 own tics would reach, in `restartLevelPresentation()` -- see
 `settleLevelView()`'s comment in
 [`src/doomc/FrameDriver.cpp`](src/doomc/FrameDriver.cpp). Without it, the frame
-after a load is drawn from the sector floor, which the wall pass leaves with
-uncovered columns and the surface's `0xFF` prefill shows as a magenta bar at
+after a load is drawn from the sector floor, where the wall and plane passes no
+longer meet and the surface's `0xFF` prefill fills the gap as a magenta bar at
 each edge of the view. The fade hides that on an ordinary transition; the
 victory does not, because the main menu opens on the next frame and freezes the
 world (S25).

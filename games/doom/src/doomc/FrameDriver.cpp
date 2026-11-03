@@ -3041,6 +3041,51 @@ void closeWorldSession();
 /// Releases the whole level session. Defined after the open path it unwinds.
 void closeLevelSession();
 
+/*
+ * A loaded level has no eye until its first tic, and that frame must not be
+ * frozen.
+ *
+ * p_player_wire() is G_PlayerReborn's `memset (p, 0, sizeof(*p))`, so
+ * `playerState.viewheight` is 0 and `viewz` with it; P_PlayerThink's
+ * P_CalcHeight is what gives the camera a height (and its half-step ramp). Every
+ * load therefore draws its first frame from the sector floor. That is
+ * tolerable only while the frame is a transient under a fade, and it stops
+ * being tolerable the moment something freezes it: S21's victory opens the main
+ * menu on the frame after the reload, the world never ticks while the menu is
+ * up, and the camera stays at z = 0 for as long as the menu is open.
+ *
+ * A camera at the floor is not a low view. The wall pass's bottom clips and the
+ * plane pass's spans no longer meet in the columns at the view's edges, and the
+ * gap between them keeps the surface's 0xFF prefill -- palette 255 is
+ * (167,107,107) -- so two magenta bars run down the frame over a floor stretched
+ * to the horizon. That is the report S25 fixes: the maintainer's panel photo of
+ * the menu over E1M1 after the level walk, two vertical bars plus the stretched
+ * floor.
+ *
+ * The value written is the one the level's own tics reach within half a second
+ * and then keep -- P_CalcHeight clamps `viewheight` to P_VIEWHEIGHT and stops
+ * growing it -- so the simulation is unchanged: the ramp simply is not visible
+ * in a frame that never advances. `rsegs_check`'s spawn rule is the same number
+ * (`sector.floorHeight + R_VIEWHEIGHT`), which is why its player-start frames
+ * are drawn from it.
+ */
+static void settleLevelView() {
+    p_level_t& level = gWorld.level;
+    if (level.playerState.mo == nullptr) {
+        return;
+    }
+    fixed_t viewz = level.playerState.mo->z + P_VIEWHEIGHT;
+    const fixed_t ceiling = level.playerState.mo->ceilingz - 4 * FRACUNIT;
+    if (viewz > ceiling) {
+        // P_CalcHeight's own clamp, so a low ceiling lands on the same pixel the
+        // first tic would produce.
+        viewz = ceiling;
+    }
+    level.playerState.viewheight = P_VIEWHEIGHT;
+    level.playerState.deltaviewheight = 0;
+    level.playerState.viewz = viewz;
+}
+
 /**
  * @brief Measures, sizes and opens the world; prints two `SHOW,arena,...` lines.
  *
@@ -3219,6 +3264,8 @@ bool openWorldSession() {
     // loadPlaypal, so they never take this branch and keep rendering the
     // immutable map.
     p_level_bind_render(&gWorld.level, &gSession.driver->map);
+    // S25: boot is a load too, and its frame is drawn before the first tic.
+    settleLevelView();
 #if defined(DOOM_AUDIO)
     // G_DoLoadLevel's S_Start: kill the previous level's sounds, tell the layer
     // which level this is (S_Start's music number and the map-8 rule) and let it
@@ -4062,49 +4109,6 @@ bool openSessionMap(std::uint8_t levelNumber, doom_map_t* outMap) {
         return false;
     }
     return true;
-}
-
-/*
- * A loaded level has no eye until its first tic, and that frame must not be
- * frozen.
- *
- * p_player_wire() is G_PlayerReborn's `memset (p, 0, sizeof(*p))`, so
- * `playerState.viewheight` is 0 and `viewz` with it; P_PlayerThink's
- * P_CalcHeight is what gives the camera a height (and its half-step ramp). Every
- * load therefore draws its first frame from the sector floor. That is
- * tolerable only while the frame is a transient under a fade, and it stops
- * being tolerable the moment something freezes it: S21's victory opens the main
- * menu on the frame after the reload, the world never ticks while the menu is
- * up, and the camera stays at z = 0 for as long as the menu is open.
- *
- * A camera at the floor is not a low view. The wall pass's clips degenerate,
- * columns end up uncovered, and the surface's 0xFF prefill shows through as a
- * magenta band down each edge of the view over a floor stretched to the horizon.
- * That is the report S25 fixes: the maintainer's panel photo of the menu over
- * E1M1 after the level walk, two vertical bars plus the stretched floor.
- *
- * The value written is the one the level's own tics reach within half a second
- * and then keep -- P_CalcHeight clamps `viewheight` to P_VIEWHEIGHT and stops
- * growing it -- so the simulation is unchanged: the ramp simply is not visible
- * in a frame that never advances. `rsegs_check`'s spawn rule is the same number
- * (`sector.floorHeight + R_VIEWHEIGHT`), which is why its player-start frames
- * are drawn from it.
- */
-static void settleLevelView() {
-    p_level_t& level = gWorld.level;
-    if (level.playerState.mo == nullptr) {
-        return;
-    }
-    fixed_t viewz = level.playerState.mo->z + P_VIEWHEIGHT;
-    const fixed_t ceiling = level.playerState.mo->ceilingz - 4 * FRACUNIT;
-    if (viewz > ceiling) {
-        // P_CalcHeight's own clamp, so a low ceiling lands on the same pixel the
-        // first tic would produce.
-        viewz = ceiling;
-    }
-    level.playerState.viewheight = P_VIEWHEIGHT;
-    level.playerState.deltaviewheight = 0;
-    level.playerState.viewz = viewz;
 }
 
 /**
