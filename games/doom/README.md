@@ -1005,6 +1005,137 @@ budget, the six labels and the activation rules are gated by
 `pio test -e menu_test`, `tools/menu_check.py` and `tools/menu_draw_check.py`; the
 engine's own persistence contract suite lives in the engine repository.
 
+### Proving a save survives (T54)
+
+The record has to outlive the run that wrote it. The board has no buttons the
+build host can press, so the proof is driven by `esp32dev_ILI9341_hud_menutest`
+(the shipped image plus `DOOM_MENU_SCRIPT`); the renderer, the world and the
+frame path are the shipped ones. The diagnostic chooses its script at boot from
+slot 0's label: empty means the full script (settings, six New Games, SAVE slot
+0, LOAD slot 0, SAVE slot 1), used means the load-only script. One image, two
+boots, and **no reflash between the save and the load** -- the reset is the only
+event between them.
+
+The capture sequence, on COM4 at 115200:
+
+1. Erase `saves` (`esptool erase_region 0x3F8000 0x8000`) so all six rows start
+   `EMPTY`, then reset and capture 100 s of the full script.
+2. Reset (open COM4, `RtsEnable=$true` for 150 ms, `RtsEnable=$false`) and
+   capture 30 s; the same image now runs the load-only script.
+3. The fields compared are the ones the spec names: `x`, `y`, `angle`,
+   `health` and the player `tics`, plus the `SHOW,load` level/skill/tics. The
+   `SHOW,frame` line immediately after a load is forced by the load itself
+   (`showReportAfterLoad_`), so it describes the restored world before another
+   tic can run; the ordinary cadence is one line a second and would otherwise
+   compare a world that had already advanced.
+
+**Before the reset (full script; slot 0 was EMPTY).**
+
+```text
+SHOW,save,slot=0,status=ok,bytes=2613
+SHOW,slot,row=0,label=E1M1 HURT 00:10
+SHOW,slot,row=1,label=EMPTY
+SHOW,slot,row=2,label=EMPTY
+SHOW,slot,row=3,label=EMPTY
+SHOW,slot,row=4,label=EMPTY
+SHOW,slot,row=5,label=EMPTY
+SHOW,load,slot=0,status=ok,level=1,skill=3,tics=358
+SHOW,frame=1141,x=69206016,y=-236978176,angle=1073741824,viewz=2686976,tics=358,health=100,...,hash=5e89591346c4222f86628b84235224df8c2b6254e7b06e77b0df3b13bc11a436
+SHOW,save,slot=1,status=ok,bytes=2615
+SHOW,slot,row=0,label=E1M1 HURT 00:10
+SHOW,slot,row=1,label=E1M1 HURT 00:17
+SHOW,slot,row=2,label=EMPTY
+SHOW,slot,row=3,label=EMPTY
+SHOW,slot,row=4,label=EMPTY
+SHOW,slot,row=5,label=EMPTY
+```
+
+**After the reset (load-only script, same image and same two records).**
+
+```text
+SHOW,persist,status=ok,settings=1,saves=1,slots=6,record=3968
+SHOW,boot,screen=game,level=E1M1,open_ms=198
+SHOW,menu,settings=nvs,skill=3,volume=5,gamma=3,mute=1,level=0
+SHOW,frame00,x=69206016,y=-236978176,z=2686976,angle=0,hash=1d8b3849ab3f76750056937f2827bf2bcbb2b98e82976fb3a7ce263d5273c9d3
+SHOW,slot,row=0,label=E1M1 HURT 00:10
+SHOW,slot,row=1,label=E1M1 HURT 00:17
+SHOW,slot,row=2,label=EMPTY
+SHOW,slot,row=3,label=EMPTY
+SHOW,slot,row=4,label=EMPTY
+SHOW,slot,row=5,label=EMPTY
+SHOW,load,slot=0,status=ok,level=1,skill=3,tics=358
+SHOW,frame=93,x=69206016,y=-236978176,angle=1073741824,viewz=2686976,tics=358,health=100,...,hash=5e89591346c4222f86628b84235224df8c2b6254e7b06e77b0df3b13bc11a436
+```
+
+The two `SHOW,frame` lines are character-for-character equal in `x`, `y`,
+`angle`, `viewz`, `tics`, `health` and `hash`; the two `SHOW,load` lines name the
+same level, skill and tic; and `SHOW,menu,settings=nvs,skill=3,volume=5,
+gamma=3,mute=1,level=0` is identical in both boots, so the settings record
+crossed the same reset.
+
+**A reset is not an unplug, and that is stated rather than hidden.** No physical
+power cut was performed: the board's power rail was not disturbed, and the reset
+is the ESP32's RTS line. For this feature the distinction does not weaken the
+claim, because the claim is *flash retention across a run*, not behaviour under a
+brownout: the record is bytes in the `saves` NVS partition, no boot path erases
+that partition, and the only writer is an explicit menu SAVE. A reset and an
+unplug both leave those bytes in flash. What the reset does **not** prove is that
+a record written while the supply is collapsing is atomic; the engine's
+`RecordCodec` CRC is the guard for a torn write, and `savetest` below exercises
+the rejection path.
+
+**Six slots, and a corrupted record is refused.** The labels above are the six
+rows the slot screen draws: two used, four `EMPTY`. A corrupt row is not loaded
+and not labelled: `DoomPersistence::readSlotLabels()` asks the engine's
+`loadRecord()` for each row, and a `Corrupt` answer leaves the row `EMPTY`;
+`loadSlot()` would print `SHOW,load,slot=N,status=corrupt`. The board-level proof
+is `esp32dev_ILI9341_hud_savetest`, which writes the live world to slot 5 through
+the real `saveRecord()` envelope, then writes the same encoded record to slot 4
+with one payload byte flipped in its RAM buffer and the slot store's raw
+`write()` (so the stored CRC no longer covers the payload; calling `saveRecord()`
+again would recompute it and store a valid record). Its boot line is:
+
+```text
+SHOW,savetest,valid=ok,corrupt=corrupt
+```
+
+`valid` is the engine's `StoreResult` for the untouched record and `corrupt` is
+its answer for the flipped one. Slots 4 and 5 are used so the proof never touches
+the power-cycle record in slot 0. This is the one property no host gate can
+prove: the CRC the engine installed on the board rejecting bytes on the board.
+
+**The `boot_app0.bin` hazard.** `pio run -t upload` always writes `boot_app0.bin`
+(8 KB) at `0xE000`, the last page of `nvs` (`0x9000..0xF000`). On T54's re-upload
+the uploader printed `Wrote 8192 bytes ... at 0x0000e000`; the settings record
+nevertheless survived (`SHOW,menu,settings=nvs,skill=3,volume=5,gamma=3,mute=1,
+level=0` before and after), because NVS had not placed its live entries on that
+last page. The hazard is real, not hypothetical: an upload **can** erase that
+page. It **cannot** touch `saves` at `0x3F8000`, which is not in the upload list.
+If a future image is flashed with a live settings record that does land there,
+the engine's smoke tool already has the fix: `tools/persist_nvs_smoke/keep_nvs.py`
+is an `extra_scripts = post:` hook that drops the `0xE000` image from
+`FLASH_EXTRA_IMAGES`/`UPLOADERFLAGS`. It is not added here because the record
+survived and the board's final state is NVS-erased defaults; adding it to the
+`_show`/`_wad` environments is the change if the caveat ever bites.
+
+**Final board state (measured after T54).** `nvs` and `saves` were erased, so the
+shipped `_hud` boots on the defaults with sound on and six `EMPTY` slots:
+`SHOW,persist,status=ok,settings=1,saves=1,slots=6,record=3968`,
+`SHOW,menu,settings=default,skill=2,volume=8,gamma=0,mute=0,level=67`,
+`SHOW,boot,screen=game,level=E1M1,open_ms=199`, and
+`SHOW,frame00 ... hash=1d8b3849ab3f76750056937f2827bf2bcbb2b98e82976fb3a7ce263d5273c9d3`.
+The shipped ELF is **660,493 B of the 720,896 B app row** (60,403 B free;
+`seg_free=1132`), so the T54 wiring costs 20 B over T53's 660,473 B and the
+frame-00 hash does not move. Three 40 s runs report `fps_x10` **155-189 (mean
+164.10)**, **155-190 (mean 165.12)** and **154-189 (mean 167.86)** over the
+steady-state samples (the first ten frames are reported before the once-a-second
+cadence starts); every sample is >= 150. Those bands include the automap, which
+the floating GPIO 35 opens by itself (L42) and which renders in ~0.9 ms: in an
+independent 40 s capture 21 of 38 reported frames were automap frames, and
+filtering to world frames (`render_us > 20 ms`) gives **153-160, mean 156** --
+the number comparable with the 148-155 this phase started from, and five points
+above it.
+
 ## What the scaffold proves
 
 - The engine links from the tracker branch, not from a released version.
