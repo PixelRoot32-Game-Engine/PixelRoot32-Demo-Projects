@@ -1,6 +1,6 @@
 /*
  * The music bank's only translation unit.
- * See MusicBank.h for what ships and why it is one track.
+ * See MusicBank.h for what ships and why every level plays it.
  *
  * THE ASSET
  *
@@ -25,7 +25,16 @@ namespace doom {
 namespace doomc {
 
 const pixelroot32::audio::MusicTrack* musicBankTrack(int music_id) {
-    if (music_id == mus_e1m1) {
+    // The 4 MB build has room for one track (34,320 B of the 57,847 B the app
+    // has free), so every level theme resolves to E1M1's. A level change asks
+    // for its own id -- S_Start computes mus_e1m1 + (episode-1)*9 + map-1 --
+    // and gets the same asset back, which restarts it. The alternative was a
+    // silent level, which is what shipped before S23.
+    //
+    // The S3 16 MB profile is where each id gets its own track; the bank is the
+    // one place that decision lives, so that build replaces this lookup and
+    // nothing else.
+    if (music_id >= mus_e1m1 && music_id <= mus_e1m9) {
         return &pixelroot32::audio::kMusE1M1;
     }
     return nullptr;

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Behaviour tests for DOOM's channel layer (T45, D6.1/D6.3).
  *
  * Everything here goes through the public C API of lib/doom/s_sound.c. The
@@ -679,11 +679,10 @@ void test_update_sounds_ticks_and_frees_a_finished_channel(void) {
 
 // --- The music bank --------------------------------------------------------
 
-void test_the_music_bank_ships_only_e1m1(void) {
-    // Only the level theme is converted into a board asset (T47). Every other
-    // id -- the dummy row, the intermission, the title, past NUMMUSIC -- is
-    // answered nullptr so S_ChangeMusic leaves the level quiet instead of
-    // holding a request that never plays.
+void test_the_music_bank_plays_e1m1_on_every_level(void) {
+    // The 4 MB build ships one track and answers it for all nine level ids
+    // (S23); only the non-level ids are quiet. The S3 profile replaces the
+    // lookup so each id gets its own asset.
     TEST_ASSERT_NULL(musicBankTrack(mus_None));
     TEST_ASSERT_NULL(musicBankTrack(mus_inter));
     TEST_ASSERT_NULL(musicBankTrack(mus_intro));
@@ -721,6 +720,13 @@ void test_the_music_bank_ships_only_e1m1(void) {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 480.0f, beats(*track->secondVoice));
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 480.0f, beats(*track->thirdVoice));
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 480.0f, beats(*track->percussion));
+
+    // Every level id resolves to the same asset: a level change restarts the
+    // track instead of going silent. The loop covers E1M1..E1M9 by value, so a
+    // reordered enum fails here rather than silently leaving a level quiet.
+    for (int id = (int)mus_e1m1; id <= (int)mus_e1m9; ++id) {
+        TEST_ASSERT_EQUAL_PTR(track, musicBankTrack(id));
+    }
 
     // A drum is Rest + a duty-0 preset; ApuCore rejects any other shape.
     int drums = 0;
@@ -870,7 +876,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_voice_selection_prefers_idle_then_the_least_important);
     RUN_TEST(test_no_class_combination_steals_a_reserved_voice);
     RUN_TEST(test_update_sounds_ticks_and_frees_a_finished_channel);
-    RUN_TEST(test_the_music_bank_ships_only_e1m1);
+    RUN_TEST(test_the_music_bank_plays_e1m1_on_every_level);
     RUN_TEST(test_no_telemetry_source_prints_dashes);
     RUN_TEST(test_an_installed_source_reaches_the_line);
     RUN_TEST(test_a_source_that_answers_false_keeps_the_dashes);
