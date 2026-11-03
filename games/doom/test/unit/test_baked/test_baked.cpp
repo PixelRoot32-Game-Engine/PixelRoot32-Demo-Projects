@@ -393,7 +393,7 @@ void test_a_payload_size_disagreement_is_refused() {
 }
 
 /*
- * D3.10: the union bake puts every texture, flat and sprite lump of all nine
+ * The union bake puts every texture, flat and sprite lump of all nine
  * shareware levels in one manifest -- 185 entries for the measured episode. The
  * adapter's fixed record array therefore has to hold far more than E1M1's 90,
  * and a manifest that does not fit must still be refused rather than truncated.

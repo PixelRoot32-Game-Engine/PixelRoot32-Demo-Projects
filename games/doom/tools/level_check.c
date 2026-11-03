@@ -10,7 +10,7 @@
  *
  * WHAT THIS PROVES
  *
- * D4.5's acceptance is "a scripted run reaches E1M9". This harness opens the
+ * The acceptance is "a scripted run reaches E1M9". This harness opens the
  * shareware container (the same `PWHD` image the board reads) and loads a level
  * through lib/doom, stands the player in front of that level's own exit line,
  * presses USE through p_level_tic() -- the same entry point the panel's frame

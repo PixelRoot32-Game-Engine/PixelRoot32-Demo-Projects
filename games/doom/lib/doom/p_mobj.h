@@ -8,10 +8,10 @@
  * Map objects: the thing itself, how it spawns, how it is removed, and how its
  * state machine advances.
  *
- * This is upstream's p_mobj.h/p_mobj.c reduced to what D4.1a needs and shaped
- * so D4.2 does not have to restructure it. Every field below is one upstream
- * reads; the comments say which. The simulation that *uses* most of them
- * (movement, line attacks, the blockmap) is D4.2's, not this layer's.
+ * This is upstream's p_mobj.h/p_mobj.c reduced to what this port needs. Every
+ * field below is one upstream reads; the comments say which. The simulation
+ * that *uses* most of them (line attacks, the blockmap) lives in p_map.c, not
+ * in this layer.
  *
  * THE ZONE IS THE ALLOCATOR
  *
@@ -22,18 +22,16 @@
  * its own record size: sizeof(r_mobj_t) is 120 bytes on the 32-bit target
  * (measured in the xtensa build), against upstream's record, which is larger
  * because it also carries the sector and blockmap link pointers this one does
- * not yet have. A zone block costs ZONE_HEADER_SIZE (16) more, so one mobj is
+ * not have. A zone block costs ZONE_HEADER_SIZE (16) more, so one mobj is
  * 136 B: E1M1's 138 THINGS records do not all become mobjs -- the skill and
  * single-player filters drop some -- but the cost per mobj is 136 B either way.
  *
- * WHAT IS NOT HERE YET, DELIBERATELY
+ * WHAT IS NOT HERE, DELIBERATELY
  *
  *   - the sector and blockmap links (`snext`/`sprev`, `bnext`/`bprev` and the
- *     `P_SetThingPosition` lists). They are collision and sound inputs, so they
- *     arrive with D4.2's movement; a mobj holds `subsector` and `sector` already
+ *     `P_SetThingPosition` lists). A mobj holds `subsector` and `sector`
  *     because the spawn position needs them.
- *   - P_XYMovement, P_ZMovement and P_MobjThinker's nightmare respawn. The
- *     thinker below advances states only.
+ *   - P_MobjThinker's nightmare respawn.
  *
  * SPAWN POSITION: WHAT VANILLA DOES, AND WHAT IT DOES NOT
  *
@@ -174,7 +172,7 @@ struct p_sight_stats;
  * randomness wants. A real level always passes a generator, because the
  * sequence position is part of demo fidelity.
  *
- * D4.1b added the level's mutable state to the same struct, because sector
+ * The level's mutable state lives in the same struct, because sector
  * thinkers receive this context from p_run_thinkers() and a mobj spawned by one
  * of them must read the same heights:
  *
@@ -216,7 +214,7 @@ typedef struct p_mobj_context {
      * answered and how many needed the BSP. NULL is legal and is what the
      * firmware passes. */
     struct p_sight_stats* sightStats;
-    /* T15a: the per-sector sound state p_level_init() allocates from the level
+    /* The per-sector sound state p_level_init() allocates from the level
      * arena (p_spec.h's p_sector_sound_t). `sectorSoundCount` is the number of
      * entries and `soundValidCount` the flood epoch shared by every
      * P_NoiseAlert. A hand-built test context leaves all three zero/NULL, which
@@ -224,13 +222,13 @@ typedef struct p_mobj_context {
     p_sector_sound_t* sectorSound;
     uint16_t sectorSoundCount;
     uint32_t soundValidCount;
-    /* D4.4: an optional missing-action trace (p_action.h). It is the fourth
+    /* An optional missing-action trace (p_action.h). It is the fourth
      * harness hook of the same kind as moveStats/attackStats/sightStats: NULL
      * costs nothing and is what every shipped build passes, while
      * tools/demo_check.c points it at a caller-owned table to learn which
      * actions a demo reaches, at which tic, and on which type. */
     struct p_action_trace* actionTrace;
-    /* D4.4: an optional distinct unsupported-line-special trace (p_spec.h).
+    /* An optional distinct unsupported-line-special trace (p_spec.h).
      * The fifth harness hook of the same kind: NULL costs nothing and is what
      * every shipped build passes, while tools/demo_check.c points it at a
      * caller-owned table to learn which line specials a run reaches with no EV
@@ -254,12 +252,12 @@ typedef struct p_mobj_context {
  *   tics, state        the state tic counter and the state's index. `tics` of
  *                      -1 is a permanent state.
  *   floorz, ceilingz   the heights of the sector the thing stands in, copied at
- *                      spawn. Movement keeps them current (D4.2).
+ *                      spawn. Movement keeps them current.
  *   radius, height     the collision box and the sprite's extent, from
  *                      mobjinfo. `height` is what ONCEILINGZ subtracts.
  *   flags              the MF_* word, from mobjinfo, plus MF_AMBUSH and the
  *                      player translation bits.
- *   health             spawnhealth, then damage (D4.2).
+ *   health             spawnhealth, then damage.
  *   type               mobjtype_t: the index into mobjinfo[].
  *   subsector, sector  where the thing is, resolved through the BSP at spawn.
  *                      Indices, not pointers: the map is zero-copy and a
@@ -272,7 +270,7 @@ typedef struct p_mobj_context {
  *   target, tracer     what it chases, and what a tracer follows.
  *   spawnpoint         the THINGS record it came from, verbatim.
  *   player             1 when this mobj is a player avatar (upstream's `player`
- *                      pointer; the port has one player, D5 owns the rest).
+ *                      pointer; the port has one player).
  */
 typedef struct r_mobj {
     p_thinker_t thinker;
@@ -391,7 +389,7 @@ typedef enum p_thing_result {
  * What one THINGS record produced. `isPlayerStart` and `isDeathmatchStart` are
  * separate flags because those records are *recorded* by the caller whether or
  * not a mobj came out of them: upstream keeps playerstarts[] and
- * deathmatchstarts[] for respawning, and Phase 4's totals depend on the
+ * deathmatchstarts[] for respawning, and the level totals depend on the
  * recording, not only on the spawning.
  */
 typedef struct p_thing_outcome {
@@ -611,8 +609,8 @@ int p_check_missile_spawn(p_mobj_context_t* world, r_mobj_t* mobj);
  * first two to the layers that own them:
  *
  *   - the item respawn queue (`itemrespawnque`), which needs level time and is
- *     a D4.x special;
- *   - P_UnsetThingPosition (the sector/blockmap links), which do not exist yet;
+ *     not ported;
+ *   - P_UnsetThingPosition (the sector/blockmap links), which do not exist;
  *   - P_RemoveThinker(), which is `p_thinker_remove()` on the mobj's node.
  *
  * The mobj stays valid until a p_run_thinkers() walk reaches it; that walk
@@ -663,8 +661,7 @@ int p_set_mobj_state(p_mobj_context_t* world, r_mobj_t* mobj, statenum_t state,
  * sine for y, exactly as p_mobj.c does. The caller (P_MovePlayer upstream, the
  * movement gate here) decides how much and how often.
  *
- * @param world The level's context (unused today, kept so the signature does
- *              not change when T15's noise/attack work needs it).
+ * @param world The level's context (currently unused).
  * @param mobj  The thing.
  * @param angle Binary angle.
  * @param move  Momentum to add, 16.16.
@@ -689,7 +686,7 @@ void p_thrust(p_mobj_context_t* world, r_mobj_t* mobj, angle_t angle,
  * The port has no player_t, so the two player-only branches upstream guards on
  * `mo->player` use the mobj's own `player` flag: the S_PLAY_RUN* to S_PLAY
  * state change is kept, and the CF_NOMOMENTUM cheat is absent because there
- * are no cheats (D5). P_CheckSight/P_NoiseAlert are not called here: T15a owns
+ * are no cheats. P_CheckSight/P_NoiseAlert are not called here: A_Look owns
  * them, and P_FireWeapon is where the noise starts.
  */
 void p_xy_movement(p_mobj_context_t* world, r_mobj_t* mobj);
@@ -713,8 +710,7 @@ void p_z_movement(p_mobj_context_t* world, r_mobj_t* mobj);
  * This is P_MobjThinker(): P_XYMovement when there is horizontal momentum or a
  * flying skull, then P_ZMovement when the thing is off the floor or has vertical
  * momentum, each followed by the "was I removed?" test, then the state tic.
- * A state with `tics == -1` is permanent; the nightmare respawn is D4.2's and
- * is not here.
+ * A state with `tics == -1` is permanent; the nightmare respawn is not ported.
  */
 void p_mobj_thinker(p_thinker_t* thinker, void* context);
 
@@ -722,7 +718,7 @@ void p_mobj_thinker(p_thinker_t* thinker, void* context);
  * @brief The mobj a thinker node is, or NULL when the node is another kind.
  *
  * The check is `kind == P_THINKER_MOBJ`, not a pointer cast, so a sector
- * thinker added in D4.1b cannot be walked as a mobj by accident.
+ * thinker cannot be walked as a mobj by accident.
  */
 r_mobj_t* p_mobj_of(p_thinker_t* thinker);
 

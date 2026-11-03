@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the C THINGS run against the Python oracle on the real WAD (D4.1a).
+"""Compare the C THINGS run against the Python oracle on the real WAD.
 
 WHAT THIS PROVES
 
@@ -16,7 +16,7 @@ The compared lines are the protocol both sides document:
     THINGS ...          the map, the skill and the record count
     MOBJ ...            every spawned mobj, in thinker (insertion) order
     MOBJ-COUNT ...
-    COUNTERS ...        the totals Phase 4 reads, and which filter dropped the rest
+    COUNTERS ...        the spawn totals, and which filter dropped the rest
     PLAYERSTART ...     the four recorded starts
     DEATHMATCHSTART ... the first ten recorded deathmatch starts
     PLAYER ...          the console player's mobj index
@@ -85,18 +85,18 @@ def compile_harness(workdir: Path, compiler: str) -> Path:
         str(root / "tools" / "things_check.c"),
         str(root / "lib" / "doom" / "p_setup.c"),
         str(root / "lib" / "doom" / "p_mobj.c"),
-        # p_map.c is p_mobj.c's movement dependency (D4.2b); it needs the line
+        # p_map.c is p_mobj.c's movement dependency; it needs the line
         # geometry and the trigger dispatch, so p_spec.c and the five mover
         # files come with it. None of them is called by this harness; they are
-        # linked because the movement functions are real symbols now.
+        # linked because p_mobj.c references the movement functions.
         str(root / "lib" / "doom" / "p_map.c"),
         # p_map.c's PIT_CheckThing and PIT_ChangeSector call the damage and
-        # pickup rules (D4.2d1), so p_inter.c joins the link closure; D4.2d2 adds
+        # pickup rules, so p_inter.c joins the link closure, and so does
         # p_pspr.c because p_inter.c drops a dying player's weapon.
         str(root / "lib" / "doom" / "p_inter.c"),
         str(root / "lib" / "doom" / "p_pspr.c"),
-        # T15a: A_Look is real and P_FireWeapon calls P_NoiseAlert, so the sight
-        # and enemy modules are part of the link closure.
+        # A_Look and P_FireWeapon's P_NoiseAlert need the sight and enemy
+        # modules, so they are part of the link closure.
         str(root / "lib" / "doom" / "p_sight.c"),
         str(root / "lib" / "doom" / "p_enemy.c"),
         str(root / "lib" / "doom" / "p_spec.c"),

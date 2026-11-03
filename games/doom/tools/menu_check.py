@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate for the menu state machine, the settings codec and the gamma table (T39, D5.2).
+"""Gate for the menu state machine, the settings codec and the gamma table.
 
 ``lib/doom/m_menu.c`` is driven by ``tools/menu_check.c`` from scripts and prints one
 line of state per command. This file holds the expectation, and it is built two
@@ -18,14 +18,14 @@ fall back to the DEFAULTS rather than be half-trusted), the clamping, and the ga
 table (level 0 is the identity, every level is monotonic and brighter than the one
 before, and each equals ``round(255 * (i / 255) ** (1 - g / 8))``).
 
-Since T49 the record's byte 6 is the mute flag rather than a reserved zero, and the
-options screen has a fourth slider row (mute, OFF/ON). Both are stated here from the
-spec, not read out of the C: the flag round-trips, an older record with that byte
+The record's byte 6 is the mute flag (it was a reserved zero in older records), and
+the options screen has a fourth slider row (mute, OFF/ON). Both are stated here from
+the rules, not read out of the C: the flag round-trips, an older record with that byte
 zero decodes as "not muted", and the mute row clamps at both ends.
 
-Since T53 the main screen has four rows -- NEW GAME, OPTIONS, LOAD GAME, SAVE GAME --
-and the last two open six-row slot screens drawn from labels the owner set through
-``m_menu_set_slot_labels``. The model restates the activation rules from the spec:
+The main screen has four rows -- NEW GAME, OPTIONS, LOAD GAME, SAVE GAME -- and the
+last two open six-row slot screens drawn from labels the owner set through
+``m_menu_set_slot_labels``. The model restates the activation rules:
 a LOAD row labelled EMPTY does nothing and keeps the screen open, a LOAD of a used
 row and a SAVE of any row report a distinct action with the row number and close the
 menu.
@@ -77,7 +77,7 @@ SLOT_LABELS = ["E1M1 HURT 03:12", "E1M1 MED 00:07", "EMPTY", "EMPTY", "EMPTY", "
 # --- The reference model (no code shared with the C) ------------------------------
 
 class Model:
-    """m_menu.c's menu_t / M_Responder rules, restated from the spec."""
+    """m_menu.c's menu_t / M_Responder rules, restated independently."""
 
     def __init__(self, settings=DEFAULTS, perturb=False):
         self.skill, self.volume, self.gamma, self.muted = (self._clamp(settings))
@@ -379,9 +379,9 @@ def anchors() -> Run:
 
 
 def slots_run(perturb: bool) -> Run:
-    """LOAD GAME / SAVE GAME: the six rows, the activation rules (T53).
+    """LOAD GAME / SAVE GAME: the six rows, the activation rules.
 
-    Hand-written expectations for the rules the spec states, then the same model
+    Hand-written expectations for the activation rules, then the same model
     replay the other runs use, so a row that is off by one cannot agree with
     itself. Two rows are used and four are EMPTY, exactly the labels the board
     produces for a fresh partition.
@@ -551,7 +551,7 @@ def checksum(body: bytes) -> int:
 
 
 def blob(skill, volume, gamma, muted=0) -> bytes:
-    """The 8-byte record. Byte 6 is the mute flag since T49; before it the byte was
+    """The 8-byte record. Byte 6 is the mute flag; older records kept it
     reserved-and-zero, which is why an older record reads as "not muted"."""
     body = bytes([0x44, 0x4D, 1, skill, volume, gamma, muted])
     return body + bytes([checksum(body)])
@@ -629,7 +629,7 @@ def gamma_checks(output: dict[str, str]) -> list[str]:
             failures.append(f"gamma level {level} is darker than level {level - 1}")
         if level and sum(tables[level]) <= sum(tables[level - 1]):
             failures.append(f"gamma level {level} is not brighter overall than level {level - 1}")
-    # Entries of id's table the maintainer's notes carry: [1][1]=2, [2][1]=4, [4][1]=16, [4][2]=23.
+    # Known entries of id's printed table: [1][1]=2, [2][1]=4, [4][1]=16, [4][2]=23.
     for level, value, wanted in ((1, 1, 2), (2, 1, 4), (3, 1, 8), (4, 1, 16), (4, 2, 23)):
         if tables.get(level) and tables[level][value] != wanted:
             failures.append(f"gamma[{level}][{value}] is {tables[level][value]}, expected {wanted}")

@@ -12,10 +12,10 @@
  * tested and diffed without a board, and the mapping into `AudioEvent` lives
  * in DoomAudio.cpp alone.
  *
- * WHERE THE NUMBERS COME FROM (T46)
+ * WHERE THE NUMBERS COME FROM
  *
- * T45 shipped legal placeholders grouped by character. T46 replaces them with
- * values fitted to the WAD's 55 `DS*` lumps by `tools/sfx_design.py`, which
+ * The values are fitted to the WAD's 55 `DS*` lumps by `tools/sfx_design.py`,
+ * which writes `SfxBankTable.inc`. The 53 ids the shareware WAD has no lump for are
  * writes `SfxBankTable.inc`. The 53 ids the shareware WAD has no lump for are
  * fitted from the closest relative in the same family (the donor is named in
  * `tools/sfx_fit.txt`); no id is left without a cue and no lump is invented.
@@ -40,9 +40,8 @@
  * own, so the host test can prove the rule without an engine: an idle voice
  * first, then the least important sounding cue, and a refusal when every voice
  * holds a Reserved cue. A Reserved cue -- the player's pain, the player's
- * weapon, a boss -- is never a victim. That is S16's "under a scripted
- * fire-fight no high-value cue is stolen", expressed as code that cannot be
- * forgotten.
+ * weapon, a boss -- is never a victim, so under a scripted fire-fight no
+ * high-value cue is stolen.
  */
 
 #include <cstddef>
@@ -69,7 +68,7 @@ constexpr int kSfxVoices = 4;
 constexpr std::size_t kSfxMaxBreakpoints = 4;
 
 /// One `SfxBreakpoint`: a time from the cue's start and the value held from
-/// it. Times must be non-decreasing; T46's generator enforces what it emits
+/// it. Times must be non-decreasing; the generator enforces what it emits
 /// and the unit test enforces the bank.
 struct SfxPoint {
     float timeSec;
@@ -106,7 +105,7 @@ enum class SfxClass : std::uint8_t {
  * APU data: `sfxCueEvent()` copies them into the preset the event carries.
  *
  * `noiseShort` selects the APU's 93-step (metallic) LFSR. It is set only for
- * the aperiodic, high, narrow-band cues T46 classifies as `metallic`.
+ * the aperiodic, high, narrow-band cues the fit classifies as `metallic`.
  *
  * `pitch`/`dutyPoints` are copied into the APU event only when their count is
  * >= 2 (pitch) or >= 1 (duty); a pitch envelope supersedes `sweepEndHz`, which
@@ -136,7 +135,7 @@ struct SfxCue {
  * @brief The cue for an sfxenum_t id.
  *
  * @return NULL for id 0 (upstream's dummy row) and for anything outside
- *         1..NUMSFX-1. Callers treat NULL as a silent no-op (D6.1), and
+ *         1..NUMSFX-1. Callers treat NULL as a silent no-op, and
  *         DoomAudio counts it as `unknown` rather than inventing a sound.
  */
 const SfxCue* sfxBankCue(std::int32_t sfxId);

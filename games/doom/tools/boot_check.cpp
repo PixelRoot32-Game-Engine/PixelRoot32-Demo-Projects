@@ -1,5 +1,5 @@
 /*
- * The boot/error screen harness for tools/boot_check.py (D7.2).
+ * The boot/error screen harness for tools/boot_check.py.
  *
  * It compiles the firmware's own BootScreen.cpp and LevelFailure.cpp on the host
  * -- no engine, no WAD, no APU -- builds the loading screen and one screen per

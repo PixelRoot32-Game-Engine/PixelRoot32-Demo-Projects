@@ -5,8 +5,8 @@
  */
 
 /*
- * Monster AI: A_Look/P_LookForPlayers (T15a) and the chase and attack half
- * (T15b) -- A_Chase, P_Move/P_TryWalk/P_NewChaseDir, P_CheckMeleeRange,
+ * Monster AI: A_Look/P_LookForPlayers and the chase and attack half --
+ * A_Chase, P_Move/P_TryWalk/P_NewChaseDir, P_CheckMeleeRange,
  * P_CheckMissileRange, A_FaceTarget, A_PosAttack, A_TroopAttack and A_Explode.
  *
  * See p_enemy.h for the upstream order, the one-slot reduction of the player

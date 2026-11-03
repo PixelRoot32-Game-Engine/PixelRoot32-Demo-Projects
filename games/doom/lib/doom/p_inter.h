@@ -19,8 +19,7 @@
  *
  * Upstream reaches the player through `mobj->player`, a pointer. This port's
  * `r_mobj_t::player` is a byte saying "this is the avatar", and the record lives
- * on the level (p_level_t::playerState), because there is exactly one player
- * and D5 owns the rest. Every entry point that needs the record therefore takes
+ * on the level (p_level_t::playerState), because there is exactly one player. Every entry point that needs the record therefore takes
  * the world context and resolves it through p_inter.c's player lookup; the
  * header only promises that the lookup is NULL for a context without a level,
  * which is what makes the functions safe for a hand-built unit test.
@@ -78,9 +77,7 @@ extern "C" {
 #endif
 
 /* One record per weapon, d_items.c's weaponinfo[], lives in p_pspr.c: the ammo
- * pool P_GiveWeapon fills plus the five psprite state numbers (p_weapon_info()).
- * Until D4.2d2 this header could only promise the ammo column, because the rest
- * belonged to the weapon state machine. */
+ * pool P_GiveWeapon fills plus the five psprite state numbers (p_weapon_info()). */
 struct p_level;
 
 /* --- Giving things -------------------------------------------------------- */
@@ -101,7 +98,7 @@ struct p_level;
  * (`oldammo == 0`), the weapon in hand decides whether a new one is asked for --
  * a clip re-arms a bare-fisted player with the chaingun when it is owned and the
  * pistol otherwise; shells re-arm a fist or a pistol with the shotgun; cells and
- * rockets likewise. It compares `readyweapon`, which D4.2d2 added.
+ * rockets likewise. It compares `readyweapon`.
  *
  * @param world  The level context, for the skill's double-ammo rule.
  * @param player The player record; NULL is refused.
@@ -121,7 +118,7 @@ int p_give_ammo(const p_mobj_context_t* world, p_player_t* player, p_ammo_t ammo
  * removing the item: a second shotgun is picked up for its shells.
  *
  * NOT PORTED HERE: the netgame branch that leaves a placed weapon in the world
- * forever (`if (netgame && deathmatch != 2 && !dropped)`). Net play is D5 and
+ * forever (`if (netgame && deathmatch != 2 && !dropped)`). There is no net play:
  * p_spawn_rules_t::netgame is 0 in every mode this port ships.
  *
  * @param world   The level context, for the ammo grant.
@@ -170,8 +167,7 @@ void p_give_card(p_player_t* player, p_card_t card);
  *
  * The four timed powers store their duration (P_INVULNTICS and friends) and
  * always answer 1. Invisibility also sets MF_SHADOW on the avatar; strength
- * heals 100 points through P_GiveBody and stores 1, which P_PlayerThink fades
- * (T14). The two permanent-ish powers (all-map, infrared) store their tic count
+ * heals 100 points through P_GiveBody and stores 1, which P_PlayerThink fades. The two permanent-ish powers (all-map, infrared) store their tic count
  * too, because upstream's counters are tic counts for all six.
  *
  * @param player The player record; the avatar it points at is what MF_SHADOW
@@ -199,7 +195,7 @@ int p_give_power(p_player_t* player, p_power_t power);
  *   5. `if (special->flags & MF_COUNTITEM) player->itemcount++;`,
  *      P_RemoveMobj(special), `player->bonuscount += BONUSADD`.
  *
- * The sound and the message text are the audio layer's and the HUD's (D5); the
+ * The sound and the message text are the audio layer's and the HUD's; the
  * branch that names which they would be is kept so the rule is readable.
  *
  * @param world   The level context: the zone, the RNG and the player record.
@@ -228,7 +224,7 @@ void p_touch_special_thing(p_mobj_context_t* world, r_mobj_t* special,
  *     MT_CHAINGUY a chaingun, spawned at the corpse's feet with MF_DROPPED.
  *
  * NOT PORTED HERE, and named rather than dropped: the deathmatch `frags[]`
- * bookkeeping (D5) and the automap stop (D5). `P_DropWeapon` *is* here: a dying
+ * bookkeeping and the automap stop. `P_DropWeapon` *is* here: a dying
  * player's weapon psprite lowers and stops at the bottom of the screen.
  *
  * @param world  The level context: zone, RNG, player record.

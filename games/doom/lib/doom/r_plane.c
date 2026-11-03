@@ -314,11 +314,9 @@ static void map_plane(const r_view_state_t* state, r_draw_surface_t* surface,
                               ? surface->planeMask + (size_t)x1
                                     + (size_t)y * (size_t)surface->width
                               : NULL;
-        /* The coverage record is written where the pixel is (D3.9). The separate
-         * pass over [x1, x2] that used to follow the loop set the same bytes --
-         * every column a span covers gets 1 -- but it re-walked a 320-byte array
-         * the pixel writes had just evicted, and it cost 1,276 us a frame for
-         * 29,870 one-byte stores.
+        /* The coverage record is written where the pixel is, in the same loop:
+         * a separate pass over [x1, x2] would set the same bytes but re-walk a
+         * 320-byte array the pixel writes have just evicted from the cache.
          *
          * The flat's bytes and the two optional records are hoisted out of the
          * loop, and the case a frame actually runs (a flat and the coverage

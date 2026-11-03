@@ -1,7 +1,7 @@
 #pragma once
 
 /*
- * The menu's volume and mute, as the numbers the audio engine takes (T49).
+ * The menu's volume and mute, as the numbers the audio engine takes.
  *
  * WHY THIS IS A SEPARATE, ENGINE-FREE HEADER
  *

@@ -1,11 +1,11 @@
 /*
- * Behaviour tests for the BSP walk (D3.1: lib/doom/r_bsp.c, r_plane.c,
+ * Behaviour tests for the BSP walk (lib/doom/r_bsp.c, r_plane.c,
  * doom_map.c).
  *
  * Every map here is assembled byte for byte by this file, in the 1993 WAD
  * layout, and fed to the walk through the public C API. No WAD, no binary
- * fixture and no copyrighted data is involved. The synthetic BSPs are the
- * cases the task names: one subsector, a two-node tree, a seg outside the
+ * fixture and no copyrighted data is involved. The synthetic BSPs are these
+ * cases: one subsector, a two-node tree, a seg outside the
  * frustum, a seg behind the viewer, a back-facing seg, a near solid wall
  * occluding a far one, the plane split, and the plane cap.
  *
@@ -541,10 +541,10 @@ void test_walk_reports_plane_overflow() {
     TEST_ASSERT_EQUAL_UINT16(0u, fixture.view.drawsegCount);
 }
 
-/* D4.2h: a view that outgrows the drawseg array used to lose its later
- * fragments silently -- `drawsegOverflowed` was a flag nobody failed on, so a
- * player walking E1M1 saw walls vanish. It is now the walk's own error, on the
- * same path as R_BSP_ERR_CLIP_OVERFLOW, and the partial list is consistent. */
+/* A view that outgrows the drawseg array must not lose its later fragments
+ * silently (a player would see walls vanish). The overflow is the walk's own
+ * error, on the same path as R_BSP_ERR_CLIP_OVERFLOW, and the partial list is
+ * consistent. */
 void test_walk_that_outgrows_the_drawseg_array_fails_instead_of_dropping() {
     MapBuilder builder;
     doom_map_t map;

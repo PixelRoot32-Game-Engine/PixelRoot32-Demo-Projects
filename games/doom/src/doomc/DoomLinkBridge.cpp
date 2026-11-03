@@ -8,7 +8,7 @@
  * every definition against its declaration -- a definition the header forgot is
  * a stray symbol, and a declaration without one is a link error, never a stub.
  *
- * The chain these three entry points close (D1.5):
+ * The chain these three entry points close:
  *
  *     doom_link_probe_run()              C   lib/doom/doom_link_probe.c
  *       doom_bridge_mix()                C -> C++  this file

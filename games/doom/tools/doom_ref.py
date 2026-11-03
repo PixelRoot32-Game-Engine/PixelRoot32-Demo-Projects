@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Independent host oracle for the DOOM picture decoders (D2.4) and the BSP
-walk (D3.1) of this port.
+"""Independent host oracle for the DOOM picture decoders, the BSP walk and the
+rest of this port's renderer and world rules.
 
 WHY THIS TOOL EXISTS
 
@@ -19,11 +19,11 @@ prints every drawseg, every visplane and a hash of both, so
 protocols are independent: this file has its own map parser, its own tables,
 its own clip list and its own plane set.
 
-A third oracle, ``--segs NAME``, is D3.2's and D3.3's: it composes the wall
+A third oracle, ``--segs NAME``, covers the wall and plane passes: it composes the wall
 textures, reads COLORMAP and the flats, and renders the 20 sampled viewpoints --
 four player/deathmatch start positions from THINGS against five view angles --
 with its own wall column loop, span maker, plane light, flat lookup and sky path.
-It prints the wall hash (unchanged from D3.2), the plane-mask hash and the
+It prints the wall hash, the plane-mask hash and the
 finished frame's hash. ``tools/rsegs_check.py`` compares them with
 ``tools/rsegs_check.c``. It is written from upstream's r_segs.c/r_draw.c,
 r_plane.c/r_draw.c and from r_data.h's documented composition and flat
@@ -460,7 +460,7 @@ SLOPERANGE = 2048
 SCREEN_WIDTH = 320
 SCREEN_HEIGHT = 200
 # The 3D window's rows. 200 is the full surface (the host gates' frames); the
-# DOOM_HUD build (D5.1) renders DOOM's screen size 9, 168 rows above the status
+# DOOM_HUD build renders DOOM's screen size 9, 168 rows above the status
 # bar. The environment variable is how a gate asks the oracle for that window.
 VIEW_HEIGHT = int(os.environ.get("DOOM_REF_VIEW_HEIGHT", SCREEN_HEIGHT))
 FIELDOFVIEW = 2048
@@ -740,7 +740,7 @@ def read_bsp_map(lumps: list[Lump], map_name: str) -> BspMap:
                   ssectors, nodes, sectors, raw["REJECT"])
 
 
-# --- The BSP walk (D3.1) ----------------------------------------------------
+# --- The BSP walk -----------------------------------------------------------
 
 class WalkError(Exception):
     """The walk hit one of its documented limits."""
@@ -1170,7 +1170,7 @@ class WalkState:
         if front["ceiling"] <= self.viewz and front["ceilingpic"] != self.sky:
             markceiling = 0
 
-        # R_StoreWallRange's texture-origin block, for the column emitter (D3.2).
+        # R_StoreWallRange's texture-origin block, for the column emitter.
         # The C side stores these three per fragment because only this function
         # can produce them from the seg angle and the sidedefs; the oracle
         # derives them the same way and hands them to its own emitter.
@@ -1250,7 +1250,7 @@ class WalkState:
             "top": top_sil,
             "light": front["light"],
             "lightnum": lightnum,
-            # D3.2: what the column emitter reads.
+            # What the column emitter reads.
             "distance": self.rw_distance,
             "offset": rw_offset,
             "centerangle": rw_centerangle,
@@ -1488,7 +1488,7 @@ def spawn_view(bsp: BspMap, player: int = 0) -> dict:
             "sky": b"F_SKY1\x00\x00"}
 
 
-# --- The THINGS run (D4.1a) -------------------------------------------------
+# --- The THINGS run ---------------------------------------------------------
 #
 # P_SpawnMapThing()'s filter chain, re-derived from linuxdoom-1.10 p_mobj.c:
 # the deathmatch-start branch, the player-start branch, the single-player
@@ -1833,7 +1833,7 @@ def report_things(lumps: list[Lump], map_name: str, skill_name: str) -> None:
     print(f"RNG {run.rng}")
 
 
-# --- The specials run (D4.1b) ----------------------------------------------
+# --- The specials run ------------------------------------------------------
 #
 # A second implementation of linuxdoom-1.10's sector specials, written from the
 # state machines in p_spec.c, p_floor.c, p_doors.c, p_plats.c, p_ceilng.c and
@@ -1975,11 +1975,11 @@ class SpecLevel:
         self.rng = rng
         self.total_secrets = 0
         self.leveltime = 0
-        # D4.5: G_ExitLevel()/G_SecretExitLevel()'s write. Upstream sets
+        # G_ExitLevel()/G_SecretExitLevel()'s write. Upstream sets
         # `secretexit` and `gameaction = ga_completed`; the oracle keeps the
         # request so a comparison can see which exit a trigger asked for.
         self.exit_request = "none"
-        # T15a: the per-sector sound flood state (upstream's sector_t
+        # The per-sector sound flood state (upstream's sector_t
         # soundtarget/soundtraversed/validcount) and the one epoch counter shared
         # by every flood, exactly as p_sector_sound_t and
         # p_mobj_context_t::soundValidCount hold them in the C.
@@ -3161,7 +3161,7 @@ def _trigger_special_line(level: SpecLevel, line_index: int, kind: str,
             # P_ChangeSwitchTexture(line, 0) clears the line and starts the
             # switch sound, then G_ExitLevel()/G_SecretExitLevel() set
             # `secretexit` and `gameaction = ga_completed`. The texture half is
-            # not modelled: the container holds no SW2 partner (D4.5).
+            # not modelled: the container holds no SW2 partner.
             level.line_special[line_index] = 0
             level.exit_request = "normal" if special == 11 else "secret"
             return 1
@@ -3445,7 +3445,7 @@ def report_specials(lumps: list[Lump], map_name: str, tics: int) -> None:
     report_sector_damage(lumps, map_name)
 
 
-# --- P_UpdateSpecials: scroll and animation (T35) ---------------------------
+# --- P_UpdateSpecials: scroll and animation ---------------------------------
 #
 # linuxdoom-1.10's animdefs[], verbatim and in its order: (isTexture, endname,
 # startname, speed). P_InitPicAnims() skips an entry whose start name the WAD
@@ -3654,7 +3654,7 @@ def report_scrolls(lumps: list[Lump], map_name: str, tics: int,
     print(f"SUMMARY scrolls={len(level.scrolls)} animated={animated_fields}")
 
 
-# --- Stairs and teleports on a real map (T34) -------------------------------
+# --- Stairs and teleports on a real map -------------------------------------
 
 #: The eight numbers this stage measures. 7/8/100/127 are EV_BuildStairs' two
 #: types over the two trigger functions; 39/97/125/126 are EV_Teleport's.
@@ -3762,7 +3762,7 @@ MOVEMENT_SCRIPT = "walk-slide-corner-friction-return"
 MOVEMENT_PLAYER_RADIUS = 16 << FRACBITS
 MOVEMENT_PLAYER_HEIGHT = 56 << FRACBITS
 
-# --- The player (D4.2c) -----------------------------------------------------
+# --- The player -------------------------------------------------------------
 #
 # A second implementation of linuxdoom-1.10 p_user.c: P_PlayerThink,
 # P_MovePlayer, P_CalcHeight and P_Thrust, plus the P_UseLines half of p_map.c
@@ -4008,7 +4008,7 @@ def movement_check_thing(level: "SpecLevel", mo: dict, other: dict,
         return True
 
     if mo["flags"] & MF_SKULLFLY:
-        # The damage half is P_DamageMobj's (D4.2d); the stop is this layer's.
+        # The damage half is P_DamageMobj's; the stop is this layer's.
         mo["flags"] &= ~MF_SKULLFLY
         mo["momx"] = mo["momy"] = mo["momz"] = 0
         return False
@@ -4491,7 +4491,7 @@ def report_movement(lumps: list[Lump], map_name: str, tics: int) -> None:
           f"checks={level.move_stats['checks']}")
 
 
-# --- The player (D4.2c) -----------------------------------------------------
+# --- The player -------------------------------------------------------------
 
 
 def movement_use_lines(level: "SpecLevel", mo: dict) -> None:
@@ -4629,13 +4629,13 @@ def player_calc_height(level: "SpecLevel", player: dict) -> None:
 
 
 def player_think(level: "SpecLevel", player: dict, cmd: dict) -> None:
-    """P_PlayerThink(): upstream's body, minus the D4.2d branches."""
+    """P_PlayerThink(): upstream's body, minus the death and weapon branches."""
     player["cmd"] = dict(cmd)
     command = player["cmd"]
     player["useTriggered"] = 0
 
     if player["playerstate"] != PST_LIVE:
-        # `P_DeathThink (player); return;` is D4.2d's: counted, not faked.
+        # `P_DeathThink (player); return;` is not modelled here: counted, not faked.
         player["unsupportedDeath"] += 1
         return
 
@@ -4732,7 +4732,7 @@ def report_player(lumps: list[Lump], map_name: str, tics: int) -> None:
           f"finalviewz={player['viewz']} used={player['useTriggers']}")
 
 
-# --- The door (T26) ---------------------------------------------------------
+# --- The door ---------------------------------------------------------------
 #
 # The same scripted scenario tools/door_check.c runs, from the same frozen
 # viewpoint: the nearest closed manual door to the player start, the player one
@@ -4882,7 +4882,7 @@ def report_door(lumps: list[Lump], map_name: str,
           f"crossed={1 if crossed else 0}")
 
 
-# --- Damage, death and pickups (D4.2d1) -------------------------------------
+# --- Damage, death and pickups ----------------------------------------------
 #
 # A second implementation of linuxdoom-1.10 p_inter.c (P_GiveAmmo, P_GiveWeapon,
 # P_GiveBody, P_GiveArmor, P_GiveCard, P_GivePower, P_TouchSpecialThing,
@@ -4957,7 +4957,7 @@ MT_MISC0 = 43
 MT_MISC2 = 45
 MT_MISC3 = 46
 MT_CLIP = 63
-# D4.2d2's additions: the thing the weapon script shoots, and the three player
+# The thing the weapon script shoots, and the three player
 # missiles p_pspr.c's A_FireMissile/A_FirePlasma/A_FireBFG name.
 MT_PLAYER = 0
 MT_POSSESSED = 1
@@ -4974,7 +4974,7 @@ DAMAGE_MOBJINFO = {
         149, 156, 158, 165, 150),          # MT_PLAYER
     1: (0x00400006, 20 * FRACUNIT, 56 * FRACUNIT, 100, 20, 200,
         174, 187, 189, 194, 176),          # MT_POSSESSED
-    # T15b's imp. meleestate and missilestate are the same state (S_TROO_ATK1):
+    # The imp. meleestate and missilestate are the same state (S_TROO_ATK1):
     # A_TroopAttack decides between the claw and the fireball when it runs.
     11: (0x00400006, 20 * FRACUNIT, 56 * FRACUNIT, 100, 60, 200,
          442, 455, 457, 462, 444),         # MT_TROOP
@@ -4995,7 +4995,7 @@ DAMAGE_MOBJINFO = {
          822, 0, 0, 0, 0),                 # MT_MISC3, the armor bonus
     63: (0x00000001, 20 * FRACUNIT, 16 * FRACUNIT, 100, 1000, 0,
          870, 0, 0, 0, 0),                 # MT_CLIP
-    # D4.2d2 adds the three player missiles, which P_SpawnPlayerMissile names.
+    # The three player missiles, which P_SpawnPlayerMissile names.
     # The weapon script cannot fire any of them (shareware has no launcher), so
     # these rows exist for the code path and not for a compared line.
     33: (0x00010610, 11 * FRACUNIT, 8 * FRACUNIT, 100, 1000, 0,
@@ -5031,7 +5031,7 @@ DAMAGE_STATES = {
     94: (4, 95, "NULL", "PUFF"),        # S_PUFF2
     95: (4, 96, "NULL", "PUFF"),        # S_PUFF3
     96: (4, 0, "NULL", "PUFF"),         # S_PUFF4
-    # T15b: the imp's fireball. S_TBALL1/S_TBALL2 are the flight frames and
+    # The imp's fireball. S_TBALL1/S_TBALL2 are the flight frames and
     # S_TBALLX1..X3 the burst; the burst rows take no action, because the damage
     # is the direct missile hit in PIT_CheckThing, not A_Explode.
     97: (4, 98, "NULL", "BAL1"),        # S_TBALL1
@@ -5080,7 +5080,7 @@ DAMAGE_STATES = {
     200: (5, 201, "NULL", "POSS"),
     201: (5, 202, "NULL", "POSS"),
     202: (-1, 0, "NULL", "POSS"),       # S_POSS_XDIE9
-    # T15b: the imp's own chain. Its run frames are three tics, so A_Chase is
+    # The imp's own chain. Its run frames are three tics, so A_Chase is
     # reached every third tic rather than every fourth.
     442: (10, 443, "A_Look", "TROO"),    # S_TROO_STND
     443: (10, 442, "A_Look", "TROO"),
@@ -5257,8 +5257,8 @@ def damage_set_state(level: "SpecLevel", mo: dict, state: int) -> bool:
         mo["tics"] = tics
         mo["sprite"] = sprite
         # A_Fall is the action here that changes the mobj's flags outright. A_Look
-        # (T15a) wakes and enters the see state; A_Chase and the four attack
-        # actions (T15b) move, face, shoot and burst. A_Scream picks its sound
+        # wakes and enters the see state; A_Chase and the four attack
+        # actions move, face, shoot and burst. A_Scream picks its sound
         # with one draw for the zombie families; A_XScream, A_PlayerScream and
         # A_Pain are sound only and draw nothing.
         if action == "A_Fall":
@@ -5307,9 +5307,8 @@ def damage_give_ammo(level: "SpecLevel", player: dict, ammo: int, num: int) -> b
                                player["maxammo"][ammo])
     if old:
         return True
-    # D4.2d2's auto-select tail: "We were down to zero, so select a new weapon.
-    # Preferences are not user selectable." It reads `readyweapon`, which D4.2d1
-    # could not.
+    # The auto-select tail: "We were down to zero, so select a new weapon.
+    # Preferences are not user selectable." It reads `readyweapon`.
     ready = player["readyweapon"]
     owned = player["weaponowned"]
     if ammo == 0:
@@ -5433,7 +5432,7 @@ def damage_touch_special(level: "SpecLevel", special: dict, toucher: dict) -> No
         if not damage_give_power(player, toucher, arm[1]):
             return
         # `if (player->readyweapon != wp_fist) player->pendingweapon = wp_fist;`
-        # -- D4.2d2 could finally compare the weapon in hand.
+        # -- it compares the weapon in hand.
         if arm[1] == 1 and player["readyweapon"] != 0:
             player["pendingweapon"] = 0
     elif kind == "ammo":
@@ -5955,7 +5954,7 @@ SECTOR_IRONFEET = 3
 # Filled in by the command line: the gate's `--perturb` names one of these.
 SECTOR_PERTURB = {"damage": 0, "threshold": 0, "ironfeet": 0}
 
-#: T34's two perturbations, applied in the oracle only so the stair and teleport
+#: The two stair/teleport perturbations, applied in the oracle only so the stair and teleport
 #: comparisons are shown to be able to fail:
 #:
 #:   stairs    one extra map unit per step (build8 9, turbo16 17)
@@ -6122,7 +6121,7 @@ def report_sector_damage(lumps: list[Lump], map_name: str) -> None:
             level.leveltime += 1
 
 
-# --- Weapons and the attack path (D4.2d2) -----------------------------------
+# --- Weapons and the attack path --------------------------------------------
 #
 # A second implementation of linuxdoom-1.10 p_pspr.c (P_SetPsprite,
 # P_SetupPsprites, P_MovePsprites, P_CalcSwing, P_BringUpWeapon, P_CheckAmmo,
@@ -6281,8 +6280,8 @@ ATTACK_PHYS_ACTIONS = frozenset({
     "A_FirePlasma", "A_FireBFG", "A_Punch", "A_Light0", "A_Light1", "A_Light2",
 })
 
-# P_CheckAmmo's `gamemode` arms: DOOM 1 shareware is the only game this port loads
-# (L2 Q3), so the plasma, super-shotgun and BFG preferences can never be chosen.
+# P_CheckAmmo's `gamemode` arms: DOOM 1 shareware is the only game this port
+# loads, so the plasma, super-shotgun and BFG preferences can never be chosen.
 ATTACK_SHAREWARE = True
 
 # The sky flat's packed name, "F_SKY1": r_defs.h packs a name's eight bytes
@@ -6981,7 +6980,7 @@ def attack_shoot_special_line(level: "SpecLevel", shooter: dict,
 
 
 def attack_player_think(level: "SpecLevel", player: dict, cmd: dict) -> None:
-    """P_PlayerThink(), with D4.2d2's weapon half."""
+    """P_PlayerThink(), with the weapon half."""
     player["cmd"] = dict(cmd)
     command = player["cmd"]
     player["useTriggered"] = 0
@@ -7103,8 +7102,7 @@ def report_attack(lumps: list[Lump], map_name: str) -> None:
     level.mobjs = [mo]
     mo["threshold"] = 0
     mo["sprite"] = "PLAY"
-    # T14's weapon script needs a stationary damage sink, and T15b makes A_Chase
-    # real: its first test is `!(actor->target->flags & MF_SHOOTABLE)`. An avatar
+    # The weapon script needs a stationary damage sink, and A_Chase is real: its first test is `!(actor->target->flags & MF_SHOOTABLE)`. An avatar
     # without the bit leaves the monster re-acquiring an invalid target on every
     # run state, so it never steps out from under a shot aimed at where it stood
     # and never fires back. The avatar is never damaged in this script;
@@ -7225,7 +7223,7 @@ def report_attack(lumps: list[Lump], map_name: str) -> None:
           f"noise={player['noiseAlerts']} shots={level.stats['triggers']}")
 
 
-# --- Sight, sound and waking (T15a) ----------------------------------------
+# --- Sight, sound and waking -----------------------------------------------
 
 
 ENEMY_SCRIPT = "chase-and-attack"
@@ -7463,7 +7461,7 @@ def enemy_look(level: "SpecLevel", mo: dict) -> None:
     enemy_seeyou(level, mo)
 
 
-# --- Chase and attack (T15b) -------------------------------------------------
+# --- Chase and attack --------------------------------------------------------
 #
 # A_Chase, P_Move/P_TryWalk/P_NewChaseDir, P_CheckMeleeRange/P_CheckMissileRange,
 # A_FaceTarget, A_PosAttack, A_TroopAttack, P_SpawnMissile/P_CheckMissileSpawn,
@@ -7721,7 +7719,7 @@ def enemy_chase(level: "SpecLevel", actor: dict) -> None:
         enemy_new_chase_dir(level, actor)
 
     # The active sound's draw: both E1M1 enemies name one, so every A_Chase
-    # consumes a number even though no audio exists (S2).
+    # consumes a number even though the oracle plays no audio.
     if info[4]:
         level.rng.next()
 
@@ -7920,7 +7918,7 @@ def enemy_find_door(bsp: BspMap, sectors, start: dict):
 
 
 def enemy_print_mobj(level: "SpecLevel", slot: int, mo: dict) -> None:
-    """One MOBJ line, with the live sector and facing T15b's assertions read."""
+    """One MOBJ line, with the live sector and facing the chase assertions read."""
     line = (f"MOBJ {slot} type={mo['type']} x={mo['x']} y={mo['y']} "
             f"z={mo['z']} health={mo['health']} "
             f"flags=0x{mo['flags'] & 0xFFFFFFFF:08x} "
@@ -8117,7 +8115,7 @@ def report_enemy(lumps: list[Lump], map_name: str) -> None:
     enemy_scene(bsp, "wall", wall_mobj["x"], wall_mobj["y"], False)
     enemy_scene(bsp, "noise", wall_mobj["x"], wall_mobj["y"], True)
     enemy_scene(bsp, "door", door_x, door_y, True)
-    # T15b: it turns and walks, stops to maul, shoots at range, throws the
+    # The chase scene: it turns and walks, stops to maul, shoots at range, throws the
     # baked fireball, and stops dead when killed.
     enemy_scene(bsp, "chase", corridor_x, corridor_y,
                 tics=ENEMY_CHASE_TICS)
@@ -8380,7 +8378,7 @@ def report_stats(lumps: list[Lump], pnames: list[str]) -> None:
     print(f"STAT masked-textures {masked}")
 
 
-# --- The wall column emitter (D3.2) -----------------------------------------
+# --- The wall column emitter ------------------------------------------------
 
 # r_data.h's light constants. The view this port renders is fixed, so the wall
 # light table is a constant derived from the same formula R_ExecuteSetViewSize()
@@ -8404,7 +8402,7 @@ STORED_COLUMN_HEIGHT = 128
 ML_DONTPEGTOP = 8
 ML_DONTPEGBOTTOM = 16
 
-# R_InitLightTables()/R_ExecuteSetViewSize() constants for the plane pass (D3.3).
+# R_InitLightTables()/R_ExecuteSetViewSize() constants for the plane pass.
 LIGHTZSHIFT = 20
 MAXLIGHTZ = 128
 ANGLETOSKYSHIFT = 22
@@ -8433,7 +8431,7 @@ LIGHT_LEVEL = _light_levels()
 
 
 def _plane_light() -> tuple[tuple[int, ...], ...]:
-    """R_InitLightTables()'s zlight[,] as COLORMAP map indices (D3.3)."""
+    """R_InitLightTables()'s zlight[,] as COLORMAP map indices."""
     table: list[tuple[int, ...]] = []
     for i in range(LIGHTLEVELS):
         start_map = ((LIGHTLEVELS - 1 - i) * 2) * NUMCOLORMAPS // LIGHTLEVELS
@@ -8448,7 +8446,7 @@ def _plane_light() -> tuple[tuple[int, ...], ...]:
 
 
 def _plane_yslope() -> tuple[int, ...]:
-    """R_ExecuteSetViewSize()'s yslope[] (D3.3)."""
+    """R_ExecuteSetViewSize()'s yslope[]."""
     table: list[int] = []
     for i in range(VIEW_HEIGHT):
         dy = abs(((i - VIEW_HEIGHT // 2) << FRACBITS) + FRACUNIT // 2)
@@ -8457,7 +8455,7 @@ def _plane_yslope() -> tuple[int, ...]:
 
 
 def _plane_dist_scale() -> tuple[int, ...]:
-    """R_ExecuteSetViewSize()'s distscale[] (D3.3)."""
+    """R_ExecuteSetViewSize()'s distscale[]."""
     table: list[int] = []
     for x in range(SCREEN_WIDTH):
         cosadj = abs(FINE_SINE[(X_TO_VIEW_ANGLE[x] >> ANGLETOFINESHIFT)
@@ -8516,7 +8514,7 @@ class TextureLibrary:
 
     This is the residency policy of the oracle: nothing is composed until a
     fragment asks for it, and every patch is decoded with the same rules
-    r_data.h documents (the decoder D2.4 was verified against).
+    r_data.h documents (the rules the C decoder is verified against).
     """
 
     def __init__(self, lumps: list[Lump]) -> None:
@@ -8565,7 +8563,7 @@ class TextureLibrary:
         return wall
 
     def sprite_patch(self, name: str) -> Patch:
-        """A sprite lump, parsed with the same validator patches use (D3.4)."""
+        """A sprite lump, parsed with the same validator patches use."""
         key = name.upper()
         cached = self.sprite_patches.get(key)
         if cached is not None:
@@ -8771,8 +8769,8 @@ def emit_walls(bsp: BspMap, drawsegs: list[dict], params: dict,
             top_frac += top_step
             bottom_frac += bottom_step
 
-        # R_StoreWallRange's tail, as the clip capture and the masked record
-        # (D3.4). "const" is the shared all-viewheight/all--1 array; None means
+        # R_StoreWallRange's tail, as the clip capture and the masked record.
+        # "const" is the shared all-viewheight/all--1 array; None means
         # the drawseg has no such block (upstream's NULL pointer).
         silhouette = ds["silhouette"]
         top_sil = ds["top"]
@@ -8972,7 +8970,7 @@ def emit_planes(planes: list[Visplane], params: dict, textures: TextureLibrary,
     }
 
 
-# --- D3.4: sprites and the masked mid textures ------------------------------
+# --- Sprites and the masked mid textures ------------------------------------
 #
 # Written from r_things.c's R_ProjectSprite / R_SortVisSprites / R_DrawSprite /
 # R_DrawVisSprite / R_DrawMaskedColumn, r_segs.c's R_RenderMaskedSegRange and
@@ -9360,7 +9358,7 @@ def render_frame_pixels(lumps: list[Lump], map_name: str, view_index: int = 0,
     The same four passes report_segs() runs (walk, walls, planes, sprites):
     SCREEN_WIDTH x SCREEN_HEIGHT pixel bytes (0xFF where nothing drew) and the
     SCREEN_WIDTH `covered` bytes. The board's frame hash is SHA-256 over the
-    pixels followed by the coverage, so a gate rebuilding it needs both. D5.1's
+    pixels followed by the coverage, so a gate rebuilding it needs both. The
     HUD gate overlays the status bar on these pixels to rebuild the HUD frame-00
     hash. `view` is (x, y, z, angle); omitted, the harness's view `view_index`.
     """
@@ -9509,7 +9507,7 @@ def report_segs(lumps: list[Lump], map_name: str, drawsegs: int, planes: int,
 
 # --- Command line -----------------------------------------------------------
 
-# --- The automap (D5.3) -------------------------------------------------------
+# --- The automap --------------------------------------------------------------
 #
 # linuxdoom-1.10's am_map.c, reimplemented here from the same source: the
 # window and its scale, AM_findMinMaxBoundaries, the outcode clipper, the

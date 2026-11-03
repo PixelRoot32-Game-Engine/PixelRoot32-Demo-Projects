@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Generate tools/weapon_lumps.txt: the weapon pictures the container keeps raw (T38).
+"""Generate tools/weapon_lumps.txt: the weapon pictures the container keeps raw.
 
 WHY THIS EXISTS
 
-D5.1's weapon widget draws the player's psprites by lump name, the way
+The weapon widget draws the player's psprites by lump name, the way
 ``R_DrawPSprite`` does: ``sprnames[state->sprite]`` + the frame letter + ``0``.
 Like the status-bar art (``gen_hud_lumps.py``), a patch the container only
 *stores* is deflated and needs a zone to decode into; a patch kept RAW
 (``whd_encode.py --raw-list``) is 4-byte aligned and read in place from the
 mapped partition. They are NOT registered in the ``~PWBAKE~`` manifest: every
-record costs about 50 B of DRAM and the board has ~2.4 KB spare (T36, L36).
+record costs about 50 B of DRAM and the board has ~2.4 KB spare.
 
 The names are not typed in. They are derived from the tables the simulation
 runs on:
@@ -49,7 +49,7 @@ FF_FRAMEMASK = 0x7FFF
 FF_FULLBRIGHT = 0x8000
 # The shareware IWAD ships no art for the super shotgun, the plasma rifle or the
 # BFG 9000, and no pickup in episode 1 can give the player any of the three
-# (measured in T38: PLSG/PLSF/BFGG/BFGF and SHT2 have no lump in DOOM1.WAD).
+# (PLSG/PLSF/BFGG/BFGF and SHT2 have no lump in DOOM1.WAD).
 ABSENT_OK = {"SHT2", "PLSG", "PLSF", "BFGG", "BFGF"}
 
 STATE_ROW = re.compile(

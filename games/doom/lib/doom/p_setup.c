@@ -17,8 +17,8 @@
  *
  * It does not read the map: the caller has already run doom_map_open() over the
  * validated lumps. It does not build the sector or blockmap links, the specials
- * or the line lists -- those are P_GroupLines/P_SpawnSpecials, and D4.1b owns
- * the second.
+ * or the line lists -- those are P_GroupLines/P_SpawnSpecials, and p_spec.c
+ * owns the second.
  *
  * ONE DELIBERATE DEVIATION
  *
@@ -117,7 +117,7 @@ static p_setup_error_t load_mutable_map(p_level_t* level) {
         lineSpecial[i] = p_line_special(map, (uint16_t)i);
     }
 
-    /* T15a's per-sector sound state: P_RecursiveSound's soundtarget,
+    /* The per-sector sound state: P_RecursiveSound's soundtarget,
      * soundtraversed and validcount, one record per sector, zeroed so "never
      * flooded" is the initial state. It lives in the arena (not in p_sector_t and
      * not inline in the context) because the board's .bss has no room for it and

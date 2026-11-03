@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate for the palette flashes: which PLAYPAL page, and the colours it becomes (D5.3).
+"""Gate for the palette flashes: which PLAYPAL page, and the colours it becomes.
 
 linuxdoom's ``ST_doPaletteStuff()`` picks one of PLAYPAL's 14 pages every frame
 from counters the simulation owns: red for damage (and for berserk), gold for a

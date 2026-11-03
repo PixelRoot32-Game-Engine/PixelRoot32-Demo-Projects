@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Prove every baked weapon patch is present, raw, and the source patch (T38).
+"""Prove every baked weapon patch is present, raw, and the source patch.
 
-``tools/gen_weapon_lumps.py`` lists the psprite pictures D5.1's weapon widget draws
+``tools/gen_weapon_lumps.py`` lists the psprite pictures the weapon widget draws
 (derived from weaponinfo[] and the state table). This gate
 opens a finished container and, for each name, requires:
 

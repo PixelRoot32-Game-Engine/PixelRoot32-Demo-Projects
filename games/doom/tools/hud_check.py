@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Prove every baked status-bar patch is present, raw, and the source patch (T36).
+"""Prove every baked status-bar patch is present, raw, and the source patch.
 
-``tools/gen_hud_lumps.py`` lists the pictures D5.1's status bar draws. This gate
+``tools/gen_hud_lumps.py`` lists the pictures the status bar draws. This gate
 opens a finished container and, for each name, requires:
 
 * a lump of that name in the container's name table;

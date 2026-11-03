@@ -19,7 +19,7 @@
  *                            pixel, the texture column wrap.
  *   R_ClearPlanes()          the clip array reset that starts a frame
  *                            (floorclip = viewheight, ceilingclip = -1); the
- *                            rest of that function is the plane pass, D3.3.
+ *                            rest of that function is the plane pass (r_plane.c).
  *   R_StoreWallRange()       not reimplemented: r_wall_fragment_open/step/peg
  *                            (r_bsp.c) are, and the drawseg's three range values
  *                            are read from the walk's record.
@@ -29,11 +29,11 @@
  *   1. Masked mid textures of two-sided lines are not drawn. R_RenderSegLoop()
  *      does not draw them either -- it records their texture column for
  *      R_DrawMasked() -- so this is not a divergence from the loop, only from
- *      "the frame is finished". D3.4 owns that pass.
+ *      "the frame is finished". The masked pass (r_things.c) draws them.
  *   2. A tier may carry a transparency mask (r_walltex_t::mask), and a zero mask
  *      byte leaves the destination untouched. Vanilla has no such rule inside
  *      R_DrawColumn(); every tier it draws is opaque. The rule exists for the
- *      composite holes r_data.h measures and for D3.4's masked pass; a caller
+ *      composite holes r_data.h measures and for the masked pass; a caller
  *      that passes NULL gets vanilla's behaviour exactly.
  *   3. The texture column wrap is `& heightMask` rather than R_DrawColumn()'s
  *      hard-coded `& 127`, and the horizontal wrap is the texture's own
@@ -172,7 +172,7 @@ static void mark_mapped(r_view_state_t* state, uint16_t seg) {
         (uint8_t)(storage->mapped[line / 8u] | (uint8_t)(1u << (line % 8u)));
 }
 
-/* --- Pool demand (D3.4 / D4.2h) ------------------------------------------ */
+/* --- Pool demand --------------------------------------------------------- */
 
 /*
  * The entries this frame needs, computed from the same predicate the save step
@@ -265,7 +265,7 @@ void r_column_draw(r_draw_surface_t* surface, int x, int yl, int yh,
         /* Every tier DOOM's R_RenderSegLoop draws is opaque, and so is every
          * composite in the sampled map; this is the path that matters.
          *
-         * D3.9 splits the coverage write out of the loop instead of testing the
+         * The coverage write has its own loop instead of testing the
          * pointer per pixel: `surface->pixels[at] = ...` and `pixelMask[at] = 1`
          * are two stores through two byte pointers, and the test is a branch the
          * compiler cannot fold away. The two forms write exactly the same bytes.

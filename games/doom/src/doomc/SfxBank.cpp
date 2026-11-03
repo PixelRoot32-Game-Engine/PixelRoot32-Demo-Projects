@@ -19,7 +19,7 @@
  * dummy row is unreachable through the public API.
  *
  * A cue's class is the steal rule, not a volume: Reserved is the player's
- * pain, the player's weapon and the boss family (S16 names them); High is an
+ * pain, the player's weapon and the boss family; High is an
  * explosion, a door, a lift, a switch and a teleport; Normal is everything
  * else. `sfxVoiceSelect()` explains what Reserved means to a full voice pool.
  *
@@ -160,7 +160,7 @@ std::int32_t sfxVoiceSelect(const SfxClass slots[kSfxVoices]) {
     }
 
     // Every voice is sounding. The least important cue is the victim, and a
-    // Reserved one never is: S16's "no high-value cue is stolen" is this
+    // Reserved one never is: "no high-value cue is stolen" is this
     // `continue`, not a comment in a caller.
     for (std::int32_t slot = 0; slot < kSfxVoices; ++slot) {
         if (slots[slot] == SfxClass::Reserved) {

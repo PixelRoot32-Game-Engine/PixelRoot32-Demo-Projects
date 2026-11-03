@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate lib/doom/info_tables.h from upstream DOOM's info tables (D4.1a).
+"""Generate lib/doom/info_tables.h from upstream DOOM's info tables.
 
 WHY THIS IS GENERATED
 

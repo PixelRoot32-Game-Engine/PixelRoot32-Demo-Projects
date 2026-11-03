@@ -15,15 +15,14 @@
  * non-obvious rule below cites the upstream statement it reproduces. This is
  * C99 only: no allocation, no globals, no stdio, no floating point.
  *
- * WHAT D4.2c OWNS AND WHAT IT DOES NOT
+ * WHAT THIS LAYER OWNS AND WHAT IT DOES NOT
  *
- * D4.2c owns the walking avatar: turning, forward and side momentum, friction
+ * It owns the walking avatar: turning, forward and side momentum, friction
  * through the real collision core (p_mobj.c/p_map.c), the view height that follows
- * the floor and the bob, and the use trace that opens a door. D4.2d1 added damage,
- * death and pickups; D4.2d2 adds the weapon state machine, the weapon change and
- * the fire button, each at its own site below. P_DeathThink is real since D4.4;
- * monster AI and the HUD are other units, and every deferred field and button
- * below names its owner instead of being dropped silently.
+ * the floor and the bob, the use trace that opens a door, P_DeathThink, and the
+ * weapon change and fire button, each at its own site below. Monster AI and the
+ * HUD live elsewhere, and every deferred field and button below names its owner
+ * instead of being dropped silently.
  *
  * THE COMMAND IS NOT THE STATE
  *
@@ -155,8 +154,8 @@ typedef enum p_power {
  * for. Upstream's two extra fields are network bookkeeping and are named here
  * so their absence is a decision, not an oversight:
  *
- *   consistancy  the net-game checksum (G_Ticker); D5 owns net play.
- *   chatchar     the chat character (HU_dequeueChatChar); D5 owns chat.
+ *   consistancy  the net-game checksum (G_Ticker); there is no net play.
+ *   chatchar     the chat character (HU_dequeueChatChar); there is no chat.
  *
  * Units and signs, field by field:
  *
@@ -184,8 +183,8 @@ typedef struct p_ticcmd {
 
 /*
  * doomdef.h's buttoncode_t, with upstream's values. A bit is listed here once
- * and its comment says whether D4.2c honours it, clears it, or counts it for a
- * later unit.
+ * and its comment says whether this port honours it, clears it, or only counts
+ * it.
  *
  * BT_SPECIALMASK overlaps BT_ATTACK|BT_USE on purpose: a special button word
  * is `BT_SPECIAL | BTS_*`, and G_Ticker tests the low two bits after masking.
@@ -225,9 +224,9 @@ struct p_level;
 /* --- The player record ---------------------------------------------------- */
 
 /*
- * player_t (d_player.h), reduced to the fields D4.2c can mean. Upstream's
- * field order is kept where the fields are kept, because a save/demo layer
- * (D4.3) will archive this record in that order.
+ * player_t (d_player.h), reduced to the fields this port uses. Upstream's
+ * field order is kept where the fields are kept, so the save layer
+ * (src/doomc/SaveGame.cpp) can archive this record in that order.
  *
  * KEPT NOW, with the upstream rule each one serves:
  *
@@ -240,20 +239,20 @@ struct p_level;
  *   bob              the bounded, scaled horizontal momentum (MAXBOB).
  *   health           P_MAXHEALTH at spawn (G_PlayerReborn).
  *   armorpoints      the armor total, up to 200; P_DamageMobj spends it and
- *                    P_TouchSpecialThing raises it (D4.2d1).
+ *                    P_TouchSpecialThing raises it.
  *   armortype        0 none, 1 green (damage/3 absorbed), 2 blue (damage/2);
- *                    P_DamageMobj reads it (D4.2d1).
+ *                    P_DamageMobj reads it.
  *   powers[]         the six power-up tic counters, P_INVULNTICS and friends.
  *                    P_DamageMobj reads pw_invulnerability; the counters tick
- *                    down in P_PlayerThink, which is T14's half (D4.2d1).
- *   ammo[], maxammo[] the four pools and their ceilings, P_GiveAmmo's subject
- *                    (D4.2d1). G_PlayerReborn's 50 bullets and the {200,50,
+ *                    down in P_PlayerThink.
+ *   ammo[], maxammo[] the four pools and their ceilings, P_GiveAmmo's subject.
+ *                    G_PlayerReborn's 50 bullets and the {200,50,
  *                    300,50} ceilings are p_player_wire's.
- *   weaponowned[]    one byte per weapon; P_GiveWeapon sets it (D4.2d1).
+ *   weaponowned[]    one byte per weapon; P_GiveWeapon sets it.
  *   pendingweapon    the weapon a pickup selected; P_GiveWeapon writes it and
- *                    T14's P_BringUpWeapon consumes it.
+ *                    P_BringUpWeapon consumes it.
  *   cards[], backpack  the six keys and the doubled-ammo flag: P_GiveCard and
- *                    the backpack arm of P_TouchSpecialThing (D4.2d1).
+ *                    the backpack arm of P_TouchSpecialThing.
  *   attackdown       "button down last tic"; A_WeaponReady's fire latch (here).
  *   usedown          "button down last tic"; P_PlayerThink's use latch (here).
  *   refire           A_ReFire's refire counter (here): nonzero makes P_GunShot's
@@ -263,13 +262,13 @@ struct p_level;
  *                    and what P_GiveAmmo's auto-select tail compares. G_PlayerReborn
  *                    sets it to the pistol.
  *   psprites[]       p_pspr.h's two overlay layers: the gun and its flash. The
- *                    machine that advances them is p_pspr.c's (D4.2d2).
+ *                    machine that advances them is p_pspr.c's.
  *   pspritesStarted  G_PlayerReborn calls P_SetupPsprites. This port's reborn step
  *                    is the header-only p_player_wire() (so p_setup.c keeps
  *                    linking without p_user.c) and the weapon table lives in
  *                    p_pspr.c, so the one call is deferred to the first live
  *                    P_PlayerThink; this bit makes it happen exactly once.
- *   killcount        intermission totals; P_KillMobj raises them (D4.2d1).
+ *   killcount        intermission totals; P_KillMobj raises them.
  *   itemcount        intermission totals; P_TouchSpecialThing raises them.
  *   secretcount      intermission totals; P_PlayerInSpecialSector raises it for
  *                    a sector special 9 (p_spec.c) and the sector is cleared.
@@ -277,18 +276,18 @@ struct p_level;
  *                    P_PlayerThink decrements it.
  *   bonuscount       the gold screen-flash counter; a pickup adds BONUSADD.
  *   extralight       muzzle-flash light; A_Light0/1/2 (p_action.c) write it, read
- *                    by the HUD (D5).
- *   fixedcolormap    the power-up colormap; powers are D4.2d1's, the colormap
- *                    selection is the HUD's (D5), so it stays 0.
- *   attacker         who last dealt damage; P_DamageMobj (D4.2d1).
- *   message          the HUD's one-line message; the HUD owns the text (D5).
- *   didsecret        "the secret level was finished"; G_DoCompleted (D4.3).
+ *                    by the weapon sprite.
+ *   fixedcolormap    the power-up colormap; the powers are real, the colormap
+ *                    selection is not ported, so it stays 0.
+ *   attacker         who last dealt damage; P_DamageMobj.
+ *   message          the HUD's one-line message; the HUD owns the text.
+ *   didsecret        "the secret level was finished"; G_DoCompleted.
  *
  * DELIBERATELY ABSENT, with the owner:
  *
- *   frags[MAXPLAYERS]                            deathmatch; D5.
- *   cheats                                       no cheats exist; D5.
- *   colormap                                     the translation map; D5.
+ *   frags[MAXPLAYERS]                            deathmatch; not ported.
+ *   cheats                                       no cheats exist.
+ *   colormap                                     the translation map; not ported.
  *
  * Upstream has no momx/momy on player_t: the momentum lives on `mo`, and
  * P_CalcHeight reads `mo->momx` directly. The port follows that, so no copy
@@ -308,15 +307,14 @@ struct p_level;
  *                          The gate compares this against the demo's edges and
  *                          uses it to place each press's ray.
  *   silentSounds           every S_* call the weapon actions and P_FireWeapon make.
- *                          D6.1 plays the same calls through DOOM_SOUND_START under
+ *                          The same calls play through DOOM_SOUND_START under
  *                          DOOM_AUDIO; the count is what the attack gates assert, so
  *                          "the shot was loud" stays a number a gate can pin.
- *                          D4.2d1's death sounds are A_* stubs that count and, since
- *                          D6.1, play; these weapon calls have no stub action to hang
- *                          a counter on, so it lives here.
- *   noiseAlerts            P_FireWeapon's `P_NoiseAlert (mo, mo)`. Waking monsters
- *                          needs P_CheckSight, which is T15's, so a shot counts the
- *                          call instead of making it.
+ *                          The death sounds are A_* stubs that count and play;
+ *                          these weapon calls have no stub action to hang a
+ *                          counter on, so it lives here.
+ *   noiseAlerts            P_FireWeapon's `P_NoiseAlert (mo, mo)` calls, counted so
+ *                          a test can see that a shot reached the flood.
  *   onground               P_MovePlayer's file-scope `onground`; 1 when the
  *                          avatar's z is on its floor. P_DeathThink writes it too,
  *                          because P_MovePlayer does not run for a corpse.
@@ -482,7 +480,7 @@ void p_player_init(struct p_level* level, r_mobj_t* mobj);
  * P_PlayerInSpecialSector() is p_spec.c's and runs at step 3a: the avatar's own
  * sector is asked once per tic when its special is nonzero, which is where the
  * damage floors, the secret count and E1M8's sector-11 exit live. The power-up
- * colormaps are the HUD's (D5), so `fixedcolormap` stays 0 while the tic counters
+ * colormaps are not ported, so `fixedcolormap` stays 0 while the tic counters
  * themselves are real.
  *
  * @param level The level; its playerState record is the subject.

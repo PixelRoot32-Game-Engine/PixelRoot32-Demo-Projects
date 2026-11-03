@@ -44,11 +44,11 @@ static int32_t read_le32(const uint8_t* bytes) {
 /* --- Sprite patches ------------------------------------------------------- */
 
 /*
- * THE PATCH PROOF MEMO (D3.9)
+ * THE PATCH PROOF MEMO
  *
  * r_patch_validate() walks every column of a patch and every post in it, and the
- * bytes it walks are a mapped-flash lump. Measured on the board, that walk is
- * 5,599 us of a 7,555 us masked phase -- the largest single item in the pass --
+ * bytes it walks are a mapped-flash lump. Unmemoised, that walk measures
+ * 5,599 us of a 7,555 us masked phase on the board -- the largest single item in the pass --
  * for 159 sprites that ask for 32 distinct lumps, because the pass proves a
  * patch once per sprite in the preflight and again once per drawn sprite.
  *

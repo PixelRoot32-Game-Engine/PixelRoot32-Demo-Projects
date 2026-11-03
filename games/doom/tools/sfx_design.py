@@ -3,9 +3,9 @@
 
 WHY THIS TOOL EXISTS
 
-T45 shipped legal placeholders grouped by character. S16 asks for the opposite:
-"tratar de simular lo mas fiel posible la sintesis al sonido original". This
-script turns that sentence into data. It parses `lib/doom/sounds.c`'s `S_sfx[]`
+The bank synthesises each cue as close to the original sound as the APU allows,
+instead of using generic placeholders grouped by character. This script turns
+that goal into data. It parses `lib/doom/sounds.c`'s `S_sfx[]`
 (the 1997 name table), resolves each id's lump the way upstream does (`DS` +
 uppercase(name)), reads the DMX sample out of `tools/DOOM1.WAD`, and fits the
 cue parameters the APU can actually synthesise. It writes:
@@ -152,9 +152,9 @@ def _clock_for_centroid(target: float, short: bool) -> float:
     return min(table, key=lambda pair: abs(math.log(pair[1] / target)))[0]
 
 
-# --- The steal rule, unchanged from T45 ------------------------------------
+# --- The steal rule --------------------------------------------------------
 #
-# Reserved is S16's "never stolen": the player's pain, the player's weapon and
+# Reserved is "never stolen": the player's pain, the player's weapon and
 # the boss family. High is an explosion, a door, a lift, a switch. Everything
 # else is Normal. This is a policy table, not a measurement; the fit must not
 # move it, or the 8 -> 4 rule would change under the sound's feet.

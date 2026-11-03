@@ -1,7 +1,7 @@
 /*
  * Behaviour tests for the C <-> C++ seam of the DOOM port.
  *
- * D1.5 asks one question: can a C translation unit that will hold the DOOM core
+ * The seam answers one question: can a C translation unit that will hold the DOOM core
  * call into the C++ engine and back, in both shipped builds, under the project's
  * compiler flags? The build answers half of it -- if the seam did not link, no
  * environment would produce a binary. These tests answer the other half: the

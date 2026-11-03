@@ -183,7 +183,7 @@ bool SceneRenderer::render(std::uint8_t* indexPixels, int width, int height, boo
                               state.view.z, state.view.angle, &sample, hash, wantHash,
                               &hashMicros)) {
         // The driver recorded which pass refused and with which code; a caller
-        // that only saw "false" could not tell this from a closed session (D4.2g).
+        // that only saw "false" could not tell this from a closed session.
         if (out != nullptr) {
             frameLevelLastRefusal(&out->refusedStage, &out->refusedCode);
         }
@@ -258,7 +258,7 @@ bool SceneRenderer::verifySpawnFrame(std::uint8_t* indexPixels, int width, int h
                   static_cast<unsigned>(hashMicros), hash);
     writeLine(line);
 #if defined(DOOM_HUD)
-    // D5.3: this render is a proof, not gameplay. Its viewpoint is the harness's
+    // This render is a proof, not gameplay. Its viewpoint is the harness's
     // (facing east) and the wall pass marks what it sees, so leaving those bits
     // behind would show the player six lines they never looked at.
     frameLevelMapForget();

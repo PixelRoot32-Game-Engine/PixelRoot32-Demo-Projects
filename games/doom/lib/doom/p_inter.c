@@ -14,13 +14,12 @@
  *      pointer stored on the mobj;
  *   2. `I_Error` has no equivalent, so a branch upstream treats as impossible
  *      refuses locally instead of aborting;
- *   3. the HUD message text and haptics are absent (D5); the pickup sounds are
- *      now wired -- one cue per accepted item, chosen by the arm that grants it
+ *   3. the HUD message text and haptics are absent; the pickup sounds are
+ *      wired -- one cue per accepted item, chosen by the arm that grants it
  *      and started only after every refusing arm has returned, which is
  *      upstream's own "a refused pickup is silent" shape;
  *   4. `readyweapon` is read by two rules -- P_GiveAmmo's auto-select tail and
- *      P_TouchSpecialThing's berserk branch -- and D4.2d2 added the field they
- *      needed, so neither is omitted any more.
+ *      P_TouchSpecialThing's berserk branch -- so neither is omitted.
  *
  * The random draws are upstream's, in upstream's order, because the sequence is
  * part of demo fidelity: the fall-forwards coin, the pain chance, the death-tic
@@ -81,8 +80,7 @@ static const int32_t ammo_clip_size[P_NUMAMMO] = {10, 4, 20, 1};
 
 /* The ammo column of d_items.c's weaponinfo[] is p_pspr.c's table now, not a copy
  * here: one row per weapon, with the five psprite state numbers upstream's records
- * also carry, lives in p_weapon_info(). Until D4.2d2 this file could only keep the
- * one column it read, and said so. */
+ * also carry, lives in p_weapon_info(). */
 
 int p_give_ammo(const p_mobj_context_t* world, p_player_t* player, p_ammo_t ammo,
                 int num) {
@@ -135,9 +133,7 @@ int p_give_ammo(const p_mobj_context_t* world, p_player_t* player, p_ammo_t ammo
      * hand is the one the new ammo would replace: a clip re-arms a bare-fisted
      * player, shells re-arm a fist or a pistol, and so on.
      *
-     * This tail is why `readyweapon` had to exist before it could be written:
-     * until D4.2d2 there was no field to compare, and both this file and
-     * tools/doom_ref.py omitted it. The chainsaw arm upstream also has (a
+     * This tail compares `readyweapon`. The chainsaw arm upstream also has (a
      * cell/misl case falling through to `default`) is not reachable here.
      */
     switch (ammo) {
@@ -198,7 +194,7 @@ int p_give_weapon(const p_mobj_context_t* world, p_player_t* player,
     }
 
     /* `if (netgame && deathmatch != 2 && !dropped)` leaves a placed weapon in
-     * the world forever. Net play is D5 and the flag is 0 here, so the branch
+     * the world forever. This port has no net play and the flag is 0, so the branch
      * has no observable form in this port. */
 
     ammo = (p_ammo_t)p_weapon_info((int32_t)weapon)->ammo;
@@ -414,7 +410,7 @@ void p_touch_special_thing(p_mobj_context_t* world, r_mobj_t* special,
             return;
 
         /* cards: `P_GiveCard (player, card);` then `if (!netgame) break; return;`
-         * -- net play is D5, so every key is taken here. */
+         * -- there is no net play, so every key is taken here. */
         case SPR_BKEY:
             p_give_card(player, P_IT_BLUECARD);
             break;
@@ -667,7 +663,7 @@ void p_kill_mobj(p_mobj_context_t* world, r_mobj_t* source, r_mobj_t* target) {
             sourcePlayer->killcount += 1;
         }
         /* `source->player->frags[target->player - players]++` when a player
-         * kills a player: deathmatch's, D5. */
+         * kills a player: deathmatch only, not ported. */
     } else if (!world->rules.netgame && (target->flags & MF_COUNTKILL) != 0u) {
         /* "count all monster deaths, even those caused by other monsters" --
          * single player credits player 0. */
@@ -679,7 +675,7 @@ void p_kill_mobj(p_mobj_context_t* world, r_mobj_t* source, r_mobj_t* target) {
     if (target->player) {
         victimPlayer = player_of(world, target);
         /* `if (!source) target->player->frags[...]++` -- "count environment
-         * kills against you"; deathmatch's, D5. */
+         * kills against you"; deathmatch only, not ported. */
         target->flags &= ~MF_SOLID;
         if (victimPlayer != NULL) {
             victimPlayer->playerstate = P_PST_DEAD;
@@ -753,8 +749,7 @@ static void damage_thrust(p_mobj_context_t* world, r_mobj_t* target,
         return;
     }
     /* `|| source->player->readyweapon != wp_chainsaw` is the exception upstream
-     * carves out for the chainsaw; `readyweapon` is T14's and nothing in this
-     * port can be a chainsaw, so the exception cannot fire and the condition is
+     * carves out for the chainsaw; nothing in this port can be a chainsaw, so the exception cannot fire and the condition is
      * unconditional here. */
 
     /* Upstream divides by `target->info->mass` with no test. No shootable type
@@ -824,7 +819,7 @@ void p_damage_mobj(p_mobj_context_t* world, r_mobj_t* target,
         }
 
         /* "Below certain threshold, ignore damage in GOD mode, or with INVUL
-         * power." CF_GODMODE is a cheat and there are no cheats (D5). */
+         * power." CF_GODMODE is a cheat and there are no cheats. */
         if (damage < 1000 && player->powers[P_PW_INVULNERABILITY] != 0) {
             return;
         }
@@ -856,7 +851,7 @@ void p_damage_mobj(p_mobj_context_t* world, r_mobj_t* target,
         if (player->damagecount > 100) {
             player->damagecount = 100; /* "teleport stomp does 10k points..." */
         }
-        /* I_Tactile (haptics) is the platform's, and D5's; no rumble exists. */
+        /* I_Tactile (haptics) is the platform's; no rumble exists. */
     }
 
     /* do the damage */

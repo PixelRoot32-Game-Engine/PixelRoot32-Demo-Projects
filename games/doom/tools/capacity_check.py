@@ -4,10 +4,9 @@
 WHY THIS EXISTS
 
 ``src/doomc/FrameDriver.cpp`` sizes its drawseg array, visplane set and unified
-clip/opening pool from 20 sampled viewpoints (D3.10). A player walking the map
-reaches viewpoints nobody sampled, and a pass that runs out of one of those
-capacities refuses the whole frame -- which used to paint the Phase 0 shell over
-the level, intermittently, exactly as the panel showed.
+clip/opening pool from sampled viewpoints. A player walking the map reaches
+viewpoints nobody sampled, and a pass that runs out of one of those capacities
+refuses the whole frame, so the level is not drawn.
 
 This script builds ``tools/capacity_check.c`` -- which drives
 ``lib/doom/r_bsp.c``, ``r_segs.c``, ``r_plane.c`` and ``r_things.c`` over a
@@ -35,8 +34,8 @@ By default the five capacities are read out of ``FrameDriver.cpp`` itself, so th
 table always compares the measurement against what the image actually ships.
 ``--capacities D,P,R,POOL,V`` overrides them, which is how a proposed set is
 checked before it is written into the source. ``POOL`` is the unified
-clip/opening pool in int16_t *entries* (D4.2h); the ``clipblocks`` and
-``openings`` rows are the old block-equivalent counts, printed for comparison
+clip/opening pool in int16_t *entries*; the ``clipblocks`` and
+``openings`` rows are block-equivalent counts, printed for comparison
 and not checked against a capacity.
 
 Each scope renders twice: once with pools far above any need (the peak is the
@@ -46,7 +45,7 @@ refuse). A capacity that is too small is reported, never clamped.
 EXIT CODES
 
     0  every walkable viewpoint of every requested level and every script tic
-       rendered: no refusal (a drawseg overflow is a refusal too, D4.2h)
+       rendered: no refusal (a drawseg overflow is a refusal too)
     1  at least one refusal
     2  the command line, the compiler or the input was unusable
 
@@ -94,7 +93,7 @@ SCRIPT_TICS = 200
 
 # The five capacities in the order --capacities takes them, and the constant each
 # one is read from in FrameDriver.cpp. `clippool` is the unified clip/opening
-# pool in int16_t entries (D4.2h); `clipblocks`/`openings` are informational
+# pool in int16_t entries; `clipblocks`/`openings` are informational
 # block-equivalent counts and have no capacity of their own.
 CAPACITY_SOURCES = (
     ("drawsegs", "kDrawsegCapacity"),

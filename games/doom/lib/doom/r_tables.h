@@ -140,8 +140,7 @@ static inline fixed_t r_fine_tangent_lookup(angle_t angle) {
  * There is no third sprite table to generate. linuxdoom-1.10 has no
  * R_InitSpriteLights(): `spritelights` in r_things.c is a row pointer that
  * R_AddSprites() sets to `scalelight[lightnum]`, so a sprite reads this array.
- * The D3.4 brief expected a separate table; the reference source is the
- * authority and this port follows it, which also costs no flash. */
+ * Following the reference source here also costs no flash. */
 extern const uint8_t r_light_level[R_LIGHT_LEVELS][R_LIGHT_SCALE_LEVELS];
 
 /* --- The plane pass's per-view tables (D3.3) ----------------------------- */

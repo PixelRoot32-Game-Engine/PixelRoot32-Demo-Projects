@@ -7,16 +7,16 @@
 /*
  * The BSP walk: one viewpoint in, the drawsegs and visplanes one frame needs.
  *
- * This is D3.1 of the DOOM port. It turns the level graph (doom_map.h) plus a
+ * It turns the level graph (doom_map.h) plus a
  * view position into the two lists the rasterisers consume:
  *
  *   drawsegs   one entry per visible wall fragment, left to right in screen
  *              columns, with the scale at both ends and the silhouette a
  *              sprite behind it may be clipped against;
  *   visplanes  the floor and ceiling planes the walk marked, ready for the span
- *              emitter (D3.3) to fill.
+ *              emitter (r_plane.c) to fill.
  *
- * THE WHOLE FRAME, IN ORDER (D3.4 closes the list)
+ * THE WHOLE FRAME, IN ORDER
  *
  *  1. r_bsp_render()        the walk: drawsegs and the plane marks.
  *  2. r_wall_emit()         the wall tiers. It also takes the snapshot of the
@@ -39,7 +39,7 @@
  * WHAT THIS LAYER DOES NOT DO
  *
  * No texture lookup, no colormap, no pixel is written. The column and span
- * emitters are D3.2 and D3.3, and this file stops exactly where upstream's
+ * emitters are r_segs.c and r_plane.c, and this file stops exactly where upstream's
  * R_StoreWallRange() stops before R_RenderSegLoop()'s texture drawing: the
  * column clip arrays and the plane marks are kept, the wall tiers are not
  * drawn. That split is deliberate -- the walk's output can be diffed against a
@@ -89,15 +89,14 @@
  *
  * The visplanes dominate, exactly as DOOM's own visplane_t does (two 320-byte
  * arrays per plane). A caller that has measured its level may pass a smaller
- * `planeCapacity`; the real E1M1 spawn view is in the D3.1 report, and a
- * capacity that is too small is reported as R_BSP_ERR_VISPLANE_OVERFLOW, never
+ * `planeCapacity`; a capacity that is too small is reported as R_BSP_ERR_VISPLANE_OVERFLOW, never
  * written past. The projection tables are `const` in flash and cost no DRAM
  * (r_tables.h).
  *
- * The two D3.4 pools (the sprite list and the unified clip/opening pool) are
+ * The two pass-owned pools (the sprite list and the unified clip/opening pool) are
  * *not* in that total: they belong to the passes that read them, and their
  * capacities are the caller's. They are listed in r_view_storage_t, and the
- * unified pool's peak is measured by tools/capacity_check.py (D4.2h).
+ * unified pool's peak is measured by tools/capacity_check.py.
  *
  * THE WALL FRAGMENT, AND WHY IT IS NOT STORED
  *
@@ -116,8 +115,8 @@
  *   in r_drawseg_t (13,312 B for the 256-entry array, 52 B each)
  *     seg, x1, x2, scale1, scale2, scaleStep, silhouette, bottomSilhouette,
  *     topSilhouette, lightLevel, lightNum, rwDistance, rwOffset, rwCenterAngle,
- *     plus D3.4's three clip fields (sprTopClip, sprBottomClip,
- *     maskedTextureCol) in the padding the old layout had
+ *     plus the three clip fields (sprTopClip, sprBottomClip,
+ *     maskedTextureCol), packed into what would otherwise be padding
  *   in r_wall_fragment_t (170 B on the stack, one fragment at a time)
  *     everything above, plus worldTop/worldBottom/worldHigh/worldLow, the three
  *     texturemids, the topfrac/bottomfrac/pixhigh/pixlow steppers,
@@ -126,7 +125,7 @@
  *
  * Only the column emitter ever reads the second group, and it is 75 B of fields
  * (76 after padding): storing it per drawseg would cost 19,456 B of DRAM for one
- * view -- about a seventh of the whole remaining budget measured in D0.4 -- for
+ * view -- about a seventh of the board's remaining DRAM budget -- for
  * data with a single consumer. The fragment struct is 168 B because it also
  * carries the map-facing fields the walk needs *before* a drawseg exists (the
  * sidedef's names and offsets, the seg's first vertex and normal angle, the
@@ -139,10 +138,9 @@
  * a second implementation of the highest-risk sign and orientation math in the
  * port.
  *
- * 36 B -> 48 B -> 52 B per drawseg, so 9,216 B -> 12,288 B -> 13,312 B for the
- * array. D3.4's three int16_t clip fields fit in the two padding bytes the old
- * layout had after x2 plus the four bytes the struct grows by; appending them
- * naively would have cost 56.
+ * A drawseg is 52 B, so the array is 13,312 B. The three int16_t clip fields
+ * fit in the two padding bytes after x2 plus four more bytes; appending them
+ * naively would have cost 56 B per drawseg.
  *
  * ERROR BEHAVIOUR
  *
@@ -151,7 +149,7 @@
  * BSP deeper than the guard) it records the first error and unwinds, leaving a
  * partial but internally consistent list: drawsegCount and planes.count are
  * valid lengths, every stored entry is complete. It never writes past a
- * capacity. That is the "fail cleanly" contract the plan asks for.
+ * capacity. That is the "fail cleanly" contract.
  *
  * This is C99 only: <stddef.h> and <stdint.h>, no allocation, no globals, no
  * stdio, no floating point. The caller owns the state and the arrays.
@@ -283,7 +281,7 @@ typedef struct r_view_params {
  *
  * Upstream's drawseg_t also carries `maskedtexturecol` and the two sprite
  * clipping arrays. This port records the same three things as *entry offsets*
- * into the caller's single clip pool (D3.4) instead of as pointers into a
+ * into the caller's single clip pool instead of as pointers into a
  * global `openings[]`: an index cannot go stale if the storage moves, costs two
  * bytes instead of four on the ESP32, and makes a capacity overflow a reported
  * error instead of a silent write past the array. The layout is upstream's:
@@ -481,13 +479,12 @@ typedef struct r_clip_range {
  * R_MAX_CLIP_SEGS (32): upstream's MAXSEGS, which is the number of interior
  * posts a 320-wide view can need. drawsegs may be smaller than R_MAX_DRAWSEGS;
  * going over is R_BSP_ERR_DRAWSEG_OVERFLOW, the walk's own error on the same
- * path as the clip-post and visplane overflows. It used to set
- * `drawsegOverflowed` alone, which upstream's `if (ds_p == &drawsegs[...])
- * return;` also does -- but a *dropped* fragment is not a shorter list the
- * caller can draw, it is a hole in the picture, and the driver never failed on
- * the flag. On E1M1 that silently lost geometry from 99 walkable viewpoints.
+ * path as the clip-post and visplane overflows. Upstream's `if (ds_p ==
+ * &drawsegs[...]) return;` just drops the fragment -- but a *dropped* fragment
+ * is not a shorter list the caller can draw, it is a hole in the picture, so
+ * here it fails the walk.
  *
- * THE TWO D3.4 POOLS
+ * THE TWO PASS-OWNED POOLS
  *
  *   visSprites        one r_vissprite_t (r_things.h) per projected sprite,
  *                     i.e. upstream's `vissprites[MAXVISSPRITES]`. The walk does
@@ -505,32 +502,30 @@ typedef struct r_clip_range {
  *                     the negative sentinels above rather than 0/1.
  *
  * r_bsp_init() deliberately ignores these two: the walk neither reads nor
- * writes them, and a walk-only caller (the D3.1 harness) must keep compiling
+ * writes them, and a walk-only caller (tools/rbsp_check.c) must keep compiling
  * without them. The passes that own them validate the pointers and the
  * capacities before writing a pixel, and report a capacity that is too small
  * instead of overrunning it.
  */
 struct r_vissprite; /* r_things.h: the projected sprite record */
 
-/* --- D3.9 cycle attribution ---------------------------------------------- */
+/* --- Cycle attribution --------------------------------------------------- */
 
 /*
  * WHAT THIS IS, AND WHY IT IS IN THE VIEW STATE
  *
  * The frame table says how many microseconds each pass took; it cannot say what
- * those microseconds were spent on, and the D3.5 lesson is that a guess about
- * that is wrong by an order of magnitude. This struct is the second opinion:
+ * those microseconds were spent on, and a guess about that can be wrong by an
+ * order of magnitude. This struct is the second opinion:
  * every pass folds the CPU cycle counter into the bucket that names the work,
  * so "per-pixel store" and "per-column setup" and "per-sprite preflight" stop
  * being an argument and become two columns of a table.
  *
  * It is a pointer in the caller's state rather than a file-scope global because
  * nothing mutable lives at file scope in this library (the same rule every pass
- * follows for upstream's globals). It is only *declared* when
- * PIXELROOT32_DOOM_RASTER_PROBE is defined -- the frame measurement environment
- * sets it and every other build, including the shipped one, compiles the
- * instrumented expressions out entirely and pays a NULL test at the jitter of
- * the previous code.
+ * follows for upstream's globals). Only the frame measurement environment
+ * defines PIXELROOT32_DOOM_RASTER_PROBE; every other build, including the
+ * shipped one, compiles the instrumented expressions out entirely.
  *
  * `r_probe_cycles()` is supplied by the caller, because the cycle counter is a
  * CPU feature and this library is also built for a host with none. The frame
@@ -623,18 +618,18 @@ typedef struct r_view_storage {
     uint16_t clipRangeCapacity;
     int16_t* floorClip;   /* R_SCREEN_WIDTH entries */
     int16_t* ceilingClip; /* R_SCREEN_WIDTH entries */
-    /* D3.4: the pass-owned pools. See above. */
+    /* The pass-owned pools. See above. */
     struct r_vissprite* visSprites;
     uint16_t visSpriteCapacity;
     /* The unified clip/opening pool: upstream's openings[] as entries. */
     int16_t* clipPool;
     uint16_t clipPoolCapacity;
-    /* D3.9: an optional, caller-owned proof cache for the sprite patches the
+    /* An optional, caller-owned proof cache for the sprite patches the
      * masked pass validates. NULL means the pass proves each distinct patch once
-     * per call, which is the behaviour every earlier revision had. See
+     * per call. See
      * r_things.h's r_sprite_proofs_t. */
     struct r_sprite_proofs* spriteProofs;
-    /* D5.3: the automap's "mapped" shadow bits, one per linedef, packed LSB
+    /* The automap's "mapped" shadow bits, one per linedef, packed LSB
      * first, or NULL. Upstream sets `linedef->flags |= ML_MAPPED` in
      * R_StoreWallRange and the automap draws a line only when the bit is set;
      * this port's LINEDEFS lump is immutable, so the bit lives here and the wall
@@ -665,7 +660,7 @@ typedef struct r_view_state {
     uint16_t drawsegOverflowed;
     r_bsp_error_t error;
 
-    /* Result of the D3.4 clip capture, valid after a successful r_wall_emit():
+    /* Result of the clip capture, valid after a successful r_wall_emit():
      * 1 when every drawseg's clip spans and masked columns are recorded, 0
      * after a walk (so the masked pass can refuse a frame whose walls were
      * never emitted). `clipBlocksUsed` and `openingBlocksUsed` are the
@@ -689,7 +684,7 @@ typedef struct r_view_state {
     angle_t rwAngle1;
     uint16_t clipRangeCount;
 
-    /* The D3.9 cycle attribution, or NULL. The caller sets it after
+    /* The cycle attribution, or NULL. The caller sets it after
      * r_bsp_init(); the walk and the three draw passes only read it. */
     r_raster_probe_t* probe;
 } r_view_state_t;
@@ -734,7 +729,7 @@ r_bsp_error_t r_bsp_init(r_view_state_t* state, const doom_map_t* map,
  *   drawsegOverflowed   1 when the drawseg capacity was reached. The call then
  *                       returns R_BSP_ERR_DRAWSEG_OVERFLOW, because a dropped
  *                       fragment is a hole in the picture, not a shorter list a
- *                       caller may draw (D4.2h);
+ *                       caller may draw;
  *   planes.count        planes allocated by find()/check(), in creation order.
  *                       A plane with minX > maxX was allocated and never marked;
  *                       R_DrawPlanes() would skip it, and so does the oracle's

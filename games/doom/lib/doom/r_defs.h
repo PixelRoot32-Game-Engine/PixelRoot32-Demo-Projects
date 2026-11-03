@@ -17,8 +17,7 @@
  * Every one of these numbers is structural. `visplane_t` is two 320-byte
  * column arrays, `floorclip[]` and `ceilingclip[]` are one short per screen
  * column, and the projection tables are built for a 320-wide window. Rendering
- * narrower is a renderer change plus a HUD relayout, not a build flag
- * (docs/plan-doom-esp32.md 6.1). The panel is a presentation problem and never
+ * narrower is a renderer change plus a HUD relayout, not a build flag. The panel is a presentation problem and never
  * reaches this layer.
  *
  * This is C99 only: <stdint.h>, no allocation, no globals, no floating point.
@@ -50,7 +49,7 @@ extern "C" {
  *
  * Without DOOM_HUD this port draws a 200-row view: R_VIEW_HEIGHT is the whole
  * surface (the host gates and their pinned hashes, frame 00 `50fb3d9c`). With
- * DOOM_HUD (D5.1) the status bar owns the bottom 32 rows and the view is
+ * DOOM_HUD the status bar owns the bottom 32 rows and the view is
  * DOOM's screen size 9: viewheight 168, centery 84. Nothing else in the
  * renderer hard-codes either number. r_bsp.c and r_segs.c read these macros and
  * never a literal 100 or 200; the two places whose TABLES depend on the window
@@ -196,7 +195,7 @@ static inline int r_has_name(r_name_t packed) {
  *
  * THE PLANE PASS'S OWN RECORD
  *
- * The plane pass (D3.3) writes to the same surface after the wall pass, so the
+ * The plane pass writes to the same surface after the wall pass, so the
  * coverage mask alone can no longer say which pass produced a pixel. Three
  * optional fields make that answerable without a second surface:
  *
@@ -217,7 +216,7 @@ static inline int r_has_name(r_name_t packed) {
  *
  * The wall pass ignores all three; r_wall_emit() neither clears nor reads them.
  *
- * THE MASKED PASS'S OWN RECORD (D3.4)
+ * THE MASKED PASS'S OWN RECORD
  *
  * That pass (r_things.c) draws sprites and the deferred masked mid textures,
  * both through post chains and therefore both partially transparent. The plane

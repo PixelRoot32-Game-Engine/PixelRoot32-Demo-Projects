@@ -1,5 +1,5 @@
 ﻿/*
- * D3.8's frame driver: see FrameDriver.h for the four phases, the two map paths,
+ * The frame driver: see FrameDriver.h for the four phases, the two map paths,
  * the 20 views, the hash protocol and the exact line formats.
  *
  * The file has two halves and no third one, the same shape FlashProfile.cpp uses
@@ -16,36 +16,35 @@
  * The second half is the board driver and only exists when
  * `PIXELROOT32_DOOM_FRAME_PROBE` is defined (`env:esp32dev_ILI9341_frame` and
  * `env:esp32dev_ILI9341_frameram`). It is the only code in this project that
- * renders a whole frame on the board. D3.5 added the attribution the frame table
- * is read with; D3.8 removed the residency cache and the three decoders from
- * this path. Every wall texture, the sky and every flat is a raw payload baked
- * at build time by tools/bake_graphics.py and named by the container's ~PWBAKE~
- * manifest, so a resolve is a manifest lookup and a pointer into the mapping.
+ * renders a whole frame on the board. Every wall texture, the sky and every flat
+ * is a raw payload baked at build time by tools/bake_graphics.py and named by the
+ * container's ~PWBAKE~ manifest, so a resolve is a manifest lookup and a pointer
+ * into the mapping: there is no texture cache and no decoder on this path.
  *
- * WHAT THE FRAME COSTS, IN BYTES, AND WHERE THOSE BYTES COME FROM NOW
+ * WHAT THE FRAME COSTS, IN BYTES
  *
  * Every large buffer below is a reported size, not an estimate: `FRAMEPROF,mem`
  * prints each one from `sizeof` or from the bootstrap that allocated it.
  *
  *   walk state      68,672 B   drawsegs 6,656, visplanes 42,496, clip posts 256,
  *                              floorclip/ceilingclip 1,280, the unified clip pool
- *                              6,400, vis sprites 11,264, covered 320 (D4.2h's
+ *                              6,400, vis sprites 11,264, covered 320 (the
  *                              walkable capacities; the sampled set is smaller)
  *   baked records   12,312 B   the 187-entry manifest adapter, static .bss
  *   level                0 B   in the flash build the map is a pointer into the
  *                              mapping; 47,888 B in the RAM build
  *
- * The D3.5 graphics state is gone: a 53,248 B static arena, up to 24,576 B of
- * heap arenas, 1,920 B of cache entries and a 35,080 B decode scratch. That is
- * ~114,824 B of graphics RAM released and replaced by the 4,632 B above.
+ * A run-time texture cache (a 53,248 B static arena, up to 24,576 B of heap
+ * arenas, 1,920 B of entries and a 35,080 B decode scratch, ~114,824 B in all)
+ * is what baking avoids.
  *
  * THE TWO MAP PATHS
  *
- * `PIXELROOT32_DOOM_MAP_IN_RAM=1` decodes the map lumps into RAM, which is what
- * D3.6 did and what the A/B needs as its control; without it the map's lumps are
- * raw container entries and `doom_whd_source_lump_view()` hands out the mapped
- * bytes with no copy at all. The graphics are baked in both builds on purpose:
- * the A/B isolates the map path, and the bake is the thing this task measures.
+ * `PIXELROOT32_DOOM_MAP_IN_RAM=1` decodes the map lumps into RAM, which is the
+ * A/B's control; without it the map's lumps are raw container entries and
+ * `doom_whd_source_lump_view()` hands out the mapped bytes with no copy at all.
+ * The graphics are baked in both builds on purpose: the A/B isolates the map
+ * path.
  *
  * NO FALLBACK, NO DECODE
  *
@@ -102,7 +101,7 @@ void frameProfileRecord(FrameProfileStats* stats, const FrameProfileSample& samp
     stats->residencySum += sample.residencyMicros;
     stats->bytesSum += sample.bytesDecoded;
 
-    // D3.5's attribution: every field is folded here so no summary can read a
+    // The attribution: every field is folded here so no summary can read a
     // counter the frame path forgot to fill.
     stats->wallPixelsSum += sample.wallPixels;
     stats->planePixelsSum += sample.planePixels;
@@ -364,8 +363,8 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
     const std::uint32_t skyColumns = frameProfileMean(stats.skyColumnsSum, samples);
     const std::uint32_t spriteColumns = frameProfileMean(stats.spriteColumnsSum, samples);
 
-    // Thousandths of a microsecond: 1,100 means 1.100 us per unit, which is the
-    // unit the D3.5 brief uses. A zero denominator reports 0, never a divide.
+    // Thousandths of a microsecond: 1,100 means 1.100 us per unit. A zero
+    // denominator reports 0, never a divide.
     const std::uint32_t pixelNanos = wallPixels != 0u
                                          ? frameProfilePermille(wallRaster, wallPixels) : 0u;
     const std::uint32_t columnNanos = columns != 0u
@@ -435,7 +434,7 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 }  // namespace doomc
 }  // namespace doom
 
-// --- The board driver (D3.6) -------------------------------------------------
+// --- The board driver --------------------------------------------------------
 
 #if (defined(PIXELROOT32_DOOM_FRAME_PROBE) || defined(PIXELROOT32_DOOM_SHOW_E1M1)) && \
     (defined(ESP32) || defined(ESP_PLATFORM))
@@ -446,9 +445,8 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <esp_timer.h>
-// The loop task's stack margin. S26's crash is a corrupted zone on the firing
-// path, and the firing path is the deepest call chain the game has; the margin
-// has to be visible before that can be ruled in or out.
+// The loop task's stack margin. The firing path is the deepest call chain the
+// game has, so its margin is printed to rule a stack overflow in or out.
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -514,10 +512,10 @@ static_assert(DOOM_WHD_SOURCE_ERR_UNAVAILABLE == 6,
 #include "m_menu.h"
 #endif
 #if defined(DOOM_MENU) || DOOM_PERSISTENCE
-// G_InitNew/G_DoReborn: the reload a New Game and a loaded save share (T53).
+// G_InitNew/G_DoReborn: the reload a New Game and a loaded save share.
 #include "g_game.h"
 #endif
-// S21: the level transition. The composition of G_DoCompleted's switch with
+// The level transition. The composition of G_DoCompleted's switch with
 // G_DoWorldDone's load is engine-free and host-tested, so the game frame and
 // test/unit/test_level run one implementation. g_game.h's declarations are part
 // of it, and the include above is the menu's own reason for them.
@@ -531,7 +529,7 @@ static_assert(DOOM_WHD_SOURCE_ERR_UNAVAILABLE == 6,
 #include "e1m1_sprites.inc"
 
 /*
- * The CPU cycle counter the D3.9 attribution reads (r_bsp.h declares it).
+ * The CPU cycle counter the cycle attribution reads (r_bsp.h declares it).
  *
  * The Xtensa CCOUNT special register is the only counter with a cycle of its
  * own; esp_timer_get_time() is the reference for the phase table and these two
@@ -563,11 +561,11 @@ namespace {
  */
 
 /*
- * WHICH CAPACITY SET THIS BUILD COMPILES (D4.2h)
+ * WHICH CAPACITY SET THIS BUILD COMPILES
  *
  * The shipped set is sized for every *walkable* viewpoint of E1M1 and E1M2, the
  * sweep tools/capacity_check.py takes over both levels. `_frameram` cannot carry
- * it: that environment is D3.7's A/B control, has 256 B of `dram0_0_seg`
+ * it: that environment is the map-path A/B control, has 256 B of `dram0_0_seg`
  * headroom, and only ever renders the 20 sampled views the frame probe defines.
  * So it selects the sampled set by operation, not by board: a build that renders
  * the sampled views compiles the capacities those 20 views need, and every
@@ -576,24 +574,21 @@ namespace {
  * constant) always measures the shipped set.
  */
 #if !defined(PIXELROOT32_DOOM_SAMPLED_VIEW_CAPACITIES)
-/// DOOM's MAXDRAWSEGS is 256 (13,312 B). D3.10 sized 64 from E1M2's 52-drawseg
-/// sampled view; D4.2g's sweep showed that is short for a player: E1M1 needs 99
-/// at ss202/a4 (2,752,-2,980) and E1M2 98 at ss168/a3. With 64 those views lost
-/// their later fragments -- `drawsegOverflowed` was a flag nobody failed on.
-/// D4.2h makes the overflow a walk error, so the number must be right: 99 with
-/// the +25% margin is 124, rounded to 128. 52 B each is 6,656 B, 3,328 B more
-/// than 64.
+/// DOOM's MAXDRAWSEGS is 256 (13,312 B). The walkable sweep peaks at 99 for
+/// E1M1 at ss202/a4 (2,752,-2,980) and 98 for E1M2 at ss168/a3. An overflow is a
+/// walk error, so the number must be right: 99 with the +25% margin is 124,
+/// rounded to 128. 52 B each is 6,656 B.
 constexpr int kDrawsegCapacity = 128;
 #else
 constexpr int kDrawsegCapacity = 64;  /* the 20 sampled views need 39 */
 #endif
 
 /// A plane is allocated by the walk and may stay unmarked for the whole view, so
-/// the allocation peak is above the drawn peak. D3.10's whole-episode rule chose
-/// 40 from E1M2's sampled peak; D4.2g's sweep measures 51 allocated planes at
-/// E1M1 ss202/a4 (E1M2: 47 at ss220/a7), so 40 refused 19 walkable E1M1
-/// viewpoints with R_BSP_ERR_VISPLANE_OVERFLOW. 51 with the +25% margin is 64,
-/// 664 B each, 42,496 B -- 15,936 B more than 40.
+/// the allocation peak is above the drawn peak. The walkable sweep measures 51
+/// allocated planes at E1M1 ss202/a4 (E1M2: 47 at ss220/a7); 40, enough for the
+/// sampled views, refuses 19 walkable E1M1 viewpoints with
+/// R_BSP_ERR_VISPLANE_OVERFLOW. 51 with the +25% margin is 64, 664 B each,
+/// 42,496 B.
 #if !defined(PIXELROOT32_DOOM_SAMPLED_VIEW_CAPACITIES)
 constexpr int kPlaneCapacity = 64;
 #else
@@ -601,36 +596,30 @@ constexpr int kPlaneCapacity = 40;  /* the 20 sampled views allocate 22 */
 #endif
 
 /// R_MAX_CLIP_SEGS, the minimum r_bsp_init() accepts (upstream's MAXSEGS).
-/// D4.2g's sweep never needs more than 2 interior posts on any walkable
-/// viewpoint of either level, so this minimum stays.
+/// The walkable sweep never needs more than 2 interior posts on any viewpoint of
+/// either level, so the minimum is enough.
 constexpr int kClipRangeCapacity = 32;
 
-/// The D3.4 unified clip/opening pool (D4.2h), in int16_t *entries*: upstream's
-/// `openings[]`, where a clipped edge costs its own x2-x1+1 span instead of a
-/// whole 320-entry block. The old split layout cost 15 x 640 B + 1 x 640 B =
-/// 10,240 B; this pool's measured walkable peak is 2,459 entries for E1M1
-/// (ss95/a0, 128,-3,232) and 2,060 for E1M2 (ss35/a5), from
-/// tools/capacity_check.py's `clippool` row. +25% is 3,073.75, rounded up to a
-/// multiple of 128 is 3,200 entries = 6,400 B, so the pool frees 3,840 B of the
-/// old layout's 10,240 B. It still holds both the sprite clip arrays and the
-/// masked mid columns; the two "everything" answers are negative codes and cost
-/// nothing.
+/// The unified clip/opening pool, in int16_t *entries*: upstream's `openings[]`,
+/// where a clipped edge costs its own x2-x1+1 span instead of a whole 320-entry
+/// block. The measured walkable peak is 2,459 entries for E1M1 (ss95/a0,
+/// 128,-3,232) and 2,060 for E1M2 (ss35/a5), from tools/capacity_check.py's
+/// `clippool` row. +25% is 3,073.75, rounded up to a multiple of 128 is 3,200
+/// entries = 6,400 B. It holds both the sprite clip arrays and the masked mid
+/// columns; the two "everything" answers are negative codes and cost nothing.
 #if !defined(PIXELROOT32_DOOM_SAMPLED_VIEW_CAPACITIES)
 constexpr int kClipPoolCapacity = 3200;
 #else
 /// The 20 sampled views need `clip_blocks_peak=15`, which includes the two
 /// reserved constants; the 13 real edges are at most 13 x 320 = 4,160 entries.
-/// 5,120 is the old two-array byte count (10,240 B), so the control's link
-/// budget does not move and the sampled frames keep drawing.
+/// 5,120 entries (10,240 B) is what the control's link budget was sized for.
 constexpr int kClipPoolCapacity = 5120;
 #endif
 
-/// The masked pass's sprite pool. D3.10 sized it for the whole episode: E1M2
-/// submits 243 sprites and its densest view projects more than the E1M1-only 100
-/// the capacity used to hold (frame 02 reports R_THINGS_ERR_VISSPRITE_OVERFLOW
-/// at 100), so 256 is the episode's peak with headroom, 44 B each. D4.2g's sweep
-/// measures 220 projected sprites at E1M2 ss151/a4 (E1M1: 125 at ss76/a0), so
-/// 256 still covers the peak and needs no walkable-set change.
+/// The masked pass's sprite pool, sized for the whole episode: E1M2 submits 243
+/// sprites, and its sampled frame 02 overflows a 100-entry pool. 256 is the
+/// episode's peak with headroom, 44 B each. The walkable sweep measures 220
+/// projected sprites at E1M2 ss151/a4 (E1M1: 125 at ss76/a0), so 256 covers it.
 constexpr int kVisspriteCapacity = 256;
 
 /// One THINGS record per sprite the level can place. E1M1's fixture resolves
@@ -645,14 +634,13 @@ constexpr int kSpriteCapacity = 512;
 /// and SECTORS (E1M1's are 46,508 B; E1M2's are 94,984 B). THINGS is a view in
 /// both builds. `gLevelReleasedBytes` is what the opened level stops costing
 /// DRAM: those lumps plus the 20,742 B of COLORMAP, TEXTURE1 and PNAMES that the
-/// flash build maps instead of decoding. D3.10 computes it from the level it
-/// actually opened, so `FRAMEPROF,mem` is a per-level number, not E1M1's.
+/// flash build maps instead of decoding. It is computed from the level actually
+/// opened, so `FRAMEPROF,mem` is a per-level number, not E1M1's.
 std::size_t gLevelReleasedBytes = 0u;
 
-/// One static graphics region. D3.8 removed the cache: every wall texture, the
-/// sky and every flat is a pointer into the container's raw section now, so the
-/// 53,248 B arena and the 35,080 B decode scratch are gone. The only graphics
-/// state left is the manifest adapter, which is a fixed record array.
+/// Every wall texture, the sky and every flat is a pointer into the container's
+/// raw section, so the only graphics state is the manifest adapter, a fixed
+/// record array.
 ///
 /// Up to nine extra lump blocks from the heap: the blocks of the decoded level
 /// that the static arena does not hold, in the RAM build.
@@ -660,12 +648,10 @@ constexpr int kExtraLumpBlocks = 9;
 
 #if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
 /// How much of the decoded level the static arena holds. `dram0_0_seg` is
-/// 124,068 B. D3.10 grew the walk state for the whole episode (64 drawsegs, 40
-/// planes, 256 vis sprites) and the manifest adapter to 187 entries, so the
-/// E1M1-only control has 2,784 B less static room than D3.9's 20,480 B arena
-/// assumed; 17,408 keeps the link and sends SIDEDEFS (19,448 B) to the heap,
-/// which `heap_before` shows has room for it. The control's pixels are
-/// unchanged: it still decodes every map lump the flash build maps.
+/// 124,068 B and the sampled-view walk state plus the 187-entry manifest adapter
+/// leave room for 17,408 B; that keeps the link and sends SIDEDEFS (19,448 B) to
+/// the heap, which `heap_before` shows has room for it. The control still decodes
+/// every map lump the flash build maps.
 constexpr std::size_t kStaticLumpBytes = 17408u;
 #endif
 
@@ -691,11 +677,11 @@ constexpr std::uint8_t kSkyFlatName[8] = {'F', '_', 'S', 'K', 'Y', '1', 0, 0};
 constexpr std::uint8_t kSkyTextureName[8] = {'S', 'K', 'Y', '1', 0, 0, 0, 0};
 
 /*
- * WHICH LEVEL THIS BUILD OPENS (D3.10)
+ * WHICH LEVEL THIS BUILD OPENS
  *
- * The container carries the whole shareware episode now, so "the level" is a
- * build decision instead of the E1M1 literal D3.8 shipped. Every environment
- * that predates this task compiles the default; the E1M2 measurement build sets
+ * The container carries the whole shareware episode, so the startup level is a
+ * build decision. Most environments compile the default; the E1M2 measurement
+ * build sets
  * PIXELROOT32_DOOM_FRAME_LEVEL=2 and renders the same 20 views of the largest
  * bake in the episode. The marker name is built by frameMapMarker(), which the
  * host suite pins, so the number and the container's lump name cannot drift.
@@ -709,17 +695,14 @@ static_assert(kFrameLevel >= 1u && kFrameLevel <= 9u,
               "the shareware episode has nine levels: E1M1..E1M9");
 
 /*
- * THE LEVEL THE GAME IS ON (S21)
+ * THE LEVEL THE GAME IS ON
  *
  * `kFrameLevel` is the *build's* map: the environment variable that selects which
  * level a measurement build opens, and therefore the level a session starts on.
- * It stopped being "the only level" the moment the exit works: a completed level
- * names the next one and the world loads it, so the driver needs the number the
- * world is actually on. `gRuntimeLevel` is that number.
+ * A completed level names the next one and the world loads it, so the driver
+ * also needs the number the world is actually on. `gRuntimeLevel` is that number.
  *
- *   - it starts at `kFrameLevel`, so every existing environment and gate opens
- *     exactly the map it always did (the variable keeps its meaning as the
- *     startup default);
+ *   - it starts at `kFrameLevel`, the startup default;
  *   - New Game returns it to `kFrameLevel` (a run starts at the build's map);
  *   - a transition moves it to the map the load named;
  *   - the save record carries it, so a save written on E1M2 names E1M2.
@@ -746,9 +729,8 @@ constexpr int kFirstSkippedMapLump = DOOM_MAP_REJECT;
  * the split below is a measurement, not a preference:
  *
  *   dram0_0_seg   the static data region the linker enforces: 124,068 B
- *                 (0x3ffb0000 + 0xdb5c, len 0x2c200 - 0xdb5c). D3.8 removed the
- *                 cache and scratch, so the walk state and the manifest adapter
- *                 are the only large statics left.
+ *                 (0x3ffb0000 + 0xdb5c, len 0x2c200 - 0xdb5c). The walk state
+ *                 and the manifest adapter are the only large statics.
  *   the heap      what is left of DRAM after the static data. The sprite list
  *                 (130 records) and, in the RAM build, the decoded level come
  *                 from it.
@@ -762,38 +744,33 @@ constexpr int kFirstSkippedMapLump = DOOM_MAP_REJECT;
 /// The static half: the walk state, the unified clip/opening pool and the
 /// coverage record.
 ///
-/// THE D4.2h CAPACITY MEASUREMENT
+/// THE CAPACITY MEASUREMENT
 ///
 /// tools/capacity_check.py renders every subsector midpoint and every sector
 /// centre of E1M1 and E1M2 at 8 angles (2,520 walkable E1M1 viewpoints; 4,768
 /// E1M2) through the same four passes this driver runs, then reports the peak
 /// each capacity consumes and every viewpoint a pass refused. The walkable
-/// peaks, the +25% margin this project rounds from, and what the shipped set
-/// costs:
+/// peaks and the +25% margin the capacities are rounded from:
 ///
-///   capacity      peak (E1M1)   +25%   now    growth
-///   drawsegs      99            128    128    +3,328 B
-///   planes        51             64     64   +15,936 B
-///   clip ranges    2             32     32        0 B
-///   clip pool   2,459 entries  3,074  3,200  -3,840 B (10,240 B freed)
-///   vis sprites  125 (E1M2 220)  256    256        0 B
-///   --------------------------------------------------------
-///   growth, shipped set                       +15,424 B
+///   capacity      peak (E1M1)      +25%   shipped
+///   drawsegs      99               128    128
+///   planes        51                64     64
+///   clip ranges    2                32     32
+///   clip pool   2,459 entries     3,074  3,200
+///   vis sprites  125 (E1M2 220)    256    256
 ///
-/// `dram0_0_seg` (0x3ffbdb5c + 0x1e6a4, end 0x3ffdc200) had 19,596 B free in
-/// env:esp32dev_ILI9341_show (`static_used=104,984` in the old census), so the
-/// walkable set fits: the census now prints `static_used=120,408,seg_free=4172`
-/// and the link map's `_bss_end` (0x3ffdb1b8) leaves 4,168 B. env:esp32dev_ILI9341_frameram
-/// has 256 B and cannot: it is the A/B control, renders only the 20 sampled
-/// views, and selects the sampled capacity set with
+/// In env:esp32dev_ILI9341_show the census prints
+/// `static_used=120,408,seg_free=4172` and the link map's `_bss_end`
+/// (0x3ffdb1b8) leaves 4,168 B of `dram0_0_seg`. env:esp32dev_ILI9341_frameram
+/// has 256 B and cannot carry the walkable set: it is the A/B control, renders
+/// only the 20 sampled views, and selects the sampled capacity set with
 /// PIXELROOT32_DOOM_SAMPLED_VIEW_CAPACITIES (see the capacities block above).
 ///
-/// The unified pool is what makes this fit. The old layout charged a 320-entry
-/// block per clipped edge and per masked mid: 15 blocks + 1 opening block =
-/// 10,240 B for the sampled views, 71 blocks = 45,440 B for E1M1's walkable
-/// peak -- more than the whole free static region. Upstream's openings[] charges
-/// the fragment's own span, and 3,200 entries is 6,400 B for the whole walkable
-/// set. `_show` is the only environment that grows.
+/// The unified pool is what makes this fit. A layout that charges a 320-entry
+/// block per clipped edge and per masked mid needs 71 blocks = 45,440 B for
+/// E1M1's walkable peak -- more than the whole free static region. Upstream's
+/// openings[] charges the fragment's own span, and 3,200 entries is 6,400 B for
+/// the whole walkable set.
 struct DriverState {
     /// The walk's state, all of it caller-owned as r_bsp.h requires.
     alignas(8) r_drawseg_t drawsegs[kDrawsegCapacity];
@@ -852,8 +829,8 @@ std::size_t gLevelRamUsed = 0;
 
 #if defined(PIXELROOT32_DOOM_MAP_IN_RAM)
 /// The static part of the decoded level. `PIXELROOT32_DOOM_MAP_IN_RAM` is the
-/// A/B's control: it keeps D3.6's data path (the map decoded into DRAM) so the
-/// two builds differ in exactly one thing.
+/// A/B's control: it decodes the map into DRAM so the two builds differ in
+/// exactly one thing.
 alignas(8) std::uint8_t gLumpArena[kStaticLumpBytes];
 #endif
 
@@ -883,12 +860,12 @@ const std::uint8_t* gColormap = nullptr;
 std::size_t gColormapBytes = 0;
 r_light_t gLight = {};
 
-/// D3.9's residency-scoped patch proof cache. The bake is part of the read-only
+/// The residency-scoped patch proof cache. The bake is part of the read-only
 /// container mapping and BakedGraphics' records are file-scope statics, so a
 /// patch at a given address cannot change or become malformed while the run
 /// holds: the two promises r_things.h's r_sprite_proofs_t requires both hold
 /// here, and the 32 distinct sprite lumps are proved once per run instead of
-/// once per frame. It is the only state this change adds, 800 B of .bss.
+/// once per frame. 800 B of .bss.
 r_sprite_proofs_t gSpriteProofs;
 
 /// The measured sample being filled. Every resolver folds into it, so a counter
@@ -954,8 +931,8 @@ bool decodeLump(int lump, std::uint8_t* out, std::size_t capacity, std::uint32_t
     --gDecodeDepth;
 
     // The leaf time, always: a compose that decodes six patches wants each
-    // patch's inflate counted once, and `residency_us` keeps its older meaning
-    // (the outermost decoder only) so the baseline stays comparable.
+    // patch's inflate counted once, while `residency_us` counts the outermost
+    // decoder only.
     gSample.decodeMicros += elapsedMicros(start);
     if (outermost) {
         gSample.residencyMicros += elapsedMicros(start);
@@ -1045,7 +1022,7 @@ char gFailTexture[9] = {0};
 const char* gFailWhy = "none";
 
 #if defined(PIXELROOT32_DOOM_RASTER_PROBE)
-/// The first wall texture the run resolved, kept for the D3.9 memory probe so
+/// The first wall texture the run resolved, kept for the raster memory probe so
 /// the benchmark reads the bytes the frame actually reads.
 const r_walltex_t* gProbeTexture = nullptr;
 #endif
@@ -1191,7 +1168,7 @@ const e1m1_sprite_rule_t* spriteRule(int type) {
 }
 
 /*
- * THE LIVE FRAME, NOT THE TYPE (T23)
+ * THE LIVE FRAME, NOT THE TYPE
  *
  * A static row per type can only name the type's spawn frame, so a pain frame,
  * a death animation, a corpse or a puff could never be drawn from it. The world
@@ -1215,7 +1192,7 @@ const e1m1_sprite_rule_t* spriteFrameRule(const char* sprite, int frame) {
 
 /*
  * A mobj whose live frame was not baked falls back to its type's spawn-state
- * row -- the frame the old static list always showed. The alternative is a
+ * row -- the frame the static THINGS list shows. The alternative is a
  * whole-frame refusal for one unbakeable frame (R_THINGS_ERR_SPRITE_MISSING),
  * which would blank the panel, or a silent drop, which would make an animated
  * item flicker out of existence. This keeps every mobj drawn and every pixel
@@ -1250,22 +1227,22 @@ bool sectorAt(const doom_map_t* map, fixed_t x, fixed_t y, std::uint16_t* sector
 }
 
 /*
- * THE SPRITE LIST'S CONSTANT HALF (D3.9)
+ * THE SPRITE LIST'S CONSTANT HALF
  *
- * buildSprites() used to re-read every THINGS record, descend the BSP for its
- * sector and copy the sector for all 129 sprites *per view*, for values that
- * cannot change while the level is loaded. The attribution measured that at
- * 4,932 us a frame -- 37% of the masked window, more than the sprite drawing
- * itself -- for 242 mapped-flash record reads a frame.
+ * Re-reading every THINGS record, descending the BSP for its sector and copying
+ * the sector for all 129 sprites *per view* costs 4,932 us a frame on the board
+ * -- 37% of the masked window, more than the sprite drawing itself -- for 242
+ * mapped-flash record reads, all for values that cannot change while the level
+ * is loaded.
  *
  * Only two fields are view-dependent: the rotation R_ProjectSprite's rule picks
  * for this viewpoint, and the lump and flip that follow from it. So the base
  * record is built once per run into gSprites itself (no second array of records)
  * and the per-view pass rewrites the lump, the flip and the fullbright flag.
- * The rule pointer is the 520 bytes this needs, and it is the only new state.
+ * The rule pointers are the 520 bytes this needs.
  *
- * The frame is unchanged by construction: the same records, the same values,
- * the same order -- only the reads that produce them happen once.
+ * The frame is the same as a per-view rebuild: the same records, the same
+ * values, the same order -- only the reads that produce them happen once.
  */
 const e1m1_sprite_rule_t* gSpriteRules[kSpriteCapacity] = {};
 int gSpriteBaseCount = -1;
@@ -1339,7 +1316,7 @@ int buildSprites(const doom_map_t* map, const r_view_params_t* view) {
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
 /*
- * THE LIVE LIST (T23)
+ * THE LIVE LIST
  *
  * For the game frame the sprite list is the world's mobjs, walked per frame
  * through p_level_first_mobj()/p_level_next_mobj(). The static THINGS list
@@ -1367,7 +1344,7 @@ int buildSprites(const doom_map_t* map, const r_view_params_t* view) {
 const p_level_t* gFrameWorld = nullptr;
 
 /// Set by buildWorldSprites() so renderOnce() can report *why* the list refused
-/// instead of the generic -1 the static build's failure has always used.
+/// instead of the generic -1 the static build's failure uses.
 int gSpriteBuildCode = -1;
 
 int buildWorldSprites(const doom_map_t* map, const r_view_params_t* view) {
@@ -1677,8 +1654,7 @@ bool sha256SelfTest() {
 /// the heap; in the flash build the map is not decoded at all, so nothing calls
 /// this. Blocks are handed out in descending size order by the caller: the heap's
 /// holes are not interchangeable, and a block order that leaves a small hole in
-/// front of a bigger request fails
-/// while the same bytes fit.
+/// front of a bigger request fails while the same bytes fit.
 std::uint8_t* heapLump(std::size_t bytes) {
     const std::size_t aligned = (bytes + 7u) & ~static_cast<std::size_t>(7u);
 
@@ -1722,8 +1698,8 @@ int gFailLump = -1;
 /// the flash build the container still holds them raw, so the loader could bind
 /// them, and does not -- the probe measures the renderer.
 ///
-/// THINGS is loaded like the rest and, unlike D3.6, stays loaded: the masked pass
-/// builds the sprite list from it once per view, so it is read 20 times, not once.
+/// THINGS stays loaded: the masked pass builds the sprite list from it once per
+/// view, so it is read 20 times, not once.
 bool loadMapLump(int marker, int dataIndex, doom_map_source_t* source,
                  std::int32_t* failures) {
     const int slot = dataIndex;
@@ -1802,7 +1778,7 @@ bool loadLumpViewByName(const char* name, const std::uint8_t** data, std::size_t
 }
 
 /*
- * ONE MAP'S LUMPS, BECAUSE TWO CALLERS NEED THE SAME SET (S21)
+ * ONE MAP'S LUMPS, BECAUSE TWO CALLERS NEED THE SAME SET
  *
  * `openLevelSession()` binds the level a session starts on, and the level
  * transition binds the level an exit names. Both must hand the rest of the file
@@ -1844,7 +1820,7 @@ doom_map_error_t readMapLumps(int marker, bool loadColormap, doom_map_t* outMap,
     }
     (void)loadMapLump(marker, DOOM_MAP_LINEDEFS, &source, mapFailures);   //  6,650
     (void)loadMapLump(marker, DOOM_MAP_NODES, &source, mapFailures);      //  6,608
-    // TEXTURE1 and PNAMES are build-time inputs now: the bake used them and the
+    // TEXTURE1 and PNAMES are build-time inputs: the bake used them and the
     // runtime reads the manifest. They stay in the container for the C check.
     if (!viewMapLump(marker, DOOM_MAP_THINGS, &source)) {
         ++(*mapFailures);
@@ -1875,7 +1851,7 @@ struct Driver {
     r_sprite_source_t sprites = {};
     const char* stage = "none";
 #if defined(PIXELROOT32_DOOM_RASTER_PROBE)
-    /// D3.9's cycle attribution for one frame. Zeroed at the top of every
+    /// The cycle attribution for one frame. Zeroed at the top of every
     /// frame and handed to the view state so the four passes can fold into it.
     r_raster_probe_t probe = {};
     /// The sprite-list build, timed on the caller's side because the fixture,
@@ -1890,7 +1866,7 @@ struct Driver {
 
 #if defined(PIXELROOT32_DOOM_RASTER_PROBE)
 /*
- * THE D3.9 ACCUMULATOR
+ * THE CYCLE ACCUMULATOR
  *
  * r_raster_probe_t is 32-bit fields because the passes live in C99 and adding
  * a second width there buys nothing. Forty frames of 240 MHz is 9.6e9 cycles,
@@ -1999,12 +1975,11 @@ void bindSurface(Driver* driver, std::uint8_t* pixels, int width, int height) {
  *
  * THE FOUR PHASES
  *
- * `walk`, `walls`, `planes` and `masked` all run. D3.6 could only afford the
- * first two: the plane pass needs a 35,080 B sky-patch scratch and the masked
- * pass its 9,168 B of pools, and neither fit next to a decoded level. With the
- * level in the container's raw section both fit, so this is the whole frame the
+ * `walk`, `walls`, `planes` and `masked` all run: this is the whole frame the
  * renderer defines, in the order r_bsp.h states, and the hash is the finished
- * frame rather than the wall pass's half of it.
+ * frame. The plane and masked passes fit only because the level and the
+ * graphics are read from the container's raw section instead of being decoded
+ * into RAM.
  *
  * The sprite list is built inside the masked window: upstream builds it during
  * the walk, but this port's caller owns the thing list, so the build is the
@@ -2063,15 +2038,15 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     sample->walkMicros = elapsedMicros(start);
     if (walk != R_BSP_OK) {
         // The walk has its own vocabulary (clip list, plane capacity, depth,
-        // and D4.2h's drawseg capacity); the error line names the stage and this
-        // code, so a level that outgrows a capacity says which one instead of
-        // reporting a bare `stage=walk`.
+        // drawseg capacity); the error line names the stage and this code, so a
+        // level that outgrows a capacity says which one instead of reporting a
+        // bare `stage=walk`.
         //
-        // The surface is not touched before the walk succeeds (D4.2g), and it is
-        // not prefilled until the wall preflight below passes either (D4.2h): a
-        // refusal writes no pixel, so the previous frame stays in the surface and
-        // the scene keeps the last good picture instead of the white or
-        // half-drawn frame the panel showed.
+        // The surface is not touched before the walk succeeds, and it is not
+        // prefilled until the wall preflight below passes either: a refusal
+        // writes no pixel, so the previous frame stays in the surface and the
+        // scene keeps the last good picture instead of a white or half-drawn
+        // frame.
         gStageCode = static_cast<int>(walk);
         return false;
     }
@@ -2098,7 +2073,7 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
     lookupMark = gSample.lookupMicros;
     start = nowMicros();
     driver->stage = "walls";
-    // The wall pass is preflight then draw (D4.2h). The preflight proves every
+    // The wall pass is preflight then draw. The preflight proves every
     // texture and counts the clip-pool demand before a pixel exists; this is the
     // last gate before the prefill, so a refusal here still leaves the previous
     // frame intact instead of a 0xFF background with nothing drawn over it.
@@ -2181,7 +2156,7 @@ bool renderOnce(Driver* driver, const FrameView& view, std::uint8_t* pixels, int
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
     // The game frame submits the world; the probes (which own no world) keep the
     // static THINGS list. This is the one switch between the two, so the game
-    // can never draw both lists and double-draw a thing T23 made live.
+    // can never draw both lists and double-draw a thing.
     const int spriteCount = buildWorldSprites(&driver->map, &params);
 #else
     const int spriteCount = buildSprites(&driver->map, &params);
@@ -2298,7 +2273,7 @@ void hashSurface(const std::uint8_t* pixels, std::size_t pixelBytes, char hex[65
 
 #if defined(DOOM_HUD)
 /**
- * @brief The automap frame's hash: the map window's rows alone (D5.3).
+ * @brief The automap frame's hash: the map window's rows alone.
  *
  * `hashSurface()` appends the wall pass's coverage record, which a map frame
  * never writes (it clears every pixel of the window itself), so a map frame has
@@ -2329,7 +2304,7 @@ bool isBreakdownView(int frame) {
 
 #if defined(PIXELROOT32_DOOM_RASTER_PROBE)
 /*
- * The D3.9 attribution line: what the cycles were spent on, per unit, so the
+ * The cycle attribution line (`FRAMEPROF,d39`): what the cycles were spent on, per unit, so the
  * microsecond table can be read as work rather than as a phase name. Every
  * number here is a sum over the measured frames of one bucket the passes fill,
  * divided by the count that names it.
@@ -2412,8 +2387,8 @@ void formatProbeLine(const ProbeSum& sum, char* out, std::size_t capacity) {
  * @brief Runs the inner-loop benchmark and prints where the operand bytes live.
  *
  * Three residencies of the same statement, then the difference. `us_permille`
- * units are the D3.5 convention (1,100 = 1.100 us), so a row here is directly
- * comparable with the frame table's `px_us_permille`.
+ * units are thousandths of a microsecond (1,100 = 1.100 us), so a row here is
+ * directly comparable with the frame table's `px_us_permille`.
  */
 void runMemoryProbe(std::uint8_t* scratch, int stride, const r_walltex_t* texture,
                     const std::uint8_t* colormap, char* out, std::size_t capacity) {
@@ -2458,8 +2433,7 @@ void runMemoryProbe(std::uint8_t* scratch, int stride, const r_walltex_t* textur
         benchInner(scratch, stride, row.column, row.map, kIscale, kRows, kPasses,
                    &sink);
         const std::uint32_t micros = elapsedMicros(start);
-        // Thousandths of a nanosecond... the frame table's unit is 1/1000 us,
-        // so the same unit is used here: permille of a microsecond.
+        // The frame table's unit: permille of a microsecond.
         *row.nanos = static_cast<std::uint32_t>(
             (static_cast<std::uint64_t>(micros) * 1000u)
             / static_cast<std::uint64_t>(kRows * kPasses));
@@ -2494,7 +2468,7 @@ void runMemoryProbe(std::uint8_t* scratch, int stride, const r_walltex_t* textur
 }
 #endif /* PIXELROOT32_DOOM_RASTER_PROBE */
 
-// --- The level session (D4.0) -----------------------------------------------
+// --- The level session ------------------------------------------------------
 
 /// Palette 0 of the WAD's PLAYPAL lump: 256 entries of R, G, B.
 constexpr std::size_t kPlaypalBytes = 768u;
@@ -2503,8 +2477,8 @@ constexpr std::size_t kPlaypalBytes = 768u;
  * @brief What the probe and the game frame share: one open level.
  *
  * `Driver` already holds the map, the walk state, the surface and the three
- * resolvers, and it is the caller's: the probe keeps its copy on the stack
- * exactly as it did before D4.0, because `env:esp32dev_ILI9341_frameram` has
+ * resolvers, and it is the caller's: the probe keeps its copy on the stack,
+ * because `env:esp32dev_ILI9341_frameram` has
  * less than 1 KB of `dram0_0_seg` headroom and a 464 B file-scope copy would
  * overflow it. The game frame owns one static copy (`gShowDriver`) instead. The
  * session adds only what has to outlive one render call: the spawn viewpoint,
@@ -2527,11 +2501,11 @@ LevelSession gSession;
 char gSessionLine[kFrameProfileLineCapacity];
 
 /*
- * D7.2: the setup's failure taxonomy. Every branch of `openLevelSession()` (and
- * of the world open it calls) records one value beside the line it already
- * prints, so the scene can paint the reason on the panel. The serial line keeps
- * its exact text and fields -- it is the evidence previous phases pinned -- and
- * this record only adds the machine-readable form the screen consumes.
+ * The setup's failure taxonomy. Every branch of `openLevelSession()` (and of
+ * the world open it calls) records one value beside the line it prints, so the
+ * scene can paint the reason on the panel. The serial line keeps its exact text
+ * and fields -- log parsers and tests read it -- and this record only adds the
+ * machine-readable form the screen consumes.
  *
  * `None` is both "no failure yet" and "the open succeeded"; it is reset at the
  * top of every open and left untouched by a successful one.
@@ -2568,18 +2542,16 @@ constexpr std::size_t kPlaypalStaticBytes = 0u;
 #endif
 bool gPlaypalValid = false;
 
-// --- The world (D4.2f) -------------------------------------------------------
+// --- The world ----------------------------------------------------------------
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
 
 /*
- * THE WORLD (D4.2f): one level, one arena, one tic at a time.
+ * THE WORLD: one level, one arena, one tic at a time.
  *
- * Until now every p_level_* use in this port was a host tool's: a desktop
- * harness allocated a 256 KB arena with malloc and ticked the world in a loop.
- * On the board there is no 256 KB to spend, so the arena is a number this file
- * measures instead of a number it assumes -- the one thing this project has paid
- * for guessing twice (task record L13, L20).
+ * The host tools tick the world over a 256 KB malloc'd arena. On the board there
+ * is no 256 KB to spend, so the arena is a number this file measures instead of
+ * a number it assumes.
  *
  * THE ARENA'S SIZE IS A MEASUREMENT, THEN A RULE
  *
@@ -2634,7 +2606,7 @@ struct LevelWorld {
 LevelWorld gWorld;
 
 /*
- * S21's game state and the one-shot the scene reads.
+ * The level-transition game state and the one-shot the scene reads.
  *
  * `gLevelState` is upstream's gameepisode/gamemap/secretexit, which this port
  * keeps as a value because it has no globals (g_game.h). It is written by
@@ -2642,7 +2614,7 @@ LevelWorld gWorld;
  * and the exit that requested it.
  *
  * `gVictoryPending` is "the run ended and nothing has looked at it yet": E1M8's
- * ending has no finale screen to draw (Phase 5/S3 never built one), so the driver
+ * ending has no finale screen to draw (this port has none), so the driver
  * records the fact, loads the run's start so the frame the menu draws over is a
  * live one, and the scene opens the main menu on the next frame. One-shot because
  * the scene must not reopen the menu every frame after a victory.
@@ -2653,27 +2625,26 @@ bool gVictoryPending = false;
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
 
 /*
- * THE STATUS BAR (D5.1)
+ * THE STATUS BAR
  *
  * With DOOM_HUD the view is 320x168 and the bottom 32 rows belong to
  * lib/doom/st_stuff.c. The bar's state is the face machine's ~60 bytes; every
  * number, weapon, key and the pain level are read from the player the world
  * already owns, so nothing here duplicates game state.
  *
- * The patches are the raw, name-addressed lumps T36 baked (not manifest
+ * The patches are raw, name-addressed lumps the container keeps (not manifest
  * records). whd_lump_index_for_name() is a linear scan of the name table, which
  * is flash-resident and about 2,000 entries long, so a frame that asks for forty
  * names pays for it forty times; the cache below remembers each name's lump
- * index by a 32-bit FNV-1a hash. T38 raised it from 64 to 128 slots (768 B of
- * DRAM) because the weapon widget asks for its patches through the same cache:
- * 86 bar names plus the 28 weapon frames are 114 distinct names a long session
- * can touch, and a weapon name that missed would pay the linear name scan every
- * frame. A name that finds the table full is still looked up each time, never
- * dropped.
+ * index by a 32-bit FNV-1a hash. It has 128 slots (768 B of DRAM) because the
+ * weapon widget asks for its patches through the same cache: 86 bar names plus
+ * the 28 weapon frames are 114 distinct names a long session can touch, and a
+ * weapon name that missed would pay the linear name scan every frame. A name
+ * that finds the table full is still looked up each time, never dropped.
  *
- * DOOM_HUD_NOFACES is Option B, the CYD fall-back: the bar without the face
- * widget (STBAR's empty face box stays), kept for the case the full bar misses
- * its frame-rate bar on the 4 MB board.
+ * DOOM_HUD_NOFACES is the CYD fall-back: the bar without the face widget
+ * (STBAR's empty face box stays), kept for the case the full bar misses its
+ * frame-rate target on the 4 MB board.
  */
 constexpr std::size_t kHudCacheSlots = 128u;
 st_state_t gStatus;
@@ -2760,11 +2731,11 @@ void hudDraw(std::uint8_t* surface, int width) {
 }
 
 /*
- * THE WEAPON (D5.1, T38)
+ * THE WEAPON
  *
  * R_DrawPlayerSprites(): the player's psprites, drawn over the finished 3D view
- * and under the bar. The patches are the raw, name-addressed lumps T38 baked
- * (tools/weapon_lumps.txt), looked up through the same cache as the bar's.
+ * and under the bar. The patches are raw, name-addressed lumps listed in
+ * tools/weapon_lumps.txt, looked up through the same cache as the bar's.
  * DOOM_HUD_NOWEAPON leaves the call out: it exists only so the cost of the
  * weapon can be measured by an A/B build, never as a product option.
  */
@@ -2818,15 +2789,15 @@ bool weaponAtRest() {
 
 #if defined(DOOM_MENU)
 /*
- * THE MENU (D5.2)
+ * THE MENU
  *
  * lib/doom/m_menu.c owns the state machine and the drawing; this file only
  * paints it over the finished frame and carries out its New Game. The menu is
  * the scene's, so the driver holds a pointer, not a copy, and a NULL pointer or
  * a closed menu costs one comparison per frame.
  *
- * The patches are the raw, name-addressed lumps T39 baked
- * (tools/menu_lumps.txt) and are looked up through the HUD's cache. The HUD and
+ * The patches are raw, name-addressed lumps listed in tools/menu_lumps.txt and
+ * are looked up through the HUD's cache. The HUD and
  * the weapon already use 114 of its 128 slots in a long session and the menu asks
  * for about 70 more names, so the cache is emptied whenever the menu opens or
  * closes: while it is open the frame needs only the names it actually draws (the
@@ -2863,7 +2834,7 @@ void menuDraw(std::uint8_t* surface, int width) {
 #endif  // DOOM_MENU
 
 /*
- * THE AUTOMAP (D5.3)
+ * THE AUTOMAP
  *
  * lib/doom/am_map.c is upstream's am_map.c translated; this block is the session
  * side of it and nothing else:
@@ -2972,7 +2943,7 @@ void resetAutomap() {
 #endif  // SHOW && DOOM_HUD
 
 /*
- * The live seams (T26, T35): p_level_bind_render() installs three callbacks on
+ * The live seams: p_level_bind_render() installs three callbacks on
  * the map the renderer walks, so what the simulation wrote is what the frame
  * draws.
  *
@@ -2984,7 +2955,7 @@ void resetAutomap() {
  *   adjustSide     the scroll offset P_UpdateSpecials accumulates on a line
  *                  special 48's front side.
  *   translateName  the animation tables' frame for a *texture* name; installed
- *                  only on a map whose SIDEDEFS name one (T35) -- the flat half
+ *                  only on a map whose SIDEDEFS name one -- the flat half
  *                  rides with readSector.
  *
  * All three are p_spec.c's; this file only binds them, so the arithmetic the
@@ -3066,7 +3037,7 @@ void closeLevelSession();
  * P_CalcHeight is what gives the camera a height (and its half-step ramp). Every
  * load therefore draws its first frame from the sector floor. That is
  * tolerable only while the frame is a transient under a fade, and it stops
- * being tolerable the moment something freezes it: S21's victory opens the main
+ * being tolerable the moment something freezes it: the victory opens the main
  * menu on the frame after the reload, the world never ticks while the menu is
  * up, and the camera stays at z = 0 for as long as the menu is open.
  *
@@ -3074,9 +3045,7 @@ void closeLevelSession();
  * plane pass's spans no longer meet in the columns at the view's edges, and the
  * gap between them keeps the surface's 0xFF prefill -- palette 255 is
  * (167,107,107) -- so two magenta bars run down the frame over a floor stretched
- * to the horizon. That is the report S25 fixes: the maintainer's panel photo of
- * the menu over E1M1 after the level walk, two vertical bars plus the stretched
- * floor.
+ * to the horizon.
  *
  * The value written is the one the level's own tics reach within half a second
  * and then keep -- P_CalcHeight clamps `viewheight` to P_VIEWHEIGHT and stops
@@ -3116,7 +3085,7 @@ static void settleLevelView() {
 bool openWorldSession() {
     gWorld = LevelWorld{};
     gFrameWorld = nullptr;
-    // S21: a fresh session's game state is the level being opened, with no exit
+    // A fresh session's game state is the level being opened, with no exit
     // requested. gRuntimeLevel was set by openLevelSession() before the map was
     // read, so the marker and this record cannot disagree.
     gLevelState.episode = 1u;
@@ -3165,7 +3134,7 @@ bool openWorldSession() {
 
     zone_stats_t zone;
 #if defined(DOOM_MENU)
-    // D5.2: the menu's New Game can reload this level at any skill, and a harder
+    // The menu's New Game can reload this level at any skill, and a harder
     // skill spawns more things (E1M1: 92 mobjs at medium, 116 at ultra-violence
     // and nightmare). The arena must hold the largest of them, so the peak is
     // measured at nightmare; the world itself still starts at medium below.
@@ -3273,14 +3242,14 @@ bool openWorldSession() {
 
     gWorld.open = true;
     gFrameWorld = &gWorld.level;
-    // T26/T35: the renderer walks gSession.driver->map. Bind the level's live
+    // The renderer walks gSession.driver->map. Bind the level's live
     // state to it -- the mutable sectors, the scroll offsets P_UpdateSpecials
     // accumulates and the animation tables -- so what the simulation wrote is
     // what the frame draws. The probe paths call openLevelSession() without
     // loadPlaypal, so they never take this branch and keep rendering the
     // immutable map.
     p_level_bind_render(&gWorld.level, &gSession.driver->map);
-    // S25: boot is a load too, and its frame is drawn before the first tic.
+    // Boot is a load too, and its frame is drawn before the first tic.
     settleLevelView();
 #if defined(DOOM_AUDIO)
     // G_DoLoadLevel's S_Start: kill the previous level's sounds, tell the layer
@@ -3293,7 +3262,7 @@ bool openWorldSession() {
 #endif
 #if defined(DOOM_HUD)
     hudStart();
-    // D5.3: the automap's shadow bitmap and its level state. A refusal is
+    // The automap's shadow bitmap and its level state. A refusal is
     // reported (`SHOW,map,init,status=fail`) and leaves the map unavailable; the
     // world frame is untouched either way.
     (void)openAutomap();
@@ -3327,10 +3296,12 @@ void closeWorldSession() {
 #endif  // PIXELROOT32_DOOM_SHOW_E1M1
 
 
-/// One `FRAMEPROF,mem` field, from `sizeof`: the driver's RAM cost is a printed/// number, never an estimate. `state_static` is the .bss half, `level_ram` is the
+/// One `FRAMEPROF,mem` field, from `sizeof`: the driver's RAM cost is a printed
+/// number, never an estimate. `state_static` is the .bss half, `level_ram` is the
 /// decoded level (0 in the flash build) and `heap_before/after` bound the rest.
-/// D3.8's `cache_*` fields are the bytes the cache and scratch used to cost;
-/// they are constants now because the code that owned them is gone.
+/// The `cache_*` and `scratch` fields are constants: the bytes a run-time texture
+/// cache and decode scratch would cost, kept as the reference baking is
+/// measured against.
 void formatMemoryLine(const char* tag, bool sceneFrame, char* line, std::size_t capacity,
                       std::uint32_t heapBefore, std::uint32_t heapAfterAlloc) {
     const std::size_t drawsegs = sizeof(gState.drawsegs);
@@ -3385,16 +3356,14 @@ void formatMemoryLine(const char* tag, bool sceneFrame, char* line, std::size_t 
                   static_cast<unsigned>(kPlaypalStaticBytes));
 }
 
-// --- The level session (D4.0) -----------------------------------------------
+// --- The level session ------------------------------------------------------
 
 /**
  * @brief Opens the container, binds E1M1 and leaves the mapping live.
  *
- * This is the setup `frameProbeRun()` performed inline before D4.0, moved here
- * unchanged so the shipped scene renders through the same code the probe proved.
- * The order of the operations, the lump list and every capacity are deliberately
- * the probe's: a second copy would be the place a frame hash could start
- * disagreeing with the host.
+ * The probe and the shipped scene both open the level through this one setup, so
+ * the scene renders through the same code the probe measures. A second copy would
+ * be the place a frame hash could start disagreeing with the host.
  *
  * @param session   Caller-owned session record; it points at @p driver.
  * @param driver    The caller-owned Driver to fill. The probe passes a stack
@@ -3423,10 +3392,9 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     // A new open starts with no failure recorded: the scene paints an error
     // screen only when this call (or the palette step that follows it) says so.
     gLevelFailure = LevelFailure{};
-    // S21: a session starts on the build's map. The variable keeps its D3.10
-    // meaning (which map this environment opens) and now also names the level the
-    // run is on, so it is set before the marker and the game state are built from
-    // it -- a second open cannot inherit the previous run's transition.
+    // A session starts on the build's map. gRuntimeLevel names the level the run
+    // is on, so it is set before the marker and the game state are built from it
+    // -- a second open cannot inherit the previous run's transition.
     gRuntimeLevel = static_cast<std::uint8_t>(kFrameLevel);
 
     // The reason line writes into the shared session buffer: the setup call
@@ -3627,7 +3595,7 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     driver->storage.clipRangeCapacity = kClipRangeCapacity;
     driver->storage.floorClip = gState.floorClip;
     driver->storage.ceilingClip = gState.ceilingClip;
-    // All four phases run, so the D3.4 pools are part of the frame: the wall
+    // All four phases run, so the clip and sprite pools are part of the frame: the wall
     // pass snapshots each drawseg's clip spans and records its deferred masked
     // mid columns in the same unified pool (upstream's openings[]), and the
     // masked pass projects into visSprites.
@@ -3635,7 +3603,7 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     driver->storage.clipPoolCapacity = kClipPoolCapacity;
     driver->storage.visSprites = gState.visSprites;
     driver->storage.visSpriteCapacity = kVisspriteCapacity;
-    // D3.9: the baked patches cannot change under an unchanged record address,
+    // The baked patches cannot change under an unchanged record address,
     // so their proof belongs to the residency and not to the frame.
     gSpriteProofs.count = 0;
     driver->storage.spriteProofs = &gSpriteProofs;
@@ -3660,7 +3628,7 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     driver->sprites.resolve = resolveSprite;
     driver->sprites.context = nullptr;
 #if defined(PIXELROOT32_DOOM_RASTER_PROBE)
-    // D3.9: the four passes fold their cycle buckets into this state. Assigned
+    // The four passes fold their cycle buckets into this state. Assigned
     // after r_bsp_init() because that call zeroes the state.
     driver->view.probe = &driver->probe;
 #endif
@@ -3697,7 +3665,7 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     writeLine(line);
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
-    // The game frame owns a world as well (D4.2f); the probe does not, because
+    // The game frame owns a world as well; the probe does not, because
     // it measures a renderer and the RAM control environment has no room for a
     // p_level_t. `loadPlaypal` is the flag that says "this is the game": the
     // probe passes false for it and for the palette for the same reason.
@@ -3724,7 +3692,7 @@ void closeLevelSession() {
     closeWorldSession();
 #endif
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
-    // D5.3: the shadow bitmap is the session's heap block, so it goes with it.
+    // The shadow bitmap is the session's heap block, so it goes with it.
     closeAutomap();
 #endif
     doom_whd_source_close();
@@ -3766,7 +3734,7 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
     std::uint32_t mapMicros = 0u;
     bool mapFrame = false;
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
-    // D5.3: the automap replaces the world frame. Upstream's D_Display draws the
+    // The automap replaces the world frame. Upstream's D_Display draws the
     // automap *instead of* the view (R_RenderPlayerView is skipped while
     // automapactive) and the status bar and the menu on top of it; that is the
     // order below. No pass runs, so nothing is marked as seen while the map is
@@ -3794,7 +3762,7 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
         }
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
         // The bar is part of the frame and of its hash: the HUD frame-00 hash is a
-        // different number from the 200-row `50fb3d9c`, by construction.
+        // different number from the 200-row (no HUD) frame-00 hash, by construction.
 #if defined(DOOM_WEAPON_DIAG)
         if (wantHash && !gWeaponPartsDone && weaponAtRest()) {
             // The rectangle around the resting pistol before it is drawn, for the
@@ -3827,8 +3795,8 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
             // now. The line deliberately carries no hash (the `frame` line that follows
             // has the same one): this line is written inside the frame, so it is charged
             // to the frame period, and past about 135 characters the UART's transmit
-            // buffer blocks (T38 measured ~12 ms, 134 vs 157 fps_x10, from 62 extra
-            // characters). Keep it short.
+            // buffer blocks (62 extra characters measured ~12 ms on the board, 134 vs
+            // 157 fps_x10). Keep it short.
             std::snprintf(gSessionLine, sizeof gSessionLine,
                           "SHOW,hud,hud_us=%u,missing=%d,faces=%d,view_h=%d,face=%d,"
                           "weapon_us=%u,weapon_missing=%d,weapon_state=%d,weapon_sy=%d\n",
@@ -3839,7 +3807,7 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
                           static_cast<int>(gWorld.level.playerState.psprites[0].sy >> FRACBITS));
             writeLine(gSessionLine);
             if (mapFrame) {
-                // D5.3: the map's own line, once per reported frame and only while
+                // The map's own line, once per reported frame and only while
                 // the map is up, so no map-off log grows a field. The hash is the
                 // 168-window bytes alone (`hashWindow`), which is exactly what
                 // tools/am_check.py prints for the same state, so the board and the
@@ -3856,13 +3824,11 @@ bool renderSessionView(std::uint8_t* surface, int width, int height, std::int32_
             }
 #if defined(DOOM_MAP_SCRIPT)
             if (mapFrame) {
-                // D5.3 diagnostic build only: the automap's own numbers, so a
-                // board picture that disagrees with tools/am_check.py can be
-                // localised to the window, the mapped set or the drawing. This is
-                // how the boot frame-00 verification was caught marking six lines
-                // the player never saw: the second line dumps the shadow bitmap
-                // itself, LSB first, capped at 64 bytes -- E1M1's 60 all fit,
-                // E1M2's 130 would truncate, and only E1M1 is a game level here.
+                // Diagnostic build only: the automap's own numbers, so a board
+                // picture that disagrees with tools/am_check.py can be localised to
+                // the window, the mapped set or the drawing. The second line dumps
+                // the shadow bitmap itself, LSB first, capped at 64 bytes -- E1M1's
+                // 60 all fit, E1M2's 130 would truncate.
                 std::uint32_t marked = 0u;
                 for (std::uint32_t line = 0u; line < gMap.lineCount; ++line) {
                     if (am_mapped(&gMap, line) != 0) {
@@ -3955,8 +3921,8 @@ bool ensureSpawnView() {
  * *not* `r_bsp_spawn_view()`, which would use the THING record's own facing and
  * therefore hash differently from the host's frame 00.
  *
- * Since D4.2f this is a delegation to `renderSessionView()` with that cached
- * viewpoint, so the frame-00 hash is produced by the same code the game frame
+ * This delegates to `renderSessionView()` with that cached viewpoint, so the
+ * frame-00 hash is produced by the same code the game frame
  * runs rather than by a copy kept in step by hand.
  */
 bool renderSessionSpawn(std::uint8_t* surface, int width, int height,
@@ -4063,11 +4029,10 @@ bool frameLevelSpawnView(LevelView* out) {
 }
 
 /*
- * --- S21: opening a level at runtime and changing to another one -----------
+ * --- Opening a level at runtime and changing to another one ----------------
  *
- * The game used to open exactly one map for the life of the process: the build's
- * `kFrameLevel`. A completed level names the next one and the world has to load
- * it, so the driver needs two things the probe never did -- a way to build any
+ * A completed level names the next one and the world has to load it, so the
+ * driver needs two things the probe never does -- a way to build any
  * level's map view into the session, and a per-load presentation reset that
  * knows whether the map changed.
  *
@@ -4197,7 +4162,7 @@ bool layOutWorld(const doom_map_t* map, int skill) {
 }
 
 /**
- * @brief S21: carries out the exit the level requested, once.
+ * @brief Carries out the exit the level requested, once.
  *
  * Upstream's order, without the intermission this port never built:
  *
@@ -4296,9 +4261,8 @@ bool transitionLevel() {
     // own `SHOW,map,init` for the new map, and the level change reading first is
     // what makes a captured log readable top to bottom.
     if (victory) {
-        // E1M8's ending, as the placeholder S21 names: no finale screen (Phase
-        // 5/S3 never built one), so the run ends here and the scene opens the
-        // menu over the level the run started on.
+        // E1M8's ending: this port has no finale screen, so the run ends here
+        // and the scene opens the menu over the level the run started on.
         std::snprintf(line, sizeof line, "SHOW,level,victory=1,episode=%u,map=%u\n",
                       static_cast<unsigned>(next.episode), static_cast<unsigned>(next.map));
         writeLine(line);
@@ -4336,7 +4300,7 @@ bool frameLevelTakeVictory() {
 
 #if defined(DOOM_LEVEL_TEST)
 /*
- * S21's board proof (env esp32dev_ILI9341_hud_leveltest): the panel's buttons
+ * The level-exit board proof (env esp32dev_ILI9341_hud_leveltest): the panel's buttons
  * cannot be pressed from the build host, so this finds E1M1's own exit switch
  * (line special 11) and stands the avatar in front of it, on the front sector's
  * side facing the line. The scene then holds USE through the real button byte, so
@@ -4449,12 +4413,12 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
         // hands `players[0].mo` to S_UpdateSounds once per tic, after P_Ticker.
         S_SetListener(gWorld.level.playerState.mo);
 #endif
-        // No walk statistics: the scene reports the world's state, and D4.2d's
-        // combat owns the counters that would read them.
+        // No walk statistics: the scene reports the world's state, and the
+        // combat code owns the counters that would read them.
         if (p_level_tic(&gWorld.level, &cmd, nullptr) != P_TICK_OK) {
             return false;
         }
-        // S21: G_Ticker runs G_DoCompleted/G_DoWorldDone immediately after
+        // G_Ticker runs G_DoCompleted/G_DoWorldDone immediately after
         // P_Ticker and before ST_Ticker, AM_Ticker and S_UpdateSounds, so this
         // frame's HUD and sound work belong to the level the transition loaded --
         // not to the one that just ended.
@@ -4477,7 +4441,7 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
         hudTick();
 #endif
 #if defined(DOOM_HUD)
-        // D5.3: upstream's G_Ticker order -- P_Ticker, then ST_Ticker, then the
+        // Upstream's G_Ticker order -- P_Ticker, then ST_Ticker, then the
         // automap's AM_Ticker -- one call per 35 Hz tic, so the pan and the zoom
         // are the reference's per-second rates and not the panel's frame rate.
         if (am_active(&gMap) && gWorld.level.playerState.mo != nullptr) {
@@ -4491,8 +4455,8 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
 
 #if defined(DOOM_MENU) || DOOM_PERSISTENCE
 /*
- * G_InitNew()'s reload, shared by the menu's New Game and by a loaded save (T53)
- * and by the run's reset after a victory (S21).
+ * G_InitNew()'s reload, shared by the menu's New Game, by a loaded save and by
+ * the run's reset after a victory.
  *
  * The skill goes into the rules, the random position is cleared (M_ClearRandom),
  * then G_DoLoadLevel's reload of @p levelNumber over the same arena -- the path
@@ -4500,7 +4464,7 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
  * the map's own records under the new skill, the player is G_PlayerReborn's,
  * leveltime is 0.
  *
- * S21: @p levelNumber is the level the world should be on, not "the one map the
+ * @p levelNumber is the level the world should be on, not "the one map the
  * session opened". A New Game and the post-victory reset ask for `kFrameLevel`; a
  * loaded record asks for the map its header names. When it differs from the map
  * already bound, the session's map view is rebuilt from the container first, so
@@ -4511,10 +4475,9 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
  * The renderer's live reader is UNBOUND for the reload and bound again after.
  * The reload copies the map's sectors with doom_map_get_sector(), which answers
  * through a bound reader (p_level_read_sector) -- and the level it would read is
- * the one being rebuilt, so with the reader bound the copy is stack garbage (the
- * first board run of this menu refused every frame after the first New Game,
- * FLAT_MISSING, with 85 of 85 sectors wrong). tools/menu_check.py --arena
- * reproduces that with --perturb.
+ * the one being rebuilt, so with the reader bound the copy is stack garbage
+ * (every frame after a New Game is refused with FLAT_MISSING, 85 of 85 sectors
+ * wrong). tools/menu_check.py --arena reproduces that with --perturb.
  *
  * A refused reload leaves the level zeroed (p_setup.h), so the fallback lays it
  * out again through `layOutWorld()`, or closes the world so the frame keeps its
@@ -4522,7 +4485,7 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
  * this arena; the fallback is for a build whose measurement was changed.
  *
  * This does NOT run the idle tic a New Game needs: a save is applied to the
- * freshly built world first, and its restored state must not advance (T53).
+ * freshly built world first, and its restored state must not advance.
  *
  * @param levelNumber 1..9, the map the caller wants the world on.
  * @param skill       0..4.
@@ -5348,3 +5311,4 @@ const LevelFailure& frameLevelFailure() {
 #endif
 
 
+      

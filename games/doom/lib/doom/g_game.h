@@ -17,7 +17,8 @@
  * ga_loadlevel` and therefore a reload of the same level, and the exit path --
  * G_ExitLevel()/G_SecretExitLevel(), G_DoCompleted()'s next-map decision and
  * G_DoWorldDone()'s load of the next level. There is still no intermission, no
- * world map, no finale and no menu: those are screens, and D5.2 owns them.
+ * world map, no finale and no menu: those are screens, owned by the menu and
+ * screen layers above this one.
  *
  * THE FORMAT (shareware WAD, version 109)
  *
@@ -188,7 +189,7 @@ typedef enum g_demo_stop {
      * here. Upstream answers this with G_ExitLevel(), which is the game state
      * machine's; this port stops instead and reports it, because a demo that
      * reaches a level exit is a finding about the stream, not a transition the
-     * demo path may follow (D4.4's scope). */
+     * demo path may follow. */
     G_DEMO_STOP_MARKER = 0,
     /* The lump ended with no marker. g_demo_open() refuses this, so a driver
      * that started from an accepted record cannot reach it; the value exists so
@@ -429,7 +430,8 @@ void g_demo_rules(const g_demo_t* demo, p_spawn_rules_t* rules);
  * function exists to remove.
  *
  * A reload is the same map only: no level transition, no intermission, no menu,
- * no `gamemap` change and no `nextmap` special line. Those are D4.5's.
+ * no `gamemap` change and no `nextmap` special line. Those belong to the exit
+ * path.
  *
  * @param level A loaded level whose player is PST_REBORN (any player state is
  *              accepted; the reload itself is unconditional, as G_DoLoadLevel's
@@ -563,7 +565,7 @@ g_level_error_t g_do_world_done(p_level_t* level, g_level_state_t* game,
  *
  * AN EXIT STOPS THE PLAYBACK. Upstream's demo path reaches G_DoCompleted and the
  * intermission from the same game state machine; this driver refuses to follow a
- * transition (D4.4's scope), names the reason G_DEMO_STOP_EXIT, and leaves the
+ * transition, names the reason G_DEMO_STOP_EXIT, and leaves the
  * stream short. No shareware demo reaches an exit today, so the pins do not
  * move; a demo that does is a finding the shorter `tics` reports.
  *

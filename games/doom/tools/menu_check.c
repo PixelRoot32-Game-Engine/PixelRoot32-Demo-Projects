@@ -297,8 +297,8 @@ static int arenaMain(const char* path, int bound) {
          * The unbind is not optional. p_level_reload() copies the map's sectors with
          * doom_map_get_sector(), which answers through a bound live reader -- and the
          * level is being rebuilt, so the reader returns without writing and the copy
-         * is the stack's garbage (T39: every frame after the first board New Game
-         * was refused with FLAT_MISSING). `--bound` skips the unbind to prove this
+         * is the stack's garbage (every frame after a New Game on the board would
+         * be refused with FLAT_MISSING). `--bound` skips the unbind to prove this
          * gate sees that defect. */
         level.rules.skill = (p_skill_t)skill;
         memset(&level.random, 0, sizeof level.random);

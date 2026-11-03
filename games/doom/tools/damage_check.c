@@ -1,5 +1,5 @@
 /*
- * Host harness for damage, death, pickups and the crush (D4.2d1).
+ * Host harness for damage, death, pickups and the crush.
  *
  * It loads E1M1 through lib/doom/p_setup.c, keeps only the avatar that
  * P_LoadThings() already spawned, and then drives the real p_inter.c rules from

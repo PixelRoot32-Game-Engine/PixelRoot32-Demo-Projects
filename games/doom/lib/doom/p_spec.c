@@ -132,7 +132,7 @@ void p_spec_refresh_things(struct p_mobj_context* world, uint16_t sectorIndex) {
         if (mobj == NULL || mobj->sector != sectorIndex) {
             continue;
         }
-        /* The two fields P_SpawnMobj copied. `z` is P_ZMovement's, D4.2. */
+        /* The two fields P_SpawnMobj copied. `z` is P_ZMovement's. */
         mobj->floorz = world->sectors[sectorIndex].floorHeight;
         mobj->ceilingz = world->sectors[sectorIndex].ceilingHeight;
         if (world->specStats != NULL) {
@@ -389,7 +389,7 @@ p_spec_error_t p_spawn_specials(struct p_level* level) {
 
     /* P_SetupLevel spawns deathmatch players before P_SpawnSpecials. The
      * reference has no P_SpawnDeathmatchSpecials; the deathmatch-only level
-     * start is G_DeathMatchSpawnPlayer, owned by the player layer (D5). The
+     * start is G_DeathMatchSpawnPlayer, which this port does not have. The
      * mode flag is still threaded here so the branch is visible and the gate can
      * assert it. */
     if (level->rules.deathmatch) {
@@ -613,7 +613,7 @@ void p_player_in_special_sector(p_level_t* level, p_player_t* player) {
         case 11:
             /* EXIT SUPER DAMAGE! (for E1M8 finale)
              *
-             * `player->cheats &= ~CF_GODMODE;` -- there are no cheats (D5), so
+             * `player->cheats &= ~CF_GODMODE;` -- there are no cheats, so
              * there is nothing to clear. The order below is upstream's: the
              * damage lands first and the threshold is read after it. */
             if ((level->leveltime & P_SECTOR_DAMAGE_MASK) == 0) {
@@ -1361,7 +1361,7 @@ static int trigger_use_arm(struct p_level* level, uint16_t lineIndex,
         case 99:
         case 134:
         case 136:
-            /* EV_DoLockedDoor(blazeOpen). No key inventory yet (D5), and
+            /* EV_DoLockedDoor(blazeOpen). Key cards are not checked, and
              * byPlayer was checked above. */
             (void)p_do_door(world, lineIndex, P_DOOR_BLAZE_OPEN);
             level->specStats.deferredLineSpecial += 1u;

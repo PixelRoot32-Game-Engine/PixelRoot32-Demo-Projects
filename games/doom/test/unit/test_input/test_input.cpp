@@ -1,5 +1,5 @@
 /*
- * Behaviour tests for the button -> ticcmd mapping (D4.2f).
+ * Behaviour tests for the button -> ticcmd mapping.
  *
  * The world's only input is a tic command. This mapping is the one place the
  * engine's six button bits become `p_ticcmd_t`, and it is a pure function, so
@@ -12,14 +12,14 @@
  *   A                         BT_ATTACK
  *   B alone                   BT_USE
  *
- * The cases the brief left open are asserted too, because a value nobody chose
+ * The combinations the table leaves open are asserted too, because a value nobody chose
  * is a behaviour the panel would have to discover: both directions on one axis
  * cancel, B is a run modifier only forward, B with any direction is not BT_USE,
  * and A+B sets both bits.
  *
  * Every case checks all four fields, so a mapping that sets the right movement
  * and a stray button fails just as loudly as an inverted sign. `sidemove` is 0
- * in every case: strafing is D4.3's and the field's presence is the contract.
+ * in every case: no button strafes, and the field's presence is the contract.
  */
 #include <cstdint>
 
@@ -126,8 +126,7 @@ void test_opposite_directions_cancel(void) {
     assertCommand(static_cast<std::uint8_t>(kButtonLeft | kButtonRight), 0, 0, 0, 0u);
 }
 
-// A is BT_ATTACK, alone or while walking: D4.2d consumes it, and until then
-// P_PlayerThink counts the press instead of dropping it.
+// A is BT_ATTACK, alone or while walking.
 void test_a_is_attack(void) {
     assertCommand(kButtonA, 0, 0, 0, BT_ATTACK);
     assertCommand(static_cast<std::uint8_t>(kButtonA | kButtonUp), kForwardWalk, 0, 0,

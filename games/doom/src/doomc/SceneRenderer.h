@@ -13,7 +13,7 @@ namespace doom {
 namespace doomc {
 
 /**
- * @brief What the scene needs to know about one rendered frame (D4.0).
+ * @brief What the scene needs to know about one rendered frame.
  *
  * The renderer's own timings come straight from the driver's per-frame record,
  * so the numbers the game prints and the numbers the probe prints are produced
@@ -34,7 +34,7 @@ struct SceneFrameMeasurements {
     char hash[65] = {0};
     /// The pass that refused this frame, or "none" when it rendered. The names
     /// are the frame driver's own stages: "walk", "walls", "planes", "sprites",
-    /// "masked", plus "player" for a world with no avatar. D4.2g: a refused frame
+    /// "masked", plus "player" for a world with no avatar. A refused frame
     /// leaves the previous picture on the panel, and this is what the one
     /// diagnostic line names.
     const char* refusedStage = "none";
@@ -44,7 +44,7 @@ struct SceneFrameMeasurements {
 };
 
 /**
- * @brief The console player, as the scene's serial line reports it (D4.2f).
+ * @brief The console player, as the scene's serial line reports it.
  *
  * The fixed-point numbers are DOOM's own: 16.16 map units and a 32-bit binary
  * angle. They are printed raw, not converted, so a board line can be compared
@@ -63,7 +63,7 @@ struct ScenePlayerState {
 };
 
 /**
- * @brief The shipped frame's window onto the level (D4.0 / D4.2f).
+ * @brief The shipped frame's window onto the level.
  *
  * This is the module the scene talks to, not the probe's `frameProbeRun()`:
  * `open()` loads E1M1 once and keeps the container mapping, the walk state, the
@@ -116,7 +116,7 @@ public:
 
 #if defined(DOOM_MENU)
     /**
-     * @brief The menu's New Game (D5.2): reloads the level at @p skill.
+     * @brief The menu's New Game: reloads the level at @p skill.
      *
      * A delegation to `frameLevelNewGame()`; see it for what is reset.
      *
@@ -134,7 +134,7 @@ public:
 #endif
 
     /**
-     * @brief The automap (D5.3): the controls, and whether it is up.
+     * @brief The automap: the controls, and whether it is up.
      *
      * `render()` paints the map instead of the world while it is active, so the
      * scene only has to hand over the buttons and let it be. These are the
@@ -181,8 +181,8 @@ public:
     /**
      * @brief Renders the host harness's frame 00 through the view entry point.
      *
-     * The byte-identity proof D4.2f owes: `frameLevelRenderView()` is the only
-     * render path now, and rendering the harness's own viewpoint through it must
+     * The byte-identity proof: `frameLevelRenderView()` is the only
+     * render path, and rendering the harness's own viewpoint through it must
      * reproduce the host's frame-00 hash character for character. Prints one
      * `SHOW,frame00,...` line with the hash and the viewpoint it used, so the
      * check is in the boot log and not only in a report.
@@ -202,7 +202,7 @@ public:
     bool isOpen() const { return open_; }
 
     /**
-     * @brief The classification of the last failed `open()` (D7.2).
+     * @brief The classification of the last failed `open()`.
      *
      * A copy of the frame driver's record when the level session refused, or
      * `Palette` when the session opened but PLAYPAL could not supply the colour
@@ -215,7 +215,7 @@ public:
 
     /// The level marker the session is on ("E1M1"), empty before `open()`.
     ///
-    /// S21: live, not the marker `open()` returned. A transition moves the world
+    /// Live, not the marker `open()` returned. A transition moves the world
     /// to another map, and a cached boot marker would keep naming the level the
     /// run started on. The string lives in the driver's own buffer.
     const char* level() const {

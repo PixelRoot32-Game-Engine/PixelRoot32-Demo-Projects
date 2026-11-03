@@ -12,7 +12,7 @@ independent implementation written from linuxdoom-1.10.
 
 TWO PROTOCOLS
 
-``--movement`` (the default) is D4.2b's walk. The harness sets the angle and
+``--movement`` (the default) is the walk. The harness sets the angle and
 calls P_Thrust/P_MobjThinker directly, so the collision core is exercised
 without a player record. The script (documented in movement_check.c) is:
 
@@ -22,7 +22,7 @@ without a player record. The script (documented in movement_check.c) is:
     tics  96..127  no thrust                         (friction only)
     tics 128..159  angle 180,    thrust 0x19 * 2048  (back into the room)
 
-``--player`` is D4.2c's tic. A real ``p_ticcmd_t`` drives the avatar through
+``--player`` is the player tic. A real ``p_ticcmd_t`` drives the avatar through
 ``p_level_tic()``, so P_PlayerThink, P_MovePlayer, P_CalcHeight and the use
 trace run in upstream's order (200 tics):
 
@@ -96,13 +96,13 @@ EXIT_USAGE = 2
 SOURCES = (
     "p_setup.c", "p_mobj.c", "p_map.c", "p_user.c", "p_tick.c", "p_action.c",
     # p_map.c's PIT_CheckThing and PIT_ChangeSector call p_inter.c's damage and
-    # pickup rules (D4.2d1), so the interaction layer is part of the movement
-    # core's link closure now.
+    # pickup rules, so the interaction layer is part of the movement core's
+    # link closure.
     "p_inter.c",
-    # D4.2d2: p_user.c runs the weapon psprite machine and p_inter.c drops a dying
+    # p_user.c runs the weapon psprite machine and p_inter.c drops a dying
     # player's weapon, so p_pspr.c is in the closure too.
     "p_pspr.c",
-    # T15a: A_Look is real and P_FireWeapon calls P_NoiseAlert.
+    # A_Look and P_FireWeapon's P_NoiseAlert need the sight and sound modules.
     "p_sight.c", "p_enemy.c",
     "m_random.c", "z_zone.c", "doom_map.c", "r_bsp.c", "r_plane.c", "r_tables.c",
     "w_wad.c", "p_spec.c", "p_floor.c", "p_doors.c", "p_plats.c", "p_ceilng.c",

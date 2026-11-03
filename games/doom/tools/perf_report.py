@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Report the DOOM port's frame time from a captured serial log (D7.3).
+"""Report the DOOM port's frame time from a captured serial log.
 
-Phase 7 needs the final frame-time record to be a command, not a table typed
-once and left to age. This tool reads the serial capture of a running image and
+The frame-time record is a command, not a table typed once and left to age.
+This tool reads the serial capture of a running image and
 prints, per phase, the count / min / max / mean over the samples that describe
 the world pass.
 
@@ -14,7 +14,7 @@ Two line formats are understood, both written by the firmware itself:
   Fields are looked up by name, never by position: the firmware has added
   fields before and will again, and a positional parser would read a shifted
   column as a real measurement.
-* ``FRAMEPROF,summary,...`` -- the Phase 3 ``_frame`` probe's 20-view summary
+* ``FRAMEPROF,summary,...`` -- the ``_frame`` probe's 20-view summary
   (``FrameDriver.cpp``), reported as its own table.
 
 WHY THE WORLD-FRAME FILTER EXISTS

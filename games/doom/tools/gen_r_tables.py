@@ -50,14 +50,14 @@ FORMULAS (exactly the ones upstream's disabled initialisers state)
     rebuilds this table in R_ExecuteSetViewSize() because the view size can
     change; this port has one view size, so it is a constant like the rest.
 
-    That same table is the sprite light (D3.4): R_ProjectSprite() indexes
+    That same table is the sprite light: R_ProjectSprite() indexes
     `spritelights[xscale >> LIGHTSCALESHIFT]`, and `spritelights` is the row
     R_AddSprites() installs from `scalelight[lightnum]`. linuxdoom-1.10 has no
     R_InitSpriteLights(), so there is no third table here and no flash to spend:
     r_light.h states the two coordinates and how they differ from the wall's.
 
     r_plane_light[i][j] is R_InitLightTables()'s zlight[,] table, the plane
-    light (D3.3), reduced to the map index it selects:
+    light, reduced to the map index it selects:
 
         startmap = ((LIGHTLEVELS-1-i)*2) * NUMCOLORMAPS / LIGHTLEVELS
         scale    = FixedDiv((SCREENWIDTH/2)*FRACUNIT, (j+1)<<LIGHTZSHIFT)
@@ -101,7 +101,7 @@ viewangletox from today's finetangent and from upstream's literal array yields
 the same 4096 values, verified while writing this file. The C walk and the
 independent Python oracle in tools/doom_ref.py both derive their tables from
 these formulas, so the two sides are comparable exactly; a one-unit difference
-in a sine is a sub-pixel scale change that D3.2/D3.3 either match or don't,
+in a sine is a sub-pixel scale change that the wall and plane passes either match or don't,
 and that is the layer where pixel identity is measured.
 
 Output is deterministic: same formulas, same bytes, no timestamps and no paths.
@@ -182,7 +182,7 @@ def fixed_div(a: int, b: int) -> int:
 
 
 def plane_light() -> list[list[int]]:
-    """R_InitLightTables()'s zlight[,] as colormap indices (D3.3)."""
+    """R_InitLightTables()'s zlight[,] as colormap indices."""
     table: list[list[int]] = []
     for i in range(LIGHTLEVELS):
         startmap = ((LIGHTLEVELS - 1 - i) * 2) * NUMCOLORMAPS // LIGHTLEVELS
@@ -197,7 +197,7 @@ def plane_light() -> list[list[int]]:
 
 
 def plane_yslope() -> list[int]:
-    """R_ExecuteSetViewSize()'s yslope[] (D3.3)."""
+    """R_ExecuteSetViewSize()'s yslope[]."""
     table: list[int] = []
     for i in range(SCREEN_HEIGHT):
         dy = abs(((i - SCREEN_HEIGHT // 2) << FRACBITS) + FRACUNIT // 2)
@@ -206,7 +206,7 @@ def plane_yslope() -> list[int]:
 
 
 def plane_dist_scale(xangles: list[int]) -> list[int]:
-    """R_ExecuteSetViewSize()'s distscale[] (D3.3)."""
+    """R_ExecuteSetViewSize()'s distscale[]."""
     sine = fine_sine()
     table: list[int] = []
     for x in range(SCREEN_WIDTH):

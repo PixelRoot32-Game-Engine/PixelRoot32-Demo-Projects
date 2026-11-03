@@ -32,7 +32,7 @@
 
 #include "palette/DoomPalette.h"
 #if defined(DOOM_AUDIO)
-#include "audio/AudioEngine.h"  /* AudioEngine::setMasterVolume (T49) */
+#include "audio/AudioEngine.h"  /* AudioEngine::setMasterVolume */
 #include "doomc/DoomAudio.h"
 #include "doomc/SfxBank.h"
 #include "s_sound.h"
@@ -55,7 +55,7 @@
 #include "doomc/InputMap.h"  /* the button bits the menu and the automap read */
 #endif
 #if defined(DOOM_MENU)
-#include "doomc/AudioLevels.h"  /* the volume/mute -> audio level mapping (T49) */
+#include "doomc/AudioLevels.h"  /* the volume/mute -> audio level mapping */
 #include "doomc/SceneRenderer.h"
 #include "doomc/SettingsStore.h"
 #if DOOM_PERSISTENCE
@@ -65,7 +65,7 @@
 #endif
 #endif
 #if defined(DOOM_HUD)
-#include "am_map.h"  /* AM_PAN_* and AM_ZOOM_*: the automap's controls (D5.3) */
+#include "am_map.h"  /* AM_PAN_* and AM_ZOOM_*: the automap's controls */
 #endif
 
 #include <cassert>
@@ -124,11 +124,11 @@ constexpr int kButtonCount = 6;
 
 /// The engine's `InputConfig` index of Start (GPIO 34 on the CYD): after the six
 /// game buttons, so the shell, the INPUT line and the on-screen slots never see it.
-/// Only the menu reads it (D5.2).
+/// Only the menu reads it.
 constexpr std::uint8_t kStartIndex = 6;
 
 /// The engine's `InputConfig` index of Select (GPIO 35 on the CYD): the automap's
-/// toggle (D5.3). Like Start it is not a game button: it is sampled on its own,
+/// toggle. Like Start it is not a game button: it is sampled on its own,
 /// never packed into the world's bits, so `kButtonCount` stays 6.
 constexpr std::uint8_t kSelectIndex = 7;
 
@@ -137,11 +137,6 @@ constexpr std::uint8_t kSelectIndex = 7;
 /// diagnostic script reaches `runMap()` through the same byte the real sample
 /// fills without the menu reading it as Start.
 constexpr std::uint8_t kMapScriptSelect = 0x80u;
-
-/// The scripted-input build's map chord. The engine never sets bit 7 of the
-/// button byte (the six game bits are 0..5), and the menu's Start is 0x40, so a
-/// diagnostic script reaches `runMap()` through the same byte the real sample
-/// fills without the menu reading it as Start.
 
 // --- Shell geometry ---------------------------------------------------------
 
@@ -166,8 +161,7 @@ constexpr int kSlotRowWidth = kButtonCount * kSlotWidth + (kButtonCount - 1) * k
  *
  * The enumerators index `kInkColors`, which maps each one to an engine palette
  * entry; nothing here hardcodes an RGB value, so the shell follows whichever
- * palette the engine has active, exactly as the placeholder frame did when it
- * asked `Renderer` for `Color::Red`.
+ * palette the engine has active.
  */
 enum class Ink : std::uint8_t {
     Background = 0,    ///< Whole surface, so the shell owns every pixel.
@@ -230,9 +224,8 @@ void writeConsoleLine(const char* line) {
  * the stride it must use, the byte size of the buffer the shell actually got,
  * and the palette the drawer presents it in.
  *
- * `bytes` also says which path is live, so a maintainer reading the log learns
- * as much as the code does: 64,000 B for the 8bpp panel buffer, 128,000 B for
- * the 16bpp desktop one, 0 for a driver with neither.
+ * `bytes` also says which path is live: 64,000 B for the 8bpp panel buffer,
+ * 128,000 B for the 16bpp desktop one, 0 for a driver with neither.
  *
  * Suppressed by the frame-log build: that build's stream is pure `FRAME,...`
  * CSV, and the one boot line would be the only record without a frame index.
@@ -268,7 +261,7 @@ void reportFrameContract(Renderer& renderer) {
 }
 #endif  // !PIXELROOT32_DOOM_FRAME_LOG
 
-// --- Memory census (D4.0c) --------------------------------------------------
+// --- Memory census -----------------------------------------------------------
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
 
@@ -523,8 +516,7 @@ void paintShell(const std::uint16_t* inks, int width, int height, std::uint8_t p
  * @brief Paint the shipped shell into whichever framebuffer the driver offers.
  *
  * Split out of `draw()` so the palette-test build can replace it whole instead
- * of editing it: with the test flag off, this is the frame the port has always
- * shown, unchanged.
+ * of editing it.
  */
 void paintShellFrame(Renderer& renderer, std::uint8_t pressed) {
     DrawSurface& surface = renderer.getDrawSurface();
@@ -651,8 +643,8 @@ void paintPaletteTest(int width, int height, Store store) {
  * @brief Paint the palette test into whichever framebuffer the driver offers.
  *
  * The panel path writes the table byte straight into the 8bpp surface -- the
- * same store DOOM's rasteriser performs -- so the panel shows exactly what
- * Phase 2 will draw. The desktop mirror expands that byte the way TFT_eSPI
+ * same store DOOM's rasteriser performs -- so the panel shows exactly what the
+ * renderer draws. The desktop mirror expands that byte the way TFT_eSPI
  * does, so both screens agree instead of showing the expanded source colour.
  */
 void paintPaletteTestFrame(Renderer& renderer) {
@@ -679,15 +671,15 @@ void paintPaletteTestFrame(Renderer& renderer) {
 
 #endif  // PIXELROOT32_DOOM_PALETTE_TEST
 
-// --- Container probe (D2.3) -------------------------------------------------
+// --- Container probe ---------------------------------------------------------
 
 #if defined(PIXELROOT32_DOOM_WAD_PROBE)
 
 /**
  * @brief The lumps the probe resolves, in the order it reports them.
  *
- * The six are one of each kind the port will need: the palette and the colour
- * map (Phase 2's first read), ENDOOM (the fixed 4000 B screen), E1M1 (a map
+ * The six are one of each kind the port needs: the palette and the colour
+ * map (the renderer's first read), ENDOOM (the fixed 4000 B screen), E1M1 (a map
  * marker with no bytes of its own), DEMO1 (the largest demo, a real DEFLATE
  * payload) and TEXTURE1 (a composite), so a directory that accepted the image
  * but shifted its names is caught here.
@@ -809,7 +801,7 @@ void reportZoneProbe() {
 /// The store the settings live in: the board's NVS, or RAM on the desktop mirror.
 /// The game code only ever sees the doomc::SettingsStore seam.
 #if DOOM_PERSISTENCE
-/// D7.1 (T53): the engine's persistence layer owns both media -- the settings in
+/// The engine's persistence layer owns both media -- the settings in
 /// `nvs` (the same namespace and key the `Preferences` store used, so the record
 /// survives byte for byte) and the six slots in the `saves` partition.
 doomc::DoomPersistence gPersistence;
@@ -851,7 +843,7 @@ static_assert(M_BTN_UP == doomc::kButtonUp && M_BTN_DOWN == doomc::kButtonDown
  *      frames of the new world are in the log. The last one leaves skill 3. The main
  *      screen remembers its cursor (upstream's lastOn), which step 2 left on OPTIONS,
  *      so the first one moves it back to NEW GAME with one UP.
- *   5. D7.1 (T53): SAVE GAME on row 0, then LOAD GAME on the same row, so the
+ *   5. SAVE GAME on row 0, then LOAD GAME on the same row, so the
  *      boot log carries one `SHOW,save` and one `SHOW,load` through the real menu.
  * End state: skill 3, volume 5, gamma 3, mute ON, menu closed, slot 0 holding a
  * fresh New Game's world.
@@ -895,7 +887,7 @@ const ScriptStep kMenuScript[] = {
     WAIT(120),
 #if DOOM_PERSISTENCE
     /*
-     * D7.1 (T53): the two slot screens driven through the real menu path.
+     * The two slot screens driven through the real menu path.
      *
      * The New Games leave MAIN's cursor on NEW GAME, so three DOWNs reach SAVE
      * GAME (NEW GAME, OPTIONS, LOAD GAME, SAVE GAME). A opens the six-row screen,
@@ -903,12 +895,12 @@ const ScriptStep kMenuScript[] = {
      * confirm dialog. The save closes the menu; OPEN_MENU, UP, A, A then loads the
      * same row back. The `SHOW,save` and `SHOW,load` lines are the record; a
      * partition that is not there reports `status=unavailable` and the script
-     * still finishes, which is the honest shape on an old table.
+     * still finishes, which is the honest shape on a table without `saves`.
      */
     OPEN_MENU, DOWN3, TAP(M_BTN_A), WAIT(40), TAP(M_BTN_A), WAIT(60),
     OPEN_MENU, TAP(M_BTN_UP), TAP(M_BTN_A), WAIT(40), TAP(M_BTN_A), WAIT(120),
     /*
-     * T54: a second used row, so the slot screen proves "more than one slot"
+     * A second used row, so the slot screen proves "more than one slot"
      * rather than only the row the power-cycle proof uses. The load above left
      * MAIN's cursor on LOAD GAME; DOWN reaches SAVE GAME, A opens it on row 0,
      * DOWN moves to row 1, A writes it. A save changes no world state, so the
@@ -921,7 +913,7 @@ const ScriptStep kMenuScript[] = {
 
 #if DOOM_PERSISTENCE
 /*
- * The second boot's script (T54): slot 0 already holds the record the first boot
+ * The second boot's script: slot 0 already holds the record the first boot
  * wrote, so this boot only opens the menu and loads it. MAIN starts on NEW GAME,
  * so two DOWNs reach LOAD GAME and two A presses open row 0 and load it. This is
  * the same image as `kMenuScript`, chosen at boot from slot 0's label, so no
@@ -936,7 +928,7 @@ const ScriptStep kMenuLoadScript[] = {
 #endif
 
 /// The buttons the script holds on @p frame, or 0 once it has ended.
-/// @p loadOnly selects the T54 second-boot script (slot 0 already used).
+/// @p loadOnly selects the second-boot script (slot 0 already used).
 std::uint8_t menuScriptButtons(std::uint32_t frame, bool loadOnly) {
 #if DOOM_PERSISTENCE
     const ScriptStep* script = loadOnly ? kMenuLoadScript : kMenuScript;
@@ -984,7 +976,7 @@ std::uint8_t menuScriptButtons(std::uint32_t frame, bool loadOnly) {
  *   8. Select: closed, and the log goes back to SHOW,frame lines.
  *
  * The grid is not in the script: upstream toggles it with 'g', the board has no
- * button for it, and inventing one is not this task's call.
+ * button for it, and the build assigns it none.
  */
 struct MapScriptStep {
     std::uint8_t buttons;
@@ -1049,13 +1041,13 @@ void DoomScene::init() {
     // settings replace it below, once the level is open.
     m_menu_init(&menu_, nullptr);
 #if DOOM_PERSISTENCE
-    // D7.1 (T53): the two media before anything that reads the menu's settings,
+    // The two media before anything that reads the menu's settings,
     // so the load below never runs against an uninitialised store. A failure is
     // printed once here and the game continues: settings default, slots answer
     // unavailable.
     (void)gPersistence.init();
 #if defined(DOOM_MENU_SCRIPT)
-    // T54: one image, two boots. A used slot 0 means the first boot already
+    // One image, two boots. A used slot 0 means the first boot already
     // wrote the record this boot must load; an empty one means this is the first
     // boot and the full script (settings, New Games, SAVE, LOAD) runs. Choosing
     // from the medium is what keeps a reflash out of the save-to-load gap.
@@ -1068,16 +1060,16 @@ void DoomScene::init() {
 #endif
 #endif
 
-    // Builds the index -> RGB332 table once. It is the port's whole palette
-    // story: Phase 2 replaces the synthetic source with the WAD's PLAYPAL lump
-    // and nothing else in the frame path changes.
+    // Builds the index -> RGB332 table once; the shell, the palette test and
+    // the link probe below all read it.
     palette::init();
 
 #if defined(DOOM_AUDIO)
-    // D6.1/D6.3: the S_* layer first, so a level load's S_Start() has a seam to
-    // talk to. `S_Init` takes upstream's volumes (0..127); the menu's 0..15 is
-    // T49's, and until then the layer runs at full scale. `mode=legacy` is a
-    // literal on purpose: this port never sends SET_SOUND_PROFILE (S4).
+    // The S_* layer first, so a level load's S_Start() has a seam to talk to.
+    // `S_Init` takes upstream's volumes (0..127) and the layer runs at full
+    // scale; the menu's 0..15 volume is applied as the engine's master gain.
+    // `mode=legacy` is a literal on purpose: this port never sends
+    // SET_SOUND_PROFILE.
     doomc::doomAudioInit(engine.getAudioEngine(), engine.getMusicPlayer());
     S_Init(S_MAX_VOLUME, S_MAX_VOLUME);
     {
@@ -1101,8 +1093,8 @@ void DoomScene::init() {
     // calls this port's palette and the engine's console, and the value it
     // sends across comes back verified. It prints exactly one
     // `LINK,status=...,checksum=0x...` line, through the same console as the
-    // lines above and below, so a maintainer reading the boot log sees whether
-    // the DOOM core's build model links before the core exists.
+    // lines above and below, so the boot log shows whether the DOOM core's
+    // build model links.
     //
     // Runs after palette::init() because the probe reads the palette table, and
     // it is compiled out of the frame-log build for the reason stated there:
@@ -1111,7 +1103,7 @@ void DoomScene::init() {
 #endif  // !PIXELROOT32_DOOM_FRAME_LOG
 
 #if defined(PIXELROOT32_DOOM_WAD_PROBE)
-    // D2.3's storage probe, compiled only into env:esp32dev_ILI9341_wad: opens
+    // The storage probe, compiled only into env:esp32dev_ILI9341_wad: opens
     // the `wad` partition through the container adapter and prints one
     // `WAD,status=...` line plus one `LUMP,...` line per resolved name. It runs
     // after palette::init() and inside init()'s once-per-scene contract, so the
@@ -1133,7 +1125,7 @@ void DoomScene::init() {
 #endif  // PIXELROOT32_DOOM_ZONE_PROBE
 
 #if defined(PIXELROOT32_DOOM_FLASH_PROFILE)
-    // D2.5's flash-read profile, compiled only into
+    // The flash-read profile, compiled only into
     // env:esp32dev_ILI9341_flashprof: opens the `wad` partition, decodes E1M1's
     // whole working set out of it once (cold) and immediately again (warm), and
     // prints the two summaries, the phase lines, the warm/cold ratio and the
@@ -1148,10 +1140,10 @@ void DoomScene::init() {
 #endif  // PIXELROOT32_DOOM_FLASH_PROFILE
 
 #if defined(PIXELROOT32_DOOM_FRAME_PROBE)
-    // D3.6's frame driver, compiled only into env:esp32dev_ILI9341_frame: opens
+    // The frame driver, compiled only into env:esp32dev_ILI9341_frame: opens
     // the `wad` partition, loads E1M1's renderer working set, renders the 20
     // sampled viewpoints and prints the per-phase table, the three-view
-    // breakdown, the summary with the Phase 3 gate verdict, the RAM line and the
+    // breakdown, the summary with the gate verdict, the RAM line and the
     // hash of every frame.
     //
     // The surface is the engine's own 8bpp logical framebuffer, passed in rather
@@ -1172,7 +1164,7 @@ void DoomScene::init() {
 #endif  // PIXELROOT32_DOOM_FRAME_PROBE
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
-    // D4.0's game frame: one open level for the life of the scene. It reads the
+    // The game frame: one open level for the life of the scene. It reads the
     // `wad` partition, so this is the only environment that can render the game;
     // when it fails the reason is already on the serial line and draw() keeps
     // painting the shell. The measurement counters start here so the first
@@ -1181,7 +1173,7 @@ void DoomScene::init() {
     bootFailure_ = doomc::LevelFailure{};
 
 #if !defined(PLATFORM_NATIVE)
-    // D7.2: the loading screen, painted and presented before anything that can
+    // The loading screen, painted and presented before anything that can
     // fail runs. This is the one moment the surface is still in its default
     // RGB332 regime, so the painter's bytes are exactly what the panel shows.
     // `present()` + `flushPendingTransfers()` is the pair Engine::run() uses: the
@@ -1230,7 +1222,7 @@ void DoomScene::init() {
         // no-op on a surface without an 8-bit buffer (DrawSurface's default), so
         // the desktop mirror keeps its own conversion below.
 #if defined(DOOM_MENU)
-        // D5.2: the stored settings, or the defaults when the store has no valid
+        // The stored settings, or the defaults when the store has no valid
         // record. The gamma goes into the PLAYPAL tables before the panel is
         // handed them, so the first frame already shows it. Boot continues at
         // medium skill in E1M1 as always: the stored skill is the cursor's start
@@ -1245,7 +1237,7 @@ void DoomScene::init() {
             palette::applyGamma(sceneRenderer_.playpal(), gammaApplied_);
             sceneRenderer_.setMenu(&menu_);
 #if defined(DOOM_AUDIO)
-            // T49: the stored volume and mute reach the APU before the first
+            // The stored volume and mute reach the APU before the first
             // frame. The level is DOOM's 0..127; see doomc/AudioLevels.h for
             // why it is applied once, at the engine's master gain.
             applyAudioLevels();
@@ -1263,7 +1255,7 @@ void DoomScene::init() {
 #endif
         engine.getRenderer().getDrawSurface().setPalette8(palette::playpal565Table());
 
-        // D4.2f's byte-identity proof: render the host harness's frame 00 through
+        // Byte-identity proof: render the host harness's frame 00 through
         // the same `frameLevelRenderView()` the game frame uses, hash it, and
         // print the number. `50fb3d9c...` is the host's frame-00 hash, so a boot
         // log that prints anything else says the shared view path diverged.
@@ -1276,14 +1268,14 @@ void DoomScene::init() {
                                                  engine.getRenderer().getLogicalHeight());
         }
 #if defined(DOOM_SAVE_TEST) && DOOM_PERSISTENCE
-        // T54: the codec self-test, after the world exists (the valid record is
+        // The codec self-test, after the world exists (the valid record is
         // the live E1M1) and before any menu or input can change it. The two
         // slots it touches are 4 and 5, never the power-cycle record in slot 0.
         gPersistence.runSaveTest();
 #endif
     }
 
-    // D4.0c's census: what the image owns in dram0_0_seg, what the heap holds,
+    // The census: what the image owns in dram0_0_seg, what the heap holds,
     // the exact size of every allocation the frame path made, and the one
     // question the overlap design depends on -- whether a second 320x200 8-bit
     // frame fits in ONE contiguous block. On this board it does not: the heap
@@ -1314,7 +1306,7 @@ void DoomScene::init() {
     reportedTic_ = kNoTic;
 
 #if defined(PIXELROOT32_DOOM_FRAME_LOG)
-    // The recorder writes the same console the shipped shell did. Under the
+    // The recorder writes the same console the shell uses. Under the
     // flag it is the only writer: the SHELL, TIC and INPUT lines are compiled
     // out so the stream is pure CSV.
     frameLog_.setSink(&writeConsoleLine);
@@ -1399,7 +1391,7 @@ void DoomScene::update(unsigned long deltaTime) {
     }
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD) && defined(DOOM_MAP_SCRIPT)
-    // D5.3's diagnostic build: a fixed script plays Select and the map's keys
+    // The map diagnostic build: a fixed script plays Select and the map's keys
     // through the same byte the real sample fills, because no button on this board
     // can be pressed from the build host. Its Select bit is kMapScriptSelect, which
     // `runMap()` strips before anything reaches the world.
@@ -1408,7 +1400,7 @@ void DoomScene::update(unsigned long deltaTime) {
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_LEVEL_TEST)
 #if defined(DOOM_LEVEL_WALK)
-    // S24: the viewing walk. Each level gets a dwell, then the fixture stands on
+    // The viewing walk. Each level gets a dwell, then the fixture stands on
     // its own exit and B (the world's USE) is held for three frames; E1M3 takes
     // its secret line 51 so E1M9 is on the route, and E1M8 takes the victory
     // branch. Every tic goes through the real input path, and the driver's own
@@ -1441,7 +1433,7 @@ void DoomScene::update(unsigned long deltaTime) {
         }
     }
 #else
-    // S21's board proof (env esp32dev_ILI9341_hud_leveltest): at frame 20 the
+    // The level-exit board proof (env esp32dev_ILI9341_hud_leveltest): at frame 20 the
     // avatar is put in front of E1M1's own exit switch, and from frame 24 B is
     // held for three frames. B is bit 5 -- the world's USE -- so the press goes
     // through the real tic path; the frames before it are what release the use
@@ -1454,10 +1446,10 @@ void DoomScene::update(unsigned long deltaTime) {
     }
 #if DOOM_PERSISTENCE
     // The save half of the same proof, on the level the transition reached: write
-    // the live world -- slot 3, so the T54 power-cycle record in slot 0 is
+    // the live world -- slot 3, so the power-cycle record in slot 0 is
     // untouched -- go back to E1M1 with a New Game, then load the record. The load
     // must reopen the level the record names (E1M2), not the level the world is
-    // on, which is the wiring S21 added.
+    // on.
     if (showFrame_ == 60u) {
         (void)gPersistence.saveSlot(3);
     }
@@ -1477,7 +1469,7 @@ void DoomScene::update(unsigned long deltaTime) {
 #endif  // PIXELROOT32_DOOM_SHOW_E1M1 && DOOM_LEVEL_TEST
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
-    // S21: the run ended (E1M8's ending has no finale screen). The driver has
+    // The run ended (E1M8's ending has no finale screen). The driver has
     // already put the world back on the level the run started on; this frame asks
     // the menu to open over it, and `runMenu()` reports the open with its own
     // line, so there is no second menu-state printer here.
@@ -1494,11 +1486,11 @@ void DoomScene::update(unsigned long deltaTime) {
 #endif
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
-    // D4.2f: the world ticks on every frame, before the early return below. That
+    // The world ticks on every frame, before the early return below. That
     // return exists for the shell's repaint and the INPUT line; it must not stop
     // the simulation, or a held button would freeze the game.
 #if defined(DOOM_MENU)
-    // D5.2: the menu sees the raw buttons and answers with what the world may
+    // The menu sees the raw buttons and answers with what the world may
     // see. Open or latched, that is nothing, and runWorldTics() does not tick.
     std::uint8_t menuButtons = buttons;
     if (input.isButtonDown(kStartIndex)) {
@@ -1506,7 +1498,7 @@ void DoomScene::update(unsigned long deltaTime) {
     }
     std::uint8_t worldButtons = runMenu(menuButtons);
 #if defined(DOOM_HUD)
-    // D5.3: the automap owns Select and, while it is up, the d-pad, A and B. The
+    // The automap owns Select and, while it is up, the d-pad, A and B. The
     // menu comes first: while it is open it owns the frame's input and the map is
     // only a picture under it (upstream draws the menu on top of the automap).
     worldButtons = runMap(worldButtons, m_menu_active(&menu_) != 0);
@@ -1525,7 +1517,7 @@ void DoomScene::update(unsigned long deltaTime) {
 #endif
 
 #if defined(DOOM_AUDIO_SOAK)
-    // D6.5's soak (T48): the gate that paces the four-cue load is the tic, not
+    // The soak: the gate that paces the four-cue load is the tic, not
     // the frame, so a slow frame can skip a round but never add one.
     runAudioSoak();
 #endif
@@ -1586,8 +1578,8 @@ void DoomScene::runWorldTics(std::uint8_t buttons) {
     // Every owed tic runs, in order. A long stall (a serial write, a debugger
     // pause) replays its backlog instead of dropping it: DOOM's own loop runs
     // every available tic, and a dropped tic would be a simulation that silently
-    // ran slower than 35 Hz. There is no cap, because one would be a policy this
-    // task never chose; the burst is bounded by the stall, not by a constant.
+    // ran slower than 35 Hz. There is no cap: the burst is bounded by the
+    // stall, not by a constant.
     (void)sceneRenderer_.runTics(owed, buttons);
 }
 
@@ -1597,7 +1589,7 @@ void DoomScene::runWorldTics(std::uint8_t buttons) {
 
 void DoomScene::reportAudio() {
     const std::uint32_t now = sampleMicros();
-    // One second, the task's cadence. It is its own constant rather than the
+    // One report per second. It is its own constant rather than the
     // frame line's so the two can move independently.
     if (now - audioLastReportUs_ < 1000000u) {
         return;
@@ -1625,8 +1617,9 @@ void DoomScene::reportAudio() {
 #if defined(DOOM_AUDIO_SCRIPT)
 
 void DoomScene::runAudioScript() {
-    // The twelve ids are the sfxenum_t values the maintainer asked to hear; the
-    // two comments name what each one is. NULL is upstream's "no origin": the
+    // The twelve ids are sfxenum_t values chosen to cover weapons, doors,
+    // monsters and pickups; the comments beside them name each one. NULL is
+    // upstream's "no origin": the
     // script is a cue-by-cue listen test, not a positional one.
     static const int kScript[] = {
         sfx_pistol,  /* pistol */
@@ -1682,7 +1675,7 @@ constexpr std::uint32_t kSoakReportSeconds = 60u;
 constexpr std::uint32_t kSoakMinutes = 10u;
 constexpr std::uint32_t kSoakReportMicros = kSoakReportSeconds * 1000000u;
 
-/// The brief's reference block: 128 samples at 22050 Hz (5.80 ms), the DMA
+/// The reference block: 128 samples at 22050 Hz (5.80 ms), the DMA
 /// granularity the APU's own measurements use. The engine's render block here
 /// is 512 samples (23.22 ms); the README states both, so the percentage cannot
 /// be read as a quarter of the wrong budget without the sentence beside it.
@@ -1841,7 +1834,7 @@ void DoomScene::applyAudioLevels() {
 void DoomScene::applyMenuGamma() {
     gammaApplied_ = menu_.settings.gamma;
     if (fadeActive_) {
-        // D5.4: a fade owns the tables until it finishes; its next step composes
+        // A fade owns the tables until it finishes; its next step composes
         // the new gamma. Rebuilding here would flash the frame to full brightness.
         return;
     }
@@ -1961,7 +1954,7 @@ void DoomScene::updatePaletteFlash() {
         return;
     }
 #if defined(DOOM_FRAME_DUMP)
-    // S26 diagnostic: every page change, so a capture says which palette the
+    // Diagnostic: every page change, so a capture says which palette the
     // artifact's frames were drawn under (a flash page or page 0).
     {
         char event[80];
@@ -1995,7 +1988,7 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
     buttons = static_cast<std::uint8_t>(
         buttons | menuScriptButtons(menuScriptFrame_++, menuScriptLoadOnly_));
 #endif
-    // S21: the run ended on the frame before this one. Opening here -- after the
+    // The run ended on the frame before this one. Opening here -- after the
     // previous active state is sampled and before this frame's -- is what makes
     // the open visible below: the same frame prints `SHOW,menu,state=open` and
     // calls S_PauseSound, exactly as a Start press does.
@@ -2029,8 +2022,7 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
     if (active != wasActive) {
 #if defined(DOOM_AUDIO)
         // Upstream's menu pause: P_Pause calls S_PauseSound, P_Unpause calls
-        // S_ResumeSound. T47 is what makes it audible; the transport is wired
-        // now so the menu's pause is not a missing call later.
+        // S_ResumeSound, so the music holds while the menu is open.
         if (active) {
             S_PauseSound();
         } else {
@@ -2057,7 +2049,7 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
         // The reload is a stall, not a tic: do not replay the tics that elapsed.
         worldTic_ = ticClock_.tic();
         if (started) {
-            // D5.4: a New Game is a level load with no level change to notice.
+            // A New Game is a level load with no level change to notice.
             startFade();
         }
         std::snprintf(line, sizeof line, "SHOW,newgame,skill=%d,status=%s,frame=%u\n", skill,
@@ -2074,7 +2066,7 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
         applyMenuGamma();
     }
 #if defined(DOOM_AUDIO)
-    // T49: the volume and the mute row follow the same rule as the gamma row --
+    // The volume and the mute row follow the same rule as the gamma row --
     // live while they move, from the menu's own per-frame turn rather than a
     // second poll in update(). The method's first statement is the comparison.
     applyAudioLevels();
@@ -2109,7 +2101,7 @@ void DoomScene::refreshSlotLabels() {
     }
     m_menu_set_slot_labels(&menu_, pointers);
 #if defined(DOOM_MENU_SCRIPT)
-    // T54: the six rows are pixels the build host cannot read, so the scripted
+    // The six rows are pixels the build host cannot read, so the scripted
     // diagnostic prints them as well. The screen is the truth; this line is the
     // same six strings at the same moment, used to report what it showed.
     for (int index = 0; index < M_SLOT_COUNT; ++index) {
@@ -2138,10 +2130,10 @@ void DoomScene::handleSlotAction(int action, int slot) {
         return;
     }
     // A load is a level load: the tics that elapsed during the reload are not
-    // replayed, and D5.4's fade runs from black exactly as a New Game's does.
+    // replayed, and the transition fade runs from black exactly as a New Game's does.
     worldTic_ = ticClock_.tic();
     startFade();
-    // T54: make the very next drawn frame report itself. The power-cycle proof
+    // Make the very next drawn frame report itself. The power-cycle proof
     // compares the restored x/y/angle/health/tics with the previous boot's; the
     // ordinary one-second cadence could already be a second of world tics past
     // the restore, which would compare different states.
@@ -2154,7 +2146,7 @@ void DoomScene::handleSlotAction(int action, int slot) {
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
 
 /*
- * THE AUTOMAP'S CONTROLS (D5.3)
+ * THE AUTOMAP'S CONTROLS
  *
  * Select toggles on its rising edge and latches until release -- only the edge is
  * read, so one press is one toggle. While the map is up the d-pad pans, A zooms
@@ -2195,7 +2187,7 @@ std::uint8_t DoomScene::runMap(std::uint8_t buttons, bool menuOpen) {
     // high when released (measured at 5 kHz: 0-25 short low pulses per 5 s, almost
     // all under 1 ms -- electrical noise the engine's 100 ms debounce absorbs).
     // It is armed only after being seen released once: that costs nothing on a
-    // healthy pin and disables a stuck-low one instead of toggling forever (D5.3).
+    // healthy pin and disables a stuck-low one instead of toggling forever.
     const bool physical = engine.getInputManager().isButtonDown(kSelectIndex);
     if (!physical) {
         mapSelectArmed_ = true;
@@ -2234,7 +2226,7 @@ std::uint8_t DoomScene::runMap(std::uint8_t buttons, bool menuOpen) {
 
 void DoomScene::draw(Renderer& renderer) {
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
-    // D4.2f's game frame: the player's viewpoint, presented by the engine with
+    // The game frame: the player's viewpoint, presented by the engine with
     // the PLAYPAL expansion the surface was given in init(). It takes precedence
     // over the palette test and the shell, but the flags never meet: this
     // environment defines only this one.
@@ -2344,7 +2336,7 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
     // frame it reports.
     showPlayer_ = sceneRenderer_.player();
 #if DOOM_PERSISTENCE
-    // T54: a load asked for its first restored frame to be reported. The line is
+    // A load asked for its first restored frame to be reported. The line is
     // written at the top of the next draw and describes the state captured just
     // above, so setting the flag here is what puts the restored x/y/angle/
     // health/tics on the wire before the world can tick again.
@@ -2354,7 +2346,7 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
     }
 #endif
 #if defined(DOOM_MENU)
-    // D5.4: a level load's fade owns the palette while it runs; asked before the
+    // A level load's fade owns the palette while it runs; asked before the
     // flash so the flash never rebuilds a full-brightness table mid-fade.
     updateFade();
 #endif
@@ -2370,8 +2362,8 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
     bool rendered = false;
 
     // The refusal diagnostic outlives the two surface branches below. A refused
-    // frame is no longer replaced by the shell, so this record is the only place
-    // the cause is named (D4.2g).
+    // frame is not replaced by the shell, so this record is the only place
+    // the cause is named.
     const char* refusedStage = "none";
     int refusedCode = 0;
 
@@ -2449,7 +2441,7 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
 #endif
 
     if (!rendered) {
-        // Two different failures, two different answers (D4.2g).
+        // Two different failures, two different answers.
         //
         //   no session, or a surface the renderer cannot use
         //       The shell is the truth: no partition and no accepted container
@@ -2458,20 +2450,20 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
         //   an open session whose pass refused this viewpoint
         //       The session is fine and the surface still holds the last good
         //       picture, because renderOnce() prefills only after the walk
-        //       succeeds. Replacing it with the shell would claim a Phase 0
+        //       succeeds. Replacing it with the shell would claim a
         //       fallback that never happened. Count it, name the stage/code pair
         //       once, and leave the picture alone.
         if (!sceneRenderer_.isOpen() || width != kLogicalWidth
             || height != kLogicalHeight) {
-            // D7.2: a session that never opened gets the taxonomy's screen, not
-            // the Phase 0 shell. The loading screen is the fallback for the case
+            // A session that never opened gets the failure screen, not
+            // the shell. The loading screen is the fallback for the case
             // where `init()`'s open never ran at all. The open-but-refused case
             // below is untouched and keeps its last good picture.
             //
             // The boot screen is painted only while no session is open: after
             // `setPalette8()` the same surface byte is a PLAYPAL index, so
             // painting RGB332 bytes then would lie about every colour. A broken
-            // surface size on an open session therefore keeps the old shell
+            // surface size on an open session therefore keeps the shell
             // fallback rather than risking that mix.
             std::uint8_t* bootPixels = surface.getSpriteBuffer();
             if (!sceneRenderer_.isOpen() && bootPixels != nullptr) {
@@ -2520,7 +2512,7 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
     showDrawEnd_ = sampleMicros();
 
 #if defined(DOOM_FRAME_DUMP)
-    // S26 diagnostic: the stack margin once a second, independent of the frame
+    // Diagnostic: the stack margin once a second, independent of the frame
     // report's own limit. The firing path is the deepest chain the game has, and
     // its peak only shows after minutes of play, long after `SHOW,frame` has
     // stopped printing.
@@ -2539,7 +2531,7 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
 #endif
 
 #if defined(DOOM_FRAME_DUMP)
-    // S26 diagnostic (env `esp32dev_ILI9341_show_dump` / `_hud_dump`): hold A and
+    // Diagnostic (env `esp32dev_ILI9341_show_dump` / `_hud_dump`): hold A and
     // B together and the finished surface goes out over the console as RLE, so
     // the frame that looked wrong on the glass can be rebuilt on the host and
     // diffed against its own render of the same viewpoint.
@@ -2574,14 +2566,13 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
         }
 #endif
         if (dump) {
-            // S26: the per-record answer only. The RLE frame is what pinned the
-            // artifact to the masked pass; from here the useful question is which
-            // field or which texture byte differs, and that costs ~2 KB instead of
-            // the 64,000-byte frame, so a press no longer freezes the game for
-            // twelve seconds and no long capture window is needed.
+            // The per-record answer only: which field or which texture byte
+            // differs. That costs ~2 KB instead of the 64,000-byte RLE frame, so
+            // a press does not freeze the game for twelve seconds and no long
+            // capture window is needed.
             if (remaining == 3) {
                 doomc::frameDumpSectors();
-                // S26: and the records the frame was drawn from -- every drawseg
+                // And the records the frame was drawn from -- every drawseg
                 // (scales, masked column block, clip codes), every visplane and
                 // the submitted sprite list -- as `VD,...` lines that
                 // tools/viewdiag_compare.py diffs against the host's render of

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate DOOM's MUS -> APU four-track conversion (T47, S16).
+"""Gate DOOM's MUS -> APU four-track conversion.
 
 WHAT THIS PROVES
 

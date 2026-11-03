@@ -5,8 +5,8 @@
  */
 
 /*
- * The enemy actions this port has written: A_Look and the player scan behind it
- * (T15a), then A_Chase and the attack actions (T15b) -- P_Move/P_TryWalk/
+ * The enemy actions this port has written: A_Look and the player scan behind it,
+ * then A_Chase and the attack actions -- P_Move/P_TryWalk/
  * P_NewChaseDir, P_CheckMeleeRange/P_CheckMissileRange, A_FaceTarget,
  * A_PosAttack, A_TroopAttack and A_Explode. What upstream's p_enemy.c has that
  * this port does not is boss behaviour, the Arch-vile, the lost soul's flight and
@@ -167,7 +167,7 @@ void p_enemy_face_target(p_mobj_context_t* world, r_mobj_t* actor);
  * @brief A_PosAttack(): the zombieman's hitscan pistol.
  *
  * A_FaceTarget, aim, one random pair of drift, `((P_Random()%5)+1)*3` damage,
- * through p_line_attack(). The pistol sound is S2's.
+ * through p_line_attack(). The pistol sound is the sound layer's (s_sound.c).
  */
 void p_enemy_pos_attack(p_mobj_context_t* world, r_mobj_t* actor);
 
@@ -186,7 +186,7 @@ void p_enemy_pos_attack(p_mobj_context_t* world, r_mobj_t* actor);
  *
  * The aim is taken once, on the facing, and every pass re-spreads from that
  * base: `angle` is not accumulated across passes. The nine draws are part of a
- * demo's sequence even though the shotgun sound is S2's.
+ * demo's sequence even though the shotgun sound is the sound layer's.
  *
  * @param world The level's context (random sequence, attack trace).
  * @param actor The shotgun guy; no target is a no-op.
@@ -200,7 +200,7 @@ void p_enemy_spos_attack(p_mobj_context_t* world, r_mobj_t* actor);
  * ((P_Random()%10)+1)*4; P_DamageMobj (actor->target, actor, actor, damage); }`
  *
  * The draw happens only after P_CheckMeleeRange succeeds, so a bite that misses
- * consumes nothing. S_StartSound is S2's and draws nothing.
+ * consumes nothing. S_StartSound belongs to the sound layer and draws nothing.
  *
  * @param world The level's context.
  * @param actor The demon or spectre; no target is a no-op.

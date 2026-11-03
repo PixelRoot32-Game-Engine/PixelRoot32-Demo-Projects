@@ -1,6 +1,6 @@
 /*
  * fade_check.cpp - dumps the panel's palette tables for one gamma level at one
- * fade scale (D5.4).
+ * fade scale.
  *
  * The other half of tools/fade_check.py. It runs the firmware's own
  * src/palette/DoomPalette.cpp: palette 0 builds the tables once

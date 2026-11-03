@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate tools/menu_lumps.txt and lib/doom/m_gamma_table.inc (T39, D5.2).
+"""Generate tools/menu_lumps.txt and lib/doom/m_gamma_table.inc.
 
 TWO GENERATED FILES, ONE DRIFT CHECK
 
@@ -7,7 +7,7 @@ TWO GENERATED FILES, ONE DRIFT CHECK
    Like the status-bar and weapon art (``gen_hud_lumps.py``, ``gen_weapon_lumps.py``)
    the menu draws patches by name from the mapped partition, so a deflated patch
    would need a zone to decode into, and a ``~PWBAKE~`` manifest slot costs about
-   50 B of DRAM the board does not have (T36, L36). ``whd_encode.py --raw-list``
+   50 B of DRAM the board does not have. ``whd_encode.py --raw-list``
    keeps them 4-byte aligned and readable in place.
 
    The list is not an independent opinion: ``lib/doom/m_menu.c`` is the source of

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Prove the level transitions: the exit specials, the next map and the load (D4.5).
+"""Prove the level transitions: the exit specials, the next map and the load.
 
 WHAT THIS PROVES
 
-The plan's acceptance is "a scripted run reaches E1M9". ``tools/level_check.c``
+The acceptance is "a scripted run reaches E1M9". ``tools/level_check.c``
 opens the shareware container (the same ``PWHD`` image the board reads), loads a
 level through ``lib/doom``, stands the player in front of that level's own exit
 line, presses USE through ``p_level_tic()`` -- the same entry point the panel's

@@ -97,8 +97,7 @@ constexpr float kTicsPerSecond = 35.0f;
 constexpr int kLogicalSlots = S_NUMCHANNELS;
 
 /// How many successful plays print a `SHOW,audio,play` line in the diagnostic
-/// build: the twelve-cue script's own count, so its whole script is visible
-/// (the brief asked for ten; printing all twelve shows the last two too).
+/// build: the twelve-cue script's own count, so its whole script is visible.
 constexpr std::uint32_t kPlayLogLimit = 12u;
 
 /// One logical slot: which APU voice it owns, and for how long.
@@ -315,7 +314,7 @@ extern "C" void doom_sound_update(int32_t handle, int32_t volume, int32_t pitch)
         // A one-shot's distance was applied when it started. The APU has no
         // command that retunes a sounding note without restarting it, and
         // restarting a crack every time the player turns would be worse than
-        // the attenuation it buys. T45's bank has no looping cue; T47's music
+        // the attenuation it buys. The SFX bank has no looping cue, and music
         // is a separate transport.
         return;
     }
@@ -352,8 +351,7 @@ extern "C" bool doom_music_start(int32_t music_id, bool looping) {
     // The shipped asset is a looping track (`loop = true` in the generated
     // MusicTrack). `S_StartMusic` (looping = 0) is never called by this port;
     // a non-looping view would need a second MusicTrack struct for every
-    // asset, so the request is accepted and the track loops. Recorded in the
-    // task log rather than silently dropped.
+    // asset, so the request is accepted and the track loops.
     (void)looping;
 
     const MusicTrack* track = doom::doomc::musicBankTrack(static_cast<int>(music_id));

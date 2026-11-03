@@ -21,8 +21,8 @@ constexpr std::size_t kPersistenceLineCapacity = 128u;
 constexpr std::size_t kEnvelopeBytes = 16u;  // RecordCodec::kHeaderSize
 
 /// The store's result as the one word the serial line carries. The vocabulary is
-/// the engine's `StoreResult`, which is what a maintainer reading the line has to
-/// compare with `docs/api/persistence.md`.
+/// the engine's `StoreResult`, so the word can be looked up in the engine's
+/// persistence documentation.
 const char* storeStatusName(pixelroot32::persistence::StoreResult result) {
     using pixelroot32::persistence::StoreResult;
 
@@ -60,11 +60,11 @@ const char* saveStatusName(SaveStatus status) {
 
 DoomPersistence::DoomPersistence()
 #if defined(ESP32)
-    // The settings stay in `nvs` (byte-compatible with the record T39 wrote) and
+    // The settings stay in `nvs` (byte-compatible with the `Preferences` record) and
     // a 64-byte maximum is twice the eight bytes the record uses.
     : settingsMedium_("doom", 64u),
       // The slots live in the `saves` partition; 3,968 B is one NVS page's
-      // largest blob (L56), envelope included.
+      // largest blob, envelope included.
       slotMedium_("doom", "save", kSlotCount, kRecordBytes, "saves"),
 #else
     // The engine's host adapter creates `save_data/doom/` and `save_data/save/`
@@ -139,7 +139,7 @@ void DoomPersistence::readSlotLabels(char labels[kSlotCount][M_SLOT_LABEL_SIZE])
         const std::uint8_t* record = nullptr;
         pixelroot32::persistence::RecordInfo info{};
 
-        // One loadRecord() per slot into the same scratch, as the task asks: the
+        // One loadRecord() per slot into the same scratch: the
         // payload pointer is valid only until the next call, so the label is
         // copied out here and never kept.
         if (service_.loadRecord(slot, scratch(), kRecordBytes, record, info)

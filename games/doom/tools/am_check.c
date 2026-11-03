@@ -373,7 +373,7 @@ static void initView(void) {
     g_storage.ceilingClip = g_ceilingClip;
     g_storage.clipPool = g_clipPool;
     g_storage.clipPoolCapacity = 3200;
-    /* D5.3: the shadow bitmap the wall pass marks. It is the same block the
+    /* The shadow bitmap the wall pass marks. It is the same block the
      * automap reads, which is what makes `walk` then `draw` one proof. */
     g_storage.mapped = g_mapped;
     g_storage.mappedBytes = g_mappedBytes;

@@ -5,7 +5,7 @@
  */
 
 /*
- * The automap (D5.3), from upstream's am_map.c.
+ * The automap, from upstream's am_map.c.
  *
  * WHAT IS PORTED, AND FROM WHERE
  *
@@ -398,7 +398,7 @@ static int draw_mline(am_state_t* state, const am_mline_t* line, uint8_t color) 
 /* AM_drawGrid(): the flat-aligned grid lines. Upstream's `% ` on a negative
  * dividend truncates toward zero, which is why the remainder is adjusted here
  * rather than taken with C's own `%` (the same value, spelled so the port and
- * the oracle cannot disagree about the sign). */
+ * the Python check, tools/am_check.py, cannot disagree about the sign). */
 static void draw_grid(am_state_t* state, uint8_t color) {
     fixed_t start;
     fixed_t end;

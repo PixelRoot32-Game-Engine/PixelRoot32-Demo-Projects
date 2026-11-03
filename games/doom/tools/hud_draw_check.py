@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the C status bar against an independent Python oracle, pixel by pixel (D5.1).
+"""Compare the C status bar against an independent Python oracle, pixel by pixel.
 
 WHAT THIS PROVES
 

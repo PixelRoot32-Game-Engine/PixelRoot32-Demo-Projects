@@ -54,7 +54,7 @@
  * the whole documented layout anyway, because a lump of the wrong length is a
  * damaged WAD and reporting it here is cheaper than reading past a table later.
  *
- * THE THIRD LOOKUP: SPRITES (D3.4)
+ * THE THIRD LOOKUP: SPRITES
  *
  * A sprite's table is chosen by R_ProjectSprite() (r_things.c):
  *
@@ -84,9 +84,9 @@
  *
  * NOTE ON THE REFERENCE. There is no `R_InitSpriteLights` in linuxdoom-1.10;
  * `spritelights` is the row pointer R_AddSprites() installs, and the table it
- * points into is scalelight (R_ExecuteSetViewSize). The D3.4 brief expected a
- * separate distance-based table there; this port implements what the cited
- * source actually does, because a third table would not match vanilla pixels.
+ * points into is scalelight (R_ExecuteSetViewSize). This port implements
+ * exactly that rather than a separate distance-based sprite table, because a
+ * third table would not match vanilla pixels.
  * The consequence for the build is that no new generated table is needed: the
  * sprite row is r_light_level's, and the flash cost of this decision is 0 B.
  *

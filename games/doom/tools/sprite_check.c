@@ -1,23 +1,21 @@
 /*
- * The sprite-submission gate (T23): the world's live mobjs, not the map's THINGS.
+ * The sprite-submission gate: the world's live mobjs, not the map's THINGS.
  *
- * THE DEFECT THIS PROVES CLOSED
+ * WHY THIS GATE EXISTS
  *
- * Until T23 the renderer's sprite list was built from E1M1's THINGS records
- * alone (src/doomc/FrameDriver.cpp's buildSpriteBase()). Every mobj the
- * simulation creates after the level loads -- a shot's puff, a blood spray, a
- * rocket, a monster's pain, death and corpse frames -- was therefore never
- * submitted to the masked pass, and a frame that showed one showed nothing. A
- * frame that submitted an unbakeable lump would be refused instead, so "nothing
- * is drawn" and "the whole frame is refused" were the only two outcomes.
+ * A sprite list built from E1M1's THINGS records alone never submits the mobjs
+ * the simulation creates after the level loads -- a shot's puff, a blood spray,
+ * a rocket, a monster's pain, death and corpse frames -- so a frame that should
+ * show one shows nothing, and a frame that submits an unbakeable lump is refused
+ * whole.
  *
- * This tool is the gate for the replacement: the caller walks the live world
+ * This tool is the gate for the live submission: the caller walks the live world
  * (p_level_first_mobj()/p_level_next_mobj()), derives each mobj's lump from its
  * own state's sprite and frame, and hands that list to the real masked pass. It
  * renders whole frames through r_bsp_render(), r_wall_emit(), r_plane_draw()
  * and r_masked_emit(), the same four passes the board runs, and asserts:
  *
- *   A. NO PIXEL MOVED AT SPAWN. The static THINGS list (the old behaviour) and
+ *   A. NO PIXEL MOVED AT SPAWN. The static THINGS list and
  *      a live-mobj list PINNED to each mobj's spawn-state row render the
  *      identical frame at the host harness's frame-00 viewpoint and at the
  *      player's spawn viewpoint. Pinning is the honest comparison: the static
@@ -28,7 +26,7 @@
  *      invariants.
  *   A2b. THE LIVE LIST ADVANCES A CHAIN. At tics 10 and 35 at least one
  *      submitted mobj asks for a baked frame other than its type's spawn row,
- *      and no chain frame falls back. This is the property T25 delivers: a
+ *      and no chain frame falls back. This holds because a
  *      monster's walk/pain/death frames and an item's blink frames are baked,
  *      so the world's state machines actually change what is drawn.
  *   B. A LIVE PUFF IS SUBMITTED. The same viewpoint rendered with a live puff
@@ -56,9 +54,8 @@
  *
  * WHAT A FRAME THE FIXTURE DOES NOT NAME DOES
  *
- * The container bakes 201 sprite lumps (T25): the frames E1M1's THINGS show,
- * every state chain of the mobj types it places, and the puff, blood and rocket
- * chains T22 added. The only submission left without a row is the player avatar
+ * The container bakes the frames E1M1's THINGS show, every state chain of the
+ * mobj types it places, and the puff, blood and rocket chains. The only submission left without a row is the player avatar
  * (MT_PLAYER's S_PLAY_STND), which is deliberately not baked because it stands
  * at the viewpoint and is skipped. Any other unbaked frame still draws -- the
  * fallback is its type's spawn-state row -- and the tool counts it, so a gap is
@@ -70,8 +67,8 @@
  *     python tools/sprite_check.py --wad ... --perturb frame
  *
  * compiles the harness with SPRITE_CHECK_PERTURB_FRAME, which makes every live
- * list use each mobj's spawn-state row instead of its live frame -- exactly the
- * static behaviour T23/T25 replace. A2b then sees zero advances, the puff stops
+ * list use each mobj's spawn-state row instead of its live frame -- the static
+ * behaviour. A2b then sees zero advances, the puff stops
  * advancing, assertion C fails and the process exits 1. A gate that cannot fail
  * only proves it runs.
  *
@@ -571,7 +568,7 @@ static const e1m1_sprite_rule_t* spriteRule(int type) {
     return NULL;
 }
 
-/* The row for one *frame* of one sprite. This is the T23 rule: a static row per
+/* The row for one *frame* of one sprite. The rule: a static row per
  * type can express the spawn frame only, and the world supplies the frame. */
 static const e1m1_sprite_rule_t* spriteFrameRule(const char* sprite, int frame) {
     int index;
@@ -586,7 +583,7 @@ static const e1m1_sprite_rule_t* spriteFrameRule(const char* sprite, int frame) 
 }
 
 /* A mobj whose live frame has no baked lump falls back to its type's spawn-state
- * row: the frame the old static list always showed. The alternative -- refusing
+ * row: the frame a static THINGS list would show. The alternative -- refusing
  * the whole frame over one unbakeable frame -- would blank the panel. */
 static const e1m1_sprite_rule_t* spawnRuleForType(int mobjType) {
     const doom_mobjinfo_t* info;
@@ -711,7 +708,7 @@ static int buildLiveSprites(const p_level_t* level, const r_view_params_t* view,
     *advancedCount = 0;
 #if defined(SPRITE_CHECK_PERTURB_FRAME)
     /* The failing perturbation: force the spawn row everywhere, exactly the
-     * static behaviour T23 replaces. A2b then reports zero advances. */
+     * static behaviour. A2b then reports zero advances. */
     pinSpawn = 1;
 #endif
     mobj = p_level_first_mobj(level);
@@ -1221,9 +1218,8 @@ int main(int argc, char** argv) {
             report(strcmp(staticResult.hash, pinnedResult.hash) == 0 ? "status=pass"
                                                                      : "status=fail",
                    "a2-spawn-player", detail);
-            /* A2b is the half the old A2 was accidentally wearing: the live
-             * list actually advances a chain. `advanced` counts the submissions
-             * whose live frame resolved to a row other than the type's spawn
+            /* A2b: the live list actually advances a chain. `advanced` counts
+             * the submissions whose live frame resolved to a row other than the type's spawn
              * row -- every one of those is a baked lump by construction. The
              * one fallback is the player avatar, whose S_PLAY_STND is
              * deliberately not baked (it stands at the viewpoint); a chain
@@ -1239,7 +1235,7 @@ int main(int argc, char** argv) {
                        "a2b-live-chain", detail);
             }
             if (step == ticCount - 1) {
-                // The board's settled spawn-view hash (L28, T22). The host frame
+                // The board's settled spawn-view hash. The host frame
                 // at the same viewpoint must reproduce it, which is what makes
                 // "the live list draws what the static list drew" a gate and not
                 // a claim. It is the last tic because P_CalcHeight is still

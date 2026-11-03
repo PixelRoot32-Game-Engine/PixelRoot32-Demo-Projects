@@ -1,5 +1,5 @@
 /*
- * DOOM on PixelRoot32 - the palette flashes (D5.3).
+ * DOOM on PixelRoot32 - the palette flashes.
  *
  * Derived from linuxdoom-1.10 st_stuff.c ST_doPaletteStuff() (Copyright (C)
  * 1993-1996 by id Software, Inc.), licensed under the GNU General Public

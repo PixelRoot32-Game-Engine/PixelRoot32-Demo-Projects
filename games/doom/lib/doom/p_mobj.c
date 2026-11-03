@@ -117,9 +117,9 @@ static p_mobj_error_t locate(const p_mobj_context_t* world, fixed_t x, fixed_t y
         return P_MOBJ_ERR_NO_SUBSECTOR;
     }
 
-    /* The level's mutable sector array is the truth once it exists (D4.1b);
-     * a hand-built context without one reads the map, which is what D4.1a's
-     * tests do. */
+    /* The level's mutable sector array is the truth once it exists; a
+     * hand-built context without one reads the map, which is what the
+     * hand-built unit tests do. */
     if (world->sectors != NULL && (uint32_t)sector < (uint32_t)world->sectorCount) {
         *floorOut = world->sectors[sector].floorHeight;
         *ceilingOut = world->sectors[sector].ceilingHeight;
@@ -608,7 +608,7 @@ static fixed_t sector_floor(const p_mobj_context_t* world, uint16_t sector) {
  * The deathsound is the explosion's own (`sfx_barexp` for a barrel, `sfx_rxplod`
  * for a rocket, `sfx_firxpl` for a fireball); upstream starts it at the tail of
  * this function, and this does the same. The sky-wall hack that decides whether
- * a missile explodes at all lives with the rest of the missile work in T14.
+ * a missile explodes at all is not ported (see p_xy_movement).
  */
 static void explode_missile(p_mobj_context_t* world, r_mobj_t* mobj) {
     mobj->momx = 0;
@@ -690,8 +690,8 @@ void p_xy_movement(p_mobj_context_t* world, r_mobj_t* mobj) {
                 p_slide_move(world, mobj);
             } else if ((mobj->flags & MF_MISSILE) != 0u) {
                 /* Upstream's sky-wall check reads the ceilingline P_CheckPosition
-                 * kept; the port keeps no such global, and the check is part of
-                 * the missile work D4.2d owns. The explosion itself is below. */
+                 * kept; the port keeps no such global, so the check is not
+                 * ported. The explosion itself is below. */
                 explode_missile(world, mobj);
             } else {
                 mobj->momx = 0;
@@ -701,7 +701,7 @@ void p_xy_movement(p_mobj_context_t* world, r_mobj_t* mobj) {
     } while (xmove != 0 || ymove != 0);
 
     /* `if (player && player->cheats & CF_NOMOMENTUM)`: there are no cheats in
-     * this port (D5), so the branch is absent. */
+     * this port, so the branch is absent. */
 
     if ((mobj->flags & (MF_MISSILE | MF_SKULLFLY)) != 0u) {
         return; /* no friction for missiles ever */
@@ -744,7 +744,7 @@ void p_z_movement(p_mobj_context_t* world, r_mobj_t* mobj) {
     }
 
     /* `if (mo->player && mo->z < mo->floorz)` squashes the player's viewheight.
-     * This port has no player_t view state yet (D5), so nothing happens here. */
+     * The view height is the player layer's (p_user.c), so nothing happens here. */
 
     /* adjust height */
     mobj->z += mobj->momz;
@@ -987,7 +987,7 @@ void p_mobj_thinker(p_thinker_t* thinker, void* context) {
 
     /* Upstream's two momenta tests and the `acv == -1` ("was I removed?")
      * return after each. P_CheckSight/P_NoiseAlert live behind A_Look and
-     * P_FireWeapon (T15a), not in the mobj tick. */
+     * P_FireWeapon, not in the mobj tick. */
     if (mobj->momx != 0 || mobj->momy != 0 ||
         (mobj->flags & MF_SKULLFLY) != 0u) {
         p_xy_movement(world, mobj);
@@ -1013,7 +1013,7 @@ void p_mobj_thinker(p_thinker_t* thinker, void* context) {
         }
     }
     /* A state with tics == -1 is permanent (upstream's else branch is the
-     * nightmare respawn, which D4.2 owns). */
+     * nightmare respawn, which is not ported). */
 }
 
 /* --- Casting ------------------------------------------------------------ */

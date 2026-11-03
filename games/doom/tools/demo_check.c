@@ -1,5 +1,5 @@
 /*
- * Host harness for demo playback (D4.4): the recorded stream, played through the
+ * Host harness for demo playback: the recorded stream, played through the
  * world's own tic, measured and hashed.
  *
  * WHAT THIS IS FOR
@@ -972,7 +972,7 @@ int main(int argc, char** argv) {
         run.tics += 1u;
         totals.tics += 1u;
 
-        /* D4.5: a line trigger set an exit. G_Ticker would enter the game state
+        /* A line trigger set an exit. G_Ticker would enter the game state
          * machine's G_DoCompleted; this driver has no intermission and must not
          * follow a transition, so it stops and names it. A demo that reaches one
          * is a finding: the run is shorter than its lump and the gate says so. */
@@ -1379,9 +1379,8 @@ int main(int argc, char** argv) {
          * Upstream ends a demo at the marker byte or at G_CheckDemoStatus, never
          * on a death: a recording whose last command kills the player simply
          * ends dead, and no respawn was possible. So a death is only a defect
-         * when the stream still had commands to play -- that is a frozen corpse,
-         * and it is what the old "PST_LIVE at the last command" test was
-         * reaching for. The arithmetic is the pairing of the DEATH and RELOAD
+         * when the stream still had commands to play -- that is a frozen corpse.
+         * The arithmetic is the pairing of the DEATH and RELOAD
          * lines: every death but the last is answered, and the last one may only
          * stand if it landed at or after the last input.
          */

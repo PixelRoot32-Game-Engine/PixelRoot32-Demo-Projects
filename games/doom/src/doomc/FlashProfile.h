@@ -1,13 +1,13 @@
 #pragma once
 
 /*
- * D2.5: what reading a level's working set out of mapped flash actually costs.
+ * What reading a level's working set out of mapped flash actually costs.
  *
  * THE QUESTION, AND WHY IT IS SHAPED THIS WAY
  *
  * The port never streams pixels out of flash. A lump is decoded whole into RAM
  * (`whd_read_lump`) and the renderer works from RAM afterwards. So the number
- * that decides how Phase 3 is built is not a per-byte cache-miss rate: it is
+ * that decides how the renderer loads its data is not a per-byte cache-miss rate: it is
  *
  *   (a) what one cold decode of E1M1's working set costs,
  *   (b) what the identical sequence costs when repeated immediately (warm),
@@ -91,8 +91,7 @@
  *
  *   The load-bearing line: `pct_x10` is the cold total in tenths of one percent
  *   of a single 35 Hz frame (28,570 us), so 432 means a per-frame reload of the
- *   working set would cost 43.2% of the frame budget. Nothing here argues from
- *   intuition, and neither should anyone reading it.
+ *   working set would cost 43.2% of the frame budget.
  *
  * Two bookkeeping lines frame those passes. `WADPROF,probe=open,...` states the
  * container (lump count, length, mapped bytes), prints `buf=68168` -- the static
@@ -299,7 +298,7 @@ struct FlashProfileReport<false> {
 #if defined(PIXELROOT32_DOOM_FLASH_PROFILE)
 
 /**
- * @brief Runs D2.5's profile once, at boot: cold pass, warm pass, ratio, budget.
+ * @brief Runs the flash-read profile once, at boot: cold pass, warm pass, ratio, budget.
  *
  * Opens the `wad` partition through `doomc/WhdSource.h`, builds E1M1's working
  * set from the container itself -- the map lumps, TEXTURE1, PNAMES, every patch

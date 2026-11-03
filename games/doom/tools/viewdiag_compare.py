@@ -31,8 +31,7 @@ HOW TO GET THE TWO SIDES
 
   Use the `DUMP,view,x=...,y=...,z=...,angle=...` line of the same capture as
   `--view`, and feed the host the board's own sector table if the room strobes
-  (this port's `--lights` option does that in the S26 scratch harness; without
-  it the host renders the WAD's static light and every lit field differs).
+  (the harness's `--lights FILE` option; without it the host renders the WAD's static light and every lit field differs).
 
 WHAT A DIFFERENCE MEANS
 
@@ -47,8 +46,8 @@ WHAT A DIFFERENCE MEANS
             texture's column block `mc` (and its name), the two clip codes
             `ct`/`cb`, the silhouette and the light index. The masked pass reads
             `mc`/`ct`/`cb` straight out of the shared clip pool, so a mid texture
-            clipped with another fragment's numbers fans exactly like the S26
-            report.
+            clipped with another fragment's numbers fans visibly on the
+            panel.
   VD,p      one visplane: height, flat, light, the recorded column range, the
             number of recorded columns and the extrema of top[]/bottom[]. A
             correct header over a corrupted span map shows up in the extrema.

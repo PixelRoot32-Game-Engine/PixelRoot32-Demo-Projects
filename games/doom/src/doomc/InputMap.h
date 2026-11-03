@@ -31,7 +31,7 @@ constexpr std::int8_t kForwardRun = 0x32;
 constexpr std::int16_t kTurnStep = 640;
 
 /**
- * @brief One frame's held buttons as the world's tic command (D4.2f).
+ * @brief One frame's held buttons as the world's tic command.
  *
  * Pure: no state, no clock, no engine, no allocation. The same bits always
  * produce the same command, which is what lets a host test pin the table below
@@ -44,7 +44,7 @@ constexpr std::int16_t kTurnStep = 640;
  *   down held                   forwardmove = -0x19         backpedal
  *   left held                   angleturn  = +kTurnStep     slow turn, upstream's sign
  *   right held                  angleturn  = -kTurnStep
- *   A held                      buttons   |= BT_ATTACK      D4.2d consumes it
+ *   A held                      buttons   |= BT_ATTACK      upstream's fire button
  *   B held alone                buttons   |= BT_USE         P_PlayerThink's usedown
  *                                                           latch makes it edge-triggered
  *
@@ -64,9 +64,9 @@ constexpr std::int16_t kTurnStep = 640;
  * WHAT IS NOT HERE, ON PURPOSE
  *
  * Strafing (sidemove), the strafe modifier, the full contextual matrix upstream
- * builds from autorun, always-run and the mouse, and BT_CHANGE are D4.3's: they
- * need the weapon and options layers that do not exist yet. `sidemove` is
- * therefore always 0, which is a value, not a missing field.
+ * builds from autorun, always-run and the mouse, and BT_CHANGE are not mapped
+ * by this table. `sidemove` is therefore always 0, which is a value, not a
+ * missing field.
  *
  * @param buttons The engine's six bits, packed as `INPUT,buttons` prints them.
  * @return The tic command those buttons produce.

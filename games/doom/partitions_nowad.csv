@@ -18,7 +18,7 @@
 #
 # As in partitions_wad.csv there is no OTA slot and no spiffs slot -- a 4 MB part
 # cannot carry a second app image and a container at once -- and no `phy_init`
-# row either, because this IDF version (Arduino-ESP32 4.2 / IDF 4.4) does not
+# row either, because this IDF version (Arduino-ESP32 2.0.17 / IDF 4.4) does not
 # require one for Wi-Fi PHY calibration.
 #
 # Name,   Type, SubType, Offset,   Size,     Flags

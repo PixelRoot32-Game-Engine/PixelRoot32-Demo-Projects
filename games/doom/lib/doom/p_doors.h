@@ -35,9 +35,9 @@
  * LOCKS
  *
  * Upstream checks the player's key cards for 26/27/28 and 31/32/33/34. This port
- * has no inventory yet (D5), so a locked manual door opens like an unlocked one
+ * does not check key cards, so a locked manual door opens like an unlocked one
  * and the gate never depends on it. The line-trigger dispatch is where the key
- * check belongs once cards exist.
+ * check belongs.
  *
  * This is C99 only: no allocation, no globals, no stdio, no floating point.
  */

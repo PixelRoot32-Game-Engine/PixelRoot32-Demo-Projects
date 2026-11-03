@@ -15,7 +15,7 @@
  *
  * WHY THE PATCHES COME FROM THE WAD, NOT THE CONTAINER
  *
- * D3.11 drops the wall-composition patch lumps the bake consumed: their bytes
+ * The container omits the wall-composition patch lumps the bake consumed: their bytes
  * live on only as the dense width*128 payloads. Composing from the container
  * would be composing from the thing under test. Reading TEXTURE1, PNAMES and
  * every patch from the original WAD keeps the proof honest: a C composition of

@@ -87,23 +87,23 @@
  *     82,83,84,91..94,98,128,129 floors;
  *     87,88,89 plats; 79,80,81 lights implemented
  *     97,126 teleport                 implemented (EV_Teleport, the line stays)
- *     48 scroll                       implemented (T35): P_SpawnSpecials records
+ *     48 scroll                       implemented: P_SpawnSpecials records
  *                                     the line, P_UpdateSpecials adds
  *                                     FRACUNIT to its front side's texture
  *                                     offset every tic (see below)
- *     52,124 exit                     implemented (D4.5): the level's exit
+ *     52,124 exit                     implemented: the level's exit
  *                                     request is set, the line is not cleared
  *                                     (upstream's G_ExitLevel/G_SecretExitLevel
  *                                     do not write `line->special = 0`)
  *   P_UseSpecialLine
- *     1,26,27,28,31,32,33,34,117,118  manual doors, implemented (keys: D5)
+ *     1,26,27,28,31,32,33,34,117,118  manual doors, implemented (keys not checked)
  *     7,127 stairs                    implemented (EV_BuildStairs; the switch
  *                                     half is P_ChangeSwitchTexture, deferred)
  *     9,14,15,18,20,21,23,29,41,42,43,45,49,50,55,60..71,99,101,
  *     102,103,111..116,122,123,131..140
  *                                     EV implemented; the switch *texture*
  *                                     change is deferred (see p_switch note)
- *     11,51 exit                      implemented (D4.5): the level's exit
+ *     11,51 exit                      implemented: the level's exit
  *                                     request is set and the line is cleared,
  *                                     which is P_ChangeSwitchTexture(line, 0)'s
  *                                     one-shot write
@@ -122,29 +122,27 @@
  * loop sees the request and does nothing, which is the faithful state for a
  * world that has no intermission.
  *
- * P_ChangeSwitchTexture IS STILL NOT part of this layer, and the exit specials
- * do not fake it. The measurement (D4.5): the nine episode-1 maps name 14
+ * P_ChangeSwitchTexture IS NOT part of this layer, and the exit specials
+ * do not fake it. The nine episode-1 maps name 14
  * distinct `SW1*` textures; none of their 14 `SW2*` partners is in the baked
  * container, because the bake lists only the names the levels' own SIDEDEFS
  * carry (SW2BROWN is baked only because two maps already use it as a wall). A
  * swap would therefore ask the renderer for a texture the container does not
  * hold. Baking the partners costs 131,072 B of payload (131,744 B with the
- * container's per-lump overhead) against 46,116 B of free container space
- * (the 3,342,336 B partition of the time - 3,296,220 B used; T36 later grew it to
- * 3,407,872 B), so it is a capacity decision and
- * not this task's. The one-shot line clear is kept because it is the part of
+ * container's per-lump overhead), so it is a container capacity decision. The
+ * one-shot line clear is kept because it is the part of
  * P_ChangeSwitchTexture(line, 0) the simulation can represent without a texture.
  *
  * NOT IMPLEMENTED AT ALL, DELIBERATELY
  *
- *   - P_ChangeSwitchTexture (the SW2 capacity decision above), the level timer
- *     (-avg/-timer), texture animation and P_UpdateSpecials' scrolling.
+ *   - P_ChangeSwitchTexture (the SW2 capacity decision above) and the level
+ *     timer (-avg/-timer).
  *   - EV_SlidingDoor (compiled out upstream too).
  *   - P_PlayerInSpecialSector's `player->cheats &= ~CF_GODMODE` in case 11: this
- *     port has no cheats (D5), so the clear is a no-op and is named, not faked.
+ *     port has no cheats, so the clear is a no-op and is named, not faked.
  *     The damage and the exit that the same case performs are real.
  *
- * P_ChangeSector's crush *damage* is no longer on this list: p_map.c's
+ * P_ChangeSector's crush *damage* is implemented: p_map.c's
  * p_change_sector() calls P_DamageMobj (p_inter.c) with T_MovePlane's own
  * `crush` flag, so a crushing floor or ceiling damages what it traps exactly as
  * upstream does, and nothing on this path is counted as unsupported.
@@ -342,7 +340,7 @@ typedef struct p_spec_stats {
 } p_spec_stats_t;
 
 /*
- * The distinct line-special record (D4.4).
+ * The distinct line-special record.
  *
  * `unsupportedLineSpecial` answers "how many triggers had no EV"; it cannot say
  * which special numbers, and a run that reaches a line with no handler is not
@@ -476,11 +474,11 @@ int p_spec_p_change_sector_is_stubbed(void);
 /**
  * @brief Refreshes the heights every mobj in @p sector cached at spawn.
  *
- * Decision (1) of D4.1b: the sector array is the truth and anything that cached
+ * The sector array is the truth and anything that cached
  * a height at spawn follows it. The spawn path copies floorz/ceilingz from the
  * sector (p_spawn_mobj); this is the other half, called by p_move_plane() after
  * every height write (including a revert). It does not move a mobj's `z`: that
- * is P_ZMovement, D4.2.
+ * is P_ZMovement.
  */
 void p_spec_refresh_things(struct p_mobj_context* world, uint16_t sector);
 

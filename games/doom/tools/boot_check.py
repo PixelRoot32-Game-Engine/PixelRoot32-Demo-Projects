@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Gate for the boot and failure screens (D7.2).
+"""Gate for the boot and failure screens.
 
-A boot that cannot open the WAD used to leave the panel on the Phase 0 shell: a
-geometric pattern with no text, indistinguishable from a hung board. The fix is a
-screen that owns its pixels -- a 5x7 column font for ASCII 32..95 and an RGB332
-painter in ``src/doomc/BootScreen.cpp`` -- so it can report "the WAD is missing"
-without a WAD font to borrow.
+A boot that cannot open the WAD must not leave the panel on a geometric pattern
+with no text, indistinguishable from a hung board. The boot screen owns its
+pixels -- a 5x7 column font for ASCII 32..95 and an RGB332 painter in
+``src/doomc/BootScreen.cpp`` -- so it can report "the WAD is missing" without a
+WAD font to borrow.
 
 This gate compiles the firmware's own painter and taxonomy on the host, with no
 engine, no WAD and no APU, and hashes each screen state's 320x200 bytes:

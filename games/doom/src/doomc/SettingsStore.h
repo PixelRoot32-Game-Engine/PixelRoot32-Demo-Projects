@@ -7,7 +7,7 @@
 #include "m_menu.h"
 
 /*
- * D7.1 (T53): the settings record on the engine's persistence layer.
+ * The settings record on the engine's persistence layer.
  *
  * The engine keeps a small game record behind `IKeyValueStore`, and its ESP32
  * adapter is byte-compatible with Arduino `Preferences` (the engine's own README
@@ -34,13 +34,13 @@ namespace doom {
 namespace doomc {
 
 /**
- * @brief Where the settings live between boots (D5.2): the persistence seam.
+ * @brief Where the settings live between boots: the persistence seam.
  *
  * The C game code (`lib/doom/m_menu.c`) knows the settings and their stored
  * form -- 8 checksummed bytes -- and nothing about storage. This interface is
  * the only thing between those bytes and the medium, so the same
- * `loadSettings()` / `saveSettings()` run against the board's NVS (T53:
- * `KeyValueSettingsStore` over the engine's `Esp32NvsKeyValueStore`), against
+ * `loadSettings()` / `saveSettings()` run against the board's NVS
+ * (`KeyValueSettingsStore` over the engine's `Esp32NvsKeyValueStore`), against
  * `MemorySettingsStore` in a host test, and against the desktop mirror's RAM.
  *
  * A store moves opaque bytes. It does not validate them: a missing record, a
@@ -133,7 +133,7 @@ inline bool saveSettings(SettingsStore& store, const m_settings_t& settings) {
 #if DOOM_PERSISTENCE
 
 /**
- * @brief The settings record on the engine's `IKeyValueStore` (T53, S18).
+ * @brief The settings record on the engine's `IKeyValueStore`.
  *
  * One source for both platforms: the board's `Esp32NvsKeyValueStore("doom", 64)`
  * and the host's `HostFileKeyValueStore("save_data", "doom", 64)` are both an

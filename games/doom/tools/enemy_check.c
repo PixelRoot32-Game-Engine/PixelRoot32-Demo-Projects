@@ -1,5 +1,5 @@
 /*
- * Host harness for monster AI: sight and waking (T15a), chase and attack (T15b).
+ * Host harness for monster AI: sight and waking, chase and attack.
  *
  * It loads E1M1 through lib/doom/p_setup.c and runs scenes, each one a fresh
  * level with the avatar and one monster:
@@ -58,7 +58,7 @@
  *   CSTAT sight_checks=<n> reject=<n> reject_missing=<n> bsp=<n>
  *       bsp_blocked=<n> accepted=<n>
  *
- * `see=` is present only on the two monster types this task reaches
+ * `see=` is present only on the two monster types this gate reaches
  * (MT_POSSESSED, MT_TROOP): it is P_CheckSight(monster, player) at emit time, so
  * the gate can ask whether a hit landed while the shooter was blind. `wallcross`
  * counts the tics whose step from the previous position crosses a one-sided
@@ -136,7 +136,7 @@ r_mobj_t* p_sector_sound_target(const p_mobj_context_t* world,
 
 /* The sweep's pair rule: every ordered pair (i, j) with i != j and
  * (17i + 31j) % 13 == 0. Deterministic, independent of the map, and 644 pairs on
- * E1M1's 92 spawned mobjs -- several hundred, as the task asks. */
+ * E1M1's 92 spawned mobjs. */
 #define ENEMY_PAIR_MOD 13
 
 #define ENEMY_MAX_MOBJS 256
@@ -205,7 +205,7 @@ static void print_mobj(p_level_t* level, int slot, const r_mobj_t* mobj) {
            (int)mobj->tics, slot_of(level, mobj->target), (long)mobj->momx,
            (long)mobj->momy, (unsigned)mobj->sector,
            (unsigned)mobj->subsector, (unsigned long)mobj->angle);
-    /* The two monsters this task reaches carry whether they can see the player
+    /* The two monsters this gate reaches carry whether they can see the player
      * on the tic the line is printed, so a hit can be tied to line of sight. */
     if (monster_type((int)mobj->type) && level->player != NULL) {
         printf(" see=%d", p_check_sight(&level->context, mobj, level->player));
@@ -488,7 +488,7 @@ typedef struct scene_result {
 
 /*
  * One scene's script. The four waking scenes fill only the first five fields;
- * the T15b scenes also name the monster, the length, the shot tic and the kill
+ * the chase and attack scenes also name the monster, the length, the shot tic and the kill
  * tic. `fireTic < 0` means the player never fires.
  */
 typedef struct scene_spec {
@@ -642,7 +642,7 @@ static int run_scene(const doom_map_t* map, uint8_t* arena, size_t arenaBytes,
 /*
  * The corridor fixture: the farthest point along the avatar's spawn facing, at
  * or below 240 map units, that is in the player's own sector and whose straight
- * segment crosses no one-sided linedef. The T15b scenes that need room between
+ * segment crosses no one-sided linedef. The chase scenes that need room between
  * the two use it, and the oracle computes the same point with the same rule.
  */
 static int findCorridor(const doom_map_t* map, const r_mobj_t* start, fixed_t* x,

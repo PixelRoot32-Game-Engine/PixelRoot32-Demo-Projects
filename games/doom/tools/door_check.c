@@ -1,5 +1,5 @@
 /*
- * Host harness for the door rules (T26) and the doorway frame.
+ * Host harness for the door rules and the doorway frame.
  *
  * It loads a level through lib/doom/p_setup.c, keeps only the player mobj
  * P_LoadThings() already spawned, finds the nearest closed manual door
@@ -246,7 +246,7 @@ static const r_flat_t* resolveFlat(void* context, r_name_t name) {
     return &entry->flat;
 }
 
-/* The live-sector reader the fixed render path uses (T26): the harness binds it
+/* The live-sector reader the fixed render path uses: the harness binds it
  * on the map it hands r_bsp_init, exactly as FrameDriver binds it on
  * gSession.driver->map. The seven map-facing fields come from the level's
  * mutable sectors; `specialdata` is not part of doom_sector_t. */

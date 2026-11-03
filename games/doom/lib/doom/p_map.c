@@ -291,7 +291,7 @@ static void line_bounding_box(const doom_vertex_t* v1, const doom_vertex_t* v2,
 }
 
 /* The level's mutable sector array is the truth; a hand-built context without
- * one reads the map, which is what D4.1a's tests do. */
+ * one reads the map, which is what the hand-built unit tests do. */
 static int sector_heights(const p_mobj_context_t* world, uint16_t index,
                           fixed_t* floorOut, fixed_t* ceilingOut) {
     doom_sector_t record;

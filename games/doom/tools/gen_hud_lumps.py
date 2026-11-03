@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate tools/hud_lumps.txt: the status-bar pictures the container bakes (T36).
+"""Generate tools/hud_lumps.txt: the status-bar pictures the container bakes.
 
 WHY THIS EXISTS
 
-D5.1's status bar draws patches by name, the way ``st_stuff.c`` loads them in
+The status bar draws patches by name, the way ``st_stuff.c`` loads them in
 ``ST_loadGraphics``. A patch the container only *stores* is deflated and has to
 be decoded into the zone before it can be drawn; a patch the container keeps
 RAW (``whd_encode.py --raw-list``) is 4-byte aligned and read in place from the
@@ -12,8 +12,8 @@ no RAM.
 
 These patches are deliberately NOT registered in the ``~PWBAKE~`` manifest
 (``--sprite-list``): the adapter holds one ``entries_`` + ``values_`` slot of
-about 50 B of DRAM per record, and 86 more records overflowed ``dram0_0_seg`` by
-992 B when raised from 384 to 464 (the board had 2,988 B free). Raw-by-name costs
+about 50 B of DRAM per record, and the 86 status-bar records would overflow
+``dram0_0_seg``. Raw-by-name costs
 the same flash and no DRAM.
 
 The names are not typed in: they are the patch names ``ST_loadGraphics`` builds

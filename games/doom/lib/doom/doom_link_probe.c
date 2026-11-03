@@ -8,7 +8,7 @@
  * initialiser, no variable-length array, no allocation, no float -- and it calls
  * the C++ side only through the declarations in doom_link_probe.h.
  *
- * The probe, in order (the whole call chain of D1.5):
+ * The probe, in order (the whole call chain):
  *
  *   1. this file hashes a 32-byte table with FNV-1a and keeps the answer;
  *   2. doom_bridge_mix() applies the shared salt in C++ and returns it to C;

@@ -1,5 +1,5 @@
 /*
- * palflash_check.c - drives lib/doom/palflash.c from a script (D5.3).
+ * palflash_check.c - drives lib/doom/palflash.c from a script.
  *
  * The other half of tools/palflash_check.py. This harness owns no expectation:
  * it prints what the real code computes and the Python oracle, which shares no

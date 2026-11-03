@@ -74,12 +74,8 @@ DEFLATE_WINDOW_BITS = -15
 DEFLATE_MEMORY_LEVEL = 9
 
 # The partition the shipped container is written to: partitions_wad.csv gives
-# `wad` 0x0C0000..0x3F8000 (T53b), 3,375,104 B. D3.11 shrank the app slot to
-# 768 KB so the container gained 196,608 B; T36 took another 65,536 B from the app
-# (720,896 B) for the HUD art and T38 another 65,536 B (now 655,360 B) for the
-# weapon art. T53 took 32 KB off the `wad` top for the save slots and T53b trimmed
-# the container (--drop-unused-sprites) and gave 64 KB back to the app, so the row
-# starts at 0x0C0000 and ends at the `saves` row.
+# `wad` 0x0C0000..0x3F8000, 3,375,104 B: it starts after the app slot and ends
+# at the `saves` row.
 # --budget overrides it for a probe of some other layout; every answer below is
 # measured against whatever it is given.
 FLASH_BUDGET = 3_375_104
@@ -365,7 +361,7 @@ def select_baked_source_patches(lumps: list[Lump], baked: bake.BakedSet,
     """The WAD indices of every wall patch lump the union bake composed.
 
     A baked wall is a dense payload appended to the container; the patch lumps
-    it was composed from are no longer read at runtime. The sky is a baked
+    it was composed from are not read at runtime. The sky is a baked
     payload too, but its single SKY1 patch is deliberately kept: the reference
     layout's 156-lump drop is the wall-composition set only. This resolves the
     texture definitions and PNAMES exactly the way bake_graphics.bake_level did,
@@ -897,7 +893,7 @@ def stats_report(container: bytes, encoded: list[EncodedLump], padding: list[int
     else:
         lines.append("  raw levels       n/a  (no --raw-level)")
 
-    # D3.10: one bake would still be a bake. If a level were packed alone, would
+    # One bake would still be a bake. If a level were packed alone, would
     # its own bake fit the partition? The union has to answer that per level,
     # because the largest is the one that decides the layout.
     if baked_set is not None and baked_set.per_level:
@@ -1309,15 +1305,13 @@ def parse_level_line(line: str) -> tuple[str, str, dict[str, tuple[int, int]]] |
 
 
 def assert_baked_capacity(count: int, capacity: int | None) -> None:
-    """Refuses a bake the firmware's manifest cannot hold (T27).
+    """Refuses a bake the firmware's manifest cannot hold.
 
     Fitting the wad partition is only half the budget. The adapter also holds a
     fixed number of manifest records -- `kBakedCapacity` in
     src/doomc/BakedGraphics.h -- and a container past it is refused whole at
-    boot with `reason=baked,code=too_many`, which leaves the panel on the shell.
-    T25 shipped exactly that: 352 entries into a 256-entry adapter, with 48,968 B
-    of flash to spare, because no tool compared the two budgets. This is the
-    comparison, and the encode is the last point before a flash where it can run.
+    boot with `reason=baked,code=too_many`, even with flash to spare. This is
+    the comparison of the two budgets, and the encode is the last point before a flash where it can run.
 
     @param count    how many records the bake's manifest holds.
     @param capacity the firmware's capacity, or None to skip the check.
@@ -1524,7 +1518,7 @@ def main(argv: list[str] | None = None) -> int:
             baked_manifest = next(lump.data for lump in kept if lump.name == bake.MANIFEST_NAME)
             # The manifest is final here -- drop_baked_sources rebuilt it above --
             # and this is the only place the record count and the firmware's own
-            # capacity meet, before the container is written and flashed (T27).
+            # capacity meet, before the container is written and flashed.
             assert_baked_capacity(len(records), arguments.baked_capacity)
         elif arguments.drop_baked_sources:
             raise InputError("--drop-baked-sources is a bake decision: pass --bake")
@@ -1540,7 +1534,7 @@ def main(argv: list[str] | None = None) -> int:
     container, encoded, padding = build_container(kept, arguments.level, source_crc, selection)
 
     # Every sprite lump between the markers is present: the 36 the frame-0 bake
-    # marks raw and the rest as compressed frames Phase 4 can address later.
+    # marks raw and the rest as compressed frames the animation can address.
     sprite_count = 0
     sprite_bytes = 0
     sprite_range = _range_between(lumps, "S_START", "S_END")

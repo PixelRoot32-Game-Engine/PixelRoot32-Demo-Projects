@@ -49,7 +49,7 @@ struct DoomAudioStats {
     std::int32_t highestVoice;
 };
 
-/// The APU's own numbers, supplied by whoever installs a source (T48).
+/// The APU's own numbers, supplied by whoever installs a source.
 struct DoomAudioTelemetry {
     std::uint32_t underruns;
     std::uint32_t worstUs;

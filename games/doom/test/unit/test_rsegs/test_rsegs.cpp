@@ -1,5 +1,5 @@
 /*
- * Behaviour tests for the wall column emitter (D3.2: lib/doom/r_segs.c,
+ * Behaviour tests for the wall column emitter (lib/doom/r_segs.c,
  * r_light.c), and for the fragment predicate it shares with the walk.
  *
  * Every map, texture and colormap here is assembled byte for byte by this file.
@@ -30,7 +30,7 @@
  *  - r_light_init validates the lump's layout and r_light_wall clamps the row;
  *  - the emitter rejects a surface smaller than the view before writing.
  *
- * D3.3 adds the plane pass (r_plane.c), on hand-built visplanes rather than on a
+ * The plane pass (r_plane.c) is tested on hand-built visplanes rather than on a
  * walked map, because the walk cannot produce the runs these cases need:
  *
  *  - one plane covering the whole surface draws every pixel and 200 spans;
@@ -347,7 +347,7 @@ const r_flat_t* resolveFlat(void* context, r_name_t name) {
     return static_cast<FlatTable*>(context)->find(name);
 }
 
-/* --- Sprite patches and the sprite resolver (D3.4) ----------------------- */
+/* --- Sprite patches and the sprite resolver ------------------------------ */
 
 /*
  * A patch built byte for byte: `patch_t` header, the column-offset table with
@@ -459,7 +459,7 @@ struct Fixture {
     std::array<std::int16_t, kScreenWidth> ceilingClip{};
     std::array<r_vissprite_t, 16> visSprites{};
     // The unified clip/opening pool: 32 whole-screen runs' worth of entries. A
-    // real frame needs the fragment's own span, not 320 per edge (D4.2h).
+    // real frame needs the fragment's own span, not 320 per edge.
     std::array<std::int16_t, 32u * kScreenWidth> clipPool{};
     r_view_state_t view{};
 
@@ -1162,7 +1162,7 @@ void test_drawseg_records_the_three_range_values() {
     TEST_ASSERT_EQUAL_UINT32(ANG90, drawseg.rwCenterAngle);
 }
 
-/* --- D3.3: the plane pass ------------------------------------------------ */
+/* --- The plane pass ------------------------------------------------------ */
 
 void test_a_single_plane_fills_the_whole_surface() {
     Fixture fixture;
@@ -1647,7 +1647,7 @@ void test_the_plane_pass_validates_its_arguments_before_writing() {
 
 }  // namespace
 
-/* --- D3.4: sprites and the masked mid textures -------------------------- */
+/* --- Sprites and the masked mid textures -------------------------------- */
 
 r_sprite_t makeSprite(fixed_t x, fixed_t y, fixed_t z, const char* lump) {
     r_sprite_t sprite{};
@@ -1776,7 +1776,7 @@ void test_a_nearer_wall_clips_exactly_the_columns_it_covers() {
     const int wallX2 = near->x2;
 
     // A single-sided line is the shared constant pair, never a per-fragment
-    // copy: that is the D3.4 clip capture's first case.
+    // copy: that is the clip capture's first case.
     TEST_ASSERT_EQUAL_INT16(R_DRAWSEG_CLIP_TOP, near->sprTopClip);
     TEST_ASSERT_EQUAL_INT16(R_DRAWSEG_CLIP_BOTTOM, near->sprBottomClip);
     TEST_ASSERT_EQUAL_UINT8(R_SIL_BOTH, near->silhouette);
@@ -2082,7 +2082,7 @@ void test_a_sprite_post_gap_leaves_the_buffer_untouched() {
 }
 
 /*
- * D3.9's patch proof cache (r_things.h's r_sprite_proofs_t).
+ * The patch proof cache (r_things.h's r_sprite_proofs_t).
  *
  * The cache only changes *how many times* a patch is validated, so the test that
  * matters is the one that proves it changes nothing else: the same sprites drawn
@@ -2174,8 +2174,8 @@ void test_a_patch_proof_cache_cannot_answer_for_an_unproved_patch() {
 }
 
 /*
- * D3.9 writes the coverage record inside the span loop instead of in a second
- * pass over [x1, x2]. The invariant is the same one the second pass had: a
+ * The plane pass writes the coverage record inside the span loop instead of in
+ * a second pass over [x1, x2]. The invariant: a
  * column is covered exactly when this pass wrote at least one of its pixels.
  * Drawn on a surface nothing else has touched, so "a plane wrote here" and
  * "this pixel is not the prefill" are the same statement.
@@ -2329,11 +2329,11 @@ void test_a_back_face_sprite_and_a_zero_span_sprite_draw_nothing() {
     TEST_ASSERT_EQUAL_INT(320 * 200, countValue(fixture, kUncovered));
 }
 
-/* D4.2h: the pool is upstream's openings[] -- one run of x2-x1+1 entries per
+/* The pool is upstream's openings[] -- one run of x2-x1+1 entries per
  * clipped edge, not one R_SCREEN_WIDTH block. This test measures the demand the
  * pass itself computes, then proves a pool of exactly that size draws the frame
- * and one entry less refuses it with the surface untouched. Under the old
- * per-block layout the same frame cost 2 * R_SCREEN_WIDTH entries. */
+ * and one entry less refuses it with the surface untouched. A per-block
+ * layout would cost 2 * R_SCREEN_WIDTH entries for the same frame. */
 void test_a_clip_pool_holds_span_runs_instead_of_whole_screen_blocks() {
     Fixture fixture;
     TestTexture top;
@@ -2367,8 +2367,8 @@ void test_a_clip_pool_holds_span_runs_instead_of_whole_screen_blocks() {
 
     TEST_ASSERT_GREATER_THAN_UINT16(0u, demand);
     TEST_ASSERT_EQUAL_UINT16(fixture.view.clipPoolUsed, demand);
-    // One or two spans, each narrower than the screen: the old layout would
-    // have rounded this up to 320 or 640 entries.
+    // One or two spans, each narrower than the screen: a per-block layout
+    // would round this up to 320 or 640 entries.
     TEST_ASSERT_TRUE(demand < 2u * static_cast<std::uint16_t>(kScreenWidth));
 
     fixture.prefill(kUncovered);
@@ -2427,7 +2427,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_a_sky_plane_with_no_resolvable_texture_fails);
     RUN_TEST(test_the_plane_pass_validates_its_arguments_before_writing);
 
-    // D3.4: the sprite pass and the masked mid textures.
+    // The sprite pass and the masked mid textures.
     RUN_TEST(test_a_sprite_is_projected_and_drawn_over_the_wall_behind_it);
     RUN_TEST(test_a_nearer_wall_clips_exactly_the_columns_it_covers);
     RUN_TEST(test_a_sprite_behind_a_solid_wall_writes_nothing);

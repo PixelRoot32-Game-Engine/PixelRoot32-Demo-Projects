@@ -16,11 +16,11 @@
  *   THINGS LINEDEFS SIDEDEFS VERTEXES SEGS SSECTORS NODES SECTORS
  *   REJECT BLOCKMAP
  *
- * The BSP walk (r_bsp.c, D3.1) reads **NODES, SSECTORS, SEGS, SECTORS,
+ * The BSP walk (r_bsp.c) reads **NODES, SSECTORS, SEGS, SECTORS,
  * SIDEDEFS, LINEDEFS and VERTEXES**. It does not read REJECT or BLOCKMAP at
  * all: those are line-of-sight and collision inputs for the simulation, and
- * they are exposed here only so the loader can prove their sizes and so D4.x
- * does not have to reopen the map. THINGS is read by r_bsp_spawn_view() to find
+ * they are exposed here so the loader can prove their sizes and so the
+ * simulation does not have to reopen the map. THINGS is read by r_bsp_spawn_view() to find
  * the player start; a view supplied directly needs none of it.
  *
  * NODES may be empty. DOOM's R_PointInSubsector() special-cases a map with no
@@ -299,8 +299,8 @@ typedef r_name_t (*doom_name_translate_fn)(void* context, r_name_t name);
  *
  * `adjustSide` adjusts: when set, every doom_map_get_side() parses the immutable
  * record and then hands it to the callback, which may add the scroll offset the
- * simulation has accumulated (never T23/T25/T26's failure: a number the
- * renderer does not read). The parse happens first and once, so the callback
+ * simulation has accumulated, so the scroll lands in the record the renderer
+ * actually reads rather than in a number it never looks at. The parse happens first and once, so the callback
  * cannot recurse into the seam.
  *
  * `translateName` supplies: when set, every texture name doom_map_get_side()

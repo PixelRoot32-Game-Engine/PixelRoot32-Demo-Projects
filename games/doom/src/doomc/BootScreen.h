@@ -8,7 +8,7 @@ namespace doom {
 namespace doomc {
 
 /*
- * THE BOOT AND FAILURE SCREENS (D7.2)
+ * THE BOOT AND FAILURE SCREENS
  *
  * The panel must be able to say what happened before a level exists, so this
  * module owns its own pixels: a 5x7 column font for ASCII 32..95 ships in
@@ -57,7 +57,7 @@ struct BootScreen {
  * @brief Builds the loading screen shown before the level session opens.
  *
  * Title `DOOM`; the port's name, the work in progress and @p level; footer
- * `SHAREWARE DOOM1.WAD`. It exists so a maintainer sees the display work before
+ * `SHAREWARE DOOM1.WAD`. It exists so the display is seen working before
  * the game does -- a boot that dies in the level loader is otherwise a black
  * panel with no evidence that the panel ever worked.
  *

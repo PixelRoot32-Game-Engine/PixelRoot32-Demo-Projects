@@ -2,8 +2,8 @@
 //
 // The feature renderer's floor is one byte store per pixel. This probe times
 // three ways to put bytes into a 320x200/240x180 surface and reports the cost
-// per pixel, so PLAN 6.2's "> 12 ns per byte-store falsifies the CPU estimate"
-// can be checked against the same loop shape a rasteriser would use.
+// per pixel, so the 12 ns per byte-store upper bound on the CPU estimate can be
+// checked against the same loop shape a rasteriser would use.
 
 #include "bench_memory.h"
 
@@ -122,14 +122,14 @@ void runFillProbe() {
 
 // D0.4 - DRAM census with the display path live.
 //
-// The gate is PLAN §5's B4: >= 300 KB free internal DRAM after the drawer is
+// The gate is >= 300 KB free internal DRAM after the drawer is
 // initialised and before any DOOM buffer exists. `before_init` is captured by
 // main immediately before TFT_eSPI_Drawer::init(); `after_init` therefore
 // contains the 64,000 B 8bpp surface, both DMA line buffers and the LUTs.
 //
 // The third row allocates a second 320x200 8bpp surface on purpose. It is the
-// cost of a twin framebuffer (PLAN §6.3 shows the twin does not fit); showing
-// it here means the plan's margin can be read without re-deriving it.
+// cost of a twin framebuffer, which does not fit; showing it here means the
+// margin can be read without re-deriving it.
 void runDramCensus() {
     constexpr uint32_t kGateBytes = 300u * 1024u;
     constexpr size_t kSurfaceBytes = 320u * 200u;

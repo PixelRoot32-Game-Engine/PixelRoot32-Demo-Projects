@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The sprite-submission gate (T23) against the real WAD and the real renderer.
+"""The sprite-submission gate against the real WAD and the real renderer.
 
 WHAT IT PROVES
 
@@ -39,8 +39,7 @@ PROVING THE GATE CAN FAIL
     python tools/sprite_check.py --wad ... --perturb frame
 
 adds ``-DSPRITE_CHECK_PERTURB_FRAME`` to the C build only. Every live list then
-uses each mobj's spawn-state row instead of its live frame -- the static
-behaviour T23 replaced -- so A2b sees zero advances and the puff stops
+uses each mobj's spawn-state row instead of its live frame, so A2b sees zero advances and the puff stops
 advancing: A2b, C1, C2 and C3 fail and the process exits 1. A comparison that
 cannot fail is not a gate.
 

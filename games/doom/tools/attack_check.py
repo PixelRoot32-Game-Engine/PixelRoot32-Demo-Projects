@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the C weapon and attack rules against the Python oracle (D4.2d2).
+"""Compare the C weapon and attack rules against the Python oracle.
 
 WHAT THIS PROVES
 

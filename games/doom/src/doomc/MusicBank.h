@@ -13,7 +13,7 @@
  *
  * WHAT SHIPS, AND WHY EVERY LEVEL PLAYS IT (4 MB)
  *
- * T47 converts MUS offline. `D_E1M1` is 2,145 `MusicNote`s = 34,320 B and fits
+ * MUS is converted offline. `D_E1M1` is 2,145 `MusicNote`s = 34,320 B and fits
  * the board's flash headroom (57,847 B free); `D_INTER` would be 3,975 = 63,600 B
  * and does not. The app cannot hold the other eight level themes (another
  * ~270 KB), and the container's spare is not enough for them at 16 B/note
@@ -23,9 +23,9 @@
  * still answer nullptr, so `S_ChangeMusic` leaves those quiet rather than
  * holding a request that can never play.
  *
- * That is the 4 MB limitation, recorded as one. The **S3 16 MB profile** is
- * where each id gets its own track; the bank is the only place that has to
- * change, because nothing else knows which asset an id maps to.
+ * That is the 4 MB limitation. An ESP32-S3 16 MB profile is where each id
+ * gets its own track; the bank is the only place that has to change, because
+ * nothing else knows which asset an id maps to.
  */
 
 namespace pixelroot32 {

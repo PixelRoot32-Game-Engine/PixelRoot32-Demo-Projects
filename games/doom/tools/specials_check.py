@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the C sector specials against the Python oracle (D4.1b).
+"""Compare the C sector specials against the Python oracle.
 
 WHAT THIS PROVES
 
@@ -112,7 +112,7 @@ TICS = 420
 DAMAGE_MAPS = tuple(f"E1M{i}" for i in range(1, 10))
 PERTURBATIONS = ("none", "damage", "threshold", "ironfeet")
 
-# --- T34: stairs and teleports ---------------------------------------------
+# --- Stairs and teleports --------------------------------------------------
 #
 # The numbers the stage measures, split the way upstream splits them:
 #
@@ -151,7 +151,7 @@ SYNTHETIC_FIXTURES = (
 
 STAIR_PERTURBATIONS = ("none", "stairs", "teleport")
 
-# --- T35: scrolling walls and animated pictures -----------------------------
+# --- Scrolling walls and animated pictures ----------------------------------
 #
 # The stage runs P_UpdateSpecials on every episode-1 map, because the number is
 # not on every map: measured from DOOM1.WAD, special 48 is carried by E1M1 lines
@@ -293,7 +293,7 @@ def compare(c_lines: list[str], ref_lines: list[str]) -> tuple[int, str]:
     return mismatches, first
 
 
-# --- T34: the stair and teleport stage --------------------------------------
+# --- The stair and teleport stage -------------------------------------------
 
 def stair_census(wad: Path) -> dict[tuple[str, int], list[int]]:
     """(map, special) -> the lines carrying it, for the eight numbers.
@@ -369,7 +369,7 @@ def run_stair_fixture(executable: Path, oracle: Path, wad: Path,
     return len(protocol_lines(result.stdout)), first, mismatches
 
 
-# --- T35: the scroll/animation stage ----------------------------------------
+# --- The scroll/animation stage ---------------------------------------------
 
 def scroll_census(wad: Path) -> tuple[dict[str, list[int]], dict[str, list[str]]]:
     """What the WAD carries: line special 48 per map, and the animated pictures.

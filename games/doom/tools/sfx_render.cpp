@@ -1,5 +1,5 @@
 /*
- * Host renderer for the SFX bank gate (T46).
+ * Host renderer for the SFX bank gate.
  *
  * Renders every cue through the real ApuCore at the board's 22050 Hz and
  * prints the same 16-segment analysis tools/sfx_design.py takes of the

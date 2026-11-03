@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the C renderer against the Python oracle on the real WAD (D3.2/D3.3).
+"""Compare the C renderer against the Python oracle on the real WAD.
 
 WHAT THIS PROVES
 
@@ -21,18 +21,14 @@ The compared lines are the protocol both sides document:
     FRAMESTAT NN ...            wall counts, per-tier pixels and both partial hashes
     PLANESTAT NN ...            plane counts and the wall, plane-mask and frame hashes
     SPRSTAT NN ...              sprite counters, the pool peaks, the masked-pass
-                                mask hash and the finished frame's hash (D3.4)
-    SEGS-SUMMARY ...            the wall totals (unchanged from D3.2)
+                                mask hash and the finished frame's hash
+    SEGS-SUMMARY ...            the wall totals
     PLANE-SUMMARY ...           the plane totals
     SPR-SUMMARY ...             the sprite totals and the audited pool peaks
 
-What changed in D3.4, and why: the `frame NN:`, FRAMESTAT, PLANESTAT and both
-older SUMMARY lines are byte-for-byte what D3.2/D3.3 printed. SPRSTAT and
-SPR-SUMMARY are appended. `--segs-detail` and `--segs-column` now report the
-*finished* frame (after the masked pass) rather than the frame after the planes,
-because that is the frame a reader is comparing; the ROW mask field is the
-masked pass's mask instead of the plane pass's, and the wall fields are
-unchanged.
+`--segs-detail` and `--segs-column` report the *finished* frame (after the
+masked pass) rather than the frame after the planes, because that is the frame a
+reader is comparing; the ROW mask field is the masked pass's mask.
 
 A mismatch is localised in three steps instead of being reported as one hash: the
 frames are compared first, then the columns of the first differing frame
@@ -43,7 +39,7 @@ pass's mask, so the report can name the first divergent pixel and say which pass
 wrote it. Those two extra passes print decoded palette indices for one column;
 they are diagnostics of record and must not be committed.
 
-THE SECOND STAGE: THE SCROLL, IN PIXELS (T35)
+THE SECOND STAGE: THE SCROLL, IN PIXELS
 
 The 20 sampled viewpoints do not look at E1M1's scrolling wall -- line special
 48's eight lines there are the lower tier of the nukage ring -- so a scroll probe
@@ -98,7 +94,7 @@ import doom_ref  # noqa: E402  (path-dependent by design)
 
 MAP_NAME = "E1M1"
 
-# --- T35: the scroll proof ---------------------------------------------------
+# --- The scroll proof --------------------------------------------------------
 #
 # The scrolling wall is line special 48's front side, and it is *not* in any of
 # the 20 sampled views: E1M1's eight scrolling lines (352..359) are the lower
@@ -209,7 +205,7 @@ def by_key(lines: list[str], prefix: str, key_at: int) -> dict[str, str]:
     return found
 
 
-# --- T35: the scroll proof --------------------------------------------------
+# --- The scroll proof -------------------------------------------------------
 
 def trunc_div(value: int, divisor: int) -> int:
     """C's integer division: truncate toward zero, whatever the sign."""
@@ -426,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
                             f"frame {frame}: column {column} first diverges in the "
                             f"coverage byte, not in the pixels")
 
-        # --- T35: the scroll proof -----------------------------------------
+        # --- The scroll proof ----------------------------------------------
         # Inside the try, because it runs the harness the temporary directory
         # holds; and only when the 20-frame comparison agreed, because a
         # divergent renderer has nothing to prove about one more frame.

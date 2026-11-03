@@ -1,4 +1,4 @@
-// Shared plumbing for the Phase 0 bench: environment identity, CSV emission,
+// Shared plumbing for the measurement bench: environment identity, CSV emission,
 // heap readings and the fixed pattern the present probes checksum.
 //
 // Header-only on purpose: the probe translation units stay independent of each
@@ -17,7 +17,7 @@
 
 namespace bench {
 
-/// Free internal DRAM, the quantity PLAN §5's B4 gate is written in.
+/// Free internal DRAM, the quantity the 300 KB gate is written in.
 inline uint32_t freeInternal() {
     return static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 }
@@ -29,7 +29,7 @@ inline uint32_t largestInternal() {
 }
 
 // Captured once in main. Stored here so D0.2/D0.4 report the same post-init
-// baseline regardless of which probe the maintainer ran first.
+// baseline regardless of which probe ran first.
 inline uint32_t gFreeInternalBeforeInit = 0;
 inline uint32_t gLargestInternalBeforeInit = 0;
 inline uint32_t gFreeInternalAfterInit = 0;

@@ -1,5 +1,5 @@
 /*
- * DOOM on PixelRoot32 - the player's weapon (D5.1).
+ * DOOM on PixelRoot32 - the player's weapon.
  *
  * Derived from linuxdoom-1.10 r_things.c (R_DrawPSprite, R_DrawPlayerSprites)
  * (Copyright (C) 1993-1996 by id Software, Inc.), licensed under the GNU General

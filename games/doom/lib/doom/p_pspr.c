@@ -627,7 +627,7 @@ int p_check_ammo(p_mobj_context_t* world, p_player_t* player) {
      *
      * Upstream's two `gamemode` arms -- the plasma rifle (`gamemode != shareware`)
      * and the super shotgun (`gamemode == commercial`) -- are false in DOOM 1
-     * shareware, which is the only game this port loads (L2 Q3), and are named
+     * shareware, which is the only game this port loads, and are named
      * here rather than written. The BFG's arm has the same `gamemode` test.
      *
      * The do/while is upstream's `while (pendingweapon == wp_nochange)`; every arm
@@ -674,7 +674,7 @@ void p_fire_weapon(p_mobj_context_t* world, p_player_t* player) {
                   (statenum_t)weapon_row(player->readyweapon)->attackState);
 
     /* `P_NoiseAlert (player->mo, player->mo);` -- every shot wakes the monsters
-     * that can hear this sector (T15a). The counter still records the call, so
+     * that can hear this sector. The counter still records the call, so
      * "the shot happened" and "the shot was silent" are separately visible. */
     p_noise_alert(world, player->mo, player->mo);
     player->noiseAlerts += 1u;

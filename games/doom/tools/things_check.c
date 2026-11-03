@@ -1,5 +1,5 @@
 /*
- * Host harness for the THINGS run (D4.1a): loads a level's THINGS lump through
+ * Host harness for the THINGS run: loads a level's THINGS lump through
  * lib/doom/p_setup.c and prints every mobj it produced, the counters, the
  * recorded starts and the random position the load reached.
  *

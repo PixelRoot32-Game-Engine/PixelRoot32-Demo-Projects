@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Compare the door rules and the doorway frame against the Python oracle (T26).
+"""Compare the door rules and the doorway frame against the Python oracle.
 
 WHAT THIS PROVES
 
-The maintainer's door report -- the door never visibly opens, it does not stop
-the player, and the screen goes white while walking through it -- is three
-observations that have to be explained together. This script builds
+A door has to block the player while closed, open on use, and keep the doorway
+view drawn while the player walks through it. This script builds
 ``tools/door_check.c``, which loads E1M1 through ``lib/doom/p_setup.c``, keeps
 only the avatar, finds the nearest closed manual door to the player start and
 runs three measurements through ``p_level_tic()`` -- the same entry point the

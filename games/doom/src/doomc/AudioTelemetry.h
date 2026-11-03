@@ -6,7 +6,7 @@
  * WHY THIS IS ITS OWN TRANSLATION UNIT
  *
  * `DoomAudio.cpp` carries the APU and the engine in every build that has sound
- * (`DOOM_AUDIO`). The two numbers T48 exists for -- the DMA underrun count and
+ * (`DOOM_AUDIO`). The two numbers this telemetry exists for -- the DMA underrun count and
  * the worst synthesis time -- are read through a source the *platform* installs
  * (src/platforms/esp32_dev_ILI9341.h owns the backend), and the line that prints
  * them is built

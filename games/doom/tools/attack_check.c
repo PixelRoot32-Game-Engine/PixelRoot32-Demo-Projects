@@ -1,5 +1,5 @@
 /*
- * Host harness for the weapons and the attack path (D4.2d2).
+ * Host harness for the weapons and the attack path.
  *
  * It loads E1M1 through lib/doom/p_setup.c, keeps only the avatar that
  * P_LoadThings() already spawned, and then drives the real psprite machine and
@@ -27,8 +27,8 @@
  * Every PSP line is one overlay layer: its statenum_t, its remaining tics and the
  * two screen coordinates. `sx`/`sy` are printed because A_WeaponReady's bob,
  * A_Lower's and A_Raise's steps and the flash's follow-the-gun copy are the only
- * observable form of the layer's geometry (nothing draws it yet: the weapon widget
- * is D5.1). Nothing rendered is compared, because nothing is rendered.
+ * observable form of the layer's geometry here: the weapon widget's pixels are
+ * tools/weapon_draw_check.py's subject, and this harness renders nothing.
  *
  * Every MOBJ line is the *whole* thinker list in insertion order, so a puff, a
  * blood spray or a dropped clip appears as a new slot and a removal closes the
@@ -36,9 +36,8 @@
  * transposed intercept or a wrong slope shows up as a coordinate.
  *
  * `snd` is p_player_t::silentSounds -- every S_* call the weapon actions make --
- * and `noise` is P_FireWeapon's P_NoiseAlert. Neither sound nor alert exists in
- * this port (S2 has no audio layer, T15 owns P_NoiseAlert), so the two counters
- * are the evidence that the branches were reached the right number of times.
+ * and `noise` is P_FireWeapon's P_NoiseAlert. This harness plays nothing, so the
+ * two counters are the evidence that the branches were reached the right number of times.
  *
  * WHAT IT DOES NOT DO
  *
@@ -258,14 +257,14 @@ static int run_attack(p_level_t* level, const char* mapName) {
     aim_at(avatar, target);
 
     /*
-     * The weapon gate needs a stationary damage sink, and T15b's A_Chase is now
-     * real: a monster that acquires the avatar walks at it and shoots back, so
+     * The weapon gate needs a stationary damage sink, and A_Chase is real: a
+     * monster that acquires the avatar walks at it and shoots back, so
      * every scripted shot would miss a target that has stepped aside. Clearing
      * MF_SHOOTABLE on the avatar is exactly the test A_Chase makes first
      * ("!actor->target || !(actor->target->flags & MF_SHOOTABLE)"), so the
      * monster spends every run state re-acquiring an invalid target and never
      * steps or fires -- it stays the same stationary, damageable, killable
-     * target T14 wrote its script against. The avatar is never damaged in this
+     * target the script was written against. The avatar is never damaged in this
      * script, so no rule depends on the flag being set. enemy_check is the gate
      * that exercises a monster that does chase.
      */

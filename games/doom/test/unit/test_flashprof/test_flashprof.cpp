@@ -1,5 +1,5 @@
 /*
- * Behaviour tests for the DOOM port's flash-read profile (D2.5).
+ * Behaviour tests for the DOOM port's flash-read profile.
  *
  * The suite covers the arithmetic and the lines, not the board: `FlashProfile`
  * is engine-free and Arduino-free by construction, so a host test can fold

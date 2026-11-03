@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pixel oracle for the menu drawing (T39, D5.2).
+"""Pixel oracle for the menu drawing.
 
 ``lib/doom/m_menu.c`` draws the main menu, the New Game / skill screen and the
 setup-lite screen into the 8bpp surface by patch name. ``tools/menu_draw_check.c``
@@ -8,9 +8,9 @@ runs the SAME script through an independent drawer and compares the two byte for
 byte.
 
 The drawer is written from linuxdoom's ``m_menu.c`` and ``v_video.c``:
-``M_Drawer`` (the title patch, each row's picture 16 px apart -- and, since T53, the
-two text rows LOAD GAME / SAVE GAME), ``M_DrawNewGame`` (``M_NEWG`` at 96,14 and
-``M_SKILL`` at 54,38), ``M_DrawLoad``/``M_DrawSave`` (T53: a text title and six slot
+``M_Drawer`` (the title patch, each row's picture 16 px apart -- and the two text
+rows LOAD GAME / SAVE GAME), ``M_DrawNewGame`` (``M_NEWG`` at 96,14 and
+``M_SKILL`` at 54,38), ``M_DrawLoad``/``M_DrawSave`` (a text title and six slot
 labels at 80,54, the label the owner set), ``M_WriteText`` (the HU font, a space
 advancing 4) and ``M_DrawThermo`` (left cap, middle pieces, right cap, dot).
 It has its own patch reader and blitter; the key handling comes from the reference
@@ -20,7 +20,7 @@ so it rules out transcription slips, not a shared misreading of the source.
 
 Thirteen scripted states cover every screen, the first and last row of each (the mute
 row of the setup-lite screen and the sixth slot row are the last ones), both skull
-frames, the closed menu (which must paint nothing) and T53's two slot screens: LOAD
+frames, the closed menu (which must paint nothing) and the two slot screens: LOAD
 with two used rows and four EMPTY ones, and SAVE over the same labels. The surface
 starts as the sentinel 0xEE so a pixel written outside a patch's footprint shows up.
 A state that paints nothing when it should is itself a failure, so two blank surfaces
@@ -237,12 +237,12 @@ class Drawer:
             self.thermo(surface, 60, 76 + 14, 16, model.volume)
             self.write_text(surface, 60, 112, "GAMMA CORRECTION")
             self.thermo(surface, 60, 112 + 14, 5, model.gamma)
-            # T49's fourth row: a slider with two positions, drawn as the word.
+            # The fourth row: a slider with two positions, drawn as the word.
             self.write_text(surface, 60, 148, "SOUND MUTE")
             self.write_text(surface, 60, 148 + 14, "ON" if model.muted else "OFF")
             skull_x, skull_y = 60 - 32, 40 - 5 + item * 36
         else:
-            # T53's LOAD/SAVE screens: a text title at 120,24 and the six labels
+            # The LOAD/SAVE screens: a text title at 120,24 and the six labels
             # at 80,54, one 16 px line apart. No M_LOADG/M_SAVEG patch is drawn.
             title = "LOAD GAME" if model.screen == menu_check.LOAD else "SAVE GAME"
             self.write_text(surface, 120, 24, title)

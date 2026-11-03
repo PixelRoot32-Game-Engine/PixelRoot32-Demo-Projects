@@ -4,7 +4,7 @@
 #include <cstring>
 
 /*
- * The screen's own font and painter (D7.2).
+ * The screen's own font and painter.
  *
  * See BootScreen.h for why the font is embedded, why the bytes are RGB332 and
  * why the same buffer must never be painted after a level session opens. The

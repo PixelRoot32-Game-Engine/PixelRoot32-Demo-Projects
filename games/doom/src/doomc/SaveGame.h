@@ -1,5 +1,5 @@
 /*
- * The port's own save record for one level (D7.1, task T52).
+ * The port's own save record for one level.
  *
  * WHAT THIS IS, AND WHY IT IS NOT VANILLA'S .dsg
  *
@@ -12,7 +12,7 @@
  *     between two loads, so a stored pointer is not an index;
  *   - `doom_map` is a zero-copy view over (on the board) a mapped flash page, so
  *     there is no writable `sector_t sectors[]` in the map to copy;
- *   - the engine's slot store (S18) hands this layer a byte buffer, so the
+ *   - the engine's slot store hands this layer a byte buffer, so the
  *     record has to be self-describing and index-based.
  *
  * So the record is the honest translation of the *idea*: the player record
@@ -35,7 +35,7 @@
  *
  * A full sector dump would be 85 sectors x 26 B for E1M1 alone (2,210 B) and a
  * full mobj dump is ~90 B per thing (119 of them at nightmare on E1M1, ~10.7 KB);
- * neither fits the 3,072 B slot budget S18/L55 derives from the 32 KB `saves`
+ * neither fits the kSavePayloadMax slot budget of the 32 KB `saves`
  * partition. The record therefore stores:
  *
  *   - sectors: only those whose floor/ceiling height, floor/ceiling picture,
@@ -99,14 +99,14 @@
  *
  * WHAT THE HEADER IS FOR
  *
- * The slot menu (T53) shows six rows without decoding a body: the level, the
+ * The slot menu shows six rows without decoding a body: the level, the
  * skill, the clock, the kill count and a 15-character label. saveReadHeader()
  * reads only those bytes. Correctness does not rest on them: the body carries a
  * map fingerprint (a hash of THINGS plus the line/sector counts) and a
  * 32-bit checksum over the body, so a record from another map, or a record with
  * one flipped byte, is rejected rather than loaded. The engine's RecordCodec
- * owns a CRC-32 envelope in T53; this checksum is the save layer's own guard so
- * the host gate can prove the rejection now.
+ * adds its own CRC-32 envelope; this checksum is the save layer's guard, so the
+ * host tests can prove the rejection without the engine.
  *
  * This file is engine-free and APU-free: it includes lib/doom headers and
  * nothing from PixelRoot32. There is no allocation, no floating point and no
@@ -130,22 +130,22 @@ namespace doomc {
 /*
  * One record's payload budget.
  *
- * S18/L56, on the maintainer's decision: the `saves` partition is 32 KB of NVS,
- * six slots, and a slot must stay inside ONE NVS page so it never spills and the
- * partition keeps pages for metadata and garbage collection. A page is 126
- * entries of 32 B, so the largest blob is (126 - 2) x 32 = 3,968 B. Six of those
- * use 756 of the partition's 1,008 entries (24.2 KB) and leave two pages for the
- * collector; eight at the same size would use all 1,008 with no slack, which is
- * why S18 records six. T52's measured peak is 3,393 B (10 minutes of combat, 120
- * live mobjs), so this budget keeps 575 B (17 %) of margin over a real world.
+ * The `saves` partition is 32 KB of NVS, six slots, and a slot must stay inside
+ * ONE NVS page so it never spills and the partition keeps pages for metadata
+ * and garbage collection. A page is 126 entries of 32 B, so the largest blob is
+ * (126 - 2) x 32 = 3,968 B. Six of those use 756 of the partition's 1,008
+ * entries (24.2 KB) and leave two pages for the collector; eight at the same
+ * size would use all 1,008 with no slack, hence six. The measured peak is
+ * 3,393 B (10 minutes of combat, 120 live mobjs), so this budget keeps 575 B
+ * (17 %) of margin over a real world.
  *
- * The engine's RecordCodec envelope (16 B, T53) is part of the same slot: the
+ * The engine's RecordCodec envelope (16 B) is part of the same slot: the
  * slot store's record budget is kSavePayloadMax B, so a payload above
  * kSavePayloadMax - 16 is refused by the save path with TooLarge rather than by
  * NVS. The analytic bound (15,662 B) stays beyond any slot this partition can
  * hold, so TooLarge remains a real, reported outcome and never a silent drop.
- * The value is a contract with T53, so it is stated here once and the budget
- * test measures against it.
+ * The value is a contract with the persistence layer, so it is stated here once
+ * and the budget test measures against it.
  */
 constexpr std::size_t kSavePayloadMax = 3968;
 

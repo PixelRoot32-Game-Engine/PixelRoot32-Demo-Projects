@@ -19,8 +19,8 @@
  *
  * Upstream's demo path is entangled with the game state machine: a marker calls
  * G_ExitLevel(), G_DoPlayDemo sets gameaction, and the level, intermission and
- * menu are all reachable from the same switch. D4.4 is playback only, so this
- * file carries one game action and no more: G_DoReborn's single-player branch,
+ * menu are all reachable from the same switch. Demo playback here is playback
+ * only, so this file carries one game action and no more: G_DoReborn's single-player branch,
  * which is `gameaction = ga_loadlevel` -- a reload of the level the header
  * named, never a transition. There are no globals at all: the header is data,
  * the cursor is data, and the world is the caller's. That also keeps it linkable

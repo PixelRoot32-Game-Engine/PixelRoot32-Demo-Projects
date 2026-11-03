@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Play the shareware demos through lib/doom and pin what they produce (D4.4).
+"""Play the shareware demos through lib/doom and pin what they produce.
 
 WHAT THIS GATE IS
 
@@ -51,8 +51,8 @@ WHAT THE STRICT VERDICT CHECKS
      respawn was possible. The conditions are therefore:
        (a) every death the stream still had commands for was answered by a
            reload inside the stream -- `DEATH` tics and `RELOAD` tics must pair
-           up, and a death with input still to come and no later reload is the
-           frozen corpse the old test was reaching for;
+           up, and a death with input still to come and no later reload is a
+           frozen corpse;
        (b) a run may end dead only when its death landed at or after the last
            input, and the message names that tic when this is how a run ends;
        (c) `alive` stays inside the pin, so a change that flips a run from dead
@@ -212,15 +212,14 @@ SOURCES = (
 # lump's own count, which must also equal the independent decode below), `final`
 # and `cohere` (the whole coherence line, verbatim, so any number that moves names
 # itself). `anom`, `missing`, `spec` and `alive` are the fidelity record:
-# `missing` is the distinct action set (empty since D4.4's A_SPosAttack,
-# A_SargAttack and the A_Scream sound draw landed), `spec` is the line-special
+# `missing` is the distinct action set (empty: every action the demos reach is
+# implemented), `spec` is the line-special
 # set the playback reached, and `alive` is the end state -- PST_LIVE, or dead when
 # the last command killed the player -- with the last input tic and the number of
 # reloads that answered its deaths. `arena` and `reload` are the reload's
 # own evidence: the level's bytes in use, and the tic of every answered death.
 #
-# All three demos die. Before D4.4's reload step this gate recorded the frozen
-# corpse; every number below is from a run that answered each death with
+# All three demos die. Every number below is from a run that answered each death with
 # G_DoReborn's `ga_loadlevel` -- the same level, reloaded -- and kept playing,
 # with one exception: DEMO1's seventh death lands on its own last command, so
 # that run ends dead and its `alive` pin says so. The pins are still a regression
@@ -231,10 +230,8 @@ SOURCES = (
 PINS: dict[str, dict[str, object]] = {
     "DEMO1": {
         "map": "E1M5",
-        # Re-baselined once, for D4.5's sector damage: P_PlayerInSpecialSector
-        # made E1M5's nukage real (sector 59, 26 damage windows, 130 points), so
-        # the health track and every death after tic 1149 moved, and the seventh
-        # death now lands on the stream's own last command (tic 5025). The run
+        # P_PlayerInSpecialSector's nukage damage (E1M5 sector 59) puts the
+        # seventh death on the stream's own last command (tic 5025). The run
         # ends dead, which is upstream's ending for this recording -- see the
         # ending rules in check_run().
         "tics": 5026,
@@ -296,11 +293,8 @@ PINS: dict[str, dict[str, object]] = {
         "specunsup": "SPECUNSUP count=0 overflow=0",
         "ignored": "IGNORED count=1 31@110:949:crossx1",
         "alive": "ALIVE alive=1 lastinput=2104 deathtic=500 reborns=1",
-        # Re-measured once, for T35: E1M7 is one of the two episode-1 maps that
-        # carry line special 48, and p_spawn_specials() now allocates one
-        # p_scroll_t per such line from the level's arena. Four lines x 12 B =
-        # 48 B: 53,304 -> 53,352. Nothing else about this run moved -- `final`,
-        # `chain` and `cohere` are the same values as before the change.
+        # E1M7 carries line special 48, and p_spawn_specials() allocates one
+        # 12 B p_scroll_t per such line (four here) from the level's arena.
         "arena": 53352,
         "reload": [611],
     },
@@ -824,9 +818,9 @@ def check_run(text: str, name: str, commands: list[tuple[int, int, int, int]],
     # P_MovePlayer, and nothing later in P_PlayerThink moves the avatar. The walk
     # below decides whether upstream's 64-unit ray would have reached a special
     # line. A press that had one in reach must have triggered it, and a press that
-    # triggered must have had one in reach. This replaces the old "some press
-    # triggered" / "the player passed a door" pair, neither of which upstream
-    # requires and both of which a faithful DEMO1 must fail.
+    # triggered must have had one in reach. Weaker checks such as "some press
+    # triggered" or "the player passed a door" are not used: upstream requires
+    # neither, and a faithful DEMO1 fails both.
     if strict:
         for press in presses:
             tic = number(press, "n")
@@ -934,7 +928,7 @@ def main(argv: list[str] | None = None) -> int:
             # The pin must move. The chain is the strongest aggregate this gate
             # records: every CHECK_TICS snapshot plus the final state, hashed in
             # order. A perturbation that moves any checkpoint moves the chain.
-            # The final hash alone is no longer sufficient once the player dies:
+            # The final hash alone is not sufficient once the player dies:
             # P_DeathThink clamps the corpse's view at 6*FRACUNIT, so a
             # P_VIEWHEIGHT change can leave the last tic byte-identical while
             # every tic before the death moved.

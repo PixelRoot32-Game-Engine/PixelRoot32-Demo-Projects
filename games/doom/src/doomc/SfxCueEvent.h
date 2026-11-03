@@ -6,7 +6,7 @@
  *
  * WHY THIS FILE EXISTS
  *
- * T46 gates the bank by rendering each cue through the real ApuCore and
+ * The host gate checks the bank by rendering each cue through the real ApuCore and
  * comparing the result with the WAD's original sample. A harness that rebuilt
  * the event its own way would prove only that the harness agrees with itself:
  * the property under test is "the cue the firmware plays", so the translation

@@ -1,5 +1,5 @@
 ﻿/*
- * Behaviour tests for DOOM's channel layer (T45, D6.1/D6.3).
+ * Behaviour tests for DOOM's channel layer.
  *
  * Everything here goes through the public C API of lib/doom/s_sound.c. The
  * seven APU calls it makes are a test double at the bottom of this file, so the
@@ -7,8 +7,8 @@
  * culling, the pitch jitter and the music transport are exercised without an
  * engine, an APU, a board or an audio device.
  *
- * The rules asserted are the ones S16 and the task name, not the
- * implementation's own state:
+ * The rules asserted are the layer's contract, not the implementation's own
+ * state:
  *
  *   - id 0 and ids past NUMSFX are silent and allocate nothing;
  *   - one sound per origin (a new sound from the same origin stops the old);
@@ -635,8 +635,8 @@ void test_voice_selection_prefers_idle_then_the_least_important(void) {
 
 void test_no_class_combination_steals_a_reserved_voice(void) {
     // Exhaustive over the three cue classes: the selector must either answer
-    // "refuse" or name a voice that is not Reserved. This is S16's "no
-    // high-value cue is stolen", asserted rather than trusted.
+    // "refuse" or name a voice that is not Reserved. This is the "no
+    // high-value cue is stolen" rule, asserted rather than trusted.
     const SfxClass classes[3] = {SfxClass::Normal, SfxClass::High,
                                  SfxClass::Reserved};
     for (int a = 0; a < 3; ++a) {
@@ -680,8 +680,8 @@ void test_update_sounds_ticks_and_frees_a_finished_channel(void) {
 // --- The music bank --------------------------------------------------------
 
 void test_the_music_bank_plays_e1m1_on_every_level(void) {
-    // The 4 MB build ships one track and answers it for all nine level ids
-    // (S23); only the non-level ids are quiet. The S3 profile replaces the
+    // The 4 MB build ships one track and answers it for all nine level ids;
+    // only the non-level ids are quiet. The S3 profile replaces the
     // lookup so each id gets its own asset.
     TEST_ASSERT_NULL(musicBankTrack(mus_None));
     TEST_ASSERT_NULL(musicBankTrack(mus_inter));
@@ -743,7 +743,7 @@ void test_the_music_bank_plays_e1m1_on_every_level(void) {
     TEST_ASSERT_GREATER_THAN(0, drums);
 }
 
-// --- The APU telemetry seam (T48, D6.5) ------------------------------------
+// --- The APU telemetry seam ------------------------------------------------
 //
 // The two numbers the soak exists to prove are read through a source the
 // platform installs. The seam is engine-free, so all of its behaviour is

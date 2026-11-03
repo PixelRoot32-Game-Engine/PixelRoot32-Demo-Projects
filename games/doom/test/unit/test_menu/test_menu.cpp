@@ -1,5 +1,5 @@
 /*
- * Behaviour tests for the menu's persistence seam and its palette effect (D5.2).
+ * Behaviour tests for the menu's persistence seam and its palette effect.
  *
  * The state machine itself is gated by tools/menu_check.py (a C harness against a
  * reference model); this suite owns what that gate cannot see from C: the C++ seam
@@ -13,17 +13,17 @@
  *   - the button bits the menu reads are the bits InputMap.h defines
  *   - gamma 0 reproduces the PLAYPAL tables, higher gamma is brighter, and the
  *     table pointer the panel holds does not move when the values change
- *   - the mute flag (T49) rides in the record's reserved byte: a record written
+ *   - the mute flag rides in the record's reserved byte: a record written
  *     before the flag existed still decodes as "not muted", the flag round-trips,
  *     and a damaged flag byte is refused like any other damage
  *   - the volume and mute become DOOM's 0..127 level exactly once (`audioLevel`):
  *     silence at 0, S_MAX_VOLUME at M_VOLUME_MAX, and mute silences without
  *     touching the stored volume
- *   - T53 (D7.1): LOAD GAME / SAVE GAME are the main screen's last two rows and
+ *   - LOAD GAME / SAVE GAME are the main screen's last two rows and
  *     open six-row slot screens; an activation reports its own action and row
  *     (`M_ACTION_LOAD_SLOT` / `M_ACTION_SAVE_SLOT`), an EMPTY row does nothing and
  *     keeps the screen open, and a save over any row is immediate
- *   - T53: the settings record keeps its eight bytes when it moves onto the
+ *   - the settings record keeps its eight bytes when it moves onto the
  *     engine's `IKeyValueStore` -- `KeyValueSettingsStore` writes and reads the
  *     same blob `MemorySettingsStore` did, and a medium that refuses leaves the
  *     old record in place
@@ -194,7 +194,7 @@ void test_saving_clamps_a_hand_built_value_into_range(void) {
     assertSettings(M_SKILL_COUNT - 1, M_VOLUME_MAX, M_GAMMA_MAX, loaded, M_MUTE_MAX);
 }
 
-// --- Volume and mute (T49, D6.6) ---------------------------------------------
+// --- Volume and mute ---------------------------------------------------------
 
 void test_a_record_written_before_the_mute_flag_still_decodes(void) {
     // The board's stored record, byte for byte: 'D' 'M' v1 skill 3 volume 12
@@ -305,7 +305,7 @@ void test_the_mute_row_is_the_fourth_options_row(void) {
     TEST_ASSERT_TRUE(m_menu_take_settings_changed(&menu) == 0);
 }
 
-// --- LOAD GAME / SAVE GAME (T53, D7.1) ---------------------------------------
+// --- LOAD GAME / SAVE GAME ---------------------------------------------------
 
 namespace {
 

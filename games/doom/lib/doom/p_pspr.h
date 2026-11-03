@@ -29,24 +29,23 @@
  * p_weapon_t, for the same reason p_user.h stores `pendingweapon` as an int32_t:
  * this header must not need that enumerator.
  *
- * WHAT D4.2d2 OWNS AND WHAT IT DOES NOT
+ * WHAT THIS LAYER OWNS AND WHAT IT DOES NOT
  *
  * Owning: the state machine, the ammo a shot spends, the muzzle flash's light
  * level, and the drawing-free half of every weapon action. The coordinates
  * `sx`/`sy` are computed exactly as upstream computes them because they are
- * part of the state a later renderer reads, and because A_Lower's and A_Raise's
+ * part of the state the weapon renderer (r_psprite.c) reads, and because A_Lower's and A_Raise's
  * transitions are decided by them.
  *
  * NOT owning, and named rather than dropped:
  *
- *   - the weapon sprite itself. Nothing here touches a pixel; the status bar and
- *     the weapon widget are D5.1, and `sx`/`sy` are written so that layer has
- *     something to read when it arrives.
+ *   - the weapon sprite itself. Nothing here touches a pixel; r_psprite.c draws
+ *     the weapon from `sx`/`sy`.
  *   - audio. Every `S_StartSound` the weapon actions make is counted in
  *     p_player_t::silentSounds and, under DOOM_AUDIO, played at the same site
  *     through DOOM_SOUND_START. The counter is what the attack gates assert;
  *     the call is what the APU hears.
- *   - P_NoiseAlert. T15a owns the flood; P_FireWeapon calls it and still counts
+ *   - P_NoiseAlert. p_sight.c owns the flood; P_FireWeapon calls it and still counts
  *     the call in p_player_t::noiseAlerts, so "a shot woke the neighbours" and
  *     "the call was reached" are separately visible.
  *   - A_Saw, A_FireShotgun2, A_BFGSpray and A_BFGsound. They are the chainsaw and
@@ -118,9 +117,9 @@ typedef enum p_psprnum {
  *   tics   the state's remaining tics. -1 never advances (upstream:
  *          `if (psp->tics != -1)`).
  *   sx, sy screen coordinates, 16.16. Upstream's comment: "coordinates are given
- *          for a 320*200 view screen". Nothing in this port draws them yet
- *          (D5.1), and A_WeaponReady, A_Lower, A_Raise and P_BringUpWeapon all
- *          write them, so they are state the machine decides and a test can see.
+ *          for a 320*200 view screen". r_psprite.c draws from them, and
+ *          A_WeaponReady, A_Lower, A_Raise and P_BringUpWeapon all write them,
+ *          so they are state the machine decides and a test can see.
  *
  * Upstream's state_t also carries `misc1`/`misc2`, which P_SetPsprite uses to set
  * sx/sy from the state row. Every one of the 967 shipped rows has both zero
@@ -248,9 +247,9 @@ void p_move_psprites(p_mobj_context_t* world, struct p_player* player);
  *  swingy = -FixedMul (swingx, finesine[angle]);`
  *
  * Upstream keeps `swingx`/`swingy` as file-scope globals because the renderer
- * reads them. This port has no globals and no weapon renderer (D5.1), so the two
- * numbers are an out-parameter: the rule is here so the value exists, and the
- * only caller is a test. Nothing in D4.2d2 uses it.
+ * reads them. This port has no globals, so the two numbers are an
+ * out-parameter: the rule is here so the value exists, and the only caller is a
+ * test.
  *
  * @param level  The level, for `leveltime`; NULL means tic 0.
  * @param player The player record, for `bob`.
@@ -283,7 +282,7 @@ void p_bring_up_weapon(p_mobj_context_t* world, struct p_player* player);
  * preference order is upstream's: chaingun with clips, shotgun with shells, the
  * pistol if there are clips at all, the chainsaw, the missile launcher with
  * rockets, then the fist. The plasma, super-shotgun and BFG arms are upstream's
- * `gamemode` tests, and this port loads DOOM 1 shareware (S-scope, L2 Q3), where
+ * `gamemode` tests, and this port loads DOOM 1 shareware, where
  * all three are false; they are named in p_pspr.c rather than written.
  *
  * @return 1 when the ready weapon can fire, 0 when it cannot -- in which case
@@ -299,7 +298,7 @@ int p_check_ammo(p_mobj_context_t* world, struct p_player* player);
  * P_SetPsprite (player, ps_weapon, weaponinfo[readyweapon].atkstate);
  * P_NoiseAlert (player->mo, player->mo);`
  *
- * P_NoiseAlert is p_sight.c's flood (T15a): it starts at the player's sector,
+ * P_NoiseAlert is p_sight.c's flood: it starts at the player's sector,
  * crosses every open two-sided line and stops at a closed door, so a monster
  * behind a wall but in an open room hears the shot while one behind a closed
  * door does not. The call is also counted in `noiseAlerts`.

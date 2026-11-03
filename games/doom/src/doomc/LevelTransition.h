@@ -1,13 +1,13 @@
 /*
- * The level transition (S21, task T57): what an exit request becomes.
+ * The level transition: what an exit request becomes.
  *
- * WHAT WAS MISSING, AND WHY IT LIVES HERE
+ * WHY IT LIVES HERE
  *
  * The two halves of a level change are already in lib/doom: g_completed_next()
  * is G_DoCompleted's switch (map 8 ends the episode, a secret exit names map 9,
  * map 9 returns to its episode's map, otherwise map + 1) and g_do_world_done() is
- * G_DoWorldDone + G_DoLoadLevel for an already-opened map. What no call site had
- * was the composition between them -- read the level's request, name the next
+ * G_DoWorldDone + G_DoLoadLevel for an already-opened map. This file adds the
+ * composition between them -- read the level's request, name the next
  * level, load it -- plus the one rule this port's loader cannot express on its
  * own: a *completed* level does not reborn the player.
  *
@@ -45,12 +45,11 @@
  *                                      raises the ceilings; the raised ceilings
  *                                      travel with the backpack).
  *     weaponowned[], backpack          what a pickup granted stays granted.
- *     cards[]                          carried by this port per S21/T57 ("the
- *                                      keys" are named as part of the carry).
- *                                      RECORDED DEVIATION: upstream's
+ *     cards[]                          carried by this port on purpose ("the
+ *                                      keys" are part of the carry).
+ *                                      DEVIATION: upstream's
  *                                      G_PlayerFinishLevel does clear the keys
- *                                      on a completed level; the brief and the
- *                                      spec name them as carried, so they are.
+ *                                      on a completed level.
  *     readyweapon, pendingweapon       the weapon in hand and the one asked for;
  *                                      P_SetupPsprites' first run raises it.
  *

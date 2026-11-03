@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the C picture decoder against the Python oracle on the real WAD (D2.4).
+"""Compare the C picture decoder against the Python oracle on the real WAD.
 
 WHAT THIS PROVES
 
@@ -12,7 +12,7 @@ raw WAD with its own parser.
 
 The comparison is a whole-set diff, not a sample: all 646 patch lumps the WAD
 names (PNAMES entries plus sprites), all 125 textures in TEXTURE1 and all 54
-real flats. On top of that it reports the three sets this task asks for
+real flats. On top of that it reports three named sets
 explicitly: 100 sampled patches, every texture E1M1 references, and 20 sampled
 flats.
 
@@ -195,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         mismatches.extend(f"[{kind}] {line}" for line in
                           compare(c_hashes[kind], ref_hashes[kind]))
 
-    # The three sets this task names, reported separately from the whole diff.
+    # The three named sets, reported separately from the whole diff.
     sampled_patches = sample(set(ref_hashes["PATCH"]) | set(c_hashes["PATCH"]), SAMPLE_PATCHES)
     sampled_flats = sample(set(ref_hashes["FLAT"]) | set(c_hashes["FLAT"]), SAMPLE_FLATS)
 

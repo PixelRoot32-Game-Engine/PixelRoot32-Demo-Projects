@@ -1,5 +1,5 @@
 /*
- * Host harness for the sector and line specials (D4.1b).
+ * Host harness for the sector and line specials.
  *
  * It loads E1M1 through lib/doom/p_setup.c, runs P_SpawnSpecials through
  * lib/doom/p_spec.c, triggers every line special the map carries at tic 0, then
@@ -21,13 +21,13 @@
  *   SUMMARY spawned=<n> secrets=<n> totalSecrets=<n> changeSector=<n>
  *           unsupportedSector=<n> unsupportedLine=<n> deferredLine=<n>
  *           lineScrolls=<n> triggers=<n> refused=<n>
- *   SCROLLS <map> tics=<N> scrolls=<n>                      (T35, mode `scrolls`)
+ *   SCROLLS <map> tics=<N> scrolls=<n>                      (mode `scrolls`)
  *   SCROLL <tic> line=<i> side=<s> dx=<i32> dy=<i32> offset=<i32>
  *   ANIM <tic> sector=<i> field=<floor|ceiling> name=<base> frame=<frame>
  *   ANIM <tic> side=<s> field=<top|bottom|mid> name=<base> frame=<frame>
  *   SUMMARY scrolls=<n> animated=<n>
  *
- * `scrolls` is the P_UpdateSpecials stage (T35): every episode-1 map, the scroll
+ * `scrolls` is the P_UpdateSpecials stage: every episode-1 map, the scroll
  * offsets of its line special 48s, and every animated flat and texture it names,
  * each tic. The number is not on every map -- measured, E1M1 carries eight such
  * lines and E1M7 four, and the other seven maps none -- so the stage runs all
@@ -553,7 +553,7 @@ static int buildScenarios(const p_level_t* level, damage_scenario_t* out) {
     return count;
 }
 
-/* --- The scroll/animation section (T35) ---------------------------------- */
+/* --- The scroll/animation section ---------------------------------------- */
 
 /*
  * P_UpdateSpecials(), on every episode-1 map.
@@ -760,7 +760,7 @@ static int runScrollsMode(p_level_t* level, doom_map_t* map,
     return 1;
 }
 
-/* --- The stair/teleport section (T34) ------------------------------------ */
+/* --- The stair/teleport section ------------------------------------------ */
 
 /*
  * One fixture: a single line, triggered once by the player, then the same

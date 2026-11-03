@@ -1,6 +1,6 @@
 /*
  * palflash_pal.cpp - dumps the panel's palette tables for one PLAYPAL page at one
- * gamma level (D5.3).
+ * gamma level.
  *
  * The other half of tools/palflash_check.py's palette comparison. It runs the
  * firmware's own src/palette/DoomPalette.cpp: palette 0 builds the tables once

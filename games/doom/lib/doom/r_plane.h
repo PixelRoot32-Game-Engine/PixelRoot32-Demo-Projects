@@ -42,8 +42,7 @@
  * caller owns the array and its capacity, and going over is a reported error:
  * the plane that would have been created is not created and nothing already
  * recorded is touched, so a view that fails this way is partial but not
- * corrupt. The real E1M1 spawn view needs far fewer than 128; the measured
- * number is in the D3.1 report.
+ * corrupt. The real E1M1 spawn view needs far fewer than 128.
  *
  * WHY BOTH ARRAYS ARE 0xFF-FILLED
  *
@@ -54,7 +53,7 @@
  * only the marked columns. It cannot change a pixel: every write path sets top
  * and bottom together.
  *
- * THE OTHER HALF: THE SPAN EMITTER (D3.3)
+ * THE OTHER HALF: THE SPAN EMITTER
  *
  * r_plane_draw() is upstream's R_DrawPlanes(): it runs after the wall pass, in
  * plane index order, and fills the column runs the walk marked. The full frame
@@ -200,7 +199,7 @@ extern "C" {
  *                            R_CENTER_Y == 100, so the horizon row shows texture
  *                            row 100; the DOOM_HUD 168-row view has centery 84
  *                            and keeps the literal, as vanilla does when it
- *                            shrinks the window (D5.1).
+ *                            shrinks the window.
  */
 #define R_PLANE_SKY_ANGLE_SHIFT 22
 #define R_PLANE_SKY_ISCALE FRACUNIT
@@ -225,8 +224,8 @@ struct r_tex_source; /* r_segs.h: the wall/flat/sky residency contract */
  * Upstream's visplane_t carries pad bytes so R_DrawPlanes() can write
  * `top[maxX+1]` and `top[minX-1]` as sentinels before walking the column runs.
  * This struct is exactly R_SCREEN_WIDTH wide, so those two writes are not in
- * bounds here. D3.3 keeps that layout (adding the pads would change
- * sizeof(r_visplane_t) and the byte stream the D3.1 oracle hashes) and replaces
+ * bounds here. The port keeps that layout (adding the pads would change
+ * sizeof(r_visplane_t) and the byte stream the walk checks hash) and replaces
  * the sentinel writes with an edge test in the span maker. r_plane_draw()
  * documents the equivalence: the sentinels only ever set a top byte to
  * R_PLANE_EMPTY, which is exactly what the edge test asks, so no pixel can
@@ -308,7 +307,7 @@ typedef const r_flat_t* (*r_flat_resolve_fn)(void* context, r_name_t name);
  *   R_PLANE_ERR_RANGE     the column range is not inside the screen, or
  *                         start > stop
  *
- * The emitter's codes. They are appended so the D3.1/D3.2 numbers do not move.
+ * The emitter's codes. They are appended so the earlier numbers do not move.
  *
  *   R_PLANE_ERR_NULL_STATE        no view state
  *   R_PLANE_ERR_MAP_NOT_OPEN      the state holds no walked map

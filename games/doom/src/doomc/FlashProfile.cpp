@@ -1,5 +1,5 @@
 /*
- * D2.5's instrument: see FlashProfile.h for the question it answers, what one
+ * The flash-read profile: see FlashProfile.h for the question it answers, what one
  * read is, the timing primitive and the exact line formats.
  *
  * The file has two halves and no third one.
@@ -16,7 +16,7 @@
  * `PIXELROOT32_DOOM_FLASH_PROFILE` is defined (`env:esp32dev_ILI9341_flashprof`).
  * It is the only code in this project that maps flash and takes a timestamp, and
  * it is deliberately a separate file from WhdSource: WhdSource is the device
- * adapter a production loader will use, and a measurement harness must not
+ * adapter the production loader uses, and a measurement harness must not
  * grow into it.
  *
  * WHAT THE PROBE DID NOT GUESS
@@ -248,7 +248,7 @@ std::size_t flashProfileFormatBudget(std::uint64_t coldMicros, std::uint32_t fra
 }  // namespace doomc
 }  // namespace doom
 
-// --- The board probe (D2.5) --------------------------------------------------
+// --- The board probe ---------------------------------------------------------
 
 #if defined(PIXELROOT32_DOOM_FLASH_PROFILE) && (defined(ESP32) || defined(ESP_PLATFORM))
 
@@ -347,7 +347,7 @@ constexpr std::size_t kPnamesNameStride = 8;
 constexpr std::size_t kTexturePatchIndexOffset = 4;
 
 /// A 35 Hz frame at 1e6 / 35 = 28,571.4 us, truncated to the integer the budget
-/// line states. The renderer is held to this number in Phase 3.
+/// line states: the renderer's per-frame budget.
 constexpr std::uint32_t kFrameMicros = 28570u;
 
 /// Per-phase accumulators (each carries its own record set, so a phase line's

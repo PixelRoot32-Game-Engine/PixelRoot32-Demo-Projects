@@ -27,7 +27,7 @@
  * the sector it stands in. Rotation selection -- upstream's
  * `sprframe->lump[(ang-thing->angle+... )>>29]` -- needs the sprite definition
  * table (spriteframes, numframes, firstspritelump), which is game data, so it is
- * the caller's. Phase 4 builds this list the way R_AddSprites() does, from the
+ * the caller's. The caller builds this list the way R_AddSprites() does, from the
  * sectors the BSP walk visited; this pass must not.
  *
  * THE FRAME ORDER, AND WHY THIS PASS RUNS LAST
@@ -280,7 +280,7 @@ typedef struct r_sprite_source {
     void* context;
 } r_sprite_source_t;
 
-/* --- The patch proof cache (D3.9) ----------------------------------------- */
+/* --- The patch proof cache ----------------------------------------------- */
 
 /*
  * r_patch_validate() walks every column of a patch and every post in it, and
@@ -290,8 +290,8 @@ typedef struct r_sprite_source {
  * proves a patch once per sprite in the preflight and again once per drawn
  * sprite.
  *
- * Within one call the pass memoises on its own (a nameless stack table), which
- * is what every revision before D3.9 did. This struct is for a caller whose
+ * Within one call the pass memoises on its own (a nameless stack table). This
+ * struct is for a caller whose
  * resolver answers the *same* patch for the *same* address across calls -- a
  * baked, mmapped, immutable set of lumps -- where re-proving the same bytes
  * every frame is the same class of waste as re-decoding them. Supplying it in
@@ -496,7 +496,7 @@ r_things_error_t r_masked_emit(r_view_state_t* state, r_draw_surface_t* surface,
                                const r_sprite_source_t* spriteSource,
                                r_masked_stats_t* outStats);
 
-/* --- The player's weapon (R_DrawPlayerSprites, D5.1) ---------------------- */
+/* --- The player's weapon (R_DrawPlayerSprites) --------------------------- */
 
 /* d_items.h's NUMPSPRITES: the weapon layer and its muzzle flash. */
 #define R_PSPRITE_LAYERS 2

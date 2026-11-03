@@ -1,9 +1,9 @@
 // D0.5 - flash partition and mmap.
 //
-// PLAN Phase 2 puts the shareware WAD in flash and reads it through a memory
-// map. This probe answers the two things that decision needs before it is
-// taken: does a custom `wad` partition exist and map, and what do sequential
-// and scattered 4-byte reads out of that mapping actually cost on this board.
+// The port keeps the shareware WAD in flash and reads it through a memory
+// map. This probe answers the two things that design depends on: does a
+// custom `wad` partition exist and map, and what do sequential and scattered
+// 4-byte reads out of that mapping actually cost on this board.
 //
 // A missing partition or a failed mmap prints an explicit failure line. It
 // never reports a zero, because a zero would look like a measured result.

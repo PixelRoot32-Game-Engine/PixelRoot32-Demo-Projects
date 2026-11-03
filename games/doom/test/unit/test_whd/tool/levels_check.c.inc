@@ -1,9 +1,9 @@
 /*
- * D3.10's nine-level referee: every shareware map opens out of one container.
+ * The nine-level referee: every shareware map opens out of one container.
  *
  * WHY THIS IS C AND NOT PYTHON
  *
- * The bug class this has to catch is the one D3.6 shipped: doom_map_open()
+ * The bug class this has to catch: doom_map_open()
  * validates record sizes and index ranges, so a map-lump set shifted by one
  * lump can open cleanly and render garbage. Only the same code the board runs
  * can prove the container feeds it the ten lumps in the order it expects. This
@@ -14,7 +14,7 @@
  *
  * Every map lump must be RAW: the check asks whd_lump_view() for a pointer, not
  * just for a size, because a deflated level would cost DRAM on the board and
- * would not be the container this task is required to ship.
+ * would not be the container the board ships.
  *
  * INPUT
  *

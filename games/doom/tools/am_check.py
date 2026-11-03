@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the C automap against an independent Python oracle, pixel by pixel (D5.3).
+"""Compare the C automap against an independent Python oracle, pixel by pixel.
 
 WHAT THIS PROVES
 
@@ -326,7 +326,7 @@ def parse_c(output: str):
 
 
 # The automap frame's SHA-256 over the 320x168 window, as the board's own
-# `SHOW,map` line printed it for the same state (task record L42). The state is
+# `SHOW,map` line printed it for the same state. The state is
 # `spawn_mapped`: E1M1's player start facing north, the lines the wall pass stores
 # from that view, the entry scale, following. It is pinned here so a change to the
 # picture is a named failure and not only a C/oracle disagreement.

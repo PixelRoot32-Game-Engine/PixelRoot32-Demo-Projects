@@ -17,8 +17,8 @@
  *
  * This layer is that list and nothing else. It has no opinion about what a
  * thinker is: `function` is a caller-supplied entry point and `kind` is a tag
- * the caller may use. p_mobj.c supplies both for mobjs; D4.1b supplies the
- * sector thinkers (doors, lifts, floors, ceilings, light flashes); the list
+ * the caller may use. p_mobj.c supplies both for mobjs; the sector specials
+ * supply the sector thinkers (doors, lifts, floors, ceilings, light flashes); the list
  * does not change for either.
  *
  * THREE DELIBERATE DIFFERENCES FROM UPSTREAM
@@ -80,17 +80,16 @@ typedef void (*p_thinker_fn)(p_thinker_t* thinker, void* context);
 typedef void (*p_thinker_release_fn)(void* context, p_thinker_t* thinker);
 
 /*
- * What a node is. Only P_THINKER_MOBJ exists in D4.1a; the rest are the sector
- * thinkers D4.1b adds, declared now so the tag never has to be renumbered and
- * so a debugger can name the value.
+ * What a node is: a mobj or one of the sector thinkers. The values are fixed so
+ * the tag never has to be renumbered and so a debugger can name the value.
  */
 typedef enum p_thinker_kind {
     P_THINKER_MOBJ = 1,
-    P_THINKER_CEILING = 2,    /* reserved for D4.1b */
-    P_THINKER_FLOOR = 3,      /* reserved for D4.1b */
-    P_THINKER_PLAT = 4,       /* reserved for D4.1b */
-    P_THINKER_DOOR = 5,       /* reserved for D4.1b */
-    P_THINKER_LIGHTFLASH = 6  /* reserved for D4.1b */
+    P_THINKER_CEILING = 2,
+    P_THINKER_FLOOR = 3,
+    P_THINKER_PLAT = 4,
+    P_THINKER_DOOR = 5,
+    P_THINKER_LIGHTFLASH = 6
 } p_thinker_kind_t;
 
 /*

@@ -3,9 +3,9 @@
 
 WHY THIS FILE EXISTS
 
-D3.5 measured one E1M1 frame at 166,261 us. 114,845 us of it (69.1 %) was
-inflate/copy, 13,044 us (7.8 %) was texture composition and 9,816 us (5.9 %)
-was container name scans. Composition writes roughly 0.6 MB per frame at DRAM
+Without a bake, one E1M1 frame on the board measured 166,261 us, of which
+69.1 % was inflate/copy, 7.8 % texture composition and 5.9 % container name
+scans. Composition writes roughly 0.6 MB per frame at DRAM
 write speed, so a cache cannot make it free; the only way to stop paying it is
 to stop doing it. This tool turns the renderer's per-pixel inputs into raw
 payloads a reader can map:
@@ -26,8 +26,8 @@ The acceptance test is not "it looks right": the C decoder (lib/doom/r_data.c)
 must produce exactly these bytes from the SOURCE WAD's own patches. That is why
 --check-container compiles test/unit/test_baked/tool/bake_check.c against
 lib/doom/r_data.c and lib/doom/whd.c and compares every baked texture byte for
-byte, mask included. The container no longer carries the wall patches -- D3.11
-drops them after the bake -- so the referee takes the WAD as a second path and
+byte, mask included. The container does not carry the wall patches -- they are
+dropped after the bake -- so the referee takes the WAD as a second path and
 composes from the original data; comparing against the container's own sources
 would be the container agreeing with itself. This module contains its own
 composer -- an independent implementation, like tools/doom_ref.py -- so a bug
@@ -61,8 +61,8 @@ MASK PADDING
 
 A mask plane is baked only when the composite leaves at least one texel
 unwritten. The expanded mask sets 1 in rows ``height .. 127``: those rows are
-the zero fill the old compose expansion produced and the column drawer treated
-as opaque, so a mask of 1 there is what keeps the finished frame byte-identical.
+the zero fill an unbaked composite expansion produces and the column drawer
+treats as opaque, so a mask of 1 there is what keeps the finished frame byte-identical.
 
 USAGE
 
@@ -179,7 +179,7 @@ class BakedSet:
     """What one level needs, plus the counts a --stats line reports.
 
     ``per_level`` is empty for a single-level bake and carries one row per level
-    for the union bake (D3.10): it is what lets --stats say whether each level
+    for the union bake: it is what lets --stats say whether each level
     would still fit if it were baked alone.
     """
 
@@ -394,8 +394,8 @@ def expand_to_stored(pixels: bytes, mask: bytes, width: int, height: int,
                      has_mask: bool) -> bytes:
     """Expands a width x height composite to the 128-row stored column form.
 
-    Rows above the declared height stay zero, which is what the old in-place
-    expansion produced. The mask's rows above the height are set to 1: those
+    Rows above the declared height stay zero, which is what an in-place
+    expansion produces. The mask's rows above the height are set to 1: those
     rows are the opaque zero fill, not a hole, and setting 0 there would change
     a masked mid texture's pixels.
     """
@@ -421,7 +421,7 @@ def bake_texture(texture: Texture, patches: dict[int, Patch]) -> tuple[bytes, in
     # it does not skip them. The composer's mask records *post coverage*, and a
     # texture built from patches with gaps (BRNBIGL/C/R, masked=0) leaves those
     # gaps at 0 -- storing that as a mask lets the masked pass see through an
-    # opaque door, which is what S26 chased on the panel.
+    # opaque door.
     has_mask = texture.masked != 0 and any(value == 0 for value in mask)
     payload = expand_to_stored(pixels, mask, texture.width, texture.height, has_mask)
     return payload, (FLAG_MASK if has_mask else 0)
@@ -529,7 +529,7 @@ def _pnames(lumps: Sequence) -> list[str]:
     return parse_pnames(lumps[index].data)
 
 
-# --- The animation tables (T35) ---------------------------------------------
+# --- The animation tables --------------------------------------------------
 #
 # linuxdoom-1.10's animdefs[], verbatim and in its order: (isTexture, endname,
 # startname, speed). P_InitPicAnims() skips an entry whose start name the WAD
@@ -804,7 +804,7 @@ def bake_union(lumps: Sequence, levels: Sequence[str], sky: str = "SKY1",
                     seen_sprite.add(sprite)
                     sprite_order.append(sprite)
 
-    # T35: the animation tables. A family a baked picture belongs to can turn
+    # The animation tables. A family a baked picture belongs to can turn
     # that picture into any of its frames, so every frame has to be present; the
     # maps name only some of them (NUKAGE3, SLADRIP2, SLADRIP3).
     named_flats = [name for (kind, name) in index_by_key if kind == "flat"]

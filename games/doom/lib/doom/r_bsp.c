@@ -21,10 +21,10 @@
  *
  *   R_StoreWallRange, and the floor/ceiling marking of R_RenderSegLoop
  *       r_segs.c. The texture-column lookup, the three wall tiers and all
- *       pixel writes are D3.2's (r_segs.c). What remains here is the silhouette
+ *       pixel writes are r_segs.c's. What remains here is the silhouette
  *       decision, the light index, the two scales, the range values and the
  *       plane marks -- and that decision block is r_wall_fragment_open(), which
- *       D3.2 calls a second time from the stored drawseg rather than
+ *       r_segs.c calls a second time from the stored drawseg rather than
  *       reimplementing.
  *
  * DELIBERATE DIVERGENCES (each is visible in behaviour and named for review)
@@ -38,7 +38,7 @@
  *   4. fixed_div() is integer division, not the double division of upstream's
  *      FixedDiv2(). m_fixed.h documents the one-unit worst case.
  *   5. Sprite clipping arrays and masked-texture columns are not recorded by
- *      the walk: they are r_wall_emit()'s (D3.4), which read the clip arrays
+ *      the walk: they are r_wall_emit()'s, which read the clip arrays
  *      after its column loop. The drawseg stores them as block indices into
  *      caller-owned pools; the walk only initialises them to "none".
  *   6. The clip-list "crunch" is written as a removal (`start+1 .. next` are
@@ -324,8 +324,8 @@ static int check_bbox(r_view_state_t* state, const fixed_t* bbox) {
 
 /* --- Wall ranges (r_segs.c R_StoreWallRange, marking half) --------------- */
 
-/* R_RenderSegLoop's floor/ceiling marking, exactly upstream's column loop. D3.2
- * reimplements the drawing half in r_segs.c against the same fragment; this is
+/* R_RenderSegLoop's floor/ceiling marking, exactly upstream's column loop.
+ * r_segs.c reimplements the drawing half in r_segs.c against the same fragment; this is
  * the half that fills the plane arrays, and it runs during the walk because the
  * planes are part of the walk's output. */
 static void render_seg_loop(r_view_state_t* state, r_wall_fragment_t* fragment) {
@@ -699,9 +699,9 @@ static void store_wall_range(r_view_state_t* state, int start, int stop) {
     uint32_t mark;
 
     if (state->drawsegCount >= state->storage.drawsegCapacity) {
-        /* D4.2h: a dropped fragment is missing geometry, not a shorter view.
-         * It fails the walk on the same path as the clip-post overflow; the
-         * old silent drop hid 99 walkable E1M1 viewpoints from every report. */
+        /* A dropped fragment is missing geometry, not a shorter view, so it
+         * fails the walk on the same path as the clip-post overflow instead of
+         * being dropped silently. */
         state->drawsegOverflowed = 1;
         fail(state, R_BSP_ERR_DRAWSEG_OVERFLOW);
         return;
@@ -767,7 +767,7 @@ static void store_wall_range(r_view_state_t* state, int start, int stop) {
     drawseg->rwDistance = fragment.distance;
     drawseg->rwOffset = fragment.offset;
     drawseg->rwCenterAngle = fragment.centerAngle;
-    /* D3.4 owns these three: r_wall_emit() fills them from the clip arrays as
+    /* r_wall_emit() fills these three from the clip arrays as
      * its column loop leaves them. The walk stores the "none" value so a
      * drawseg that was never emitted cannot be read as a clip. */
     drawseg->sprTopClip = R_DRAWSEG_NO_BLOCK;

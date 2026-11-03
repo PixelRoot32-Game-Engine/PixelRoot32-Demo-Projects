@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate the SFX bank against the WAD's original samples (T46, S16).
+"""Gate the SFX bank against the WAD's original samples.
 
 WHAT THIS PROVES, AND WHAT IT DOES NOT
 
@@ -23,8 +23,8 @@ the original, and five numbers are compared:
              mean.
 
 So this gate proves the cue **is the sound it claims to be**. It does not prove
-the cue is *pleasant*: that is the maintainer's listening pass, and it is about
-taste, not identity.
+the cue is *pleasant*: that takes a listening pass, and it is about taste, not
+identity.
 
 PROVING THE GATE CAN FAIL, two ways:
 

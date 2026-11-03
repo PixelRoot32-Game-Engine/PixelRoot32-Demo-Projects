@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Gate for the level transition's palette fade (D5.4).
+"""Gate for the level transition's palette fade.
 
 Vanilla's ``f_wipe.c`` melt needs two more 64,000 B surfaces (``screens[2]`` and
 ``screens[3]``), which this board does not have: the largest free block after
-setup is 47,092 B (PLAN 12.1). The 4 MB profile substitutes a fade -- the new
+setup is 47,092 B. The 4 MB profile substitutes a fade -- the new
 frame ramps up from black through the PLAYPAL table the palette path already
 owns. ``palette::applyGammaScaled()`` in ``src/palette/DoomPalette.cpp`` is the
 whole of it: one integer scale per channel, then the gamma table, then the two

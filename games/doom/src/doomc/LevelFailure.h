@@ -6,7 +6,7 @@ namespace doom {
 namespace doomc {
 
 /**
- * @brief Every way a level session can fail to open, as one vocabulary (D7.2).
+ * @brief Every way a level session can fail to open, as one vocabulary.
  *
  * `openLevelSession()` already classifies each failure in the line it prints.
  * This enum is the same classification for the panel and for a test: the serial

@@ -1,5 +1,5 @@
 /*
- * The level transition (S21, task T57). See LevelTransition.h for the rule each
+ * The level transition. See LevelTransition.h for the rule each
  * carried and each reset field serves; this file is only the two halves.
  */
 #include "doomc/LevelTransition.h"

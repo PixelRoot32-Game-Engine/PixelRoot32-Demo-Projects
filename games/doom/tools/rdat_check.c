@@ -1,5 +1,5 @@
 /*
- * Host harness for the real WAD (D2.4): decodes patches, composite textures and
+ * Host harness for the real WAD: decodes patches, composite textures and
  * flats through lib/doom/r_data.c and prints one SHA-256 per item.
  *
  * This is a desktop tool, not firmware: it reads the WAD into malloc'd memory

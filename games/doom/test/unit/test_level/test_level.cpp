@@ -1,10 +1,10 @@
 /*
- * Behaviour tests for the level transition (S21, task T57).
+ * Behaviour tests for the level transition.
  *
  * WHAT THESE CASES PROVE, AND WHY IT IS NOT "THE FUNCTION RETURNS OK"
  *
- * The defect the maintainer reported is that pressing the exit switch does
- * nothing. That is one statement about three separate things, so each has its own
+ * The failure these cases guard against is an exit switch that does nothing
+ * when pressed. That is one statement about three separate things, so each has its own
  * case and each drives the *real* path:
  *
  *   1. THE SWITCH. The player is put in front of E1M1's own line special 11 with
@@ -33,7 +33,7 @@
  * g_completed_next() answers the episode's victory before the secret flag is
  * read.
  *
- * The save case closes the loop the maintainer would hit next: a record written
+ * The save case closes the loop a player would hit next: a record written
  * on E1M2 must load back into E1M2. The transition produces that world through
  * the real path, saveWrite() stamps level 2 into it, and saveApply() is given the
  * E1M2 world the driver would have just loaded. Applying the same record to E1M1
@@ -605,7 +605,7 @@ void assertReset(const p_player_t& player) {
 /* --- Cases ---------------------------------------------------------------- */
 
 /*
- * The maintainer's report, reproduced at its first failing statement: the press
+ * The first statement of the exit path: the press
  * on E1M1's own exit switch must arrive as P_EXIT_NORMAL.
  */
 void test_e1m1_exit_switch_requests_the_exit(void) {
@@ -854,7 +854,7 @@ void test_e1m8_sector_11_ends_the_run(void) {
  * THE POPULATION IS REDUCED FIRST, AND WHY THAT IS NOT A CHEAT
  *
  * A save record costs one entry per live mobj, and E1M2's full population does
- * not fit the D7.1 slot budget (the case after this one measures the refusal).
+ * not fit the save-slot budget (the case after this one measures the refusal).
  * So this case saves the world the way a player reaches the exit: after combat
  * has removed most of the things. The removal is the level's own deferred path
  * (p_remove_mobj() marks, the thinker walk unlinks), not a smuggled list edit, and
@@ -941,15 +941,14 @@ void test_save_in_e1m2_round_trips_into_e1m2(void) {
 }
 
 /*
- * The measured limit this task found: E1M2's *full* population does not fit the
- * D7.1 slot, so the save is refused cleanly instead of being truncated.
+ * The measured limit: E1M2's *full* population does not fit the
+ * save slot, so the save is refused cleanly instead of being truncated.
  *
  * Measured with the slot cap temporarily raised (the method, so the numbers can
  * be re-derived): skill 0/1 with 180 mobjs is 4,577 B, skill 2 with 200 is
  * 4,967 B, skill 3/4 with 239 is 5,776 B -- against a 3,968 B slot. The refusal
- * is what S18's six-slot budget and T52's record can do today; shrinking the
- * record or widening a slot is a format/partition decision that S21 explicitly
- * puts out of scope. This case pins the refusal so a future budget change is
+ * is what the six-slot budget and the current record format allow; shrinking
+ * the record or widening a slot is a format/partition decision. This case pins the refusal so a future budget change is
  * visible rather than silent.
  */
 void test_e1m2_full_population_is_refused_by_the_slot_budget(void) {

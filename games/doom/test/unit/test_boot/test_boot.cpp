@@ -1,5 +1,5 @@
 /*
- * Behaviour tests for the boot/failure screen taxonomy and painter (D7.2).
+ * Behaviour tests for the boot/failure screen taxonomy and painter.
  *
  * The pixel record itself is gated by tools/boot_check.py (the firmware's own
  * painter compiled on the host and hashed). This suite owns what a hash cannot

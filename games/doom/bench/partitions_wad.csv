@@ -1,4 +1,4 @@
-# Phase 0 partition table for D0.5 (docs/plan-doom-esp32.md 6.4).
+# Partition table for the D0.5 flash probe (env bench_flash).
 #
 # One app slot and one `wad` data partition. There is deliberately no OTA and
 # no spiffs: the 4 MB part cannot carry a second app image and the shareware

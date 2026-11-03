@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the C BSP walk against the Python oracle on the real WAD (D3.1).
+"""Compare the C BSP walk against the Python oracle on the real WAD.
 
 WHAT THIS PROVES
 

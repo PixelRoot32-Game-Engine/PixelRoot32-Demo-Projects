@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare lib/doom's monster AI against the Python oracle (T15a + T15b).
+"""Compare lib/doom's monster AI against the Python oracle.
 
 WHAT THIS PROVES
 
@@ -8,8 +8,8 @@ close the distance and attack, and does it stop when it dies? This gate answers
 them with the real code and per-tic scripts, so each half can fail on its own:
 
     1. SEES AND WAKES. A zombieman 40 map units from the player, in the same room,
-       must set `target` on its first state cycle and enter its see state. Before
-       T15a it stands in S_POSS_STND forever.
+       must set `target` on its first state cycle and enter its see state
+       instead of standing in S_POSS_STND forever.
     2. DOES NOT SEE THROUGH A WALL. The same monster at a spot whose straight line
        to the player crosses a one-sided linedef must stay in its spawn state for
        the whole script. The fixture is chosen by that geometry, not by
@@ -43,7 +43,7 @@ them with the real code and per-tic scripts, so each half can fail on its own:
        exist, advance its live states through S_TBALL1/S_TBALL2 (the flight rows,
        not a frozen spawn row), burst through S_TBALLX1, and lower the player's
        health. The container's baked manifest must carry BAL1A0..BAL1E0, which is
-       what makes those rows drawable at all (T15's prerequisite).
+       what makes those rows drawable at all.
     9. DEATH STOPS IT. A zombieman killed at tic 20 must enter S_POSS_DIE1, walk
        the death chain to its permanent S_POSS_DIE5 frame, and never re-enter a
        run or attack state.
@@ -126,7 +126,7 @@ PERTURBATIONS = {
 
 MIN_PAIRS = 400
 
-# --- The five T15b numbers the assertions read ------------------------------
+# --- The numbers the assertions read ----------------------------------------
 
 FRACUNIT = 1 << 16
 ANG45 = 0x20000000
@@ -294,7 +294,7 @@ def sweep_counts(text: str) -> tuple[int, int, int, int]:
     return declared, len(lines), visible, hidden
 
 
-# --- The T15b measurements ---------------------------------------------------
+# --- The chase and attack measurements ---------------------------------------
 
 
 def number(record: dict, key: str, default: int = 0) -> int:

@@ -1,5 +1,5 @@
 /*
- * Host harness for the real WAD (D3.1): walks E1M1's BSP from the player start
+ * Host harness for the real WAD: walks E1M1's BSP from the player start
  * through lib/doom/r_bsp.c and prints the drawsegs, the visplanes and their
  * hashes.
  *

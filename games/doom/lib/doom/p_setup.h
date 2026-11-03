@@ -16,7 +16,7 @@
  *
  * WHY THE BOOKKEEPING LIVES HERE
  *
- * Vanilla keeps the totals Phase 4 needs as four globals: `totalkills`,
+ * Vanilla keeps the level totals as four globals: `totalkills`,
  * `totalitems`, `totalsecret` and the player/deathmatch start arrays. They are
  * the denominators of the intermission screen ("Kills 34/63"), so a loader that
  * drops one thing silently changes a number the player sees. They are therefore
@@ -148,11 +148,11 @@ typedef enum p_setup_error {
  *   player          the mobj of the console player's start (type 1), or NULL.
  *   playerState     the console player's record (upstream players[0]): the view
  *                   height, the counters and this tic's command (p_user.h).
- *                   `player` keeps naming the avatar mobj, because the two
- *                   existing gates read that pointer and are not this task's.
+ *                   `player` keeps naming the avatar mobj, because existing
+ *                   callers read that pointer.
  *   leveltime       P_Ticker's tic counter since the level loaded. P_CalcHeight
- *                   uses it for the bob angle; G_DoCompleted's par time (D4.3)
- *                   reads it too.
+ *                   uses it for the bob angle; G_DoCompleted's par time reads
+ *                   it too.
  *   scrolls         one entry per line special 48, in line order (upstream's
  *                   `linespeciallist[]`), allocated from this arena by
  *                   p_spawn_specials(). Each holds the front side and the
@@ -451,7 +451,7 @@ uint32_t p_level_mobj_count(const p_level_t* level);
  * @brief The first mobj in thinker (insertion) order, or NULL.
  *
  * p_level_next_mobj() continues the walk; both skip non-mobj thinkers, so the
- * pair keeps working when D4.1b adds sector thinkers to the same list.
+ * pair keeps working with the sector thinkers on the same list.
  */
 const r_mobj_t* p_level_first_mobj(const p_level_t* level);
 const r_mobj_t* p_level_next_mobj(const r_mobj_t* mobj);

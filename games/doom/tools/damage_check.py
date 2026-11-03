@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the C damage/death/pickup rules against the Python oracle (D4.2d1).
+"""Compare the C damage/death/pickup rules against the Python oracle.
 
 WHAT THIS PROVES
 
@@ -90,11 +90,10 @@ EXIT_USAGE = 2
 SOURCES = (
     "p_setup.c", "p_mobj.c", "p_map.c", "p_user.c", "p_tick.c", "p_action.c",
     "p_inter.c",
-    # D4.2d2: p_user.c runs the weapon psprite machine and p_inter.c drops a dying
-    # player's weapon, so p_pspr.c is part of the link closure now.
+    # p_user.c runs the weapon psprite machine and p_inter.c drops a dying
+    # player's weapon, so p_pspr.c is part of the link closure.
     "p_pspr.c",
-    # T15a: A_Look is real and P_FireWeapon calls P_NoiseAlert, so the sight and
-    # sound modules are in the closure too.
+    # A_Look and P_FireWeapon's P_NoiseAlert need the sight and sound modules.
     "p_sight.c", "p_enemy.c",
     "m_random.c", "z_zone.c", "doom_map.c", "r_bsp.c", "r_plane.c", "r_tables.c",
     "w_wad.c", "p_spec.c", "p_floor.c", "p_doors.c", "p_plats.c", "p_ceilng.c",

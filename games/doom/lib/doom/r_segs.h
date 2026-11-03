@@ -66,7 +66,7 @@
  *                   the plane behind it is marked (markCeiling/markFloor).
  *   sky             There is no sky branch in this loop, because there is none
  *                   in R_RenderSegLoop(): the sky is a *plane*, drawn by
- *                   R_DrawPlanes (D3.3), and the only thing the wall pass owes
+ *                   R_DrawPlanes (r_plane.c), and the only thing the wall pass owes
  *                   it is the outdoor height hack, which is part of the shared
  *                   fragment predicate. See r_wall_fragment_open() and the
  *                   proof below.
@@ -112,21 +112,21 @@
  * WHAT IS DELIBERATELY NOT HERE
  *
  *   - the masked mid texture of a two-sided line is not *drawn*: R_RenderSegLoop()
- *     does not draw it either. D3.4 records its texture column here, because this
+ *     does not draw it either. This pass records its texture column, because this
  *     is the pass that runs the column loop, and draws it in r_things.c's
  *     R_DrawMasked() after the planes. The storage (upstream's openings[]) is a
  *     caller-owned pool in r_view_storage_t.
  *   - flats, sprites, the sky texture, the status bar, the palette, the present
- *     path. The plane pass (D3.3) draws the flats and the sky in r_plane.c;
- *     sprites and the masked mid textures are D3.4.
+ *     path. The plane pass draws the flats and the sky in r_plane.c;
+ *     sprites and the masked mid textures are r_things.c's.
  *   - any texture decoding or residency policy. A tier's texture arrives as an
  *     r_walltex_t through r_tex_source_t, and the *caller* decides where the
- *     bytes come from and which of them are resident. D3.3's flats use the same
+ *     bytes come from and which of them are resident. The flats use the same
  *     source's resolveFlat, with the same rule.
  *   - any mutable global: the state is the caller's r_view_state_t, the surface
  *     is the caller's buffer, the light lump is the caller's bytes.
  *
- * THE CLIP CAPTURE AND THE MASKED RECORDING (D3.4)
+ * THE CLIP CAPTURE AND THE MASKED RECORDING
  *
  * Upstream's R_StoreWallRange(), after R_RenderSegLoop() has run, copies the
  * clip arrays into openings[] for every drawseg a sprite behind it may be
@@ -160,15 +160,15 @@
  *   silhouette   a masked mid forces both edges: if the geometric silhouette
  *                did not have SIL_TOP it gains it and `tsilheight` becomes
  *                INT32_MIN; the same for SIL_BOTTOM and INT32_MAX. This happens
- *                in this pass, not in the walk, so the D3.1 drawseg record and
- *                its oracle stay byte-identical.
+ *                in this pass, not in the walk, so the walk's drawseg record
+ *                and its oracle stay byte-identical.
  *
  * The pool demand is computed in the preflight, before the first pixel, from the
  * same predicate the save uses. A pool that cannot hold the frame's entries is
  * therefore a reported error with the surface untouched, never an overrun, and
  * the column loop itself allocates nothing.
  *
- * THE PREFLIGHT AND THE DRAW ARE TWO CALLS (D4.2h)
+ * THE PREFLIGHT AND THE DRAW ARE TWO CALLS
  *
  * r_wall_preflight() is the last gate before the frame's first pixel, and the
  * frame driver needs to run it *before* it prefills the surface: a refusal after
@@ -189,7 +189,7 @@
  * per distinct texture; the draw loop still resolves every tier, which is what
  * keeps the resolver's lifetime contract local to one fragment.
  *
- * THE AUTOMAP'S MAPPED BIT (D5.3)
+ * THE AUTOMAP'S MAPPED BIT
  *
  * Upstream's R_StoreWallRange sets `linedef->flags |= ML_MAPPED` as its third
  * statement -- once per wall range the walk decided to store, and for nothing it
@@ -249,7 +249,7 @@ extern "C" {
  * reads its composite column opaquely, and the one transparent wall texture in
  * DOOM -- a two-sided line's mid texture -- is drawn by R_DrawMasked(), which
  * this pass does not implement. It is here because a composite can have holes
- * (r_data.h measures nine such textures) and because D3.4's masked pass needs
+ * (r_data.h measures nine such textures) and because the masked pass needs
  * exactly this record; a caller that models a wall as opaque passes NULL, which
  * is what the real-data harness does.
  *
@@ -295,7 +295,7 @@ typedef const r_walltex_t* (*r_tex_resolve_fn)(void* context, r_name_t name);
  * How a fragment finds its textures. `resolve` is required; `context` is handed
  * back unchanged and may be NULL.
  *
- * D3.3 (the plane pass) extends the same source with the two things a flat
+ * The plane pass extends the same source with the two things a flat
  * needs, so one struct describes everything one frame draws:
  *
  *   resolveFlat  Resolves a packed flat name to bytes, or NULL when the flat is
@@ -401,7 +401,7 @@ typedef enum r_segs_error {
 /*
  * What one frame's wall pass will need, produced by r_wall_preflight() and
  * consumed by r_wall_draw(). It exists so the frame driver can run every gate
- * that can refuse a frame before it prefills the surface (D4.2h): a refusal
+ * that can refuse a frame before it prefills the surface: a refusal
  * after the prefill leaves the previous frame destroyed.
  *
  *   clipPoolEntries  int16_t entries the unified pool must hold: one run of

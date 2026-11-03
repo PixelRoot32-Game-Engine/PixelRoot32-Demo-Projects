@@ -172,8 +172,8 @@ struct Reader {
 /* FNV-1a. A save is small, so a hash is cheaper than a table and needs no
  * library; it exists so one flipped byte is a BadField instead of a world that
  * looks plausible until a monster walks through a wall. The engine's
- * RecordCodec adds a CRC-32 envelope in T53; this is the save layer's own guard
- * so the host gate can prove the rejection now. */
+ * RecordCodec adds its own CRC-32 envelope; this is the save layer's guard, so
+ * the host tests can prove the rejection without the engine. */
 constexpr std::uint32_t kFnvBasis = 2166136261u;
 constexpr std::uint32_t kFnvPrime = 16777619u;
 

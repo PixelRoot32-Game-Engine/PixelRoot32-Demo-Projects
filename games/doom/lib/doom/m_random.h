@@ -55,8 +55,8 @@ extern "C" {
  * indices to zero) and therefore means the first P_Random() answers table[1].
  *
  * The field is public because the harness prints it: the number of calls a
- * level load consumed is half of the proof that the C loader and the oracle
- * consumed the same ones.
+ * level load consumed is half of the proof that the C loader and the Python
+ * reference (tools/doom_ref.py) consumed the same ones.
  */
 typedef struct m_random {
     uint32_t index;

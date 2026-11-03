@@ -5,7 +5,7 @@
  */
 
 /*
- * The automap (D5.3): upstream's am_map.c, drawn into the caller's surface.
+ * The automap: upstream's am_map.c, drawn into the caller's surface.
  *
  * WHAT THIS IS
  *

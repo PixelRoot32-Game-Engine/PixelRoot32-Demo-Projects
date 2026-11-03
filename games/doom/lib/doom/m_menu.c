@@ -1,5 +1,5 @@
 /*
- * DOOM on PixelRoot32 - the menu and the setup-lite settings (D5.2).
+ * DOOM on PixelRoot32 - the menu and the setup-lite settings.
  *
  * Derived from linuxdoom-1.10 m_menu.c and v_video.c (V_DrawPatch)
  * (Copyright (C) 1993-1996 id Software, Inc.), licensed under the GNU General
@@ -16,10 +16,10 @@
  *     quit to. No episode screen: shareware has one episode. No "are you sure?"
  *     for nightmare: the board has no Y/N keys, so ENTER on the nightmare row
  *     starts the game.
- *   - LOAD GAME and SAVE GAME exist since T53, in upstream's order after
+ *   - LOAD GAME and SAVE GAME sit in upstream's order after
  *     OPTIONS, each a six-row slot screen. Their titles and rows are TEXT, not
  *     `M_LOADG`/`M_SAVEG` patches: those two lumps are 2,332 B and 2,364 B and
- *     the container has 1,164 B of spare in the `wad` row (S18), so drawing them
+ *     the container has 1,164 B of spare in the `wad` row, so drawing them
  *     would mean a container and partition change for two pictures the HU font
  *     already spells. The rest of the main screen keeps its patch rows.
  *   - The options screen is the port's "setup-lite": skill, sound volume,
@@ -116,7 +116,7 @@ static const m_def_t kMenus[M_SCREEN_COUNT] = {
     /* The setup-lite screen; its rows sit OPTIONS_STEP apart. */
     {sizeof kOptionsRows / sizeof kOptionsRows[0], M_SCREEN_MAIN, kOptionsRows, 60,
      OPTIONS_Y0},
-    /* LoadDef: x 80, y 54 (T53) */
+    /* LoadDef: x 80, y 54 */
     {M_SLOT_COUNT, M_SCREEN_MAIN, kSlotRows, SLOT_SCREEN_X, SLOT_SCREEN_Y},
     /* SaveDef: the same geometry, the same rows */
     {M_SLOT_COUNT, M_SCREEN_MAIN, kSlotRows, SLOT_SCREEN_X, SLOT_SCREEN_Y},
@@ -184,7 +184,7 @@ void m_settings_encode(const m_settings_t* settings, uint8_t blob[M_SETTINGS_BLO
     blob[3] = clean.skill;
     blob[4] = clean.volume;
     blob[5] = clean.gamma;
-    /* The reserved byte is the mute flag (T49). An older record holds 0 here,
+    /* The reserved byte is the mute flag. An older record holds 0 here,
      * which is "not muted", so nothing a board already stored is invalidated. */
     blob[6] = clean.muted ? 1u : 0u;
     blob[7] = blobChecksum(blob);
@@ -228,7 +228,7 @@ void m_menu_init(m_menu_t* menu, const m_settings_t* settings) {
     menu->itemOn[M_SCREEN_NEWGAME] = menu->settings.skill;
     menu->skullCounter = SKULL_ANIM_FIRST;
     menu->pendingSkill = -1;
-    /* T53: nothing is owed and no slot is named until the owner fills the labels
+    /* Nothing is owed and no slot is named until the owner fills the labels
      * and an activation happens. An unfilled row reads EMPTY, so a menu that is
      * opened before the owner filled anything cannot load a slot. */
     menu->pendingAction = (int8_t)M_ACTION_NONE;
@@ -332,7 +332,7 @@ int m_menu_key(m_menu_t* menu, m_key_t key) {
                 } else if (*itemOn == 1u) {
                     menu->screen = M_SCREEN_OPTIONS;
                 } else {
-                    /* LoadDef / SaveDef (T53): the owner has already filled the
+                    /* LoadDef / SaveDef: the owner has already filled the
                      * six labels, so the screen opens with its rows readable. */
                     menu->itemOn[*itemOn == 2u ? M_SCREEN_LOAD : M_SCREEN_SAVE] = 0u;
                     menu->screen = *itemOn == 2u ? M_SCREEN_LOAD : M_SCREEN_SAVE;
@@ -697,8 +697,8 @@ int m_menu_draw(const m_menu_t* menu, st_lump_fn lump, void* context, uint8_t* s
         missing += writeText(lump, context, def->x, y0, "SKILL LEVEL", surface, stride);
         missing += writeText(lump, context, def->x, y0 + OPTIONS_VALUE_DY,
                              m_skill_name(menu->settings.skill), surface, stride);
-        /* No "(NO SOUND YET)" any more: T49 wires this slider to the APU, so the
-         * label is the plain truth (same words as upstream's M_SFXVOL row). */
+        /* The slider drives the APU volume; the label uses the same words as
+         * upstream's M_SFXVOL row. */
         missing += writeText(lump, context, def->x, y1, "SOUND VOLUME", surface, stride);
         missing += drawThermo(lump, context, def->x, y1 + OPTIONS_VALUE_DY, M_VOLUME_MAX + 1,
                               menu->settings.volume, surface, stride);

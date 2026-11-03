@@ -6,7 +6,7 @@ WHY THIS TOOL EXISTS
 `lib/doom/s_sound.c` keeps upstream's `S_ChangeMusic`, `S_StartMusic`,
 `S_StopMusic` and `S_PauseSound`; the DMX/OPL half became a narrow C seam
 (`doom_music_*`) implemented over the APU. The APU has no streaming decoder and
-no PCM channel (S2/S16: pure synthesis, `Legacy` profile), so the music has to
+no PCM channel (pure synthesis, `Legacy` profile), so the music has to
 exist as `const MusicNote` tables in flash, produced here, offline.
 
 THE INPUT
@@ -192,8 +192,8 @@ APU_TICKS_PER_BEAT = 4
 MUS_TICKS_PER_APU_TICK = MUS_TICKS_PER_SECOND * 60.0 / (PLAYER_BPM * APU_TICKS_PER_BEAT)  # 7.0
 MUSIC_NOTE_BYTES = 16  # sizeof(MusicNote) on the 32-bit ESP32
 
-# The pre-T47 headroom L47 measured for the shipped _hud image. The board
-# proof records the post-T47 number; this default keeps --check reproducible.
+# The flash headroom of the _hud image before any music was added. A fixed
+# default keeps --check reproducible.
 DEFAULT_HEADROOM = 49_795
 
 NOTE_NAMES = ["C", "Cs", "D", "Ds", "E", "F", "Fs", "G", "Gs", "A", "As", "B"]

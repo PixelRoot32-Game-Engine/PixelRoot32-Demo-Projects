@@ -1,7 +1,7 @@
 /*
  * The seam between the DOOM core (C) and the port (C++).
  *
- * The DOOM core is C and will live in this directory, compiled by the C
+ * The DOOM core is C and lives in this directory, compiled by the C
  * compiler under the firmware's -Os / -fno-lto / -fgc-sections flags while the
  * engine, the scene and everything under src/doomc are C++. That pairing only
  * works if both sides agree on the symbols and on the calling convention, so

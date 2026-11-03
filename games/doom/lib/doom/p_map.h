@@ -53,7 +53,7 @@
  *
  * ONE NAME THAT CANNOT BE REUSED
  *
- * The brief called this result p_move_result_t, but p_floor.h already gives that
+ * The natural name for this result is p_move_result_t, but p_floor.h already gives that
  * name to T_MovePlane's result_e (P_MOVE_OK/P_MOVE_CRUSHED/P_MOVE_PASTDEST). A
  * second type with the same name cannot compile, so the position check's result
  * is p_position_result_t and the two meanings stay distinguishable.

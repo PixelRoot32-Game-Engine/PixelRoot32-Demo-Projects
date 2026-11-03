@@ -1,5 +1,5 @@
 /*
- * Host harness for movement, collision and the player (D4.2b / D4.2c).
+ * Host harness for movement, collision and the player.
  *
  * It loads a level through lib/doom/p_setup.c, keeps only the player mobj that
  * P_LoadThings() already spawned (the first type-1 THING, through
@@ -12,9 +12,9 @@
  *
  * TWO PROTOCOLS
  *
- * MOVEMENT (the default) is D4.2b's gate: the harness itself sets the angle and
- * calls p_thrust()/p_mobj_thinker(), so the walk exercises the collision core
- * without a player record. Its output is unchanged.
+ * MOVEMENT (the default): the harness itself sets the angle and calls
+ * p_thrust()/p_mobj_thinker(), so the walk exercises the collision core
+ * without a player record.
  *
  *   MOVEMENT <map> tics=<N> script=<name>
  *   TIC <n> x=<i32> y=<i32> z=<i32> momx=<i32> momy=<i32> floorz=<i32>
@@ -37,7 +37,7 @@
  * (the first refusal is what a slide then recovers from). `cross` is the number
  * of P_CrossSpecialLine invocations from that tic's move.
  *
- * PLAYER (--player) is D4.2c's gate: a real p_ticcmd_t drives the avatar
+ * PLAYER (--player): a real p_ticcmd_t drives the avatar
  * through p_level_tic(), so P_PlayerThink, P_MovePlayer and P_CalcHeight run in
  * upstream's order and the thinker list moves the mobj afterwards.
  *

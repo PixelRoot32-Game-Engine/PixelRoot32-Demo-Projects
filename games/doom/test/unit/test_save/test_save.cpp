@@ -1,5 +1,5 @@
 /*
- * Behaviour tests for the save record (D7.1, task T52).
+ * Behaviour tests for the save record.
  *
  * WHAT THESE CASES PROVE, AND WHY A ROUND TRIP IS NOT ENOUGH
  *
@@ -230,7 +230,7 @@ void runTics(World& world, int count) {
     }
 }
 
-/* --- The long run (T52 follow-up measurement) ----------------------------- */
+/* --- The long run --------------------------------------------------------- */
 
 /*
  * The script the 21,000-tic measurement uses. Its job is not to be good at
@@ -1432,7 +1432,7 @@ void printAnalyticBound(std::size_t empiricalMax) {
 /*
  * The long-run measurement and its deep differential.
  *
- * The earlier budget case measures the two ends the task named; this one runs
+ * The earlier budget case measures two end points; this one runs
  * the world for ten minutes with a script that keeps the level awake and samples
  * the record every 50 s. `wireSizeOf()` is the same state sized by the writer's
  * field widths, cross-checked against `written` on every sample that fits,

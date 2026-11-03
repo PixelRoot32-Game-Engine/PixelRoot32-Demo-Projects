@@ -234,7 +234,7 @@ BakedError BakedGraphics::open(const whd_state_t* container) {
     // The manifest is parsed straight into entries_: the parsed records ARE the
     // adapter's records, so there is no second capacity-sized buffer in .bss and
     // no copy loop. open() runs once at boot, and the Arduino loop task's stack
-    // is the tightest budget in this build (D3.9), so nothing here goes on the
+    // is the tightest budget in this build, so nothing here goes on the
     // stack either.
     const BakedError parsed = bakedManifestParseInto(
         manifestData, manifestBytes,

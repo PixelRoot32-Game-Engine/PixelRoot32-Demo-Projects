@@ -1,5 +1,5 @@
 /*
- * Behaviour tests for the DOOM port's frame-driver arithmetic (D3.6).
+ * Behaviour tests for the DOOM port's frame-driver arithmetic.
  *
  * The suite covers the arithmetic and the lines, not the board: `FrameDriver`'s
  * first half is engine-free, Arduino-free and esp_timer-free by construction, so
@@ -90,7 +90,7 @@ FrameProfileSample makeSample(std::uint32_t frameMicros) {
     sample.spriteDecodes = 52;
     sample.bytesDecoded = 345678u;
 
-    // D3.5 attribution fields, each distinct for the same reason.
+    // Attribution fields, each distinct for the same reason.
     sample.wallPixels = 600u;
     sample.planePixels = 350u;
     sample.spritePixels = 50u;
@@ -392,7 +392,7 @@ void test_enabled_report_without_a_sink_writes_nothing(void) {
     TEST_ASSERT_EQUAL_INT(0, g_calls);
 }
 
-// The D3.5 attribution line, field for field: every denominator and every
+// The attribution line, field for field: every denominator and every
 // exclusive bucket, so a parser can assign a microsecond to a unit.
 void test_attribution_line_is_exact(void) {
     const FrameProfileSample sample = makeSample(2950u);
@@ -414,8 +414,8 @@ void test_attribution_line_is_exact(void) {
         line);
 }
 
-// The attribution summary turns the buckets into the three per-unit answers the
-// brief asks for, and reports the hit rates as per-mille of the resolves. The
+// The attribution summary turns the buckets into the three per-unit costs
+// (pixel, column, fragment), and reports the hit rates as per-mille of the resolves. The
 // numbers are worked out by hand: wall raster is 2,000 - 44 - 7 - 10 = 1,939 us
 // per frame, so 1,939,000 / 600 pixels = 3,231 ns/pixel, / 123 columns = 15,764
 // ns/column and / 39 fragments = 49,717 ns/fragment.
@@ -468,7 +468,7 @@ void test_attribution_line_that_does_not_fit_is_not_written(void) {
     TEST_ASSERT_EQUAL_INT('\0', small[0]);
 }
 
-// D3.10: the board driver picks a level, and every line it prints says which
+// The board driver picks a level, and every line it prints says which
 // one. The marker name is the one the container names its map lumps after, so
 // E1M1..E1M9 are the only answers: a tenth level is the shareware episode's
 // end, and a rejected level leaves the caller's buffer untouched rather than

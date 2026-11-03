@@ -1,7 +1,7 @@
 /*
  * Behaviour tests for the doom port's frame-pacing recorder.
  *
- * `FrameLog` is the instrument Phase 3 will judge the real renderer with, so
+ * `FrameLog` is the instrument the real renderer is judged with, so
  * these tests pin the record itself, not an implementation detail:
  *
  *  - the CSV field order and spelling are exactly the contract a parser reads,

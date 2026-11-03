@@ -20,18 +20,16 @@
  *   1. the state table is pure data -- five numbers per record, no addresses --
  *      so it is compiled once into flash and compared field for field against
  *      the oracle;
- *   2. an action that is not implemented yet is *counted* rather than silently
- *      skipped. D4.2 implements most of them; until then a monster that should
- *      chase stands still and the counter says so, which is a visible defect
+ *   2. an action that is not implemented is *counted* rather than silently
+ *      skipped, so a monster that should act and does not is a visible defect
  *      instead of a silent one.
  *
  * WHAT IS IMPLEMENTED
  *
- * A_Look (T15a, p_enemy.c) is the action a monster's standing state carries
- * (`S_POSS_STND` -> A_Look). It reads the sector's sound target, scans for a
- * visible player and enters the see state. Every other action is counted, so a
- * monster that should chase stands still and the counter says so, which is a
- * visible defect instead of a silent one.
+ * The list of real actions, stubs and gaps is at the top of p_action.c. A_Look
+ * (p_enemy.c) is the action a monster's standing state carries (`S_POSS_STND`
+ * -> A_Look): it reads the sector's sound target, scans for a visible player and
+ * enters the see state. Any action without a case is counted.
  *
  * `ACT_NULL` is not an action. Upstream writes `{NULL}` in the table and skips
  * the call entirely (`if (st->action.acp1)`), which is what decorations and
@@ -70,7 +68,7 @@ extern "C" {
  *   P_ACTION_NONE             ACT_NULL: nothing to run, not counted
  *   P_ACTION_DONE             an implemented action ran
  *   P_ACTION_STUB             an action implemented as a deliberate no-op
- *   P_ACTION_NOT_IMPLEMENTED  a real action D4.2 has not written yet
+ *   P_ACTION_NOT_IMPLEMENTED  a real action this port has not written
  *   P_ACTION_UNKNOWN          a value outside action_t (a corrupt state table)
  *   P_ACTION_NULL_MOBJ        no mobj was passed
  */
@@ -104,7 +102,7 @@ typedef struct p_action_stats {
 } p_action_stats_t;
 
 /*
- * The distinct missing-action record (D4.4).
+ * The distinct missing-action record.
  *
  * The counters above answer "how many" and "which one last", but a run that
  * reaches two different missing actions in one tic collapses both into one
@@ -167,9 +165,8 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
  *   A_Light0, A_Light1, A_Light2   `player->extralight = 0 | 1 | 2;`
  *
  * Upstream's muzzle flash is a brighter *view* for as long as the flash psprite
- * shows one of these states. The renderer has no light state yet (the weapon
- * widget and the status bar are D5.1), so the write is real state that nothing
- * draws: counted as P_ACTION_DONE, because the statement runs, and comparable in
+ * shows one of these states. The world view is rendered with an extralight of
+ * 0, so only the weapon sprite reads the write: counted as P_ACTION_DONE, because the statement runs, and comparable in
  * a test through `extralight` so "the flash happened" and "the flash was a no-op"
  * cannot look the same.
  *

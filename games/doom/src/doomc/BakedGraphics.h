@@ -1,14 +1,14 @@
 #pragma once
 
 /*
- * The baked-graphics adapter (D3.8): a packed name becomes an r_walltex_t, an
+ * The baked-graphics adapter: a packed name becomes an r_walltex_t, an
  * r_flat_t or an r_sprite_patch_t that points straight into the container's
  * flash mapping.
  *
  * WHY THIS LAYER EXISTS
  *
- * D3.5 measured the cost of composing a texture per frame: 13,044 us of
- * composition plus 114,845 us of inflate on a 166,261 us frame. A composite is
+ * Composing a texture per frame costs 13,044 us of composition plus
+ * 114,845 us of inflate on a 166,261 us frame. A composite is
  * written once at build time by tools/bake_graphics.py and stored raw, so at
  * run time a texture resolve is a manifest lookup and a pointer. Nothing here
  * decodes, copies or allocates.
@@ -71,11 +71,10 @@ constexpr std::size_t kBakedManifestRecordSize = 20u;
 /// mobj types E1M1 places, the puff, blood, rocket, the imp's fireball and the
 /// teleport fog), so 384 leaves 17 slots. The records are parsed straight into
 /// the adapter's own array, so one slot costs sizeof(BakedEntry) +
-/// sizeof(Value) + 4 B across entries_, values_ and the three sorted views.
-/// Measured on the target: 256 -> 384 is +1,016 B (static_used 120,528 ->
-/// 121,544), leaving seg_free=3,036 B of the 124,580 B dram0_0_seg; the board
-/// now reports 2,988 B after later tasks. tools/make_container.ps1 reads this
-/// constant and fails the encode when the bake would exceed it (T27).
+/// sizeof(Value) + 4 B across entries_, values_ and the three sorted views:
+/// about 8 B of `.bss` per slot on the target, where `dram0_0_seg` has only
+/// ~3 KB to spare. tools/make_container.ps1 reads this constant and fails the
+/// encode when the bake would exceed it.
 constexpr int kBakedCapacity = 384;
 
 constexpr std::uint8_t kBakedFlagMask = 0x01u;

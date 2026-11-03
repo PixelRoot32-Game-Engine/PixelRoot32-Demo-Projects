@@ -1,7 +1,7 @@
-// Phase 0 bench entry point: boot banner, serial menu, dispatch.
+// Bench entry point: boot banner, serial menu, dispatch.
 //
 // No engine loop and no DOOM code: each probe is a one-shot function the
-// maintainer triggers from the serial console. The drawer is the engine's real
+// operator triggers from the serial console. The drawer is the engine's real
 // TFT_eSPI_Drawer, so every present number includes the actual LUT conversion
 // and DMA path the port will ship.
 
@@ -16,7 +16,7 @@
 #include "bench_memory.h"
 #include "bench_present.h"
 
-// S8: DOOM's renderer is 320 columns wide; the panel only changes the physical
+// DOOM's renderer is 320 columns wide; the panel only changes the physical
 // window. A bench build that moved LOGICAL would measure a different product.
 static_assert(LOGICAL_WIDTH == 320 && LOGICAL_HEIGHT == 200,
               "the DOOM surface is 320x200 in every configuration (S8)");
@@ -76,7 +76,7 @@ void printBanner() {
                   static_cast<unsigned long>(bench::freeInternal()),
                   static_cast<unsigned long>(bench::largestInternal()));
 
-    // Arithmetic the plan can use before the board is flashed: the surface the
+    // Arithmetic available before the board is flashed: the surface the
     // drawer allocates, the DMA blocks each probe env requests, and the LUTs.
     const uint32_t surfaceBytes =
         static_cast<uint32_t>(LOGICAL_WIDTH) * static_cast<uint32_t>(LOGICAL_HEIGHT);

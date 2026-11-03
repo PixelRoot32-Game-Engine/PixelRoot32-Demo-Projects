@@ -121,7 +121,7 @@ static void p_calc_height(p_level_t* level, p_player_t* player) {
     }
 
     /* `(player->cheats & CF_NOMOMENTUM)` is absent: this port has no cheats
-     * (D5), so only the airborne branch remains. */
+     * so only the airborne branch remains. */
     if (player->onground == 0u) {
         player->viewz = mo->z + P_VIEWHEIGHT;
         if (player->viewz > mo->ceilingz - 4 * FRACUNIT) {
@@ -138,8 +138,8 @@ static void p_calc_height(p_level_t* level, p_player_t* player) {
     angle = ((uint32_t)P_BOB_FINE_STEP * (uint32_t)level->leveltime) & FINEMASK;
     bob = fixed_mul(player->bob / 2, r_fine_sine[angle]);
 
-    /* `if (player->playerstate == PST_LIVE)` -- the dead caller is
-     * P_DeathThink's, which T14 owns; this function only runs live today. */
+    /* `if (player->playerstate == PST_LIVE)` -- P_DeathThink also calls this
+     * function, and a dead player skips the view-height walk. */
     if (player->playerstate == P_PST_LIVE) {
         player->viewheight += player->deltaviewheight;
 
@@ -440,7 +440,7 @@ void p_player_think(p_level_t* level, const p_ticcmd_t* cmd) {
 
     /* "Handling colormaps." Upstream writes `fixedcolormap` here from the
      * invulnerability and infrared counters; the colormap is the renderer's and
-     * the HUD's (D5), so the field stays 0 and the alternative is named. */
+     * the HUD's, so the field stays 0 and the alternative is named. */
     player->fixedcolormap = 0;
 }
 

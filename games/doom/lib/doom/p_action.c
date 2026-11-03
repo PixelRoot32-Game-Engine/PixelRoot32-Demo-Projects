@@ -14,11 +14,11 @@
  *
  * WHAT IS HERE, AND WHY SOME OF IT IS A STUB
  *
- *   A_Look       real (T15a): upstream's A_Look (p_enemy.c) reads the sector's
+ *   A_Look       real: upstream's A_Look (p_enemy.c) reads the sector's
  *                sound target, falls back to a visible-player scan, discards the
  *                see sound's P_Random draw and enters the run state.
  *   A_Chase, A_FaceTarget, A_PosAttack, A_TroopAttack, A_Explode
- *                real (T15b): the monster's chase, its octant turn, the
+ *                real: the monster's chase, its octant turn, the
  *                zombieman's hitscan, the imp's claw-or-fireball and the
  *                explosion's radius damage. See p_enemy.h.
  *   A_Fall       real, and the smallest real action in the game:
@@ -109,7 +109,7 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
 
     switch (action) {
         case A_Look:
-            /* A_Look (p_enemy.c, T15a): read the sector's sound target, scan for
+            /* A_Look (p_enemy.c): read the sector's sound target, scan for
              * a visible player, discard the see sound's draw and enter the see
              * state. */
             p_enemy_look(world, mobj);
@@ -120,7 +120,7 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
             return P_ACTION_DONE;
 
         case A_Chase:
-            /* A_Chase (p_enemy.c, T15b): reaction time, the octant turn, melee
+            /* A_Chase (p_enemy.c): reaction time, the octant turn, melee
              * or missile, one step, and the active sound's discarded draw. */
             p_enemy_chase(world, mobj);
             if (stats != NULL) {
@@ -146,7 +146,7 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
             return P_ACTION_DONE;
 
         case A_SPosAttack:
-            /* A_SPosAttack (p_enemy.c, D4.4): three spread passes, each with its
+            /* A_SPosAttack (p_enemy.c): three spread passes, each with its
              * own drift/drift/damage draw, aimed once on the actor's facing. */
             p_enemy_spos_attack(world, mobj);
             if (stats != NULL) {
@@ -156,7 +156,7 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
             return P_ACTION_DONE;
 
         case A_SargAttack:
-            /* A_SargAttack (p_enemy.c, D4.4): face, range-test, then one draw
+            /* A_SargAttack (p_enemy.c): face, range-test, then one draw
              * for 4..40 points of bite. Demon and spectre share the state. */
             p_enemy_sarg_attack(world, mobj);
             if (stats != NULL) {
@@ -284,10 +284,9 @@ p_action_outcome_t p_action_run(p_mobj_context_t* world, r_mobj_t* mobj,
  * The three light-level actions are here rather than in p_pspr.c because they are
  * the only weapon actions that need nothing from that file: each is one
  * assignment to `player->extralight`, which is upstream's muzzle-flash light
- * level. The renderer has no light state yet -- the weapon widget, the status bar
- * and the lit view are D5.1 -- so the write is state nothing draws; the counter
- * is what keeps that from being invisible, and a test can read `extralight`
- * directly.
+ * level. The world view is rendered with an extralight of 0, so the write does
+ * not brighten the walls; the weapon sprite is its only reader. The counter keeps
+ * the action visible, and a test can read `extralight` directly.
  *
  * Everything else falls through to the same "not implemented" counters the mobj
  * half keeps. A_Saw (the chainsaw), A_FireShotgun2 (the super shotgun),

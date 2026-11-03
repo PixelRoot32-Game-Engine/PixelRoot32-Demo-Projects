@@ -1,8 +1,7 @@
 #pragma once
 
 /*
- * D7.1 (T53, S18): the save slots and the settings record on the engine's
- * persistence layer.
+ * The save slots and the settings record on the engine's persistence layer.
  *
  * WHAT THIS OWNS
  *
@@ -15,10 +14,10 @@
  * THE MEDIA, AND WHY THEY DIFFER PER PLATFORM
  *
  *   board   Esp32NvsKeyValueStore("doom", 64)   the `nvs` partition, byte-
- *           compatible with the `Preferences` record the port wrote before this
- *           task (namespace `doom`, key `cfg`)
+ *           compatible with the `Preferences` record (namespace `doom`,
+ *           key `cfg`)
  *           Esp32NvsSlotStore("doom", "save", 6, 3968, "saves")
- *           the 32 KB `saves` partition T53 carved out of `wad`, keys save0..save5
+ *           the 32 KB `saves` partition carved out of `wad`, keys save0..save5
  *
  *   host    HostFileKeyValueStore("save_data", "doom", 64)
  *           HostFileSlotStore("save_data", "save", 6, 3968)
@@ -72,7 +71,7 @@ namespace doomc {
 
 /**
  * @class DoomPersistence
- * @brief The board's (or the host's) save slots and settings record (T53).
+ * @brief The board's (or the host's) save slots and settings record.
  *
  * Construct once, call `init()` once from the scene's `init()` before the menu
  * can be opened, then use `settingsStore()`, `readSlotLabels()`, `saveSlot()`
@@ -81,10 +80,10 @@ namespace doomc {
  */
 class DoomPersistence {
 public:
-    /// Vanilla's slot count and this partition's honest maximum (S18/L56).
+    /// Vanilla's slot count and this partition's honest maximum.
     static constexpr std::uint8_t kSlotCount = M_SLOT_COUNT;
 
-    /// The spec's two numbers, pinned: a table that says otherwise is a build
+    /// Both numbers pinned: a table that says otherwise is a build
     /// failure, not a slot that silently shrinks.
     static_assert(kSlotCount == 6, "S18/L56: six slots");
     static_assert(M_SLOT_LABEL_SIZE == 16, "a label is 15 characters plus NUL");
@@ -92,7 +91,7 @@ public:
     /**
      * @brief One slot's record budget, the engine envelope included.
      *
-     * L56's arithmetic: one NVS page is 126 entries of 32 B and the largest blob
+     * One NVS page is 126 entries of 32 B and the largest blob
      * that stays inside it is (126 - 2) x 32 = 3,968 B. The envelope's 16 bytes
      * live inside that number, which is why the payload guard below subtracts
      * them; the measured record is 3,393 B, so the gap is never reached by a
@@ -107,7 +106,7 @@ public:
     static constexpr std::uint16_t kSlotSchema = 1u;
 
     /// The map a brand-new run starts on, for the label of a record written
-    /// before any transition. S21: a saved record's real map number comes from
+    /// before any transition. A saved record's real map number comes from
     /// `frameLevelNumber()` -- the level the world is on -- so this is only the
     /// build's default and never a ceiling on what can be saved.
     static constexpr std::uint8_t kLevelNumber = 1u;
@@ -175,7 +174,7 @@ public:
 
 #if defined(DOOM_SAVE_TEST)
     /**
-     * @brief The board's codec self-test (T54): one valid and one CRC-invalid
+     * @brief The board's codec self-test: one valid and one CRC-invalid
      *        record, written to slots 5 and 4 and read back.
      *
      * The valid record is the live world, wrapped by `saveRecord()` exactly as a

@@ -8,7 +8,7 @@ namespace bench {
 void runFillProbe();
 
 /// Reports internal DRAM before drawer init, after drawer init, and after a
-/// second 320x200 8bpp surface, then checks PLAN §5's 300 KB gate.
+/// second 320x200 8bpp surface, then checks the 300 KB gate.
 void runDramCensus();
 
 } // namespace bench

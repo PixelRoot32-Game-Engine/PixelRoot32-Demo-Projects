@@ -1,5 +1,5 @@
 /*
- * Behaviour tests for the world core (D4.1a): the mobj spawn path, the thinker
+ * Behaviour tests for the world core: the mobj spawn path, the thinker
  * list, the state machine, the action dispatch and the random sequence.
  *
  * Every map here is assembled byte for byte in the 1993 WAD record layout, so
@@ -835,14 +835,14 @@ void test_action_dispatch_counts_what_is_missing(void) {
     TEST_ASSERT_EQUAL_INT(P_ACTION_NONE, p_action_run(&world.context, mobj, ACT_NULL));
     TEST_ASSERT_EQUAL_UINT32(0u, world.actions.calls);
 
-    // A_Look is real (T15a). With no level and no sound array in this hand-built
+    // A_Look is real. With no level and no sound array in this hand-built
     // context it has nothing to look at, but it ran: DONE, not STUB.
     TEST_ASSERT_EQUAL_INT(P_ACTION_DONE, p_action_run(&world.context, mobj, A_Look));
     TEST_ASSERT_EQUAL_UINT32(1u, world.actions.calls);
     TEST_ASSERT_EQUAL_UINT32(1u, world.actions.done);
     TEST_ASSERT_EQUAL_UINT32(0u, world.actions.notImplemented);
 
-    // A_Chase is real too (T15b). With no target and no level it falls back to
+    // A_Chase is real too. With no target and no level it falls back to
     // the spawn state, but it ran: DONE, not STUB.
     TEST_ASSERT_EQUAL_INT(P_ACTION_DONE, p_action_run(&world.context, mobj, A_Chase));
     TEST_ASSERT_EQUAL_UINT32(2u, world.actions.calls);
@@ -850,7 +850,7 @@ void test_action_dispatch_counts_what_is_missing(void) {
     TEST_ASSERT_EQUAL_UINT32(0u, world.actions.notImplemented);
 
     // Everything else is still counted, never silently ignored. A_BossDeath is
-    // boss-level behaviour no task has written.
+    // boss-level behaviour this port does not implement.
     TEST_ASSERT_EQUAL_INT(P_ACTION_NOT_IMPLEMENTED,
                           p_action_run(&world.context, mobj, A_BossDeath));
     TEST_ASSERT_EQUAL_UINT32(3u, world.actions.calls);
@@ -917,7 +917,7 @@ void test_action_look_wakes_on_a_sound_target(void) {
     TEST_ASSERT_EQUAL_PTR(player, monster->target);
     TEST_ASSERT_EQUAL_INT(mobjinfo[MT_POSSESSED].seestate, monster->state);
     // Four draws now: the discarded see sound (sfx_posit1, 36), then the three
-    // A_Chase makes on the see state T15b's P_SetMobjState runs immediately --
+    // A_Chase makes on the see state P_SetMobjState runs immediately --
     // P_NewChaseDir's direction draw, its P_TryWalk `movecount` draw, and the
     // active sound's draw.
     TEST_ASSERT_EQUAL_UINT8(static_cast<u8>((before + 4) & 0xFFu),
@@ -947,7 +947,7 @@ void test_ticking_a_mobj_advances_its_state(void) {
     TEST_ASSERT_EQUAL_UINT32(1u, stats.executed);
     TEST_ASSERT_EQUAL_INT(tics - 1, mobj->tics);
 }
-// --- D4.1b: sector and line specials ----------------------------------------
+// --- Sector and line specials -----------------------------------------------
 
 /*
  * One sector and one line as a test writes them. The builder below emits the
@@ -1255,12 +1255,12 @@ void test_specs_door_waits_then_closes_and_removes_itself(void) {
 }
 
 void test_specs_door_closing_over_a_thing_stops_at_its_height(void) {
-    // A player stands in the door sector. P_ChangeSector now runs the real
+    // A player stands in the door sector. P_ChangeSector runs the real
     // P_ThingHeightClip, so the closing door stops at the player's height and
     // reports "does not fit" every tic instead of reaching the floor. Special 3
     // is this port's P_DOOR_CLOSE, whose crushed branch does not go back up
-    // (p_doors.c), so the door hovers; the player is not damaged (D4.2d owns
-    // P_DamageMobj) and the counter says so.
+    // (p_doors.c), so the door hovers; the player is not damaged and
+    // the counter says so.
     SpecFixture fixture({{0, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
     fixture.builder.addLine(4, 3, 1, 0, 1, true);
 
@@ -1552,7 +1552,7 @@ void test_specs_secret_sectors_and_unsupported_specials_are_counted(void) {
     TEST_ASSERT_EQUAL_UINT32(3u, fixture.level.specStats.secrets);
     // 15 is not a spawn case and not a player-in-sector case: upstream's
     // P_PlayerInSpecialSector calls I_Error on it, so it stays the one number
-    // this port counts as a gap. 7 is now P_PlayerInSpecialSector's.
+    // this port counts as a gap. 7 is P_PlayerInSpecialSector's.
     TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.unsupportedSectorSpecial);
     TEST_ASSERT_EQUAL_UINT32(0u, fixture.level.specStats.spawned);
     TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_LIGHTFLASH));
@@ -1841,8 +1841,8 @@ void test_specs_p_change_sector_counts_and_answers_clear(void) {
 
     TEST_ASSERT_TRUE(fixture.open());
     const u32 before = fixture.level.specStats.changeSectorCalls;
-    // With nothing in the sector the real rule answers "clear" like the stub
-    // did, but the function is no longer a stub.
+    // With nothing in the sector the real rule answers "clear", and the
+    // function is not a stub.
     TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector_is_stubbed());
     TEST_ASSERT_EQUAL_INT(0,
                           p_spec_p_change_sector(&fixture.level.context, 0, 0));
@@ -1854,7 +1854,7 @@ void test_specs_p_change_sector_counts_and_answers_clear(void) {
                              fixture.level.specStats.changeSectorClear);
 }
 
-// --- D4.2a: the line record carries its special and tag ---------------------
+// --- The line record carries its special and tag ----------------------------
 
 /*
  * doom_line_t is the one description of a LINEDEF, so it carries the two fields
@@ -1897,12 +1897,12 @@ void test_line_record_exposes_special_and_tag(void) {
     TEST_ASSERT_EQUAL_INT16(0, p_line_special(nullptr, 0));
     TEST_ASSERT_EQUAL_INT16(0, p_line_tag(nullptr, 0));
 
-    // 14 bytes: the two new shorts fill what used to be padding, so the struct
+    // 14 bytes: the special and tag shorts fill what would be padding, so the struct
     // is exactly the on-disk record's size and no caller pays for a wider one.
     TEST_ASSERT_EQUAL_UINT32(DOOM_LINEDEF_SIZE, sizeof(doom_line_t));
 }
 
-// --- D4.2b: movement and collision ------------------------------------------
+// --- Movement and collision -------------------------------------------------
 
 /*
  * A room with real geometry: four one-sided walls and, when a case needs one, a
@@ -2345,7 +2345,7 @@ void test_move_slide_along_a_diagonal_wall_uses_the_lines_direction(void) {
     TEST_ASSERT_TRUE(gap <= 7 * kFrac);
 }
 
-// --- D4.2c: the player ------------------------------------------------------
+// --- The player -------------------------------------------------------------
 
 /*
  * A whole level with a type-1 THING, so p_level_init runs P_SpawnPlayer and
@@ -2736,7 +2736,7 @@ void test_player_think_counts_the_deferred_buttons_and_death(void) {
     PlayerFixture fixture;
     TEST_ASSERT_TRUE(fixture.open());
 
-    // The fire button is no longer counted: A_WeaponReady reads it inside
+    // The fire button is not counted here: A_WeaponReady reads it inside
     // P_MovePsprites. The weapon must be up first -- P_SetupPsprites runs on the
     // first live think and the raise takes fifteen A_Raise steps -- so sixteen
     // idle tics reach the ready state and the press after them fires.
@@ -2859,7 +2859,7 @@ void test_level_tic_runs_the_player_then_the_thinkers(void) {
     TEST_ASSERT_EQUAL_INT32(viewz, fixture.player().viewz);
 }
 
-// --- D4.4: the death, the reload and the stream (g_game.c's G_DoReborn) -----
+// --- The death, the reload and the stream (g_game.c's G_DoReborn) -----------
 
 /*
  * A level with the player start and one sector special, so P_SpawnSpecials has
@@ -3037,7 +3037,7 @@ void test_demo_reborn_refuses_a_level_that_is_not_loaded(void) {
     TEST_ASSERT_EQUAL_INT(P_SETUP_ERR_NULL_LEVEL, p_level_reload(nullptr));
 }
 
-// --- D4.5: the level change, the next-map table and the exit request -------
+// --- The level change, the next-map table and the exit request -------------
 
 /*
  * Two levels over one arena: A has the player at the origin and one light
@@ -3528,7 +3528,7 @@ void test_attack_melee_puff_starts_at_the_third_frame(void) {
     TEST_FAIL_MESSAGE("the bullet's shot left no puff");
 }
 
-// --- T35: the animation reaches the renderer without costing a read ---------
+// --- The animation reaches the renderer without costing a read --------------
 
 /*
  * The animation seam has two halves, and both are about *when* the name is

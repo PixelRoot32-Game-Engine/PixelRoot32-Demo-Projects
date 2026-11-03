@@ -1,5 +1,5 @@
 /*
- * DOOM on PixelRoot32 - the menu and the setup-lite settings (D5.2).
+ * DOOM on PixelRoot32 - the menu and the setup-lite settings.
  *
  * Derived from linuxdoom-1.10 m_menu.c (Copyright (C) 1993-1996 by id Software,
  * Inc.), licensed under the GNU General Public License v2. See NOTICE.
@@ -41,8 +41,8 @@ extern "C" {
  *                                         other rows only show the "registered
  *                                         version" notice)
  *   OPTIONS   skill, volume, gamma, mute  (setup-lite)
- *   LOAD      six slot rows               (T53; a slot label or EMPTY)
- *   SAVE      six slot rows               (T53; same rows, same labels)
+ *   LOAD      six slot rows               (a slot label or EMPTY)
+ *   SAVE      six slot rows               (same rows, same labels)
  *
  * The two slot screens are drawn from `menu->slotLabels`, which the owner fills
  * before opening them (`m_menu_set_slot_labels`). This file never reads a store:
@@ -54,7 +54,7 @@ extern "C" {
  * A LOAD row whose label is "EMPTY" does nothing and keeps the screen open.
  * A SAVE over a used row saves immediately: vanilla asks "are you sure?", and
  * this port has no confirm dialog -- adding one is a screen and two keys on a
- * six-button pad, out of T53's scope, so a save is one key press, like New Game.
+ * six-button pad, so a save is one key press, like New Game.
  *
  * KEYS, and the buttons they come from
  *
@@ -80,10 +80,10 @@ extern "C" {
 #define M_MUTE_MAX 1        /* the mute row is a slider with two positions */
 
 /*
- * LOAD GAME / SAVE GAME (T53).
+ * LOAD GAME / SAVE GAME.
  *
  * Six is vanilla's own slot count and the most this board's 32 KB `saves`
- * partition holds honestly (S18/L56). A label is at most 15 characters plus the
+ * partition holds honestly. A label is at most 15 characters plus the
  * terminator -- the record's own header field, "E1M1 HURT 03:12" -- so the menu
  * can draw it without knowing where it came from.
  */
@@ -97,7 +97,7 @@ typedef struct m_settings {
     uint8_t volume;  /* 0..M_VOLUME_MAX */
     uint8_t gamma;   /* 0..M_GAMMA_MAX */
     /*
-     * 0 or 1 (T49). A separate field, not a zero volume: the player's slider
+     * 0 or 1. A separate field, not a zero volume: the player's slider
      * position has to survive being muted, or unmuting could not restore it.
      */
     uint8_t muted;
@@ -124,7 +124,7 @@ void m_settings_clamp(m_settings_t* settings);
  *   6  mute flag      0 = off, 1 = on
  *   7  checksum       (0xA5 + the sum of bytes 0..6) modulo 256
  *
- * Byte 6 was "reserved, must be 0" before T49, which is exactly why the flag
+ * Byte 6 was "reserved, must be 0" in earlier records, which is exactly why the flag
  * lives there: a record an older board wrote decodes as "not muted" with no
  * version bump and without touching a saved skill, volume or gamma. The
  * checksum already covers it, so a damaged flag byte is caught twice -- by the
@@ -171,7 +171,7 @@ typedef enum m_key {
  * What a key meant to the menu's OWNER.
  *
  * M_ACTION_KEY is 1 so `m_menu_key` keeps its old contract for every path that
- * existed before T53 ("nonzero = the menu was open and spent the key"). The two
+ * predates the save slots ("nonzero = the menu was open and spent the key"). The two
  * slot actions are distinct values above it; the owner's `m_menu_take_slot_action`
  * reports them once, together with the row in `menu->slot`.
  */
@@ -204,7 +204,7 @@ typedef struct m_menu {
     int8_t pendingSkill;             /* -1, or a New Game the owner must start */
     int16_t skullCounter;            /* skullAnimCounter */
     /*
-     * T53: the six slot labels the owner filled, and the row an activation
+     * The six slot labels the owner filled, and the row an activation
      * named. The labels live here rather than behind a callback so the menu
      * never reads a store and a closed menu costs no call. `pendingAction` is
      * M_ACTION_NONE until an activation; `slot` is that row (0..5) and stays
@@ -226,8 +226,8 @@ void m_menu_close(m_menu_t* menu);
 
 /* M_Responder() for one key. Returns M_ACTION_NONE when the menu was closed (the
  * key was never seen), M_ACTION_KEY when it was open and spent the key, and a
- * slot action when an activation is owed; a caller that only tests "nonzero" is
- * as correct as it was before T53. */
+ * slot action when an activation is owed; a caller that only tests "nonzero"
+ * still sees every spent key. */
 int m_menu_key(m_menu_t* menu, m_key_t key);
 
 /*
@@ -249,7 +249,7 @@ int m_menu_take_new_game(m_menu_t* menu, int* skill);
 /* Returns 1 once after a persisted value changed. */
 int m_menu_take_settings_changed(m_menu_t* menu);
 
-/* --- The save slots (T53) ---------------------------------------------------- */
+/* --- The save slots ---------------------------------------------------------- */
 
 /*
  * Fills the six slot labels the LOAD and SAVE screens draw. The owner calls it
