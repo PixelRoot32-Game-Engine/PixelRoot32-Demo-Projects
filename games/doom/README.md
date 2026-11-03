@@ -90,7 +90,7 @@ Then turn it into the container the firmware reads, from **`games/doom`**:
 .\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD
 ```
 
-It writes `tools/DOOM1.whd` -- 3,167,944 B of the `wad` partition's 3,375,104 --
+It writes `tools/DOOM1.whd` -- 3,168,508 B of the `wad` partition's 3,375,104 --
 and proves the result four ways: the WAD rebuilds byte for byte, the container
 parses, all nine levels open through `lib/doom/doom_map.c`, and every baked
 texture recomposes from the source WAD's patches. A fifth gate, `tools/hud_check.py`,
@@ -152,9 +152,15 @@ ports `ST_doPaletteStuff`: once per rendered frame the scene asks
 radiation suit and its blink) and re-applies the palette only when the page or the
 gamma changes. Berserk is the strength POWER, not the wielded weapon; red page 1 is
 never chosen (upstream's `(cnt + 7) >> 3` is 0 only when there is no flash). A flash
-page is decoded from the container for the one call that builds the tables (the
-lump is deflated, so that is a transient 10,752 B heap block and about 8.6 ms on
-the CYD, once per page change; page 0 is resident). Gamma is applied to each page.
+page is a mapped raw view of the container's PLAYPAL (T58): page *p* is
+`view + p * 768`, copied into the scene's 768-byte buffer, so a page change costs
+one copy and no heap and page 0 stays resident (768 B). The reader used to decode
+the whole 10,752 B lump into a transient internal-RAM block -- about 8.6 ms per
+page change -- and D7.1's save buffer left no block that size (`heap_largest`
+7,924), so the allocation failed and every flash page silently stayed at 0. A
+container built before T58 stores PLAYPAL deflated: the view answers `ERR_NOT_RAW`,
+the scene keeps the page it already has, and there is deliberately no allocation
+fallback. Gamma is applied to each page.
 `python tools/palflash_check.py --wad DOOM1.WAD --container DOOM1.whd` compares
 the page selection, the 14 pages at five gamma levels and the decay on the real
 world with an independent oracle (`--perturb` must fail).
@@ -1031,7 +1037,7 @@ container drops the 239 sprite frames no list can name -- 264,819 B stored,
 ```text
 nvs       0x009000 .. 0x00F000        24 KB   (unchanged)
 factory   0x010000 .. 0x0C0000       720,896 B   the app, ~60 KB of margin
-wad       0x0C0000 .. 0x3F8000     3,375,104 B   the container, 207,160 B spare
+wad       0x0C0000 .. 0x3F8000     3,375,104 B   the container, 206,596 B spare
 saves     0x3F8000 .. 0x400000        32 KB    six save slots
 ```
 
@@ -1114,10 +1120,10 @@ settings record. The `saves` partition is at `0x3F8000`, far above it, and a
 reflash does not touch it. That is why the settings are one small record (defaults
 are a solved state) and the slots are their own partition.
 
-**Status on this board (measured, T53b).** The shipped `_hud` image is **660,425 B
-of the 720,896 B app row (91.6 %)**, leaving 60,471 B; the trimmed container is
-**3,167,944 B of 3,375,104 B**, leaving 207,160 B; `dram0_0_seg` keeps
-`seg_free=1132` (the image is 123,448 B of the region, 37.7 % of the chip's RAM).
+**Status on this board (measured, T58).** The shipped `_hud` image is **663,049 B
+of the 720,896 B app row (92.0 %)**, leaving 57,847 B; the container is
+**3,168,508 B of 3,375,104 B**, leaving 206,596 B; `dram0_0_seg` keeps
+`seg_free=1124` (the image is 123,456 B of the region, 37.7 % of the chip's RAM).
 The save record (`src/doomc/SaveGame.cpp`, T52) is 25,737 B and PlatformIO links
 every project source, so it is in the image even in environments that never call
 it; T53's own wiring (the engine's persistence module, the NVS partition adapter,

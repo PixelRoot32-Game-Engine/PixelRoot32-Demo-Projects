@@ -88,7 +88,7 @@ demo's binary, not the engine tree.
   `esp32dev_ILI9341_show` → `esp32dev_ILI9341`) over
   `partitions_wad.csv`. The shipped app is **660,493 B of the 720,896 B
   `factory` row** (`seg_free=1132`; README "Final board state" and T55).
-- **Container:** `tools/DOOM1.whd`, **3,167,944 B**, flashed at **`0xC0000`**
+- **Container:** `tools/DOOM1.whd`, **3,168,508 B**, flashed at **`0xC0000`**
   into the `wad` row (`0xC0000..0x3F8000`, 3,375,104 B). It is built by
   `tools/make_container.ps1` from the shareware `DOOM1.WAD`; neither the WAD nor
   any `.whd` is committed (`tools/.gitignore`).
@@ -346,7 +346,7 @@ design** and is listed last.
 | `music_check --wad tools/DOOM1.WAD` | `OK music_check: 3 lumps converted, 12 tracks, D_E1M1 committed` |
 | `boot_check` | `OK record: every title, line, footer and hash matches tools/boot_screens.txt` |
 | `bake_graphics --check-container tools/DOOM1.whd --wad tools/DOOM1.WAD` | `BAKECHECK,entries=370,walls=101,sky=1,flats=52,sprites=216,compared=370,mismatches=0,bytes=1742916` |
-| `whd_encode --check tools/DOOM1.whd` | `tools/DOOM1.whd: 913 lumps, 3,167,944 B`; `658 raw lumps, every payload on a 4-byte boundary` |
+| `whd_encode --check tools/DOOM1.whd` | `tools/DOOM1.whd: 913 lumps, 3,168,508 B`; `659 raw lumps, every payload on a 4-byte boundary` |
 | `perf_report --self-test` | `SELFTEST: 12 cases passed` |
 | `perf_report --perturb` | `PERTURB: simulated verdict FAIL (exit 1) -- the rule can fail` |
 
