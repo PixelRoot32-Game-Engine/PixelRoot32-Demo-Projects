@@ -203,10 +203,13 @@ pin and reads a button as pressed when `digitalRead() == LOW` (active low, with 
 **no internal pull-up or pull-down**, so `INPUT_PULLUP` does nothing there: each
 button needs an **external pull-up** (10 kOhm from the pin to 3V3, switch to GND),
 which this board has on both pins -- measured: both read high when released.
-GPIO 35 also carries short low pulses (0-25 per 5 s at a 5 kHz sample, almost all
-under 1 ms, one in the 100-500 ms range once) which the 100 ms debounce absorbs;
-an occasional spurious automap toggle is that noise, not the code, and a 100 nF
-from the pin to GND is the fix if it ever becomes annoying.
+GPIO 35 also carried short low pulses (0-25 per 5 s at a 5 kHz sample, almost
+all under 1 ms, one in the 100-500 ms range once) which the 100 ms debounce
+absorbs; an occasional spurious automap toggle was that noise, not the code. It
+was traced to a cold joint on the external resistor, which the maintainer found
+and re-soldered after T58: Select now reads high when released and the automap
+no longer opens by itself. A 100 nF from the pin to GND remains the fix if the
+noise ever returns.
 
 **Screens.** NEW GAME, OPTIONS, LOAD GAME and SAVE GAME. NEW GAME is linuxdoom's
 skill screen (the cursor starts on the saved skill); choosing a row reloads E1M1
@@ -1268,8 +1271,9 @@ frame-00 hash does not move. Three 40 s runs report `fps_x10` **155-189 (mean
 164.10)**, **155-190 (mean 165.12)** and **154-189 (mean 167.86)** over the
 steady-state samples (the first ten frames are reported before the once-a-second
 cadence starts); every sample is >= 150. Those bands include the automap, which
-the floating GPIO 35 opens by itself (L42) and which renders in ~0.9 ms: in an
-independent 40 s capture 21 of 38 reported frames were automap frames, and
+the GPIO 35 opened by itself while the pin was floating (L42; the resistor was
+re-soldered after T58) and which renders in ~0.9 ms: in an independent 40 s
+capture 21 of 38 reported frames were automap frames, and
 filtering to world frames (`render_us > 20 ms`) gives **153-160, mean 156** --
 the number comparable with the 148-155 this phase started from, and five points
 above it.
@@ -1322,9 +1326,10 @@ present path is allowed to have, and it is measured, not modelled.
 
 `env:esp32dev_ILI9341_hud`, the shipped 660,493 B image, container at
 `0xC0000`. Each run is a separate reset and a separate 40 s capture. The table
-below is **world frames only**: the CYD's GPIO 35 floats and opens DOOM's
-automap by itself, and a map frame renders in about 0.9 ms, so those samples
-are excluded and counted rather than left to flatter the band.
+below is **world frames only**: these captures predate the GPIO-35 repair, when
+the floating Select pin opened DOOM's automap by itself, and a map frame renders
+in about 0.9 ms, so those samples are excluded and counted rather than left to
+flatter the band. After the repair a clean capture excludes none (below).
 
 | phase | count | min | max | mean |
 | --- | --- | --- | --- | --- |
@@ -1356,6 +1361,15 @@ mean 168.6 over 111 samples**: every automap frame draws in under a millisecond
 and raises the top of the band, which is exactly why it is not the shipping
 number. The world band is stable across the three runs (153-160), and every
 sample clears the rule's floor of 150.
+
+**After the GPIO-35 repair (T58 close).** The captures above were taken with the
+floating Select pin; a fresh 45 s capture on the shipped image (`bd44b53`,
+settings reset to the defaults first) excludes **0** frames and reads
+`render_us` **29,002.7** mean (28,849-29,663), `present_us` 26,987.9,
+`update_us` 2,667.4, `frame_us` 64,996.7, `fps_x10` **151-157, mean 153.4** --
+still above the 150 floor. The render is 1.6 ms above the T55 table because T57
+added 2.5 KB of code and moved the image; that is inside the ±1.3-3.3 ms
+flash-placement band D5.1 measured, and no renderer code changed.
 
 ### Phase 3 today, and the reconciliation
 
