@@ -1960,6 +1960,16 @@ void DoomScene::updatePaletteFlash() {
     if (page == paletteApplied_) {
         return;
     }
+#if defined(DOOM_FRAME_DUMP)
+    // S26 diagnostic: every page change, so a capture says which palette the
+    // artifact's frames were drawn under (a flash page or page 0).
+    {
+        char event[80];
+        std::snprintf(event, sizeof event, "SHOW,palette,page=%d,frame=%u\n", page,
+                      static_cast<unsigned>(showFrame_));
+        writeConsoleLine(event);
+    }
+#endif
 #if defined(DOOM_PALFLASH_SCRIPT)
     const std::uint32_t startUs = sampleMicros();
 #endif
@@ -2508,6 +2518,25 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
 
     showDrawStart_ = drawStart;
     showDrawEnd_ = sampleMicros();
+
+#if defined(DOOM_FRAME_DUMP)
+    // S26 diagnostic: the stack margin once a second, independent of the frame
+    // report's own limit. The firing path is the deepest chain the game has, and
+    // its peak only shows after minutes of play, long after `SHOW,frame` has
+    // stopped printing.
+    {
+        static std::uint32_t lastStackUs = 0u;
+        const std::uint32_t now = sampleMicros();
+        if (lastStackUs == 0u || now - lastStackUs >= 1000000u) {
+            lastStackUs = now;
+            char stackLine[64];
+            std::snprintf(stackLine, sizeof stackLine, "SHOW,stack,free=%u,frame=%u\n",
+                          static_cast<unsigned>(doomc::frameStackFree()),
+                          static_cast<unsigned>(showFrame_));
+            writeConsoleLine(stackLine);
+        }
+    }
+#endif
 
 #if defined(DOOM_FRAME_DUMP)
     // S26 diagnostic (env `esp32dev_ILI9341_show_dump` / `_hud_dump`): hold A and
