@@ -411,9 +411,11 @@ be; whether it is pleasant is the listening pass.
 keeps upstream's `S_ChangeMusic`/`S_StartMusic`/`S_StopMusic`/`S_PauseSound`;
 the three `doom_music_*` calls they make are implemented in
 `src/doomc/DoomAudio.cpp` over the engine's `MusicPlayer`. `S_Start` asks for
-`mus_e1m1` on every level load and after New Game, and the menu's open/close
-already calls `S_PauseSound`/`S_ResumeSound` (`DoomScene::runMenu`), so the
-pause path is upstream's, not a second control.
+the map's own track (`mus_e1m1 + (episode-1)*9 + map-1`), so a load of E1M2
+asks for `mus_e1m2`; `MusicBank` ships only E1M1 and answers nullptr for the
+rest, which leaves those levels quiet (see "What ships"). After New Game the
+menu's open/close already calls `S_PauseSound`/`S_ResumeSound`
+(`DoomScene::runMenu`), so the pause path is upstream's, not a second control.
 
 **The converter.** `tools/mus2tracks.py` reads a `d_*` MUS lump, parses it by
 `mus2mid.c`'s rules, and writes a deterministic C++ include. MUS has no tempo
