@@ -4285,7 +4285,7 @@ bool frameLevelTakeVictory() {
  *
  * @return true when the avatar was moved and the fixture printed.
  */
-bool frameLevelExitScript() {
+bool frameLevelExitScript(int special) {
     char (&out)[kFrameProfileLineCapacity] = gSessionLine;
     if (!gWorld.open || gWorld.level.player == nullptr) {
         std::snprintf(out, sizeof out, "SHOW,level,script=stand,status=fail,reason=world\n");
@@ -4300,7 +4300,7 @@ bool frameLevelExitScript() {
     static const int kThirds[5] = {6, 4, 8, 3, 9};
 
     for (std::uint32_t index = 0u; index < level.lineCount; ++index) {
-        if (level.lineSpecial[index] != 11) {
+        if (level.lineSpecial[index] != (uint8_t)special) {
             continue;
         }
         doom_line_t line;
@@ -4349,8 +4349,8 @@ bool frameLevelExitScript() {
                     mobj->angle = p_point_to_angle(mx - px, my - py);
                     std::snprintf(out, sizeof out,
                                   "SHOW,level,script=stand,status=ok,level=%s,line=%u,"
-                                  "special=11,standoff=%ld,x=%ld,y=%ld,angle=%lu\n",
-                                  frameLevelMarker(), static_cast<unsigned>(index),
+                                  "special=%d,standoff=%ld,x=%ld,y=%ld,angle=%lu\n",
+                                  frameLevelMarker(), static_cast<unsigned>(index), special,
                                   static_cast<long>(kGaps[gapIndex]), static_cast<long>(px),
                                   static_cast<long>(py),
                                   static_cast<unsigned long>(mobj->angle));

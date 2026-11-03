@@ -776,7 +776,19 @@ bool frameLevelTakeVictory();
  * line, and the move is printed (`SHOW,level,script=stand,...`). Never in the
  * shipped image.
  */
-bool frameLevelExitScript();
+bool frameLevelExitScript(int special);
+
+#if defined(DOOM_LEVEL_WALK)
+/**
+ * @brief Diagnostic (env `esp32dev_ILI9341_hud_levelwalk`): walk every level.
+ *
+ * The scene calls `frameLevelExitScript(11)` on each level and 51 on E1M3, holds
+ * USE through the real button byte, and calls `frameLevelVictoryScript()` on
+ * E1M8, so the panel shows E1M1 -> E1M2 -> E1M3 -> E1M9 -> E1M4 -> ... -> E1M8
+ * and the ending. Frame-paced on purpose: it is a viewing aid, not a timing
+ * measurement. Never in the shipped image.
+ */
+#endif
 
 #if DOOM_PERSISTENCE
 /**

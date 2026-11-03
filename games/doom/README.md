@@ -815,6 +815,21 @@ arena the session sized from its startup map), the main menu opens and the fade
 runs again. `frame00` stays
 `1d8b3849ab3f76750056937f2827bf2bcbb2b98e82976fb3a7ce263d5273c9d3`.
 
+**Watching the whole episode.** `esp32dev_ILI9341_hud_levelwalk` is a viewing
+aid, never shipped: it walks E1M1 -> E1M2 -> E1M3 -> **E1M9** (E1M3's secret
+line 51) -> E1M4 -> E1M5 -> E1M6 -> E1M7 -> E1M8 -> the ending, dwelling about
+three seconds per level. Each press is the real one (`p_use` through the held B
+byte), and the driver's `SHOW,level,script=stand`, `from=...` and `victory=` lines
+are the record of what the panel showed. Flash it, reset, watch; reflash `_hud`
+to return to the game. On COM4 the sequence was:
+
+```text
+E1M1 -> E1M2 -> E1M3 -> E1M9 -> E1M4 -> E1M5 -> E1M6 -> E1M7 -> E1M8
+SHOW,level,victory=1,episode=1,map=8
+SHOW,menu,state=open,...
+```
+
+
 ## Boot and failure screens (D7.2)
 
 A boot that cannot open the container used to print a precise line on the serial

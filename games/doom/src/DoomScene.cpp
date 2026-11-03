@@ -1401,13 +1401,47 @@ void DoomScene::update(unsigned long deltaTime) {
 #endif
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_LEVEL_TEST)
+#if defined(DOOM_LEVEL_WALK)
+    // S24: the viewing walk. Each level gets a dwell, then the fixture stands on
+    // its own exit and B (the world's USE) is held for three frames; E1M3 takes
+    // its secret line 51 so E1M9 is on the route, and E1M8 takes the victory
+    // branch. Every tic goes through the real input path, and the driver's own
+    // SHOW,level lines are the log of what the panel showed.
+    if (!walkDone_) {
+        const std::uint8_t level = doomc::frameLevelNumber();
+        if (level != walkLastLevel_) {
+            walkLastLevel_ = level;
+            walkTimer_ = 45;  // ~3 s at the shipped frame rate, fade included
+            walkUse_ = 0;
+        }
+        if (walkUse_ > 0u) {
+            buttons = static_cast<std::uint8_t>(buttons | doomc::kButtonB);
+            --walkUse_;
+        } else if (walkTimer_ > 0u) {
+            --walkTimer_;
+        } else if (level == 8u) {
+            walkDone_ = true;
+#if DOOM_PERSISTENCE
+            (void)doomc::frameLevelVictoryScript();
+#endif
+        } else {
+            const int special = (level == 3u) ? 51 : 11;
+            if (!doomc::frameLevelExitScript(special)) {
+                walkDone_ = true;
+            } else {
+                walkUse_ = 3u;
+            }
+            walkTimer_ = 40;
+        }
+    }
+#else
     // S21's board proof (env esp32dev_ILI9341_hud_leveltest): at frame 20 the
     // avatar is put in front of E1M1's own exit switch, and from frame 24 B is
     // held for three frames. B is bit 5 -- the world's USE -- so the press goes
     // through the real tic path; the frames before it are what release the use
     // latch G_PlayerReborn() left set.
     if (showFrame_ == 20u) {
-        (void)doomc::frameLevelExitScript();
+        (void)doomc::frameLevelExitScript(11);
     }
     if (showFrame_ >= 24u && showFrame_ <= 26u) {
         buttons = static_cast<std::uint8_t>(buttons | doomc::kButtonB);
@@ -1432,8 +1466,9 @@ void DoomScene::update(unsigned long deltaTime) {
         // the shipped path (the run reloads on its first map, the menu opens).
         (void)doomc::frameLevelVictoryScript();
     }
-#endif
-#endif
+#endif  // DOOM_PERSISTENCE
+#endif  // DOOM_LEVEL_WALK
+#endif  // PIXELROOT32_DOOM_SHOW_E1M1 && DOOM_LEVEL_TEST
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
     // S21: the run ended (E1M8's ending has no finale screen). The driver has

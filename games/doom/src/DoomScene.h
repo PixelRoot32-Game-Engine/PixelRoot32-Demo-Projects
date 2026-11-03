@@ -445,6 +445,21 @@ private:
      */
     bool victoryMenuPending_ = false;
 
+#if defined(DOOM_LEVEL_WALK)
+    /*
+     * The viewing walk (env esp32dev_ILI9341_hud_levelwalk). Frame-paced, not a
+     * measurement: the point is what a person sees on the panel. `walkLastLevel_`
+     * notices a transition and restarts the dwell, `walkTimer_` counts the dwell
+     * before the next press, `walkUse_` holds B for the press, and `walkDone_`
+     * stops after E1M8's ending (the world goes back to E1M1, so a level-change
+     * reset must not restart the tour).
+     */
+    std::uint8_t walkLastLevel_ = 0;
+    std::uint8_t walkTimer_ = 0;
+    std::uint8_t walkUse_ = 0;
+    bool walkDone_ = false;
+#endif
+
 #if DOOM_PERSISTENCE
     /// Fills `menu_`'s six slot labels through the persistence layer (T53).
     void refreshSlotLabels();
