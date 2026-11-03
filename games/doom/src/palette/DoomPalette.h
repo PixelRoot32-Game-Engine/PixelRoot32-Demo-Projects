@@ -130,8 +130,8 @@ static_assert(rgb888To565(56, 56, 56) == 0x39C7, "RGB888 -> RGB565: mid grey mus
  *
  * @param rgb888 256 entries of R, G, B -- 768 bytes, exactly the layout the
  *               WAD's `PLAYPAL` lump stores (one 768-byte palette at a time).
- *               Phase 2 feeds the real lump here; until then the port passes
- *               its synthetic palette.
+ *               The port passes its synthetic palette here; the WAD's own
+ *               PLAYPAL goes through `initFromPlaypal()`.
  * @param out    256 bytes, one RRRGGGBB wire byte per palette index. Index `i`
  *               is the colour DOOM's rasteriser writes for palette index `i`.
  *
@@ -161,7 +161,7 @@ void init();
 const std::uint8_t* indexTable();
 
 /**
- * @brief Installs the tables built from the WAD's own PLAYPAL lump (D4.0).
+ * @brief Installs the tables built from the WAD's own PLAYPAL lump.
  *
  * Two forms of one palette, both built here:
  *
@@ -200,7 +200,7 @@ const std::uint16_t* playpal565Table();
 /**
  * @brief The 256-entry PLAYPAL index -> RGB332 table, in palette order.
  *
- * Zero-filled until `initFromPlaypal()` runs, which the D4.0 scene does once,
+ * Zero-filled until `initFromPlaypal()` runs, which the game scene does once,
  * right after the container is open. Unlike `indexTable()` it never falls back
  * to the synthetic palette: a frame converted through an unbuilt table is black,
  * which is a visible failure instead of a wrong-coloured one.
@@ -208,7 +208,7 @@ const std::uint16_t* playpal565Table();
 const std::uint8_t* playpalTable();
 
 /**
- * @brief Rebuilds the PLAYPAL tables for DOOM's gamma level (D5.2).
+ * @brief Rebuilds the PLAYPAL tables for DOOM's gamma level.
  *
  * linuxdoom's `I_SetPalette` passes every PLAYPAL channel through
  * `gammatable[usegamma]` before it reaches the display; this is that step. It
@@ -229,10 +229,10 @@ void applyGamma(const std::uint8_t* rgb888, std::uint8_t level);
 constexpr std::uint16_t kFadeFull = 256u;
 
 /**
- * @brief Rebuilds the PLAYPAL tables for gamma *and* a fade scale (D5.4).
+ * @brief Rebuilds the PLAYPAL tables for gamma *and* a fade scale.
  *
  * Vanilla's screen melt needs two more 64,000 B surfaces the CYD does not have
- * (PLAN 12.1: the largest free block after setup is 47,092 B), so the 4 MB
+ * (the largest free block after setup is 47,092 B), so the 4 MB
  * profile substitutes a palette fade: the frame ramps up from black after a
  * level load. This is its only colour step -- one table rebuild, no buffer, no
  * per-pixel pass.

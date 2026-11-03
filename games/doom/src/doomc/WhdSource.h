@@ -59,10 +59,10 @@
  * decoded into DRAM. A lump that is stored or deflated answers ERR_NOT_RAW and
  * the caller decodes it the way it always did.
  *
- * Nothing here writes to the console. WadSource logs because it is also the
- * thing a maintainer pokes from the bench; this adapter is opened by whatever
+ * Nothing here writes to the console. WadSource logs because the bench also
+ * drives it directly; this adapter is opened by whatever
  * layer needs the lumps, and that layer owns its own record of the outcome. The
- * D2.3 probe in DoomScene::init() is one such caller and prints the code.
+ * storage probe in DoomScene::init() is one such caller and prints the code.
  *
  * The mapping is read-only and lives until doom_whd_source_close(). The reader
  * state is owned by the caller, exactly as whd.h requires, so the accessors take

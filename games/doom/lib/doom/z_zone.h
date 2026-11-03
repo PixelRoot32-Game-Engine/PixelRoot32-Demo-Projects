@@ -17,8 +17,7 @@
  * WHY A ZONE AND NOT malloc()
  *
  * The board reports about 201 KB of free internal DRAM with the display path
- * live. A 64,000 B twin framebuffer is planned on top of that, leaving about
- * 137 KB for the world. That number is a hard budget, and malloc gives no way
+ * live, and the world gets a fixed share of it. That share is a hard budget, and malloc gives no way
  * to say "this is all the world may ever have": the first level that asks for
  * too much fails somewhere else, later, inside a different subsystem. A zone
  * with one fixed arena turns the budget into an invariant, and its stats make

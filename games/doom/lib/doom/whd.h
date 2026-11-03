@@ -95,7 +95,7 @@
  * not contain method 2, because then its own version would be a lie about the
  * alignment the writer promised.
  *
- * THE BAKED GRAPHICS SECTION (D3.8, A CONVENTION ON TOP OF METHOD 2)
+ * THE BAKED GRAPHICS SECTION (A CONVENTION ON TOP OF METHOD 2)
  *
  * A container built for the ESP32 port may carry one extra raw lump named
  * "~PWBAKE~". The name is exactly eight characters and contains '~', a byte no

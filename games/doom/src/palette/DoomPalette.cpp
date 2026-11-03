@@ -118,14 +118,14 @@ static_assert(wireAt(191) == 0x03, "synthetic palette: index 191 must be pure bl
 std::uint8_t g_indexTable[kEntryCount];
 bool g_built = false;
 
-/// The PLAYPAL-built table (D4.0): 256 bytes, zero until the container has
+/// The PLAYPAL-built table: 256 bytes, zero until the container has
 /// supplied the real palette. Separate from `g_indexTable` so the shell's
 /// synthetic-palette contract and the game's real-palette frame can coexist in
 /// one binary without one install overwriting the other.
 std::uint8_t g_playpalTable[kEntryCount];
 bool g_playpalBuilt = false;
 
-/// The same PLAYPAL in the panel's native format (D4.0b): 512 bytes of RGB565,
+/// The same PLAYPAL in the panel's native format: 512 bytes of RGB565,
 /// handed to the engine's 8bpp surface through `DrawSurface::setPalette8()` so
 /// the driver expands each index as it presents. Built in the same one-shot
 /// pass as `g_playpalTable`, from the same 768 source bytes.

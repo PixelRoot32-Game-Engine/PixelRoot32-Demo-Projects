@@ -1,5 +1,5 @@
 /*
- * DOOM on PixelRoot32 - the status bar (D5.1).
+ * DOOM on PixelRoot32 - the status bar.
  *
  * Derived from linuxdoom-1.10 st_stuff.c, st_lib.c and v_video.c (V_DrawPatch)
  * (Copyright (C) 1993-1996 by id Software, Inc.), licensed under the GNU General

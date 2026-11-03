@@ -4546,13 +4546,13 @@ static bool reloadWorldAtLevel(std::uint8_t levelNumber, int skill) {
 
 #if defined(DOOM_MENU)
 bool frameLevelNewGame(int skill) {
-    // S21: a run starts on the build's map, whatever level the last run ended on.
+    // A run starts on the build's map, whatever level the last run ended on.
     if (!reloadWorldAtLevel(static_cast<std::uint8_t>(kFrameLevel), skill)) {
         return false;
     }
     // One idle tic, so the level's own first tic has run before the first frame
     // of the new game: P_PlayerThink is where P_SetupPsprites' deferred call
-    // happens, which is what puts the weapon in hand. The eye no longer depends
+    // happens, which is what puts the weapon in hand. The eye does not depend
     // on it -- settleLevelView() gives a loaded level its height -- but the
     // psprite timeline does.
     (void)frameLevelRunTics(1u, 0u);
@@ -4582,7 +4582,7 @@ const char* frameLevelLastMissing() { return gFailTexture; }
 
 #if defined(DOOM_LEVEL_TEST)
 /*
- * The E1M8 ending, from a map the board proof can reach (S21).
+ * The E1M8 ending, from a map the board proof can reach.
  *
  * The leveltest image plays E1M1 and never walks the other seven maps, so the
  * victory branch would otherwise be proven only by test/unit/test_level's own
@@ -4620,7 +4620,7 @@ SaveStatus frameLevelSave(std::uint8_t* out, std::size_t capacity, std::size_t& 
         // refusal rather than archive a zeroed level.
         return SaveStatus::ApplyFailed;
     }
-    // S21: the record names the level the world is actually on. `p_level_t` does
+    // The record names the level the world is actually on. `p_level_t` does
     // not carry its number, the container's level marker is what the session
     // loaded, and `gRuntimeLevel` is the one variable a transition and a load
     // both move -- so a save written in E1M2 stamps 2 and loads back into E1M2.
@@ -4633,7 +4633,7 @@ SaveStatus frameLevelLoad(const std::uint8_t* in, std::size_t size, std::uint8_t
     if (!gWorld.open || in == nullptr) {
         return SaveStatus::ApplyFailed;
     }
-    // S21: the record names the map, so the reload opens *that* map before
+    // The record names the map, so the reload opens *that* map before
     // applying it -- not whatever level the world happens to be on. `carry=false`
     // is implicit here: g_demo_reborn() is G_PlayerReborn's, and a restored
     // player is a reborn one, never a carried one.
@@ -4698,7 +4698,7 @@ std::uint32_t frameStackFree() {
 
 #if defined(DOOM_FRAME_DUMP)
 /*
- * S26's board-side eye. The protocol is in FrameDriver.h; what matters here is
+ * The board-side frame dump. The protocol is in FrameDriver.h; what matters here is
  * that this writes the surface the panel is about to expand, not a re-render:
  * a pixel that looks wrong in the dump looked wrong on the glass, so the host
  * can rebuild this exact frame (same palette index bytes) and diff it against
@@ -5311,4 +5311,3 @@ const LevelFailure& frameLevelFailure() {
 #endif
 
 
-      

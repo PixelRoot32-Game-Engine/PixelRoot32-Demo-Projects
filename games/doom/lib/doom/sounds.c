@@ -10,7 +10,7 @@
  * The rows are linuxdoom-1.10's, in its order, with its names, singularity,
  * priority, link, pitch and volume. The three sample-cache fields
  * (`data`, `usefulness`, `lumpnum`) are always 0/NULL because this port has no
- * sample channel (S2), and the tables are `const` so they cost flash and no
+ * sample channel (pure APU synthesis), and the tables are `const` so they cost flash and no
  * DRAM (sounds.h says why).
  *
  * WHY THE IDS MUST NOT MOVE

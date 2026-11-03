@@ -120,7 +120,7 @@ void S_Init(int sfxVolume, int musicVolume);
  * `mus_e1m1 + (gameepisode-1)*9 + gamemap-1` for episodes 1..3, and the
  * `spmus[]` table for episode 4. `gamemode` is always shareware here, so
  * upstream's commercial arm is not written. The request reaches the seam as
- * `doom_music_start()`; T47 supplies the tracks, and until then the seam
+ * `doom_music_start()`; when the build has no track for the id, the seam
  * answers false and the level is simply quiet.
  */
 void S_Start(void);
@@ -154,8 +154,8 @@ void S_StartMusic(int music_id);
  * @brief Starts @p music_id, looping or not, replacing whatever plays.
  *
  * Upstream looks the `d_<name>` lump up and registers it with the mixer. This
- * port hands the id to `doom_music_start()`; the asset side is T47's and the
- * seam decides whether a track exists.
+ * port hands the id to `doom_music_start()`; the tracks are converted offline
+ * and the seam decides whether a track exists.
  */
 void S_ChangeMusic(int music_id, int looping);
 
@@ -179,8 +179,8 @@ void S_UpdateSounds(const r_mobj_t* listener);
  *
  * `S_SetSfxVolume()` is a real gain: `S_StartSoundAtVolume()` multiplies every
  * event by it. `S_SetMusicVolume()` is upstream's global only -- the port's
- * music level is the engine's post-mix master, applied by `DoomScene` (T49,
- * `src/doomc/AudioLevels.h`), because the APU has no music-only gain and
+ * music level is the engine's post-mix master, applied by `DoomScene`
+ * (`src/doomc/AudioLevels.h`), because the APU has no music-only gain and
  * scaling a track twice would be worse than not scaling it here. */
 void S_SetMusicVolume(int volume);
 void S_SetSfxVolume(int volume);
@@ -192,7 +192,7 @@ void S_SetSfxVolume(int volume);
  * source past S_CLIPPING_DIST (unless the level is map 8), and rewrites
  * *vol, *sep and *pitch. *sep is 128 at the centre and swings by
  * S_STEREO_SWING with the angle; the APU is mono, so the seam does not consume
- * it, but the rule is ported and tested because S16 names it.
+ * it, but the rule is ported and tested so the vanilla behaviour stays pinned.
  *
  * @return 1 when audible, 0 when clipped out.
  */
@@ -264,8 +264,8 @@ bool doom_sound_playing(int32_t handle);
  *
  * The APU has no command that retunes a sounding one-shot without restarting
  * it, so a non-looping cue is left alone (its start already applied the
- * distance) and only a looping cue is re-submitted. T45's bank has no looping
- * cue; T47's music is a separate transport.
+ * distance) and only a looping cue is re-submitted. The SFX bank has no looping
+ * cue; music is a separate transport.
  */
 void doom_sound_update(int32_t handle, int32_t volume, int32_t pitch);
 

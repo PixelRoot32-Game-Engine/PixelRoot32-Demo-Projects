@@ -109,8 +109,9 @@ typedef struct {
  * for something this small. */
 static channel_t channels[S_NUMCHANNELS];
 
-/* These are not used by this port yet (T49 wires the menu's setting), but they
- * are the two volumes every calculation below reads, exactly as upstream. */
+/* The menu's volume is applied as the engine's post-mix master
+ * (src/doomc/AudioLevels.h), not through these; they are the two volumes every
+ * calculation below reads, exactly as upstream. */
 int snd_SfxVolume = 15;
 int snd_MusicVolume = 15;
 
@@ -359,7 +360,7 @@ void S_ChangeMusic(int musicnum, int looping) {
     S_StopMusic();
 
     /* Upstream looks up `d_<name>`, caches it and registers it. The port's
-     * tracks are converted offline (T47) and played by id, so the seam owns
+     * tracks are converted offline and played by id, so the seam owns
      * the lookup; a false answer means "this build has no track for that id"
      * and the level stays quiet rather than holding a request that never
      * plays. */
@@ -454,7 +455,7 @@ void S_SetMusicVolume(int volume) {
      * This is NOT the port's music gain. The engine's music transport has no
      * per-track volume -- its only runtime level is the post-mix master, which
      * scales SFX and music together -- so DoomScene applies the menu's volume
-     * there, once (T49, src/doomc/AudioLevels.h). Storing the same number here
+     * there, once (src/doomc/AudioLevels.h). Storing the same number here
      * keeps upstream's global truthful for a future music-only path; scaling a
      * track with it today would need a second gain stage the APU does not
      * have. */

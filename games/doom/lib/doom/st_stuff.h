@@ -1,5 +1,5 @@
 /*
- * DOOM on PixelRoot32 - the status bar (D5.1).
+ * DOOM on PixelRoot32 - the status bar.
  *
  * Derived from linuxdoom-1.10 st_stuff.c / st_lib.c (Copyright (C) 1993-1996 by
  * id Software, Inc.), licensed under the GNU General Public License v2.
@@ -38,7 +38,7 @@ extern "C" {
  *   8. three key boxes (STKEYS)                w_keyboxes[]
  *
  * Patches are looked up BY NAME through `st_lump_fn`, not through the sprite
- * resolver: the container keeps them raw and readable in place (T36).
+ * resolver: the container keeps them raw and readable in place.
  *
  * THE FACE
  *

@@ -9,8 +9,8 @@
  * no engine dependency, and it must keep doing so.
  *
  * The mmap API moved between ESP-IDF majors and the bench already carries the
- * same two-branch shape (bench/src/bench_flash.cpp). D0.5 measured this exact
- * call on the reference board, so the mapping itself is not speculative.
+ * same two-branch shape (bench/src/bench_flash.cpp), which exercises this exact
+ * call on the reference board.
  */
 #include "doomc/WadSource.h"
 

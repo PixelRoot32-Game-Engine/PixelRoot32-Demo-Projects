@@ -2,7 +2,7 @@
  * The device side of the WAD reader: a read-only memory mapping of the `wad`
  * flash partition, opened through the same C reader a host test uses.
  *
- * The partition table this targets is the one D0.5 measured and wrote down in
+ * The partition table this targets is
  * games/doom/bench/partitions_wad.csv: one `data` partition labelled `wad`,
  * subtype 0x40, after the app slot. This translation unit does not create that
  * table; the environment that ships the WAD is the one that selects it. When
@@ -12,7 +12,7 @@
  *
  * The mapping is read-only and lives until doom_wad_source_close(). The reader
  * state is owned by the caller, exactly as w_wad.h requires, so two callers can
- * hold their own view of the same mapping if a later task needs that.
+ * hold their own view of the same mapping if needed.
  *
  * Everything here is C-callable: the header is valid C and the two entry points
  * are `extern "C"`, so the DOOM core can reach the flash mapping without

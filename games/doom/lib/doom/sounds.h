@@ -18,7 +18,7 @@
  *
  * Upstream's S_sfx[] is mutable because a DMX mixer caches each sample in it
  * (`lumpnum`, `data`, `usefulness`). This port has no sample channel at all
- * (S2: pure APU synthesis), so nothing ever writes those three fields, and the
+ * (pure APU synthesis), so nothing ever writes those three fields, and the
  * whole table is `const` and lives in flash -- 3,924 B of `.rodata` instead of
  * 3,924 B of DRAM. The board has ~1.9 KB of `dram0_0_seg` free, so a mutable
  * copy of this table is not an option; keeping the fields (always 0) is what
@@ -73,7 +73,8 @@ struct sfxinfo_struct {
 /*
  * The music record. Same story as sfxinfo_t: `lumpnum`, `data` and `handle`
  * exist so the row has upstream's shape, and none of them is written here --
- * T47 converts MUS offline and plays it by id through doom_music_start().
+ * The music is converted from MUS offline (tools/mus2tracks.py) and played by id
+ * through doom_music_start().
  */
 typedef struct musicinfo {
     const char* name;
