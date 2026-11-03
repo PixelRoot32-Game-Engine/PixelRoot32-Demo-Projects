@@ -446,6 +446,11 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <esp_timer.h>
+// The loop task's stack margin. S26's crash is a corrupted zone on the firing
+// path, and the firing path is the deepest call chain the game has; the margin
+// has to be visible before that can be ruled in or out.
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include "doomc/BakedGraphics.h"
 #include "doomc/DoomConsole.h"
@@ -4708,6 +4713,14 @@ bool frameLevelPlayer(LevelPlayer* out) {
 }
 
 const std::uint8_t* frameLevelPlaypal() { return gPlaypalValid ? gPlaypal : nullptr; }
+
+std::uint32_t frameStackFree() {
+    // uxTaskGetStackHighWaterMark() reports the *smallest* margin the task has
+    // ever had, in StackType_t units (one byte on this port), so a value near
+    // zero after firing is the deepest chain the game has reached.
+    return static_cast<std::uint32_t>(uxTaskGetStackHighWaterMark(nullptr)) *
+           static_cast<std::uint32_t>(sizeof(StackType_t));
+}
 
 #if defined(DOOM_FRAME_DUMP)
 /*

@@ -976,6 +976,15 @@ void frameLevelMapForget();
  */
 bool frameLevelPlayer(LevelPlayer* out);
 
+/**
+ * @brief Bytes the loop task's stack still had at its deepest point.
+ *
+ * S26's crash corrupts the zone on the firing path, and that path is the
+ * deepest call chain the game has, so its margin has to be readable from the
+ * `SHOW,frame` line before a stack overflow can be ruled in or out.
+ */
+std::uint32_t frameStackFree();
+
 #if defined(DOOM_FRAME_DUMP)
 /**
  * @brief Diagnostic (env `esp32dev_ILI9341_hud_dump`): writes one frame to the

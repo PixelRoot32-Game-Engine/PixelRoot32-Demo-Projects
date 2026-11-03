@@ -2282,12 +2282,12 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
         const std::uint32_t otherUs = frameUs > accounted ? frameUs - accounted : 0u;
         const std::uint32_t fpsX10 = frameUs != 0u ? 10000000u / frameUs : 0u;
 
-        char line[384];
+        char line[448];
         std::snprintf(line, sizeof line,
                       "SHOW,frame=%u,x=%ld,y=%ld,angle=%lu,viewz=%ld,tics=%u,health=%ld,"
                       "render_us=%u,convert_us=%u,present_us=%u,"
                       "frame_us=%u,fps_x10=%u,update_us=%u,hash_us=%u,other_us=%u,"
-                      "refused=%u,hash=%s\n",
+                      "refused=%u,stack_free=%u,hash=%s\n",
                       static_cast<unsigned>(showFrame_ - 1u),
                       // DOOM's own units, unconverted: 16.16 map units and a
                       // 32-bit binary angle, the same integers the host's
@@ -2305,6 +2305,7 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
                       static_cast<unsigned>(showUpdateMicros_),
                       static_cast<unsigned>(showHashMicros_),
                       static_cast<unsigned>(otherUs), static_cast<unsigned>(showRefused_),
+                      static_cast<unsigned>(doomc::frameStackFree()),
                       showHash_);
         writeConsoleLine(line);
     }
