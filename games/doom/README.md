@@ -1357,6 +1357,10 @@ Both environments use `partitions_wad.csv`, so flashing `_frame` and then
 
 ## Project layout
 
+Promotion status: [`HANDOVER.md`](HANDOVER.md) records both tracker heads, what
+the engine pin must become and the full gate/board evidence (D7.4). It opens no
+pull request and flips no pin.
+
 ```text
 games/doom/
 ├── platformio.ini          # native, esp32dev_ILI9341
