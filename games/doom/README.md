@@ -677,6 +677,130 @@ must fail; `--perturb` moves the oracle by one scale step and must fail.
 Neither `DOOM1.WAD` nor any `.whd` is committed: `tools/.gitignore` refuses both,
 because a container is a repacked copy of shareware data.
 
+### Level transitions (S21)
+
+The exit switch worked; nothing listened. `p_spec.c` handles line specials 11/51
+by consuming the line and writing `p_level_t::exitRequest` (52/124 the same, on
+the cross path), and neither the driver nor the scene ever read it. The map was a
+build-time constant (`PIXELROOT32_DOOM_FRAME_LEVEL`, 1), `reloadWorldAtSkill()`
+reloaded that same map, and the save path hard-coded level 1 -- so the request
+was written and dropped. D4.5's `level_check` had proved the nine-level chain
+against its own worlds; the shipped game never called it.
+
+**What a transition is now.** The driver carries the level the world is on
+(`gRuntimeLevel`, one byte of `.bss`): it starts at the build's map, moves to the
+map an exit names, returns to the build's map on a New Game and after a victory,
+and is what a save record stamps. After each 35 Hz tic, `frameLevelRunTics()`
+reads `exitRequest` and runs the upstream chain, in upstream's order and before
+the HUD, automap and sound work of that tic:
+
+```text
+exitRequest != P_EXIT_NONE
+  -> levelExitNext()            g_exit_from_level + g_completed_next (next map, or the victory)
+  -> openSessionMap(next)       the container's nine raw levels; a map view is pointers, no allocation
+  -> p_level_unbind_render()    p_level_change copies SECTORS through the live reader
+  -> levelChangeLoad(..., true) g_do_world_done + the player carried across the load
+  -> p_level_bind_render()      the new map's live sectors, scroll offsets and animation frame
+```
+
+That composition lives in
+[`src/doomc/LevelTransition.{h,cpp}`](src/doomc/LevelTransition.h), which is
+engine-free (lib/doom and `<string.h>`), so `pio test -e level_test` drives the
+same two calls the board runs. There is no intermission screen: the next map
+loads directly and the D5.4 fade plays over it, which the fade's
+"`leveltime` went backwards" rule already detected and nothing had fed.
+
+**What carries, and what resets.** Upstream finishes a level with
+`G_PlayerFinishLevel()` and does **not** recreate the inventory: `P_SpawnPlayer`
+rebirths a player only when `playerstate == PST_REBORN`, which a death sets, not
+a completed level. This port's loader cannot express that -- `p_spawn_map_thing()`
+answers a type-1 record with `p_player_wire()`, i.e. `G_PlayerReborn` -- so the
+transition takes the carried fields before the load and writes them back after
+it. The header comment gives the rule each field serves; the table is:
+
+| Carried (a completed level does not reborn the player) | Reset (`G_PlayerFinishLevel`, plus what a load recomputes) |
+| --- | --- |
+| `health`, `armorpoints`, `armortype` | `powers[]` -- an invulnerability does not survive a level |
+| `ammo[]`, `maxammo[]` -- the pools and the ceilings a backpack raised | `damagecount`, `bonuscount` -- "no palette changes" into a level |
+| `weaponowned[]`, `backpack` | `extralight`, `fixedcolormap` -- gun flashes and ir goggles |
+| `cards[]` (see the deviation below) | `attacker` -- a pointer into the level being left |
+| `readyweapon`, `pendingweapon` | `killcount`, `itemcount`, `secretcount`, `didsecret` -- per-level |
+| | `viewz`, `viewheight`, `deltaviewheight`, `bob` -- P_CalcHeight's |
+| | `psprites[]`, `pspritesStarted` -- rebuilt from the carried weapon |
+| | `message`, `usedown`, `attackdown`, `refire`, `onground`, `playerstate` |
+
+Recorded deviation, stated once: S21 names "the keys" as carried, so `cards[]`
+is, although upstream's `G_PlayerFinishLevel` clears them. Everything else in
+the table is upstream's own rule. The carried `health` is also written to the new
+avatar's `mobj->health`, because `P_DamageMobj` decrements both.
+
+**E1M8, as a named placeholder.** The boss map has no exit line: its ending is
+sector special 11, which sets the same request, and `g_completed_next()` answers
+the episode's victory for map 8 before the secret flag is read. There is no
+finale screen (Phase 5/S3 never built one), so the run ends honestly: the driver
+prints `SHOW,level,victory=1,episode=1,map=8`, reloads the run's first map with
+`carry=false` (G_InitNew is a reborn) and raises a one-shot; the scene opens the
+main menu over it on the next frame, through the same `m_menu_open()` a Start
+press uses, so the menu's own `SHOW,menu,state=open` line reports it.
+
+**The map view.** Opening a level at runtime rebuilds the session's one
+`doom_map_t` from the container's raw lumps (`--raw-level E1M1..E1M9`). In the
+flash build every lump is a pointer into the mapping that stays live for the
+session, so a transition allocates nothing; the lump order is one function
+(`readMapLumps()`) so the startup map and a transition bind the same ten lumps in
+the same order the RAM probe measures. The automap is re-initialised for a new
+map (`am_level_init()` reads its linedef count and bounds), not merely stopped;
+the HUD restarts; `S_SetGameLevel`/`S_Start` run as G_DoLoadLevel's do. Only
+`mus_e1m1` ships (D6.4), so every map after the first is quiet rather than
+playing the wrong track.
+
+**The serial lines**, one per event:
+
+```text
+SHOW,level,from=E1M1,to=E1M2,skill=2,tics=68,health=100,ammo=50
+SHOW,level,victory=1,episode=1,map=8
+SHOW,level,error=load,from=E1M1,to=E1M2,code=5,recovered=1
+```
+
+`from`/`to` are the level markers, `tics` is the level's clock at the request,
+`health`/`ammo` are the carried values read after the load (clip ammo), and a
+refusal names the step that refused (`levelChangeLoad`'s code in
+`g_level_error_t`'s vocabulary). A failed load is re-laid from the map the world
+was on, and a world that cannot be re-laid is closed rather than drawn zeroed.
+
+**Gate and board proof.** `pio test -e level_test` (nine cases: the switch through
+`p_use`, E1M1 -> E1M2 with every carried and reset field, the no-carry control,
+E1M3's secret exit to E1M9, E1M8's ending, a save in E1M2 round-tripping into
+E1M2, the slot budget, the weapon repair, no request) and `tools/level_check.py`
+(the nine-change chain, unchanged). On the board,
+`env:esp32dev_ILI9341_hud_leveltest` (the shipped image plus `DOOM_LEVEL_TEST`)
+stands the avatar in front of E1M1's own exit switch at frame 20 and holds USE
+through the real button byte from frame 24. Captured on COM4:
+
+```text
+SHOW,level,script=stand,status=ok,level=E1M1,line=330,special=11,standoff=2097152,...
+SHOW,level,from=E1M1,to=E1M2,skill=2,tics=68,health=100,ammo=50
+SHOW,map,init,status=ok,lines=1033,bytes=130        (E1M2's automap)
+SHOW,fade,steps=8,us=2195,frame=32
+SHOW,save,slot=3,status=ok,bytes=2030               (in E1M2)
+SHOW,fade,steps=8,us=2184,frame=88                  (New Game, back to E1M1)
+SHOW,load,slot=3,status=ok,level=2,skill=2,tics=96  (back in E1M2, from E1M1)
+SHOW,map,init,status=ok,lines=333,bytes=42          (E1M8, loaded by the script)
+SHOW,level,victory=1,episode=1,map=8
+SHOW,menu,state=open,frame=121,arena_used=16736,arena_free=6224,...
+SHOW,fade,steps=8,us=2117,frame=128
+```
+
+The same image proves the other two halves end to end. It saves the live E1M2
+world into slot 3, starts a New Game (back to E1M1), then loads the record -- and
+`SHOW,load` names level 2 while the world was on level 1, because a restore opens
+the map the record names. And it loads E1M8 at the running skill, raises the exit
+request the sector special raises, and the next tic takes the shipped victory
+branch: the run reloads on E1M1 (mobjs=92 at medium, so the boss map fit the
+arena the session sized from its startup map), the main menu opens and the fade
+runs again. `frame00` stays
+`1d8b3849ab3f76750056937f2827bf2bcbb2b98e82976fb3a7ce263d5273c9d3`.
+
 ## Boot and failure screens (D7.2)
 
 A boot that cannot open the container used to print a precise line on the serial
@@ -958,6 +1082,14 @@ does nothing and keeps the screen open. A SAVE writes the live world into the
 row immediately -- vanilla asks "are you sure?", and this port has no confirm
 dialog, which is stated in `m_menu.h`. The menu itself stays C and engine-free: it
 receives labels and returns an action, never a store.
+
+**The map number is real (S21).** A record's header names the level the world was
+on, not the one map a session used to open: `frameLevelSave()` stamps
+`frameLevelNumber()` and `frameLevelLoad()` opens the map the record names before
+applying it. That is what makes a save written in E1M2 load back into E1M2 -- and
+into E1M2 from E1M1, which is the case the board proof exercises. The body's map
+fingerprint still refuses a record applied to the wrong world, so a wrong header
+cannot put a level's state onto another level's geometry.
 
 **The serial record.** One line at boot and one per operation, all through the
 same console as every other line:
