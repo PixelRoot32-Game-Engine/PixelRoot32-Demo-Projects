@@ -1004,6 +1004,16 @@ std::uint32_t frameStackFree();
  * @param frame  The console's frame counter, so the dump names its own frame.
  */
 void frameDumpSurface(const std::uint8_t* pixels, int width, int height, std::uint32_t frame);
+
+/**
+ * @brief Diagnostic: the level's live sector table, one `SHOW,s` line per sector.
+ *
+ * A wall drawn with a wrong `ceilingHeight` stretches its texture into a fan over
+ * everything else, and the mutable sector record is the only per-level data the
+ * renderer reads from the arena. Printing the table lets the host compare it
+ * against the WAD's immutable SECTORS and name the corrupted entry.
+ */
+void frameDumpSectors();
 #endif
 
 /**

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * D3.8's frame driver: see FrameDriver.h for the four phases, the two map paths,
  * the 20 views, the hash protocol and the exact line formats.
  *
@@ -4797,6 +4797,33 @@ void frameDumpSurface(const std::uint8_t* pixels, int width, int height, std::ui
         writeLine(line);
     }
     writeLine("DUMP,end\n");
+}
+
+void frameDumpSectors() {
+    char line[128];
+
+    if (!gWorld.open || gWorld.level.sectors == nullptr) {
+        writeLine("SHOW,sectors,status=closed\n");
+        return;
+    }
+    if (gSession.driver != nullptr) {
+        const r_view_state_t& view = gSession.driver->view;
+        std::snprintf(line, sizeof line, "SHOW,bsp,drawsegs=%u,planes=%u\n",
+                      static_cast<unsigned>(view.drawsegCount),
+                      static_cast<unsigned>(view.storage.planes.count));
+        writeLine(line);
+    }
+    std::snprintf(line, sizeof line, "SHOW,sectors,count=%u\n",
+                  static_cast<unsigned>(gWorld.level.sectorCount));
+    writeLine(line);
+    for (std::uint16_t index = 0u; index < gWorld.level.sectorCount; ++index) {
+        const p_sector_t& sector = gWorld.level.sectors[index];
+        std::snprintf(line, sizeof line, "SHOW,s,i=%u,f=%ld,c=%ld,l=%d,sp=%d\n",
+                      static_cast<unsigned>(index), static_cast<long>(sector.floorHeight),
+                      static_cast<long>(sector.ceilingHeight), static_cast<int>(sector.lightLevel),
+                      static_cast<int>(sector.special));
+        writeLine(line);
+    }
 }
 #endif
 

@@ -2577,6 +2577,12 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
             if (std::uint8_t* pixels = surface.getSpriteBuffer()) {
                 doomc::frameDumpSurface(pixels, width, height, showFrame_);
             }
+            // The sector table goes out once per burst: a wall drawn with a wrong
+            // ceiling height fans its texture over the frame, and only the live
+            // record can be corrupt.
+            if (remaining == 3) {
+                doomc::frameDumpSectors();
+            }
             --remaining;
             cooldown = 20;  // ~1.3 s at the shipped frame rate
         }
