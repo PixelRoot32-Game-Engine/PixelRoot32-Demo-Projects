@@ -416,7 +416,13 @@ def expand_to_stored(pixels: bytes, mask: bytes, width: int, height: int,
 def bake_texture(texture: Texture, patches: dict[int, Patch]) -> tuple[bytes, int]:
     """Returns (payload, flags) for one wall or sky texture."""
     pixels, mask = compose_texture(texture, patches)
-    has_mask = any(value == 0 for value in mask)
+    # TEXTURE1's `masked` flag is the only thing that makes a wall transparent:
+    # vanilla draws an opaque texture's uncovered texels as palette 0 (black),
+    # it does not skip them. The composer's mask records *post coverage*, and a
+    # texture built from patches with gaps (BRNBIGL/C/R, masked=0) leaves those
+    # gaps at 0 -- storing that as a mask lets the masked pass see through an
+    # opaque door, which is what S26 chased on the panel.
+    has_mask = texture.masked != 0 and any(value == 0 for value in mask)
     payload = expand_to_stored(pixels, mask, texture.width, texture.height, has_mask)
     return payload, (FLAG_MASK if has_mask else 0)
 
