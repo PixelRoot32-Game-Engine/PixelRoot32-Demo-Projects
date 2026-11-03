@@ -18,11 +18,9 @@
  *
  *   mobjinfo[]   137 records, one per mobjtype_t, in enum
  *                order. The
- *                fields are upstream's 23 in upstream's order; the brief
- *                for D4.1a named a subset, and the rest are what the
- *                action dispatch of D4.2 reads (painstate, deathstate,
- *                xdeathstate, reactiontime, the sound numbers), emitted
- *                now so this file is generated once and not per phase.
+ *                fields are upstream's 23 in upstream's order, so the
+ *                action dispatch finds every field it reads (painstate,
+ *                deathstate, xdeathstate, reactiontime, the sound numbers).
  *   states[]     967 records, one per statenum_t, in enum order.
  *                `action` is an action_t -- an enum, not the function
  *                pointer upstream stores -- so the table is pure data in

@@ -183,9 +183,8 @@ static void mark_mapped(r_view_state_t* state, uint16_t seg) {
  * This is upstream's `openings[]` accounting: p_setup.c allocates one
  * `MAXOPENINGS` (SCREENWIDTH * 64) short array per level, and R_StoreWallRange
  * advances `lastopening` by `rw_stopx - start` for each clipped edge it saves.
- * This port previously charged a whole 320-entry block per edge, which is why
- * 71 edges needed 45,440 B; the run below is `x2 - x1 + 1` entries, exactly
- * upstream's span.
+ * The run below is `x2 - x1 + 1` entries, exactly upstream's span, not a whole
+ * 320-entry block per edge.
  */
 
 /* Copies one fragment's clip array into the pool, fragment-relative:

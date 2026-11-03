@@ -143,7 +143,7 @@ static inline fixed_t r_fine_tangent_lookup(angle_t angle) {
  * Following the reference source here also costs no flash. */
 extern const uint8_t r_light_level[R_LIGHT_LEVELS][R_LIGHT_SCALE_LEVELS];
 
-/* --- The plane pass's per-view tables (D3.3) ----------------------------- */
+/* --- The plane pass's per-view tables ---------------------------------- */
 
 /*
  * R_InitLightTables()'s zlight[,] and two of R_ExecuteSetViewSize()'s tables,

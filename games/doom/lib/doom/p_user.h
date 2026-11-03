@@ -453,7 +453,7 @@ void p_player_init(struct p_level* level, r_mobj_t* mobj);
 /**
  * @brief P_PlayerThink(): one player's tic.
  *
- * Upstream's body, minus the parts later units own:
+ * Upstream's body, minus the parts other layers own:
  *
  *   1. copy the command into `player->cmd` (G_Ticker's memcpy);
  *   2. a live player runs the reactiontime gate and P_MovePlayer;

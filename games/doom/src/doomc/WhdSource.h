@@ -57,7 +57,7 @@
  * it costs nothing beyond the mapping that is already live: a RAW lump's payload
  * is a pointer into the window, so E1M1's map is read in place instead of being
  * decoded into DRAM. A lump that is stored or deflated answers ERR_NOT_RAW and
- * the caller decodes it the way it always did.
+ * the caller decodes it instead.
  *
  * Nothing here writes to the console. WadSource logs because the bench also
  * drives it directly; this adapter is opened by whatever

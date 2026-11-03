@@ -278,7 +278,7 @@ void doom_sound_update(int32_t handle, int32_t volume, int32_t pitch);
  */
 void doom_sound_tick(void);
 
-/** @brief The music transport the seam supplies (T47). */
+/** @brief The music transport the seam supplies. */
 bool doom_music_start(int32_t music_id, bool looping);
 void doom_music_stop(void);
 void doom_music_pause(bool paused);

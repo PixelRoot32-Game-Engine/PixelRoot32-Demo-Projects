@@ -11,14 +11,14 @@
 //
 // The pin map is copied from games/pong/src/platforms/esp32_dev_ILI9341.h,
 // which is where it was validated on hardware. The XPT2046 touch bus is left
-// unclaimed: the CYD has a touch controller, but no input scheme has been
-// decided for the port yet (docs/plan-doom-esp32.md 3.5).
+// unclaimed: the CYD has a touch controller, but the port defines no touch
+// input.
 #ifndef PLATFORM_ESP32DEV_ILI9341
 #error "esp32_dev_ILI9341.h included without PLATFORM_ESP32DEV_ILI9341"
 #else
 
 #include <Arduino.h>
-#include <cstdlib>  /* malloc: the heap objects T53 moved out of .bss */
+#include <cstdlib>  /* malloc: the scene block lives on the heap */
 #include <cstring>  /* memset: the zero-initialisation a static object gets */
 #include <new>      /* placement new over that block (an inline operator) */
 #include <drivers/esp32/TFT_eSPI_Drawer.h>
@@ -82,23 +82,21 @@ pr32::input::InputConfig inputConfig(BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_
 pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate());
 
 /*
- * The scene is a HEAP object, not .bss (T53b, D7.1's flash).
+ * The scene is a HEAP object, not .bss.
  *
- * `dram0_0_seg` is the binding constraint this image has always had, and the
- * persistence layer is the first feature that needed more of it than the last
- * build left. Measured: with the engine and the scene both static the link came
- * out 891 B over the region; the scene alone is 744 B, which is what makes it
- * fit with ~1.1 KB to spare. Nothing is given up by moving it: it is created
- * once in setup() and lives until reset, the allocator returns internal DRAM,
- * and every buffer it owns is allocated exactly as before.
+ * `dram0_0_seg` is the binding constraint of this image. With the engine and
+ * the scene both static the link comes out 891 B over the region; the scene
+ * alone is 744 B, and moving it to the heap is what makes the image fit with
+ * ~1.1 KB to spare. Nothing is given up: it is created once in setup() and
+ * lives until reset, the allocator returns internal DRAM, and every buffer it
+ * owns is allocated exactly as before.
  *
  * The ENGINE stays a global object on purpose. `DoomScene.cpp` declares
  * `extern pixelroot32::core::Engine engine;` -- a global variable's symbol is its
  * name, not its type, so a `Engine* engine` definition here would silently bind
  * that declaration to a pointer and every `engine.getRenderer()` would read a
- * pointer's bytes as an object. The first board run of that shape panicked in
- * `MusicPlayer::isPlaying()` (LoadProhibited at 0x28); this comment is the
- * cheapest possible regression test.
+ * pointer's bytes as an object. On the board that shape panics in
+ * `MusicPlayer::isPlaying()` (LoadProhibited at 0x28).
  *
  * The scene is placed with malloc + placement new, deliberately NOT with plain
  * `new`: that pulls libstdc++'s operator-new/exception tail into this image,
@@ -109,7 +107,7 @@ pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate()
 pr32::core::Engine engine(config, inputConfig, audioConfig);
 doom::DoomScene* doomScene = nullptr;
 
-// D6.5 (T48): the two numbers the APU already keeps -- blocks whose DMA ring
+// The two numbers the APU already keeps -- blocks whose DMA ring
 // had drained, and the worst synthesis time of one block. The seam asks for
 // them once a second from the scene's report and never from the frame path, so
 // the cost is one indirect call and two atomic loads a second; `user` is the

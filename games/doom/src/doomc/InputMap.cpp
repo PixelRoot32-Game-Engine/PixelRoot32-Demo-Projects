@@ -21,7 +21,7 @@ p_ticcmd_t mapButtons(std::uint8_t buttons) {
     if (up != down) {
         cmd.forwardmove = up ? kForwardWalk : static_cast<std::int8_t>(-kForwardWalk);
         // B is the run modifier only in the forward direction: a backpedal has no
-        // second speed upstream, and a strafe does not exist yet.
+        // second speed upstream, and this map has no strafe.
         if (up && run) {
             cmd.forwardmove = kForwardRun;
         }

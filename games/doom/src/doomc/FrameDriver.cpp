@@ -4801,7 +4801,7 @@ void frameDumpSectors() {
 }
 
 #if defined(DOOM_FRAME_DUMP)
-/* S26: FNV-1a over a texture record's stored bytes. The host draws its own copy
+/* FNV-1a over a texture record's stored bytes. The host draws its own copy
  * of this loop in tools/rsegs_check.c; the two must agree or the comparison is
  * meaningless. */
 static std::uint32_t fnv1a32(const std::uint8_t* data, std::size_t size) {
@@ -4841,7 +4841,7 @@ void frameDumpViewDiag() {
                 writeLine("\n");
             }
         }
-        // S26: the bytes the masked pass will read. Resolving the fragment's mid
+        // The bytes the masked pass will read. Resolving the fragment's mid
         // name and hashing the record answers "is the board drawing the same
         // texture the host composes" without sending the frame.
         for (index = 0u; index < view.drawsegCount; ++index) {
@@ -4914,17 +4914,15 @@ bool frameLevelPlaypalPage(int page, std::uint8_t* out) {
         std::memcpy(out, gPlaypal, kPlaypalBytes);
         return true;
     }
-    // T58: PLAYPAL is raw in the container, so a flash page is a pointer into
-    // the mapping -- page @p p at `view + p * 768`, one 768 B copy to the
-    // caller's buffer. The old path decoded all 10,752 B into a transient
-    // internal-RAM block; D7.1's save buffer holds heap_largest at 7,924, the
-    // allocation failed, and the scene silently kept page 0. A view needs no
-    // heap and no decode, so the 8.6 ms page switch is gone with the failure.
+    // PLAYPAL is raw in the container, so a flash page is a pointer into the
+    // mapping -- page @p p at `view + p * 768`, one 768 B copy to the caller's
+    // buffer. Decoding all 10,752 B into a transient internal-RAM block cannot
+    // work in game: with the save buffer allocated the largest free heap block
+    // is about 7,924 B. A view needs no heap and no decode.
     //
-    // A container built before this change has PLAYPAL stored/deflated and
-    // answers ERR_NOT_RAW here. There is deliberately no allocation fallback:
-    // the caller keeps the page it already has rather than taking the RAM the
-    // flash path cannot get.
+    // A container whose PLAYPAL is stored deflated answers ERR_NOT_RAW here.
+    // There is deliberately no allocation fallback: the caller keeps the page it
+    // already has rather than taking RAM the heap cannot give.
     const int lump = doom_whd_source_lump_index(&gWhd, "PLAYPAL");
     if (lump < 0) {
         return false;
@@ -4996,9 +4994,9 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     // The three line buffers are the probe's largest stack locals and the call
     // graph below them -- the BSP recursion, the wall column emitter and the
     // masked pass's two clip arrays -- already runs close to the loop task's
-    // stack. D3.9's attribution added a few words to several of those frames and
-    // that was enough to trip the canary, so the buffers moved to .bss: they are
-    // written once per line and never reentrant. `line` is the session's shared
+    // stack; a few more words in several of those frames are enough to trip the
+    // canary, so the buffers live in .bss: they are written once per line and
+    // never reentrant. `line` is the session's shared
     // buffer; this function runs only after the session has finished setting up.
     char (&line)[kFrameProfileLineCapacity] = gSessionLine;
     static char attrLine[kFrameAttributionLineCapacity];
@@ -5014,10 +5012,10 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
         return;
     }
 
-    // The one setup implementation, shared with the game frame (D4.0): it maps
-    // the container, binds E1M1 and leaves the mapping live. Every line it prints
-    // is this probe's own `FRAMEPROF,setup,...` record, unchanged.
-    // The probe keeps its Driver on the stack, exactly as D3.6 did: the RAM
+    // The one setup implementation, shared with the game frame: it maps the
+    // container, binds E1M1 and leaves the mapping live. Every line it prints is
+    // this probe's own `FRAMEPROF,setup,...` record.
+    // The probe keeps its Driver on the stack: the RAM
     // control environment has under 1 KB of `dram0_0_seg` headroom and a 464 B
     // file-scope copy is enough to overflow it. The session points at this
     // object; only the game frame uses its own static `gShowDriver`.
@@ -5128,7 +5126,7 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
 
     // The blocks go back before the shell's first frame: a probe that left the
     // graphics and the decoded level held would be a state its caller never asked
-    // for, exactly as the D2.3 probe releases its mapping.
+    // for.
     closeLevelSession();
 
     std::snprintf(line, sizeof line, "FRAMEPROF,heap,after_free=%u\n",

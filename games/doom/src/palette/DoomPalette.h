@@ -55,7 +55,7 @@ constexpr std::uint8_t rgb888To332(std::uint8_t r, std::uint8_t g, std::uint8_t 
  * This is the engine's colour convention, the same arithmetic
  * `DrawSurface::color565()` applies: R5 in bits 15-11, G6 in bits 10-5, B5 in
  * bits 4-0, each field the top bits of its source channel. It exists because
- * the panel no longer has to go through RGB332: an 8bpp surface that carries
+ * the panel does not have to go through RGB332: an 8bpp surface that carries
  * palette indices can be handed a 256-entry 565 expansion table
  * (`DrawSurface::setPalette8()`), and then the present step is one lookup per
  * pixel with no per-channel loss beyond 565 itself.
@@ -114,7 +114,7 @@ static_assert(expandRgb332(0xE0) == 0xF800, "RGB332 -> RGB565: red must expand t
 static_assert(expandRgb332(0x1C) == 0x07E0, "RGB332 -> RGB565: green must expand to 0x07E0");
 static_assert(expandRgb332(0x03) == 0x001F, "RGB332 -> RGB565: blue must expand to 0x001F");
 
-// The RGB565 table is the panel's expansion now, so its channel layout is
+// The RGB565 table is the panel's expansion, so its channel layout is
 // pinned to the engine's own `color565()` arithmetic. These are the primaries
 // and the two ends of the range: a shifted channel fails the build here instead
 // of tinting the whole frame.

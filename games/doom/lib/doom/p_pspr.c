@@ -314,8 +314,8 @@ static void fire_chaingun(p_mobj_context_t* world, p_player_t* player,
     fixed_t slope;
 
     /* Upstream's A_FireCGun plays `sfx_chgun`, the one linked row: the pistol's
-     * cue at pitch 150. The port used to name sfx_pistol in this comment; the
-     * id is what the channel layer's link arithmetic reads. */
+     * cue at pitch 150. The id is what the channel layer's link arithmetic
+     * reads. */
     weapon_sound(player, sfx_chgun);
 
     /* `if (!player->ammo[weaponinfo[readyweapon].ammo]) return;` -- the empty

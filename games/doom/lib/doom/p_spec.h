@@ -18,8 +18,8 @@
  * THE ONE DELIBERATE DIFFERENCE FROM p_mobj.c's SPAWN PATH
  *
  * `doom_map` is a zero-copy view over const bytes (on the board, a mapped flash
- * page). It cannot hold the level's mutable heights, and doom_map.* is not this
- * task's surface. So p_level_init() copies the seven sector fields the
+ * page). It cannot hold the level's mutable heights, and doom_map.* stays a
+ * renderer-facing reader. So p_level_init() copies the seven sector fields the
  * simulation reads into `p_sector_t sectors[]` in the level's zone -- exactly
  * P_LoadSectors()' step, and the only mutable copy. `doom_map` stays the
  * immutable source; no second runtime copy exists, and every mover, light and
@@ -466,8 +466,8 @@ int p_spec_p_change_sector(struct p_mobj_context* world, uint16_t sector,
 /**
  * @brief False: P_ChangeSector() is the rule, not a stub.
  *
- * Kept so the regression test that used to prove the stub can now prove its
- * replacement, and so no caller mistakes the hook for a no-op.
+ * Kept so a test can prove the rule is real, and so no caller mistakes the
+ * hook for a no-op.
  */
 int p_spec_p_change_sector_is_stubbed(void);
 

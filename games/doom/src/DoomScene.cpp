@@ -168,7 +168,7 @@ enum class Ink : std::uint8_t {
     Frame,             ///< The 1 px outline on the outermost logical pixels.
     Slot,              ///< Idle button slot, an outline only.
     Pressed,           ///< Held button, filled solid.
-    MarkerTopLeft,     ///< Red: the first pixel the rasteriser will write.
+    MarkerTopLeft,     ///< Red: the first pixel the rasteriser writes.
     MarkerTopRight,    ///< Green.
     MarkerBottomLeft,  ///< Blue.
     MarkerBottomRight, ///< Yellow.
@@ -540,7 +540,7 @@ void paintShellFrame(Renderer& renderer, std::uint8_t pressed) {
         inks[index] = pixelroot32::graphics::resolveColor(kInkColors[index]);
     }
 
-    // The panel path, and the one DOOM's renderer will use: the 8bpp logical
+    // The panel path, and the one DOOM's renderer uses: the 8bpp logical
     // framebuffer, one byte per pixel, stride = logical width, top-left origin.
     // Writing through this pointer is the whole point of the shell -- it is
     // what a column-indexed rasteriser can fill without a single virtual call.
@@ -757,7 +757,7 @@ void reportContainerProbe() {
  * boot log can state three facts about the allocator on the board itself: the
  * arena's accounting overhead, the largest single free block, and that the
  * container's 68,168 B HELP1 lump is refused cleanly by a 64 KB zone -- the
- * refusal the port will handle outside the zone.
+ * refusal the port handles outside the zone.
  */
 alignas(ZONE_ALIGNMENT) std::uint8_t kZoneArena[65536];
 

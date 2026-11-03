@@ -1694,7 +1694,7 @@ void p_update_specials(p_level_t* level) {
      * tic, and every draw then looks a picture up through those arrays. This
      * port has no picture numbers, so the same write is a six-name table plus
      * each sector's index into it: the renderer's live reader answers from these
-     * two values, and a per-segment read no longer runs the animation at all. */
+     * two values, so a per-segment read never runs the animation. */
     level->animTime = level->leveltime;
     for (family = 0; family < P_ANIM_FAMILIES; ++family) {
         const p_anim_family_t* anim = &kAnimFamilies[family];

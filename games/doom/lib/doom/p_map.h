@@ -136,9 +136,8 @@ extern "C" {
 #define P_BOXLEFT 2
 #define P_BOXRIGHT 3
 
-/* ML_BLOCKMONSTERS. doom_map.h lists only the flags the renderer tests, and it
- * is not this task's surface, so the one simulation flag the move tests need is
- * named here. Its value is the 1993 linedef flag word's bit 4. */
+/* ML_BLOCKMONSTERS. doom_map.h lists only the flags the renderer tests, so the
+ * one simulation flag the move tests need is named here. Its value is the 1993 linedef flag word's bit 4. */
 #define P_ML_BLOCKMONSTERS 16
 
 /* --- What a position check found ----------------------------------------- */

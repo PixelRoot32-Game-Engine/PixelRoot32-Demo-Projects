@@ -271,7 +271,7 @@ int p_check_missile_range(p_mobj_context_t* world, r_mobj_t* actor) {
  * it back, so a monster that bumps a closed door stops instead of opening it.
  * The two E1M1 enemies reach the player through their own room's opening, and
  * no scene here needs a monster to open a door; making it work would mean a new
- * out-parameter on p_try_move, which is a wider seam than this task's.
+ * out-parameter on p_try_move, a wider seam than this behaviour justifies.
  *
  * The MF_FLOAT `floatok` branch is absent for the same reason: it needs the
  * position check's `floatok`, and no E1M1 monster floats (the lost soul is out of

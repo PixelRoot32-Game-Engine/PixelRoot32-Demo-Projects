@@ -1053,9 +1053,8 @@ int frameLevelPaletteIndex();
  * 10,752 B transient allocation for all 14 pages cannot be served beside the
  * save buffer. Returns false, leaving @p out untouched, when the page is out of
  * range, the lump is absent or short, or the container stores PLAYPAL deflated
- * (`DOOM_WHD_SOURCE_ERR_NOT_RAW`, a container built before PLAYPAL was kept
- * raw). There is no allocation fallback on that last path; the caller keeps the
- * page it has.
+ * (`DOOM_WHD_SOURCE_ERR_NOT_RAW`). There is no allocation fallback on that last
+ * path; the caller keeps the page it has.
  */
 bool frameLevelPlaypalPage(int page, std::uint8_t* out);
 

@@ -2609,7 +2609,7 @@ const uint8_t r_light_level[R_LIGHT_LEVELS][R_LIGHT_SCALE_LEVELS] = {
     { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
 };
 
-/* R_InitLightTables()'s zlight[,] as colormap indices (D3.3). The row
+/* R_InitLightTables()'s zlight[,] as colormap indices. The row
  * is the plane light number, the column is distance >> LIGHTZSHIFT
  * clamped to MAXLIGHTZ-1, and the value indexes the 256-byte maps of
  * the COLORMAP lump. It is not the wall table r_light_level holds. */
@@ -2633,7 +2633,7 @@ const uint8_t r_plane_light[R_LIGHT_LEVELS][R_PLANE_LIGHT_Z_LEVELS] = {
 };
 
 /* R_ExecuteSetViewSize()'s yslope[]: map units of plane height per
- * screen row's ray (D3.3). */
+ * screen row's ray. */
 const fixed_t r_plane_yslope[R_SCREEN_HEIGHT] = {
     105384, 106454, 107546, 108660, 109798, 110960, 112147, 113359,
     114598, 115864, 117159, 118483, 119837, 121222, 122640, 124091,
@@ -2663,7 +2663,7 @@ const fixed_t r_plane_yslope[R_SCREEN_HEIGHT] = {
 };
 
 /* R_ExecuteSetViewSize()'s distscale[]: the reciprocal cosine that
- * turns a row's perpendicular distance into a ray distance (D3.3). */
+ * turns a row's perpendicular distance into a ray distance. */
 const fixed_t r_plane_dist_scale[R_SCREEN_WIDTH] = {
     92789, 92434, 92154, 91876, 91600, 91327, 91056, 90722,
     90456, 90194, 89867, 89611, 89355, 89038, 88790, 88479,

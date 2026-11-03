@@ -374,7 +374,7 @@ void p_gun_shot(p_mobj_context_t* world, r_mobj_t* shooter, fixed_t slope,
  * linetarget->y)` -- the punch turns the player to face what it hit.
  *
  * The `P_SpawnPuff` that lands on a wall from a melee trace starts at S_PUFF3,
- * which is the one branch of P_SpawnPuff this task owes p_mobj.c.
+ * which is the melee branch of p_mobj.c's P_SpawnPuff.
  */
 void a_punch(p_mobj_context_t* world, struct p_player* player);
 

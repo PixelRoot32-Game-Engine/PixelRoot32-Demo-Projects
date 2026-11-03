@@ -532,7 +532,7 @@ static void draw_sky_plane(const r_view_state_t* state, r_draw_surface_t* surfac
  * byte is written. Anything that fails here leaves the frame untouched.
  *
  * A flat already proved in this call is not resolved again: up to 22 planes
- * share 6 distinct flats on the sampled views, and the second resolve used to
+ * share 6 distinct flats on the sampled views, and resolving again would
  * decode the same 4,096 bytes for every plane that used it. One proof per name
  * is enough because the flat resolver must answer consistently for the call,
  * and the draw loop resolves the flat again before it reads it anyway. */

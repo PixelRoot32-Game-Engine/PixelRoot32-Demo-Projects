@@ -1235,8 +1235,7 @@ static int sector_bounds(const p_mobj_context_t* world, uint16_t sectorIndex,
 /*
  * PIT_ChangeSector: one thing against the changed sector.
  *
- * Upstream's body, in upstream's order, and the damage half is the reason this
- * task exists:
+ * Upstream's body, in upstream's order, damage half included:
  *
  *   - a thing that fits is left alone;
  *   - a corpse is crunched to S_GIBS and loses its box;
