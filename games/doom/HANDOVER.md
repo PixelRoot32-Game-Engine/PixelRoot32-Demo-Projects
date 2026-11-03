@@ -16,10 +16,9 @@ their origin copies.
 | `PixelRoot32-Game-Engine` | `feature/doom-esp32` | `08e9c3a` | `origin/develop` `59d0154` | 30 commits: 18 APU + 12 port |
 
 The note was first written against `2dbe26f` (T55) and refreshed at `3552cff`
-after T57 (the exit transition) and T58 (the mapped PLAYPAL page). Two
-documentation commits follow that code head (`bd44b53` refreshes these heads and
-`060864d` records the post-repair capture); neither changes code, and the
-evidence below is from the code head. The engine
+after T57 (the exit transition) and T58 (the mapped PLAYPAL page). Documentation
+commits follow that code head; they change no code, and the evidence below is
+from the code head. The engine
 head is `08e9c3a`, the port's twelfth commit: the audio-test fix described in
 section 4.4. The suite and gate results below name the commit each was measured
 at; each board capture names the commit that produced it.
