@@ -407,15 +407,18 @@ recorded, 0 failed. `--perturb` (frequency x1.5) and `--stub` (a fixed 440 Hz
 square) must both fail. The gate proves the cue **is** the sound it claims to
 be; whether it is pleasant is the listening pass.
 
-**Music (D6.4).** `esp32dev_ILI9341_hud` plays E1M1. `lib/doom/s_sound.c`
-keeps upstream's `S_ChangeMusic`/`S_StartMusic`/`S_StopMusic`/`S_PauseSound`;
-the three `doom_music_*` calls they make are implemented in
-`src/doomc/DoomAudio.cpp` over the engine's `MusicPlayer`. `S_Start` asks for
-the map's own track (`mus_e1m1 + (episode-1)*9 + map-1`), so a load of E1M2
-asks for `mus_e1m2`; `MusicBank` ships only E1M1 and answers nullptr for the
-rest, which leaves those levels quiet (see "What ships"). After New Game the
-menu's open/close already calls `S_PauseSound`/`S_ResumeSound`
-(`DoomScene::runMenu`), so the pause path is upstream's, not a second control.
+**Music (D6.4).** `esp32dev_ILI9341_hud` plays E1M1's track on every level.
+`lib/doom/s_sound.c` keeps upstream's
+`S_ChangeMusic`/`S_StartMusic`/`S_StopMusic`/`S_PauseSound`; the three
+`doom_music_*` calls they make are implemented in `src/doomc/DoomAudio.cpp`
+over the engine's `MusicPlayer`. `S_Start` asks for the map's own track
+(`mus_e1m1 + (episode-1)*9 + map-1`); `MusicBank` answers E1M1's track for every
+level id (`e1m1`..`e1m9`), so a level change restarts the same music instead of
+going silent. That is the **4 MB limitation** (S23): the other eight themes are
+~270 KB and the app has 57,843 B free. The intermission and title still answer
+nullptr. After New Game the menu's open/close already calls
+`S_PauseSound`/`S_ResumeSound` (`DoomScene::runMenu`), so the pause path is
+upstream's, not a second control.
 
 **The converter.** `tools/mus2tracks.py` reads a `d_*` MUS lump, parses it by
 `mus2mid.c`'s rules, and writes a deterministic C++ include. MUS has no tempo
@@ -451,17 +454,17 @@ drum's audible length is the preset's `defaultDuration`; the note's duration
 only advances the sequencer. This is a deliberate fidelity cost of one
 percussion voice.
 
-**What ships.** Only `mus_e1m1`; `MusicBank.cpp` includes
-`src/assets/music/MusE1M1.inc` once and answers `nullptr` for every other id,
-so `S_ChangeMusic` leaves a level quiet instead of holding a request. E1M1:
-2,332 press events -> 2,145 `MusicNote`s -> **34,320 B** (melody ch0 657 array
-entries, third ch1 712, bass ch2 263, percussion 513). `D_INTRO` is 80 notes =
-1,280 B and `D_INTER` is 3,975 = 63,600 B; both are converted and gated in
-memory, but only E1M1 is committed. The title would fit the remaining flash
-(no scene requests `mus_intro`), the intermission does not: the post-T47
-`_hud` image is 641,881 B of 655,360, leaving **13,479 B**, and `D_INTER`
-alone is 63,600 B. T48's telemetry wiring adds 44 B, so the shipped image is
-641,925 B and the headroom 13,435 B.
+**What ships.** One theme: E1M1's. `MusicBank.cpp` includes
+`src/assets/music/MusE1M1.inc` once and answers it for every level id
+(`mus_e1m1`..`mus_e1m9`), so E1M2..E1M9 restart the same music instead of
+going quiet -- the 4 MB limitation (S23). E1M1: 2,332 press events -> 2,145
+`MusicNote`s -> **34,320 B** (melody ch0 657 array entries, third ch1 712, bass
+ch2 263, percussion 513). `D_INTRO` is 80 notes = 1,280 B and `D_INTER` is
+3,975 = 63,600 B; both are converted and gated in memory, but not committed.
+The app has **57,843 B** free: one more theme would fit, the other eight
+(~270 KB) do not, and at 16 B/note the container's 206,596 B of spare does not
+hold them either. The intermission and title stay quiet; the S3 16 MB profile
+is where each id gets its own track, and only `MusicBank`'s lookup changes.
 
 **The gate.** `tools/music_check.py` converts `D_INTRO`, `D_INTER` and
 `D_E1M1` in memory, re-derives every press's pitch and grid start from the

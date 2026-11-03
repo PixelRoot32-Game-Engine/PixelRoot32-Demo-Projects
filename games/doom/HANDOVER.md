@@ -525,11 +525,15 @@ is what holds the line, and `analogRead()` remains forbidden there.
   panel was not looked at (T44, T46, T49). GPIO 34's real electrical path was
   proven with a scripted press, not a pressed button (T40).
 - **The S3 profile (16 MB board) is the home for the remaining cuts.**
-  Intermission music (`D_INTER`, 63,600 B) does not fit the current 49,795 B
-  headroom; title music (`D_INTRO`, 1,280 B) would fit but no scene requests
-  `mus_intro`; the 239 dropped sprite frames, vanilla's screen melt (`f_wipe`,
-  two more 64,000 B surfaces) and the twin framebuffer are all S3-profile work
-  (S12, S15, README "Music", `partitions_wad.csv`).
+  **Per-level music**: the 4 MB build plays E1M1's track on every level by
+  design (S23); the other eight themes are ~270 KB, more than the app's 57,843 B
+  free and more than the container's 206,596 B of spare at 16 B/note. The 16 MB
+  profile is where each id gets its own track, and only `MusicBank`'s lookup
+  changes. Intermission music (`D_INTER`, 63,600 B) does not fit either; title
+  music (`D_INTRO`, 1,280 B) would fit but no scene requests `mus_intro`. The
+  239 dropped sprite frames, vanilla's screen melt (`f_wipe`, two more 64,000 B
+  surfaces) and the twin framebuffer are all S3-profile work (S12, S15, README
+  "Music", `partitions_wad.csv`).
 - **Documentation debt.** The root `README.md`'s DOOM row still says "Still in
   Phase 4: … monsters and weapons do not yet" and the demo README's opening
   banner still calls the project a scaffold. Both are stale relative to
