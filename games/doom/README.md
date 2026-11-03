@@ -1136,6 +1136,215 @@ filtering to world frames (`render_us > 20 ms`) gives **153-160, mean 156** --
 the number comparable with the 148-155 this phase started from, and five points
 above it.
 
+## Performance and settings (D7.3)
+
+The last row of the plan asks for two things: the frame time documented per
+panel, and every setting behind the numbers written down once. All the
+measurements below are board captures on COM4 at 115200, reduced by
+`tools/perf_report.py` -- the command is the reproducibility, not a table typed
+from memory.
+
+Two stages are measured separately, and that separation is the point:
+
+- **the Phase 3 stage**, `env:esp32dev_ILI9341_frame`, which renders the world
+  pass alone (20 sampled views, two runs each, `-O2`), and
+- **the shipped image**, `env:esp32dev_ILI9341_hud`, which draws the same world
+  plus the status bar, the weapon and the sound seam.
+
+Comparing the two directly would call three shipped features a regression. The
+comparison is made on Phase 3's stage; the shipped image is reconciled against
+it member by member, below.
+
+### The panels
+
+| Panel | Role | Geometry | SPI | DMA block | Pixel format | Source |
+| --- | --- | --- | --- | --- | --- | --- |
+| ESP32-2432S028 CYD, ILI9341 | **shipped** | 240x320 panel rotated to a 320x240 frame (`DISPLAY_ROTATION=3`); 320x200 window at 1:1 with two 20 px bars | 40 MHz | 20 lines | RGB565 | `src/platforms/esp32_dev_ILI9341.h`, `platformio.ini` `[env:esp32dev_ILI9341]` |
+| ST7789 240x240 | **bench, not shipped** | 240x180 window, 320x200 logical surface, `Y_OFF_SET=30` | 40 / 80 MHz | 60 lines | RGB565 | PLAN §6, `bench/README.md` |
+
+The ST7789 is a bench row, not a configuration of this project. There is no
+`esp32dev_ST7789` environment, S6 settled the CYD, and the Phase 0 rows were
+measured while the firmware still drove the square panel's pin map on the CYD
+(no CS, no backlight), so nothing reached a panel: the SPI and DMA work is real
+but each figure is a **pipeline** number, not a validated frame. Its recorded
+present cost for a 240x180 window, and the block-size effect beside it, are:
+
+| Panel | SPI | Lines/block | `present_us` | Status |
+| --- | --- | --- | --- | --- |
+| ST7789 240x180 (bench) | 40 MHz | 60 | 18,198 | pipeline only |
+| ST7789 240x180 (bench) | 40 MHz | 20 | 17,892 | pipeline only |
+| ST7789 240x180 (bench) | 80 MHz | 60 | 9,557 | pipeline only |
+
+On the shipped CYD the same 320x200 RGB565 window is 128,000 B, which is
+25.6 ms of wire time at 40 MHz; the shipped `present_us` below is 26.98 ms, the
+wire time plus the DMA tail and the Arduino `yield()`. That is the number the
+present path is allowed to have, and it is measured, not modelled.
+
+### The shipped image's frame (three 40 s runs)
+
+`env:esp32dev_ILI9341_hud`, the shipped 660,493 B image, container at
+`0xC0000`. Each run is a separate reset and a separate 40 s capture. The table
+below is **world frames only**: the CYD's GPIO 35 floats and opens DOOM's
+automap by itself, and a map frame renders in about 0.9 ms, so those samples
+are excluded and counted rather than left to flatter the band.
+
+| phase | count | min | max | mean |
+| --- | --- | --- | --- | --- |
+| `frame_us` | 61 | 62,128 | 65,099 | 63,848.8 |
+| `render_us` | 61 | 27,125 | 28,212 | 27,409.8 |
+| `convert_us` | 61 | 0 | 0 | 0.0 |
+| `present_us` | 61 | 26,967 | 26,993 | 26,978.6 |
+| `update_us` | 61 | 1,461 | 3,972 | 3,005.9 |
+| `hash_us` | 61 | 22,733 | 22,753 | 22,744.1 |
+| `other_us` | 61 | 5,706 | 7,459 | 6,454.5 |
+| `fps_x10` | 61 | 153 | 160 | 156.1 |
+
+Three facts about that table. `convert_us` is 0 on this path: the engine's
+present performs the 8bpp→RGB565 LUT, so `present_us` carries the conversion.
+`hash_us` is the diagnostic SHA-256 over the index surface, ~22.7 ms, which the
+firmware subtracts from the period: it is charged to the report, never to
+`frame_us` or `fps_x10`. And `update_us` is the tic work -- input, thinkers and
+`S_UpdateSounds` -- so the audio seam is there, not in `render_us`.
+
+| run | `SHOW,frame` samples | world | excluded (automap) | `fps_x10` min-max (mean) | `render_us` mean |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 36 | 17 | 19 | 154-160 (156.2) | 27,406.5 |
+| 2 | 38 | 21 | 17 | 153-160 (155.7) | 27,429.8 |
+| 3 | 37 | 23 | 14 | 153-160 (156.4) | 27,394.1 |
+| **combined** | **111** | **61** | **50** | **153-160 (156.1)** | **27,409.8** |
+
+The all-frame band, for completeness and labelled as such, is **153-190,
+mean 168.6 over 111 samples**: every automap frame draws in under a millisecond
+and raises the top of the band, which is exactly why it is not the shipping
+number. The world band is stable across the three runs (153-160), and every
+sample clears the rule's floor of 150.
+
+### Phase 3 today, and the reconciliation
+
+`env:esp32dev_ILI9341_frame` was built and flashed for this record. The probe
+prints one summary for the 20 sampled views, two measured runs each. The line,
+verbatim from the capture; a second capture agrees on the mean (20,035 us) and
+on the gate, with min/max moving by 8 us and 1 us:
+
+```text
+FRAMEPROF,summary,views=20,runs=2,samples=40,frame_mean_us=20035,frame_min_us=9051,frame_max_us=29337,walk_us=2755,walls_us=7788,planes_us=6033,masked_us=3291,other_us=168,residency_us=0,residency_permille=0,gate_us=20000,gate=fail
+```
+
+| record | `frame_mean_us` | today | difference |
+| --- | --- | --- | --- |
+| D3.9 (L15) | 19,800 | 20,035 | +235 us (+1.19%) |
+| E1M1 after the repartition (L17) | 19,976 | 20,035 | +59 us (+0.30%) |
+
+The probe's own gate is 20,000 us, so today's summary reports `gate=fail` by
+35 us. Two captures agree on the mean to the microsecond (20,035 both), so this
+is not jitter, and the honest record is a gate miss, not a rounding. The
+world-pass source did not gain a pass since L17, but the images around it did:
+D3.9 recorded the shipped environment at 356,837 B, today's shipped image is
+660,493 B, and this probe image is 506,441 B, so neither the renderer's code nor
+the baked payloads it reads sit where they did in the flash cache (the container
+was rebaked several times after L17, most recently by T53b). D5.1's weapon A/B
+measured that placement effect at ±1.3-3.3 ms for a few hundred bytes of moved
+code, so 235 us is inside it. Which function paid it cannot be named from these
+captures, and is not guessed here.
+
+The shipped image's `render_us` mean is **27,409.8 us** against Phase 3's
+**20,035 us**, a difference of **7,374.8 us**. The draw-path features Phases 4-6
+added have recorded costs:
+
+| added cost | recorded | source |
+| --- | --- | --- |
+| status bar / HUD | 4,780 us | D5.1-D5.3 captures, `hud_us` 4.63-4.78 ms |
+| weapon sprite | 854-870 us | T38/D5.1, `weapon_us` 0.854-0.87 ms |
+| letterbox | 0 | 20 px of unwritten panel outside the 320x200 surface; the present is unchanged |
+| audio seam | not a render cost | `S_UpdateSounds` runs in the tic; its work is in `update_us` and no per-frame render figure was recorded |
+| **attributed** | **5,650 us** | 76.6% of the difference |
+| **unattributed** | **1,725 us** | 23.4% of the difference; 6.3% of the shipped render |
+
+One like-for-like check before calling that gap final. The shipped image always
+draws E1M1's spawn view, and `_frame`'s view 00 is 20,455 and 20,297 us in its
+two runs (mean **20,376 us**), not the 20,035 us mean over all 20 sampled views.
+Against the view the shipped image actually draws, the difference is **7,034 us**:
+5,650 us is still attributed and **1,384 us** (19.7%) is not. The table above
+uses the 20,035 us mean because that is the number the record and S19 name; the
+view-00 baseline is stated here so the reconciliation is not flattered by
+averaging in the cheaper views.
+
+The remainder does not close. The first place to look is the flag split the two
+stages are built with: the shipped image is `-Os` (the framework appends it),
+`_frame` removes `-Os` and keeps `-O2`, so the 20,035 us baseline is an `-O2`
+world pass while the shipped world pass is compiled differently. That
+difference lives inside the 1,725 us and cannot be separated from flash
+placement with the captures that exist. It is reported as a gap, not assigned
+to a feature to make the arithmetic tidy.
+
+**No cheap win was taken.** The data says the frame is the renderer plus the
+bus: `render_us` 27.4 ms and `present_us` 27.0 ms against a 63.8 ms period,
+with `update_us` 3.0 ms and `other_us` 6.5 ms. There is no per-frame
+recomputation in the captures that a small change removes, and the remaining
+costs are the features and display settings the maintainer has already settled,
+so the evidence backs "no change" rather than a speculative edit.
+
+### Settings that produce the numbers
+
+| Setting | Value | Why it is what it is | Measured or assumed |
+| --- | --- | --- | --- |
+| Build environment | `esp32dev_ILI9341_hud` (extends `_show` → `esp32dev_ILI9341`) | the shipped image; `_frame` is the Phase 3 measurement build and is never shipped | measured (capture) |
+| Platform pin | `espressif32@7.1.2` = Arduino-ESP32 2.0.17 | load-bearing: an unpinned `pio pkg update` moved it to 8.0.0 (Arduino 3.x), which measured 686,446 B of flash and overflowed `dram0_0_seg` by 680 B. Bumping the pin is a repartition decision | measured (D7.1) |
+| Optimization | shipped `-Os`; `_frame` `-O2` with `-Os` removed | the framework appends `-Os` after `build_flags`, so only `build_unflags = -Os` lets `-O2` win. The split is deliberate and is why the two stages are not byte-comparable | measured (`pio run -t envdump`: shipped `CCFLAGS` end `-O2, -Os`; `_frame` has no `-Os` and ends `-O2`) |
+| DMA block | `PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK=20` | two line buffers of `physicalWidth * 2 B * lines`; 20 lines at 320 px is 25,600 B, which is the DRAM budget; the engine's default is 60 (57,600 B at 240 px, 76,800 B at 320 px) and S10 rejected it | measured (D0.2; 40 MHz/60 18,198 vs 20 17,892 us on the bench) |
+| SPI clock | 40 MHz (`SPI_FREQUENCY=40000000`) | S11: 80 MHz corrupts this panel on this wiring and 55 MHz is not an achievable divider step | measured (Phase 0 / S11) |
+| Pixel format | RGB565 through a 256-entry LUT, byte-swapped for the panel | the engine's present path; DOOM renders 8bpp indices and pays one LUT lookup per pixel | measured (`present_us` matches 25.6 ms wire time) / path from PLAN §6 |
+| Flash flags | `-fno-exceptions`, `-fno-rtti`, `-Wl,--gc-sections`, `-flto`/`-fno-lto`, `-ffunction-sections`, `-fdata-sections` | a flash/RAM budget decision from `[base]`/`[base_esp32]`, not a frame-time one | assumed frame-neutral (no A/B) |
+| Letterbox | 20 px bars; `X_OFF_SET=20`, `Y_OFF_SET=0` pre-swap | the 320x200 window is 1:1 on the rotated 320x240 panel; the bars are panel rows nothing writes | measured (geometry) |
+| Runtime defaults | `skill=2, volume=8, gamma=0, mute=0` | every capture boots `SHOW,menu,settings=default,...` after the T54 NVS erase | measured (capture) |
+| Settings storage | `nvs` partition, namespace `doom`, key `cfg`, 8 checksummed bytes | the record predates the engine's persistence layer and its bytes are a contract; the engine's `IKeyValueStore` keeps the same namespace and key so a stored record survives | measured (source + capture) |
+| Save slots | six, 3,968 B each, `saves` at `0x3F8000` | D7.1; not touched by a `_frame` flash because both environments use `partitions_wad.csv` | measured (`slots=6,record=3968`) |
+
+Two settings are called out because the design record and the code disagreed.
+The plan row and this record's first draft called the DMA block "60-line"; the
+build in this tree pins **20** (`lib/platformio.ini` `[base_esp32]`, S10), and
+20 is what produced every number here. 60 is the engine's default, not this
+project's setting. The README records the measured value and the reason; the
+feature record was corrected to match.
+
+### How to reproduce
+
+`pio` is not on `PATH` here; use `C:\Users\<user>\.platformio\penv\Scripts\pio.exe`.
+
+```powershell
+# Phase 3 stage: world pass alone, -O2, 20 sampled views x 2 runs
+pio run -e esp32dev_ILI9341_frame
+pio run -e esp32dev_ILI9341_frame -t upload --upload-port COM4
+# reset: open COM4, RtsEnable=$true for 150 ms, RtsEnable=$false; capture 60 s
+# the FRAMEPROF,summary,... line is the result
+
+# Shipped image: three separate 40 s captures, each after its own reset
+pio run -e esp32dev_ILI9341_hud -t upload --upload-port COM4
+python tools/perf_report.py run1.log
+python tools/perf_report.py run2.log
+python tools/perf_report.py run3.log
+python tools/perf_report.py run1.log run2.log run3.log   # combined band
+```
+
+The log format is the firmware's own, one line per reported frame:
+
+```text
+SHOW,frame=<n>,x=...,y=...,angle=...,viewz=...,tics=...,health=...,
+render_us=...,convert_us=...,present_us=...,frame_us=...,fps_x10=...,
+update_us=...,hash_us=...,other_us=...,refused=...,hash=...
+```
+
+`perf_report.py` reads the fields **by name**, so a field added later cannot
+shift a column. It keeps `SHOW,frame` samples with `render_us > 20000` by
+default, prints how many it excluded and why, and exits non-zero when a run has
+no world frame or the world `fps_x10` minimum is under 150 (`--min-fps`).
+`--all-frames` prints the unfiltered band, labelled. `--self-test` exercises
+the parser and every rule on synthetic logs with no board; `--perturb` lowers
+the parsed band (on a capture, or on its synthetic log when no file is given)
+and must exit non-zero, which is what proves the gate can fail.
+Both environments use `partitions_wad.csv`, so flashing `_frame` and then
+`_hud` does not move `nvs`, `wad` or `saves`; the board is left on `_hud`.
+
 ## What the scaffold proves
 
 - The engine links from the tracker branch, not from a released version.
