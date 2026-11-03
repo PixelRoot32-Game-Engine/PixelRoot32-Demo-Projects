@@ -12,20 +12,20 @@ their origin copies.
 
 | Repository | Branch | Head | Base | Ahead of base |
 | --- | --- | --- | --- | --- |
-| `PixelRoot32-Demo-Projects` | `feature/doom-esp32` | `2dbe26f` | `origin/main` `1ede84f` | 112 commits |
+| `PixelRoot32-Demo-Projects` | `feature/doom-esp32` | `3552cff` | `origin/main` `1ede84f` | 118 commits |
 | `PixelRoot32-Game-Engine` | `feature/doom-esp32` | `08e9c3a` | `origin/develop` `59d0154` | 30 commits: 18 APU + 12 port |
 
-`2dbe26f` is T55's commit. **This note is the commit that follows it on the same
-branch**, so the demo head moves by exactly one commit when the note lands. The
-engine head is `08e9c3a`, the port's twelfth commit: the audio-test fix described
-in section 4.4. The suite and gate results below were run at those heads; each
-board capture names the commit it was measured at.
+The note was first written against `2dbe26f` (T55) and refreshed at `3552cff`
+after T57 (the exit transition) and T58 (the mapped PLAYPAL page). The engine
+head is `08e9c3a`, the port's twelfth commit: the audio-test fix described in
+section 4.4. The suite and gate results below name the commit each was measured
+at; each board capture names the commit that produced it.
 
 ## 1. The two branches
 
 ### The demo branch
 
-`feature/doom-esp32` in `PixelRoot32-Demo-Projects` is **112 commits ahead of
+`feature/doom-esp32` in `PixelRoot32-Demo-Projects` is **118 commits ahead of
 `origin/main` (`1ede84f`), 245 files changed, +128,169 / −1**
 (`git rev-list --count origin/main..HEAD`, `git diff --stat origin/main...HEAD`).
 The delta is `games/doom/**` (243 files) plus two repository-level files:
@@ -47,8 +47,8 @@ scope note, T19). Nothing else in the repository moves.
 - `tools/` — the gates (`*_check.py`), the deterministic generators
   (`sfx_design`, `mus2tracks`, `gen_*_lumps`), the container encoder
   (`whd_encode.py`, `make_container.ps1`) and `perf_report.py` (D7.3).
-- `test/unit/` — the 18 host suites.
-- `platformio.ini` (40 environments: 22 device/measurement and 18 host test)
+- `test/unit/` — the 19 host suites.
+- `platformio.ini` (42 environments: 23 device/measurement and 19 host test)
   and `partitions_wad.csv`.
 
 ### The engine branch
@@ -86,22 +86,23 @@ demo's binary, not the engine tree.
 
 - **Shipped environment:** `esp32dev_ILI9341_hud` (extends
   `esp32dev_ILI9341_show` → `esp32dev_ILI9341`) over
-  `partitions_wad.csv`. The shipped app is **660,493 B of the 720,896 B
-  `factory` row** (`seg_free=1132`; README "Final board state" and T55).
+  `partitions_wad.csv`. The shipped app is **663,049 B of the 720,896 B
+  `factory` row** (57,847 B free, `seg_free=1,124`; README "Level transitions"
+  and T58).
 - **Container:** `tools/DOOM1.whd`, **3,168,508 B**, flashed at **`0xC0000`**
   into the `wad` row (`0xC0000..0x3F8000`, 3,375,104 B). It is built by
   `tools/make_container.ps1` from the shareware `DOOM1.WAD`; neither the WAD nor
   any `.whd` is committed (`tools/.gitignore`).
 - **Save slots:** `saves` at `0x3F8000..0x400000`, 32 KB, six 3,968 B slots.
-- **Board state** left by T54/T55: the shipped `_hud` image, `nvs` and `saves`
-  erased, defaults and **unmuted**, six `EMPTY` slots, `frame00`
+- **Board state** left by T54/T55/T57/T58: the shipped `_hud` image, `nvs`
+  intact (defaults, unmuted), `saves` erased, six `EMPTY` slots, `frame00`
   `1d8b3849ab3f76750056937f2827bf2bcbb2b98e82976fb3a7ce263d5273c9d3`.
 - **Captures and host logs are not committed.** They live outside the tree;
   this note quotes their decisive lines.
 
 ## 2. The commit series per phase
 
-The demo's 112 commits bucket into the plan's phases by their subjects and the
+The demo's 118 commits bucket into the plan's phases by their subjects and the
 feature record's T rows. Counts and ranges were read from
 `git log --reverse --format='%h %s' origin/main..HEAD`.
 
@@ -114,9 +115,9 @@ feature record's T rows. Counts and ranges were read from
 | D4 | 33 | `ac9cda7` → `56d7002` | Thinkers, doors/lifts/floors, first light, line specials, movement and player at 35 Hz, GPL/README, damage, weapons, monster AI, the three demos, exits, stairs/teleport, scrolling/animation. |
 | D5 | 19 | `06e2b02` → `fcca065` | Status bar and face, the weapon, the menu and settings, palette flashes, the automap, the palette fade. |
 | D6 | 10 | `74feff3` → `9c595f4` | The `S_*` layer, the fitted SFX bank, MUS→four-track music, APU telemetry, the ten-minute soak, volume/mute. |
-| D7 | 13 | `df0250b` → `2dbe26f` | Boot/error screens and the WAD-missing board proof, the save record and six slots with board proof, the performance report and the settings record. |
+| D7 | 19 | `df0250b` → `3552cff` | Boot/error screens and the WAD-missing board proof, the save record and six slots with board proof, the performance report and the settings record. |
 
-Totals: 12 + 6 + 7 + 12 + 33 + 19 + 10 + 13 = **112**.
+Totals: 12 + 6 + 7 + 12 + 33 + 19 + 10 + 19 = **118**.
 
 ### 2.1 The engine's 12 port commits
 
@@ -278,14 +279,15 @@ only line that changes is the engine `lib_deps` in the two environments.
 
 ## 4. Evidence
 
-The suite and gate results below were run at demo `2dbe26f` and engine
-`08e9c3a`; each board capture names the commit that produced it.
+The demo's suites were last re-run after T57 and T58; the gate table is from
+the T58 run at `1b74081` (the container changed there, so its container gates
+are the relevant ones). Engine results are at `08e9c3a`. Each board capture
+names the commit that produced it.
 
 ### 4.1 The demo's host suites
 
-All **18** host test environments pass. (The handover brief called this "19
-suites"; `platformio.ini` defines exactly 18 `[env:*_test]` sections, and the
-list below is that set.) Total: **392 test cases, 0 failed**.
+All **19** host test environments pass (`level_test`, added by T57, is the
+nineteenth). Total: **401 test cases, 0 failed**.
 
 | Environment | Last line |
 | --- | --- |
@@ -307,6 +309,7 @@ list below is that set.) Total: **392 test cases, 0 failed**.
 | `sound_test` | `24 test cases: 24 succeeded` |
 | `boot_test` | `8 test cases: 8 succeeded` |
 | `save_test` | `8 test cases: 8 succeeded` |
+| `level_test` | `9 test cases: 9 succeeded` |
 
 ### 4.2 The demo's gates
 
@@ -386,8 +389,8 @@ the shipped `_hud` image unless named otherwise.
   defaults, unmuted, six `EMPTY` slots.
 
 **D7.3 — the final frame record (T55, commits `54d652f`, `2dbe26f`).** World
-frames only, three 40 s `_hud` runs (61 of 111 samples; 50 automap frames the
-floating GPIO 35 opened are excluded and counted):
+frames only, three 40 s `_hud` runs (61 of 111 samples; 50 automap frames are excluded and counted -- the capture
+predates the GPIO-35 repair, when the pin floated open):
 
 - `render_us` 27,409.8 mean (min 27,125 / max 28,212),
   `present_us` 26,978.6, `update_us` 3,005.9, `other_us` 6,454.5,
@@ -493,13 +496,13 @@ each exists rather than hidden.
   a menu SAVE writes it. What the reset does **not** prove is atomicity during a
   collapsing supply; the engine's `RecordCodec` CRC and the `savetest` rejection
   are the guard for a torn write.
-- **GPIO 35 floats (opens the automap).** On this unit the Select pin is noisy
-  or floating enough that the shipped image can open the automap by itself and
-  toggle it until a pull-up is fitted (L42; README "The automap"). That is why
-  every D7.3 frame number filters world frames by `render_us > 20000` and
-  reports the excluded automap count. Fitting the external 10 kΩ pull-up (the
-  README already specifies one, and a 100 nF to GND if the noise annoys) is the
-  hardware fix; no firmware change is pending.
+- **GPIO 35 is fixed in hardware (2026-11-02).** The maintainer found the
+external pull-up resistor badly soldered with a false contact, and re-soldered
+it. Select is now the only way into the automap; the D7.3 captures predate the
+repair, and their world-frame filter (`render_us > 20000`) stays because map
+frames still exist whenever Select is pressed. The rule is unchanged: GPIO
+34/35 are input-only with no internal pull-up, so the board's external resistor
+is what holds the line, and `analogRead()` remains forbidden there.
 - **`_frame` is 20,035 us, 35 us over its own 20,000 gate.** Two captures agree
   to the microsecond, so it is a real gate miss, not jitter; it is +59 us over
   L17's 19,976 and inside the ±1.3-3.3 ms placement band. Recovering those 35 us
@@ -528,7 +531,7 @@ each exists rather than hidden.
 - **Documentation debt.** The root `README.md`'s DOOM row still says "Still in
   Phase 4: … monsters and weapons do not yet" and the demo README's opening
   banner still calls the project a scaffold. Both are stale relative to
-  `2dbe26f`; they are documentation, not behaviour, and were left untouched by
+  `3552cff`; they are documentation, not behaviour, and were left untouched by
   this note.
 
 ## 6. No PR, no merge, no pin flip
@@ -538,7 +541,7 @@ each exists rather than hidden.
 - **No pin was flipped.** Both `lib_deps` lines still name
   `#feature/doom-esp32`.
 - **No CI was dispatched.**
-- Promotion — choosing path (a) or (b), naming the release tag, changing the
+- Promotion — naming 1.14.0, changing the
   pin and merging the demo — is the maintainer's, per S5 and PLAN §4.6.
 
 ## 7. How to verify it yourself
@@ -550,16 +553,16 @@ the heads named in the table above.
 ### 7.1 Demo
 
 ```powershell
-git -C PixelRoot32-Demo-Projects rev-parse HEAD        # 2dbe26f...
+git -C PixelRoot32-Demo-Projects rev-parse HEAD        # 3552cff...
 git -C PixelRoot32-Demo-Projects status --short        # clean
 
 cd games/doom
 
-# The 18 host suites
+# The 19 host suites
 foreach ($e in 'clock_test','frame_log_test','link_test','wad_test','whd_test',
                'zone_test','rdat_test','rbsp_test','rsegs_test','world_test',
                'frameprof_test','input_test','menu_test','baked_test',
-               'flashprof_test','sound_test','boot_test','save_test') {
+               'flashprof_test','sound_test','boot_test','save_test','level_test') {
     pio test -e $e
 }
 
