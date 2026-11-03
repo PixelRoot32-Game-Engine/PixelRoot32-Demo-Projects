@@ -986,10 +986,14 @@ int frameLevelPaletteIndex();
 /**
  * @brief Copies PLAYPAL page @p page (0..13) into @p out (768 bytes).
  *
- * Page 0 is resident; the others are decoded from the container into a
- * transient heap block that is freed before the call returns. Returns false
- * (leaving @p out untouched) when the page is out of range, the lump is short
- * or the heap cannot lend the block.
+ * Page 0 is resident (768 B, filled once at open). The other pages are a
+ * mapped view of the container's raw PLAYPAL lump: page @p p is
+ * `view + p * 768`, copied into @p out with no heap block and no decode (T58;
+ * the old 10,752 B transient allocation could not be served once D7.1's save
+ * buffer existed). Returns false, leaving @p out untouched, when the page is
+ * out of range, the lump is absent or short, or the container stores PLAYPAL
+ * deflated (`DOOM_WHD_SOURCE_ERR_NOT_RAW`) -- a pre-T58 container. There is no
+ * allocation fallback on that last path; the caller keeps the page it has.
  */
 bool frameLevelPlaypalPage(int page, std::uint8_t* out);
 

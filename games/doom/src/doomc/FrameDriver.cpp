@@ -4673,35 +4673,32 @@ bool frameLevelPlaypalPage(int page, std::uint8_t* out) {
         std::memcpy(out, gPlaypal, kPlaypalBytes);
         return true;
     }
-    // The container keeps PLAYPAL deflated and the reader has no partial-decode
-    // entry point, so a flash page costs one transient decode of the whole lump
-    // (10,752 B), released before this returns. Nothing is held between
-    // switches; if the heap cannot lend the block the caller keeps the page it
-    // has.
+    // T58: PLAYPAL is raw in the container, so a flash page is a pointer into
+    // the mapping -- page @p p at `view + p * 768`, one 768 B copy to the
+    // caller's buffer. The old path decoded all 10,752 B into a transient
+    // internal-RAM block; D7.1's save buffer holds heap_largest at 7,924, the
+    // allocation failed, and the scene silently kept page 0. A view needs no
+    // heap and no decode, so the 8.6 ms page switch is gone with the failure.
+    //
+    // A container built before this change has PLAYPAL stored/deflated and
+    // answers ERR_NOT_RAW here. There is deliberately no allocation fallback:
+    // the caller keeps the page it already has rather than taking the RAM the
+    // flash path cannot get.
     const int lump = doom_whd_source_lump_index(&gWhd, "PLAYPAL");
     if (lump < 0) {
         return false;
     }
-    const std::int32_t lumpBytes = doom_whd_source_lump_size(&gWhd, lump);
+    const std::uint8_t* view = nullptr;
+    std::uint32_t viewBytes = 0u;
+    if (doom_whd_source_lump_view(&gWhd, lump, &view, &viewBytes) != DOOM_WHD_SOURCE_OK) {
+        return false;
+    }
     const std::size_t need = (static_cast<std::size_t>(page) + 1u) * kPlaypalBytes;
-    if (lumpBytes < static_cast<std::int32_t>(need)) {
+    if (view == nullptr || static_cast<std::size_t>(viewBytes) < need) {
         return false;
     }
-    std::uint8_t* decode = static_cast<std::uint8_t*>(
-        heap_caps_malloc(static_cast<std::size_t>(lumpBytes), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    if (decode == nullptr) {
-        return false;
-    }
-    std::uint32_t decoded = 0u;
-    const bool ok =
-        doom_whd_source_read_lump(&gWhd, lump, decode, static_cast<std::size_t>(lumpBytes), &decoded)
-            == DOOM_WHD_SOURCE_OK
-        && decoded >= need;
-    if (ok) {
-        std::memcpy(out, decode + static_cast<std::size_t>(page) * kPlaypalBytes, kPlaypalBytes);
-    }
-    heap_caps_free(decode);
-    return ok;
+    std::memcpy(out, view + static_cast<std::size_t>(page) * kPlaypalBytes, kPlaypalBytes);
+    return true;
 }
 
 #if defined(DOOM_PALFLASH_SCRIPT)

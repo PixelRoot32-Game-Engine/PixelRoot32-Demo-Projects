@@ -12,11 +12,18 @@
 
       --raw-level E1M1..E1M9   every level's ten map lumps stay verbatim and
                                4-byte aligned, so FrameDriver maps them.
-      --raw COLORMAP,TEXTURE1,PNAMES
+      --raw COLORMAP,TEXTURE1,PNAMES,PLAYPAL
                                the renderer's read-only tables are mapped in
                                place. The C bake referee now reads TEXTURE1 and
                                PNAMES from the source WAD, but the device still
-                               wants these three mapped.
+                               wants these mapped. PLAYPAL joined them at T58:
+                               a flash page is 768 B at page*768 in the mapped
+                               lump, while the old path decoded all 10,752 B
+                               into a transient internal-RAM block -- which
+                               D7.1's save buffer made impossible (T54's census
+                               reads heap_largest=7,924), so every flash page
+                               silently stayed at 0. Raw costs +564 B measured and
+                               removes the 8.6 ms decode with it.
       --drop-lumps "DS*"       the 55 PCM sound effects, which an APU-only
                                port can never play (389 KB).
       --drop-lumps "HELP1,HELP2,CREDIT"
@@ -69,7 +76,8 @@
     0x0C0000 when it shrank to 720,896 B for the HUD art, 0x0C0000 -> 0x0B0000
     when it shrank to 655,360 B for the weapon art, and T53b moved it back to
     0x0C0000 with a 720,896 B app row because the trimmed container needs only
-    3,167,944 B. The `wad` row is 3,375,104 B: T53 took 32 KB off its top for
+    3,167,944 B (3,168,508 B once T58 made PLAYPAL raw). The `wad` row is
+    3,375,104 B: T53 took 32 KB off its top for
     the `saves` partition and T53b moved its start 64 KB up, so the budget below
     is that row's size. Flash the app image too, because the table is part of it.
     The uploader writes boot_app0.bin at 0xE000 on every upload (the last page of
@@ -156,7 +164,7 @@ try {
     # can never describe a different container than the one that was written.
     $EncodeArgs = @(
         "--raw-level", $Levels,
-        "--raw", "COLORMAP,TEXTURE1,PNAMES",
+        "--raw", "COLORMAP,TEXTURE1,PNAMES,PLAYPAL",
         "--drop-lumps", "DS*",
         "--drop-lumps", "HELP1,HELP2,CREDIT",
         "--bake", $Levels,
@@ -174,7 +182,7 @@ try {
         "--baked-capacity", $BakedCapacity
     )
 
-    Write-Host "== encode: nine levels, the named sprite frames, the HUD, weapon and menu art, union bake, 3,375,104 B budget, $BakedCapacity manifest entries =="
+    Write-Host "== encode: nine levels, the named sprite frames, the HUD, weapon and menu art, the mapped PLAYPAL, union bake, 3,375,104 B budget, $BakedCapacity manifest entries =="
     & python tools/whd_encode.py $Wad -o $Out --force @EncodeArgs --stats
     if ($LASTEXITCODE -ne 0) {
         throw "whd_encode.py exited $LASTEXITCODE"
