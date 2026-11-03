@@ -764,9 +764,20 @@ session, so a transition allocates nothing; the lump order is one function
 (`readMapLumps()`) so the startup map and a transition bind the same ten lumps in
 the same order the RAM probe measures. The automap is re-initialised for a new
 map (`am_level_init()` reads its linedef count and bounds), not merely stopped;
-the HUD restarts; `S_SetGameLevel`/`S_Start` run as G_DoLoadLevel's do. Only
-`mus_e1m1` ships (D6.4), so every map after the first is quiet rather than
-playing the wrong track.
+the HUD restarts; `S_SetGameLevel`/`S_Start` run as G_DoLoadLevel's do. One
+track ships (S23), so every map plays E1M1's theme rather than the wrong one.
+
+**The eye, before the first tic.** A load has no camera height until a tic
+computes it (`p_player_wire()` is G_PlayerReborn's `memset`; `P_CalcHeight` is
+what turns `viewheight` into `viewz`). Every load therefore states the eye its
+own tics would reach, in `restartLevelPresentation()` -- see
+`settleLevelView()`'s comment in
+[`src/doomc/FrameDriver.cpp`](src/doomc/FrameDriver.cpp). Without it, the frame
+after a load is drawn from the sector floor, which the wall pass leaves with
+uncovered columns and the surface's `0xFF` prefill shows as a magenta bar at
+each edge of the view. The fade hides that on an ordinary transition; the
+victory does not, because the main menu opens on the next frame and freezes the
+world (S25).
 
 **The serial lines**, one per event:
 
