@@ -20,6 +20,12 @@
 #include "doomc/FrameDriver.h"
 #endif
 
+#if defined(DOOM_FRAME_DUMP)
+// The dump's button combination; `_hud` pulls InputMap in through its HUD path
+// and `_show` does not, so the include is the dump's own.
+#include "doomc/InputMap.h"
+#endif
+
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
 #include "doomc/BootScreen.h"
 #endif
@@ -2501,6 +2507,52 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
 
     showDrawStart_ = drawStart;
     showDrawEnd_ = sampleMicros();
+
+#if defined(DOOM_FRAME_DUMP)
+    // S26 diagnostic (env `esp32dev_ILI9341_show_dump` / `_hud_dump`): hold A and
+    // B together and the finished surface goes out over the console as RLE, so
+    // the frame that looked wrong on the glass can be rebuilt on the host and
+    // diffed against its own render of the same viewpoint.
+    //
+    // Three frames, about a second of play apart: the room that reported the
+    // artifact blinks (sector special 12), so one sample could easily be the
+    // phase that renders correctly. The burst costs ~10 s of blocked console per
+    // frame, and the scene must not dump while it is already writing.
+    {
+        static int remaining = 0;
+        static std::uint32_t cooldown = 0;
+        const std::uint8_t both = static_cast<std::uint8_t>(doomc::kButtonA | doomc::kButtonB);
+        bool dump = false;
+        if (remaining == 0) {
+            if ((buttons_ & both) == both) {
+                remaining = 3;
+                cooldown = 0;
+            }
+        } else if (cooldown > 0u) {
+            --cooldown;
+        } else {
+            dump = true;
+        }
+#if defined(DOOM_FRAME_DUMP_AUTO)
+        // Self-test hook: `-D DOOM_FRAME_DUMP_AUTO=<frame>` dumps at that frame
+        // without a button, so the protocol can be checked end to end from a
+        // capture before anyone is asked to press A and B in a room. Never
+        // defined by an environment in this file.
+        if (remaining == 0 && showFrame_ == static_cast<std::uint32_t>(DOOM_FRAME_DUMP_AUTO)) {
+            remaining = 1;
+            cooldown = 0;
+        }
+#endif
+        if (dump) {
+            if (std::uint8_t* pixels = surface.getSpriteBuffer()) {
+                doomc::frameDumpSurface(pixels, width, height, showFrame_);
+            }
+            --remaining;
+            cooldown = 20;  // ~1.3 s at the shipped frame rate
+        }
+    }
+#endif
+
     ++showFrame_;
 }
 

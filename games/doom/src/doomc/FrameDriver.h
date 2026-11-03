@@ -976,6 +976,27 @@ void frameLevelMapForget();
  */
 bool frameLevelPlayer(LevelPlayer* out);
 
+#if defined(DOOM_FRAME_DUMP)
+/**
+ * @brief Diagnostic (env `esp32dev_ILI9341_hud_dump`): writes one frame to the
+ *        console as run-length pairs.
+ *
+ * A refused frame, a wrong palette page and a bad colormap row all look like
+ * "glitches" in a photograph, and the host renderer cannot reproduce a
+ * board-only one. This paints nothing and decides nothing: it copies the bytes
+ * the panel is about to show so the same frame can be rebuilt and compared on
+ * the host, one pixel at a time.
+ *
+ * The protocol is `DUMP,begin,...`, then `DUMP,runs=N`, then one
+ * `DUMP,r,<count><value>` pair per two hex bytes (count 1..255, value 00..FF),
+ * and `DUMP,end`. Never compiled into a shipped image.
+ *
+ * @param pixels The 8bpp surface, @p width by @p height, row-major.
+ * @param frame  The console's frame counter, so the dump names its own frame.
+ */
+void frameDumpSurface(const std::uint8_t* pixels, int width, int height, std::uint32_t frame);
+#endif
+
 /**
  * @brief Palette 0 of the WAD's PLAYPAL lump, 768 bytes, or NULL before OPEN.
  *

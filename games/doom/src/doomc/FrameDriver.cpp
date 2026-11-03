@@ -4709,6 +4709,84 @@ bool frameLevelPlayer(LevelPlayer* out) {
 
 const std::uint8_t* frameLevelPlaypal() { return gPlaypalValid ? gPlaypal : nullptr; }
 
+#if defined(DOOM_FRAME_DUMP)
+/*
+ * S26's board-side eye. The protocol is in FrameDriver.h; what matters here is
+ * that this writes the surface the panel is about to expand, not a re-render:
+ * a pixel that looks wrong in the dump looked wrong on the glass, so the host
+ * can rebuild this exact frame (same palette index bytes) and diff it against
+ * its own render of the same viewpoint.
+ *
+ * One pair per line group of 24, because a console line has to stay short
+ * enough for the writer and the capture to keep up; 255 is the longest run a
+ * byte can carry, so a longer stretch is several pairs.
+ */
+void frameDumpSurface(const std::uint8_t* pixels, int width, int height, std::uint32_t frame) {
+    if (pixels == nullptr || width <= 0 || height <= 0) {
+        return;
+    }
+    const std::size_t count = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    char line[128];
+    LevelPlayer player;
+
+    std::snprintf(line, sizeof line, "DUMP,begin,frame=%u,w=%d,h=%d\n",
+                  static_cast<unsigned>(frame), width, height);
+    writeLine(line);
+    if (frameLevelPlayer(&player)) {
+        std::snprintf(line, sizeof line, "DUMP,view,x=%ld,y=%ld,z=%ld,angle=%lu,dark=%u\n",
+                      static_cast<long>(player.view.x), static_cast<long>(player.view.y),
+                      static_cast<long>(player.view.z), static_cast<unsigned long>(player.view.angle),
+                      static_cast<unsigned>(frameLevelPaletteIndex()));
+        writeLine(line);
+    }
+
+    // Count the pairs first: the reader allocates once and can tell a truncated
+    // dump from a complete one.
+    std::size_t at = 0u;
+    std::size_t runs = 0u;
+    while (at < count) {
+        const std::uint8_t value = pixels[at];
+        std::size_t length = 1u;
+        while (at + length < count && pixels[at + length] == value && length < 255u) {
+            ++length;
+        }
+        at += length;
+        ++runs;
+    }
+    std::snprintf(line, sizeof line, "DUMP,runs=%u\n", static_cast<unsigned>(runs));
+    writeLine(line);
+
+    at = 0u;
+    std::snprintf(line, sizeof line, "DUMP,r,");
+    std::size_t written = std::strlen(line);
+    while (at < count) {
+        const std::uint8_t value = pixels[at];
+        std::size_t length = 1u;
+        while (at + length < count && pixels[at + length] == value && length < 255u) {
+            ++length;
+        }
+        // 4 hex chars per pair plus room for the newline and the NUL.
+        if (written + 6u >= sizeof line) {
+            line[written] = '\n';
+            line[written + 1u] = '\0';
+            writeLine(line);
+            std::snprintf(line, sizeof line, "DUMP,r,");
+            written = std::strlen(line);
+        }
+        std::snprintf(line + written, sizeof line - written, "%02X%02X",
+                      static_cast<unsigned>(length), static_cast<unsigned>(value));
+        written += 4u;
+        at += length;
+    }
+    if (written > 7u) {
+        line[written] = '\n';
+        line[written + 1u] = '\0';
+        writeLine(line);
+    }
+    writeLine("DUMP,end\n");
+}
+#endif
+
 int frameLevelPaletteIndex() {
     return gWorld.open ? palflash_index(&gWorld.level.playerState) : 0;
 }
