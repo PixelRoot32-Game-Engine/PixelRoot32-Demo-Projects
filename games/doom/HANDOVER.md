@@ -518,6 +518,23 @@ is what holds the line, and `analogRead()` remains forbidden there.
   environment comment records that `dram0_0_seg` has 256 B free where the
   walkable capacity set needs 15,424 B (`platformio.ini:286-306`). It exists to
   prove a measurement, not to be a candidate.
+- **The loop task's stack is 12 KB, and that is a fix, not a tuning knob.**
+  `ARDUINO_LOOP_STACK_SIZE=12288` in `esp32dev_ILI9341`'s flags. At the
+  framework's 8 KB, entering the room before E1M1's exit and firing panicked the
+  board (`LoadProhibited` inside `z_zone.c`'s `refreshLargestFree`) or hung it
+  with no output: the firing path (`P_AimLineAttack` + `P_LineAttack`, each with
+  a 768 B intercept array, then the intercept walk and `P_SpawnMobj`) overflowed
+  the stack into the level's zone. Measured peak 5,380 B with `SHOW,stack`; 12 KB
+  leaves 6.9 KB, the arena still fits (`chosen=18432`), and the boot's heap keeps
+  25,912 B free. Any future change that deepens a call chain has to move this
+  number with a measurement.
+- **The exit room's visual artifact is open (S26).** With the stack fixed the
+  board no longer crashes there, but the frames still show large fan-shaped
+  tears. The board and the host agree on `drawsegs=37` for the same viewpoint,
+  the live sector table matches the WAD except for a door standing open, and the
+  host render is clean at `-O0/-O2/-Os/-O3`; so the difference is inside the
+  drawing, not the walk. `esp32dev_ILI9341_hud_dump` (diagnostic, never shipped)
+  dumps a frame, the sector table and the walk's counts on A+B for the next pass.
 - **The listening pass and the panel visual checks are still the maintainer's.**
   `sfx_check` proves a cue *is* the sound it claims to be (49 pass, 59 recorded
   accepted-deviation, 0 fail); whether it sounds good is a listening pass. The
