@@ -930,6 +930,8 @@ int main(int argc, char** argv) {
     unsigned int viewAngle = 0u;
     int viewGiven = 0;
     int viewDiag = 0;
+    const char* lightsPath = NULL;
+    const char* dumpPath = NULL;
     int submittedCount = 0;
     int viewCount = FRAME_COUNT;
     int frame;
@@ -963,12 +965,16 @@ int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: rsegs_check <path-to-WAD> [--detail N] "
                         "[--column N,X] [--scroll SIDE,DX] "
-                        "[--view X,Y,Z,ANGLE] [--viewdiag]\n");
+                        "[--view X,Y,Z,ANGLE] [--viewdiag] [--lights FILE] [--dump PATH]\n");
         return 2;
     }
     for (index = 2; index < argc; ++index) {
         if (strcmp(argv[index], "--detail") == 0 && index + 1 < argc) {
             detail = atoi(argv[++index]);
+        } else if (strcmp(argv[index], "--dump") == 0 && index + 1 < argc) {
+            dumpPath = argv[++index];
+        } else if (strcmp(argv[index], "--lights") == 0 && index + 1 < argc) {
+            lightsPath = argv[++index];
         } else if (strcmp(argv[index], "--column") == 0 && index + 1 < argc) {
             if (sscanf(argv[++index], "%d,%d", &detailFrame, &detailColumn) != 2) {
                 fprintf(stderr, "rsegs_check: --column wants FRAME,COLUMN\n");
@@ -1010,6 +1016,46 @@ int main(int argc, char** argv) {
         return 2;
     }
     marker = W_CheckNumForName(&wad, "E1M1");
+    if (lightsPath != NULL) {
+        /* S26: the board's live sector table, so a strobe room is compared at the
+         * light the panel actually had. The lines are the board's own `SHOW,s`
+         * records: `SHOW,s,i=<n>,f=<fixed>,c=<fixed>,l=<0..255>,sp=<n>`. The WAD is
+         * read into malloc'd memory, so this patches the map before it is opened;
+         * f and c are 16.16 fixed point and the lump stores map units. A line the
+         * parser cannot read is ignored rather than half-applied. */
+        FILE* lightsFile = fopen(lightsPath, "r");
+        int applied = 0;
+        if (lightsFile != NULL) {
+            uint8_t* sectorBytes =
+                (uint8_t*)W_LumpPointer(&wad, marker + 1 + DOOM_MAP_SECTORS);
+            char lightsLine[256];
+            while (fgets(lightsLine, sizeof lightsLine, lightsFile) != NULL) {
+                int sectorIndex = 0;
+                int floorFixed = 0;
+                int ceilFixed = 0;
+                int light = 0;
+                if (sectorBytes == NULL ||
+                    sscanf(lightsLine, "SHOW,s,i=%d,f=%d,c=%d,l=%d", &sectorIndex,
+                           &floorFixed, &ceilFixed, &light) != 4) {
+                    continue;
+                }
+                if (sectorIndex < 0 || sectorIndex >= 256) {
+                    continue;
+                }
+                {
+                    int16_t floorUnits = (int16_t)(floorFixed / 65536);
+                    int16_t ceilUnits = (int16_t)(ceilFixed / 65536);
+                    int16_t lightUnits = (int16_t)light;
+                    memcpy(sectorBytes + (size_t)sectorIndex * 26u + 0u, &floorUnits, 2u);
+                    memcpy(sectorBytes + (size_t)sectorIndex * 26u + 2u, &ceilUnits, 2u);
+                    memcpy(sectorBytes + (size_t)sectorIndex * 26u + 20u, &lightUnits, 2u);
+                }
+                ++applied;
+            }
+            fclose(lightsFile);
+            printf("LIGHTS applied=%d\n", applied);
+        }
+    }
     colormapLump = W_CheckNumForName(&wad, "COLORMAP");
     texture1Lump = W_CheckNumForName(&wad, "TEXTURE1");
     pnamesLump = W_CheckNumForName(&wad, "PNAMES");
@@ -1299,6 +1345,13 @@ int main(int argc, char** argv) {
             }
         }
 
+        if (dumpPath != NULL) {
+            FILE* dumpFile = fopen(dumpPath, "wb");
+            if (dumpFile != NULL) {
+                fwrite(g_pixels, 1u, sizeof g_pixels, dumpFile);
+                fclose(dumpFile);
+            }
+        }
         if (detail == frame) {
             for (column = 0; column < R_SCREEN_WIDTH; ++column) {
                 sha256_t context;
