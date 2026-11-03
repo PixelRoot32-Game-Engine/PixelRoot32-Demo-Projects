@@ -106,7 +106,10 @@ public:
     /// The envelope's schema field: the save record's own format version.
     static constexpr std::uint16_t kSlotSchema = 1u;
 
-    /// The map this build can save: the session opens E1M1 and only E1M1.
+    /// The map a brand-new run starts on, for the label of a record written
+    /// before any transition. S21: a saved record's real map number comes from
+    /// `frameLevelNumber()` -- the level the world is on -- so this is only the
+    /// build's default and never a ceiling on what can be saved.
     static constexpr std::uint8_t kLevelNumber = 1u;
 
     DoomPersistence();

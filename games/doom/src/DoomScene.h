@@ -434,6 +434,17 @@ private:
     /// is noticed once and the six labels are read from the medium then (T53).
     std::uint8_t menuScreenLast_ = M_SCREEN_MAIN;
 
+    /**
+     * @brief Whether the run ended and the main menu has not been opened yet (S21).
+     *
+     * E1M8's ending has no finale screen (Phase 5/S3 never built one), so the
+     * driver hands the world back to the run's first map and raises a one-shot;
+     * this flag carries it to `runMenu()`, which opens the menu through the same
+     * `m_menu_open()` a Start press uses. It is consumed on the frame it is read,
+     * so the menu is not reopened every frame after a victory.
+     */
+    bool victoryMenuPending_ = false;
+
 #if DOOM_PERSISTENCE
     /// Fills `menu_`'s six slot labels through the persistence layer (T53).
     void refreshSlotLabels();

@@ -213,12 +213,21 @@ public:
      */
     const LevelFailure& failure() const { return failure_; }
 
-    /// The level marker the session opened ("E1M1"), empty before `open()`.
-    const char* level() const { return marker_; }
+    /// The level marker the session is on ("E1M1"), empty before `open()`.
+    ///
+    /// S21: live, not the marker `open()` returned. A transition moves the world
+    /// to another map, and a cached boot marker would keep naming the level the
+    /// run started on. The string lives in the driver's own buffer.
+    const char* level() const {
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+        return open_ ? frameLevelMarker() : "";
+#else
+        return "";
+#endif
+    }
 
 private:
     bool open_ = false;
-    char marker_[5] = {0, 0, 0, 0, 0};
     /// The failure `open()` last recorded; `None` when there was none.
     LevelFailure failure_;
 };

@@ -27,7 +27,10 @@ bool SceneRenderer::open() {
     failure_ = LevelFailure{};
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
-    if (!frameLevelOpen("SHOW", marker_)) {
+    // The driver fills this buffer's five bytes and forgets it; the renderer's
+    // own answer is `level()`, which reads the live marker from the driver.
+    char marker[5] = {0};
+    if (!frameLevelOpen("SHOW", marker)) {
         // The frame driver classified the branch as it printed its line; the
         // scene keeps that classification so the panel can say it in words.
         failure_ = frameLevelFailure();
@@ -49,7 +52,6 @@ bool SceneRenderer::open() {
         failure_.detail[0] = '\0';
         writeLine("SHOW,setup,status=fail,reason=playpal\n");
         frameLevelClose();
-        marker_[0] = '\0';
         return false;
     }
     palette::initFromPlaypal(rgb888);
@@ -276,7 +278,6 @@ void SceneRenderer::close() {
     }
 #endif
     open_ = false;
-    marker_[0] = '\0';
 }
 
 }  // namespace doomc

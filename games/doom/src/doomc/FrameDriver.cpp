@@ -473,6 +473,12 @@ static_assert(DOOM_WHD_SOURCE_ERR_UNAVAILABLE == 6,
 #include "p_setup.h"
 #include "p_spec.h"
 #include "p_user.h"
+#if defined(DOOM_LEVEL_TEST)
+// The board proof's exit fixture: P_CheckPosition's standability and
+// P_PointToAngle's facing, the same two calls tools/level_check.c uses.
+#include "m_fixed.h"
+#include "p_map.h"
+#endif
 #include "palflash.h"
 #if defined(DOOM_PALFLASH_SCRIPT)
 #include "p_inter.h"
@@ -505,6 +511,11 @@ static_assert(DOOM_WHD_SOURCE_ERR_UNAVAILABLE == 6,
 // G_InitNew/G_DoReborn: the reload a New Game and a loaded save share (T53).
 #include "g_game.h"
 #endif
+// S21: the level transition. The composition of G_DoCompleted's switch with
+// G_DoWorldDone's load is engine-free and host-tested, so the game frame and
+// test/unit/test_level run one implementation. g_game.h's declarations are part
+// of it, and the include above is the menu's own reason for them.
+#include "doomc/LevelTransition.h"
 
 // The E1M1 sprite fixture: the DoomEd number -> frame-0 lump table
 // tools/gen_e1m1_sprites.py generates for the host harness. Fixture data, not
@@ -690,6 +701,27 @@ constexpr std::uint8_t kSkyTextureName[8] = {'S', 'K', 'Y', '1', 0, 0, 0, 0};
 constexpr std::uint32_t kFrameLevel = PIXELROOT32_DOOM_FRAME_LEVEL;
 static_assert(kFrameLevel >= 1u && kFrameLevel <= 9u,
               "the shareware episode has nine levels: E1M1..E1M9");
+
+/*
+ * THE LEVEL THE GAME IS ON (S21)
+ *
+ * `kFrameLevel` is the *build's* map: the environment variable that selects which
+ * level a measurement build opens, and therefore the level a session starts on.
+ * It stopped being "the only level" the moment the exit works: a completed level
+ * names the next one and the world loads it, so the driver needs the number the
+ * world is actually on. `gRuntimeLevel` is that number.
+ *
+ *   - it starts at `kFrameLevel`, so every existing environment and gate opens
+ *     exactly the map it always did (the variable keeps its meaning as the
+ *     startup default);
+ *   - New Game returns it to `kFrameLevel` (a run starts at the build's map);
+ *   - a transition moves it to the map the load named;
+ *   - the save record carries it, so a save written on E1M2 names E1M2.
+ *
+ * It is one byte of .bss in the probe builds too, where nothing but
+ * openLevelSession() reads it.
+ */
+std::uint8_t gRuntimeLevel = static_cast<std::uint8_t>(kFrameLevel);
 
 /// Which of the level's lumps the driver keeps. E1M1 is the zero-byte marker and
 /// the ten data lumps follow it in WAD order (THINGS LINEDEFS SIDEDEFS VERTEXES
@@ -1763,6 +1795,67 @@ bool loadLumpViewByName(const char* name, const std::uint8_t** data, std::size_t
     return viewLump(lump, data, bytes);
 }
 
+/*
+ * ONE MAP'S LUMPS, BECAUSE TWO CALLERS NEED THE SAME SET (S21)
+ *
+ * `openLevelSession()` binds the level a session starts on, and the level
+ * transition binds the level an exit names. Both must hand the rest of the file
+ * exactly the same `doom_map_t` from the same container bytes, or the frame the
+ * board draws after a transition would come from a map no probe measured. The
+ * lump order is part of that sameness: the RAM build's heap only fits when the
+ * requests descend (see the call-site comment in openLevelSession), so the
+ * sequence below is one list and not two copies of it.
+ *
+ * THINGS is a view in both builds, because the masked pass builds one sprite list
+ * per view from it; REJECT and BLOCKMAP are skipped, because the renderer never
+ * reads them and the simulation does not need them loaded here.
+ *
+ * @param marker           The level's zero-byte marker lump index.
+ * @param loadColormap     Read COLORMAP into gColormap in its place in the
+ *                         sequence. The session's first map does; a transition
+ *                         does not, because the palette table's view is already
+ *                         bound and must not be taken again under a level that is
+ *                         about to be replaced.
+ * @param outMap           Zeroed, then filled by doom_map_open().
+ * @param mapFailures      Out: the lumps that did not resolve.
+ * @param directoriesLoaded Out: whether COLORMAP resolved; true when not asked.
+ * @return DOOM_MAP_OK, or the first refusal's code.
+ */
+doom_map_error_t readMapLumps(int marker, bool loadColormap, doom_map_t* outMap,
+                              std::int32_t* mapFailures, bool* directoriesLoaded) {
+    doom_map_source_t source = {};
+    *mapFailures = 0;
+    *directoriesLoaded = true;
+
+    // Descending block size, which is the order the RAM build's heap needs: the
+    // holes are not interchangeable, so a small request in front of a big one can
+    // fail while the same bytes fit when the requests descend. In the flash build
+    // every one of these is a pointer and the order costs nothing.
+    (void)loadMapLump(marker, DOOM_MAP_SIDEDEFS, &source, mapFailures);   // 19,440
+    (void)loadMapLump(marker, DOOM_MAP_SEGS, &source, mapFailures);       //  8,784
+    if (loadColormap) {
+        *directoriesLoaded = loadLumpViewByName("COLORMAP", &gColormap, &gColormapBytes);
+    }
+    (void)loadMapLump(marker, DOOM_MAP_LINEDEFS, &source, mapFailures);   //  6,650
+    (void)loadMapLump(marker, DOOM_MAP_NODES, &source, mapFailures);      //  6,608
+    // TEXTURE1 and PNAMES are build-time inputs now: the bake used them and the
+    // runtime reads the manifest. They stay in the container for the C check.
+    if (!viewMapLump(marker, DOOM_MAP_THINGS, &source)) {
+        ++(*mapFailures);
+    }
+    (void)loadMapLump(marker, DOOM_MAP_SECTORS, &source, mapFailures);    //  2,210
+    (void)loadMapLump(marker, DOOM_MAP_VERTEXES, &source, mapFailures);   //  1,868
+    (void)loadMapLump(marker, DOOM_MAP_SSECTORS, &source, mapFailures);   //    948
+    (void)loadMapLump(marker, DOOM_MAP_REJECT, &source, mapFailures);     // skipped
+    (void)loadMapLump(marker, DOOM_MAP_BLOCKMAP, &source, mapFailures);   // skipped
+
+    std::memset(outMap, 0, sizeof *outMap);
+    if (*mapFailures != 0) {
+        return DOOM_MAP_ERR_REQUIRED_LUMP;
+    }
+    return doom_map_open(outMap, &source);
+}
+
 // --- One frame --------------------------------------------------------------
 
 /// The state the four passes share for the whole run.
@@ -2524,6 +2617,23 @@ struct LevelWorld {
 
 LevelWorld gWorld;
 
+/*
+ * S21's game state and the one-shot the scene reads.
+ *
+ * `gLevelState` is upstream's gameepisode/gamemap/secretexit, which this port
+ * keeps as a value because it has no globals (g_game.h). It is written by
+ * g_do_world_done() before each load, so it always names the level that is open
+ * and the exit that requested it.
+ *
+ * `gVictoryPending` is "the run ended and nothing has looked at it yet": E1M8's
+ * ending has no finale screen to draw (Phase 5/S3 never built one), so the driver
+ * records the fact, loads the run's start so the frame the menu draws over is a
+ * live one, and the scene opens the main menu on the next frame. One-shot because
+ * the scene must not reopen the menu every frame after a victory.
+ */
+g_level_state_t gLevelState = {1u, static_cast<std::uint8_t>(kFrameLevel), 0u};
+bool gVictoryPending = false;
+
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD)
 
 /*
@@ -2945,6 +3055,13 @@ void closeLevelSession();
 bool openWorldSession() {
     gWorld = LevelWorld{};
     gFrameWorld = nullptr;
+    // S21: a fresh session's game state is the level being opened, with no exit
+    // requested. gRuntimeLevel was set by openLevelSession() before the map was
+    // read, so the marker and this record cannot disagree.
+    gLevelState.episode = 1u;
+    gLevelState.map = gRuntimeLevel;
+    gLevelState.secretExit = 0u;
+    gVictoryPending = false;
 
     if (!gSession.open || gSession.driver == nullptr) {
         return false;
@@ -3107,7 +3224,7 @@ bool openWorldSession() {
     // which level this is (S_Start's music number and the map-8 rule) and let it
     // start the music. The listener exists from the first tic; setting it here
     // keeps a sound started before that tick distance-adjusted.
-    S_SetGameLevel(1, static_cast<int>(kFrameLevel));
+    S_SetGameLevel(1, static_cast<int>(gRuntimeLevel));
     S_SetListener(gWorld.level.playerState.mo);
     S_Start();
 #endif
@@ -3243,6 +3360,11 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     // A new open starts with no failure recorded: the scene paints an error
     // screen only when this call (or the palette step that follows it) says so.
     gLevelFailure = LevelFailure{};
+    // S21: a session starts on the build's map. The variable keeps its D3.10
+    // meaning (which map this environment opens) and now also names the level the
+    // run is on, so it is set before the marker and the game state are built from
+    // it -- a second open cannot inherit the previous run's transition.
+    gRuntimeLevel = static_cast<std::uint8_t>(kFrameLevel);
 
     // The reason line writes into the shared session buffer: the setup call
     // graph below already runs near the loop task's stack, and a second 512-byte
@@ -3312,11 +3434,11 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
 #endif
 
     char mapMarker[5] = {0};
-    if (!frameMapMarker(kFrameLevel, mapMarker)) {
+    if (!frameMapMarker(gRuntimeLevel, mapMarker)) {
         // `frameMapMarker()` writes nothing on failure; the level number is the
         // diagnostic, so the detail names the map that could not be spelled.
         char expected[5];
-        std::snprintf(expected, sizeof expected, "E1M%u", static_cast<unsigned>(kFrameLevel));
+        std::snprintf(expected, sizeof expected, "E1M%u", static_cast<unsigned>(gRuntimeLevel));
         recordLevelFailure(LevelFailureReason::Level, 0, expected);
         std::snprintf(line, sizeof line, "%s,setup,status=fail,reason=level\n", tag);
         writeLine(line);
@@ -3334,34 +3456,11 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
         return false;
     }
 
-    doom_map_source_t source = {};
-    std::int32_t mapFailures = 0;
-    // Descending block size, which is the order the RAM build's heap needs: the
-    // holes are not interchangeable, so a small request in front of a big one can
-    // fail while the same bytes fit when the requests descend. In the flash build
-    // every one of these is a pointer and the order costs nothing.
-    (void)loadMapLump(marker, DOOM_MAP_SIDEDEFS, &source, &mapFailures);   // 19,440
-    (void)loadMapLump(marker, DOOM_MAP_SEGS, &source, &mapFailures);       //  8,784
-    bool directoriesLoaded = loadLumpViewByName("COLORMAP", &gColormap, &gColormapBytes);
-    (void)loadMapLump(marker, DOOM_MAP_LINEDEFS, &source, &mapFailures);   //  6,650
-    (void)loadMapLump(marker, DOOM_MAP_NODES, &source, &mapFailures);      //  6,608
-    // TEXTURE1 and PNAMES are build-time inputs now: the bake used them and the
-    // runtime reads the manifest. They stay in the container for the C check.
-    // THINGS is a view in both builds: see viewMapLump(). It stays alive for the
-    // whole session because the masked pass builds one sprite list per view from
-    // it.
-    if (!viewMapLump(marker, DOOM_MAP_THINGS, &source)) {
-        ++mapFailures;
-    }
-    (void)loadMapLump(marker, DOOM_MAP_SECTORS, &source, &mapFailures);    //  2,210
-    (void)loadMapLump(marker, DOOM_MAP_VERTEXES, &source, &mapFailures);   //  1,868
-    (void)loadMapLump(marker, DOOM_MAP_SSECTORS, &source, &mapFailures);   //    948
-    (void)loadMapLump(marker, DOOM_MAP_REJECT, &source, &mapFailures);     // skipped
-    (void)loadMapLump(marker, DOOM_MAP_BLOCKMAP, &source, &mapFailures);   // skipped
-
     doom_map_t map;
+    std::int32_t mapFailures = 0;
+    bool directoriesLoaded = true;
     const doom_map_error_t mapError =
-        mapFailures == 0 ? doom_map_open(&map, &source) : DOOM_MAP_ERR_REQUIRED_LUMP;
+        readMapLumps(marker, true, &map, &mapFailures, &directoriesLoaded);
     if (mapFailures != 0 || !directoriesLoaded || mapError != DOOM_MAP_OK) {
         const char* failedLump = (gFailLump >= 0 && gFailLump < DOOM_MAP_LUMP_COUNT)
                                      ? kMapLumpNames[gFailLump]
@@ -3389,11 +3488,18 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
 
     gLevelReleasedBytes = 20742u;
 #if !defined(PIXELROOT32_DOOM_MAP_IN_RAM)
+    // The map's own raw bytes, read from the container by name: in the flash
+    // build every one of them is a pointer into the mapping, so this is the RAM
+    // the workload did not have to hold. (readMapLumps() owns the source record;
+    // the number is the same one it bound.)
     for (int lump = 0; lump < DOOM_MAP_LUMP_COUNT; ++lump) {
         if (lump == DOOM_MAP_THINGS || lump >= kFirstSkippedMapLump) {
             continue;
         }
-        gLevelReleasedBytes += source.size[lump];
+        const std::int32_t size = doom_whd_source_lump_size(&gWhd, marker + 1 + lump);
+        if (size > 0) {
+            gLevelReleasedBytes += static_cast<std::uint32_t>(size);
+        }
     }
 #endif
 
@@ -3893,6 +3999,375 @@ bool frameLevelSpawnView(LevelView* out) {
     return true;
 }
 
+/*
+ * --- S21: opening a level at runtime and changing to another one -----------
+ *
+ * The game used to open exactly one map for the life of the process: the build's
+ * `kFrameLevel`. A completed level names the next one and the world has to load
+ * it, so the driver needs two things the probe never did -- a way to build any
+ * level's map view into the session, and a per-load presentation reset that
+ * knows whether the map changed.
+ *
+ * The composition itself (read the request, name the next level, load it with the
+ * player carried) is `doomc/LevelTransition.*`, which is engine-free and
+ * host-tested; this block is the board half: the container's map view, the
+ * renderer's live reader, the HUD, the automap, the sound layer and the serial
+ * line.
+ */
+
+/**
+ * @brief Builds @p levelNumber's map view into @p outMap from the open container.
+ *
+ * The container is mapped for the whole session, so a level's lumps are a second
+ * set of pointers into the same mapping -- no allocation, nothing to release, and
+ * the previous level's view simply stops being referenced.
+ *
+ * A refusal is printed here (`SHOW,level,error=...`) and leaves @p outMap zeroed:
+ * the caller decides whether the world keeps the level it was on.
+ *
+ * @param levelNumber 1..9.
+ * @param outMap      Receives the opened view.
+ * @return true when the marker, all ten lumps and doom_map_open() accepted it.
+ */
+bool openSessionMap(std::uint8_t levelNumber, doom_map_t* outMap) {
+    char (&line)[kFrameProfileLineCapacity] = gSessionLine;
+    char marker[5] = {0};
+
+    if (!gSession.open || !frameMapMarker(levelNumber, marker)) {
+        std::snprintf(line, sizeof line, "SHOW,level,error=number,level=%u\n",
+                      static_cast<unsigned>(levelNumber));
+        writeLine(line);
+        return false;
+    }
+    const int lump = doom_whd_source_lump_index(&gWhd, marker);
+    if (lump < 0) {
+        std::snprintf(line, sizeof line, "SHOW,level,error=marker,level=%s\n", marker);
+        writeLine(line);
+        return false;
+    }
+
+    std::int32_t failures = 0;
+    bool directoriesLoaded = true;
+    const doom_map_error_t error = readMapLumps(lump, false, outMap, &failures, &directoriesLoaded);
+    if (failures != 0 || error != DOOM_MAP_OK) {
+        std::snprintf(line, sizeof line,
+                      "SHOW,level,error=lump,level=%s,map_failures=%d,fail_lump=%s,"
+                      "map_error=%d\n",
+                      marker, static_cast<int>(failures),
+                      (gFailLump >= 0 && gFailLump < DOOM_MAP_LUMP_COUNT) ? kMapLumpNames[gFailLump]
+                                                                         : "none",
+                      static_cast<int>(error));
+        writeLine(line);
+        std::memset(outMap, 0, sizeof *outMap);
+        return false;
+    }
+    return true;
+}
+
+/**
+ * @brief G_DoLoadLevel's presentation reset, for a load that just happened.
+ *
+ * `hudStart()` and the sound layer's restart are the same for every load. The
+ * automap is the one that depends on the answer: a reload of the *same* map only
+ * has to forget what was seen (`resetAutomap`), while a *different* map has a
+ * different linedef count and vertex box, and `am_level_init()` is the call that
+ * reads them into the state (am_map.h: the state keeps the map pointer, the line
+ * count and both zoom limits). Stopping alone would draw the level that just
+ * ended under the new player.
+ *
+ * @param differentMap Whether the load bound a map the automap has not seen.
+ */
+void restartLevelPresentation(bool differentMap) {
+#if defined(DOOM_HUD)
+    hudStart();
+    if (differentMap) {
+        closeAutomap();
+        (void)openAutomap();
+    } else {
+        resetAutomap();
+    }
+#else
+    (void)differentMap;
+#endif
+#if defined(DOOM_AUDIO)
+    // G_DoLoadLevel's S_Start: the music choice and S_AdjustSoundParams' map-8
+    // exception both read gamemap, so the level is handed over before the music
+    // is asked for; the listener is the new avatar.
+    S_SetGameLevel(static_cast<int>(gLevelState.episode), static_cast<int>(gLevelState.map));
+    S_SetListener(gWorld.level.playerState.mo);
+    S_Start();
+#endif
+}
+
+/**
+ * @brief Lays @p map's world out over the session's arena, binds it and presents it.
+ *
+ * This is the recovery path: a level change whose load refused leaves the level
+ * zeroed (p_setup.h), so the map that load left behind is laid out again through
+ * `p_level_init()` + `p_spawn_specials()` -- the same pair every load uses, never
+ * a second loader. `probeWorld()` is that pair with the zone snapshot, and the
+ * renderer's live reader is unbound first for the reason `reloadWorldAtLevel`
+ * documents (p_level_init copies SECTORS through it).
+ *
+ * @param map   The map to lay out; its views must be live.
+ * @param skill 0..4, the map's own rules' skill.
+ * @return true when the world is open again. On false the world is closed, so the
+ *         frame keeps its last picture instead of drawing a zeroed level.
+ */
+bool layOutWorld(const doom_map_t* map, int skill) {
+    zone_stats_t unused;
+    gFrameWorld = nullptr;
+    p_level_unbind_render(&gSession.driver->map);
+    if (probeWorld(map, gWorld.arena, gWorld.arenaBytes, &gWorld.level, &unused,
+                   static_cast<p_skill_t>(skill)) != P_SETUP_OK) {
+        gWorld.open = false;
+        gFrameWorld = nullptr;
+        return false;
+    }
+    gFrameWorld = &gWorld.level;
+    p_level_bind_render(&gWorld.level, &gSession.driver->map);
+    restartLevelPresentation(true);
+    return true;
+}
+
+/**
+ * @brief S21: carries out the exit the level requested, once.
+ *
+ * Upstream's order, without the intermission this port never built:
+ *
+ *   1. `levelExitNext()` reads `exitRequest` and names the next level (or the
+ *      episode's victory).
+ *   2. A level: open its map view, unbind the renderer's live reader, load with
+ *      the player carried (`levelChangeLoad(..., carry=true)`) and bind the new
+ *      map's seams.
+ *   3. The victory (E1M8's sector special 11 has no exit line): load the run's
+ *      start with `carry=false` -- G_InitNew is a reborn -- and raise the one-shot
+ *      the scene turns into the main menu.
+ *
+ * The request is consumed before anything is attempted, so a level whose exit
+ * cannot be answered does not ask again every frame.
+ *
+ * A refusal always leaves a world: a next map that cannot be opened leaves the
+ * current level untouched, and a load that refused is re-laid from the map the
+ * world was on, or -- if even that fails -- the world is closed.
+ *
+ * @return true when a level (or the run's reset) is loaded and ticking.
+ */
+bool transitionLevel() {
+    p_level_t& level = gWorld.level;
+    doom_map_t* map = &gSession.driver->map;
+    char (&line)[kFrameProfileLineCapacity] = gSessionLine;
+
+    const std::uint8_t fromLevel = gRuntimeLevel;
+    const int skill = static_cast<int>(level.rules.skill);
+    const std::uint32_t ticsBefore = static_cast<std::uint32_t>(level.leveltime);
+    char fromMarker[5] = {0};
+    (void)frameMapMarker(fromLevel, fromMarker);
+
+    g_level_next_t next;
+    const int kind = levelExitNext(level, gLevelState, next);
+    level.exitRequest = static_cast<std::uint8_t>(P_EXIT_NONE);
+
+    if (kind < 0) {
+        // Outside upstream's table: there is no level to name, and the world is
+        // still exactly the one the tic left. Reported, consumed, not retried.
+        std::snprintf(line, sizeof line, "SHOW,level,error=no_next,from=%s,skill=%d,tics=%u\n",
+                      fromMarker, skill, static_cast<unsigned>(ticsBefore));
+        writeLine(line);
+        return true;
+    }
+
+    // The victory loads the run's start through the same call, with a record that
+    // has no victory flag: g_do_world_done() refuses a victory record because
+    // there is no map in it.
+    const bool victory = kind == 0;
+    const std::uint8_t target = victory ? static_cast<std::uint8_t>(kFrameLevel) : next.map;
+    g_level_next_t load = next;
+    if (victory) {
+        load.victory = 0u;
+        load.episode = 1u;
+        load.map = target;
+        load.secret = 0u;
+    }
+
+    char toMarker[5] = {0};
+    (void)frameMapMarker(target, toMarker);
+
+    doom_map_t nextView = {};
+    if (!openSessionMap(target, &nextView)) {
+        // Nothing was unbound and nothing was loaded: the world keeps the level
+        // it was on, which is the honest answer to "the next map is not in the
+        // container".
+        return true;
+    }
+
+    const doom_map_t previous = *map;
+    *map = nextView;
+    // p_level_change() copies SECTORS through the renderer's live reader, and the
+    // level it would answer from is the one being rebuilt -- see the long comment
+    // in reloadWorldAtLevel for the board failure that made this mandatory.
+    p_level_unbind_render(map);
+    const g_level_error_t changed = levelChangeLoad(level, gLevelState, load, *map, !victory);
+
+    if (changed != G_LEVEL_OK) {
+        // p_setup.h: a refused level change leaves the level zeroed, so the map
+        // the world was on is laid out again through the one loader every load
+        // uses. A world that cannot be re-laid is closed, never drawn zeroed.
+        *map = previous;
+        const bool recovered = layOutWorld(map, skill);
+        std::snprintf(line, sizeof line,
+                      "SHOW,level,error=load,from=%s,to=%s,code=%d,recovered=%d\n", fromMarker,
+                      toMarker, static_cast<int>(changed), recovered ? 1 : 0);
+        writeLine(line);
+        return recovered;
+    }
+
+    p_level_bind_render(&level, map);
+    gRuntimeLevel = target;
+    gVictoryPending = victory;
+
+    // The line is printed before the presentation reset: openAutomap() prints its
+    // own `SHOW,map,init` for the new map, and the level change reading first is
+    // what makes a captured log readable top to bottom.
+    if (victory) {
+        // E1M8's ending, as the placeholder S21 names: no finale screen (Phase
+        // 5/S3 never built one), so the run ends here and the scene opens the
+        // menu over the level the run started on.
+        std::snprintf(line, sizeof line, "SHOW,level,victory=1,episode=%u,map=%u\n",
+                      static_cast<unsigned>(next.episode), static_cast<unsigned>(next.map));
+        writeLine(line);
+        restartLevelPresentation(true);
+        return true;
+    }
+
+    std::snprintf(line, sizeof line,
+                  "SHOW,level,from=%s,to=%s,skill=%d,tics=%u,health=%ld,ammo=%ld\n", fromMarker,
+                  toMarker, skill, static_cast<unsigned>(ticsBefore),
+                  static_cast<long>(level.playerState.health),
+                  static_cast<long>(level.playerState.ammo[P_AM_CLIP]));
+    writeLine(line);
+    restartLevelPresentation(true);
+    return true;
+}
+
+std::uint8_t frameLevelNumber() { return gRuntimeLevel; }
+
+const char* frameLevelMarker() {
+    // One buffer: the caller reads it and copies what it needs. `gRuntimeLevel`
+    // is the only source, so the marker cannot disagree with the number.
+    static char marker[5] = {0};
+    if (!frameMapMarker(gRuntimeLevel, marker)) {
+        marker[0] = '\0';
+    }
+    return marker;
+}
+
+bool frameLevelTakeVictory() {
+    const bool pending = gVictoryPending;
+    gVictoryPending = false;
+    return pending;
+}
+
+#if defined(DOOM_LEVEL_TEST)
+/*
+ * S21's board proof (env esp32dev_ILI9341_hud_leveltest): the panel's buttons
+ * cannot be pressed from the build host, so this finds E1M1's own exit switch
+ * (line special 11) and stands the avatar in front of it, on the front sector's
+ * side facing the line. The scene then holds USE through the real button byte, so
+ * the press travels P_PlayerThink -> p_use_lines -> P_UseSpecialLine exactly as a
+ * B press does; nothing here calls the line trigger.
+ *
+ * The search is tools/level_check.c's fixture (and test/unit/test_level's), in
+ * DOOM's own fixed point: a third of the line, 16/24/32 units out along each of
+ * the two normals, and the first candidate that P_CheckPosition accepts inside
+ * the line's front sector. A use press from the back side is refused by
+ * P_UseSpecialLine for every number but 124, so the side is not an optimisation.
+ *
+ * @return true when the avatar was moved and the fixture printed.
+ */
+bool frameLevelExitScript() {
+    char (&out)[kFrameProfileLineCapacity] = gSessionLine;
+    if (!gWorld.open || gWorld.level.player == nullptr) {
+        std::snprintf(out, sizeof out, "SHOW,level,script=stand,status=fail,reason=world\n");
+        writeLine(out);
+        return false;
+    }
+
+    p_level_t& level = gWorld.level;
+    const doom_map_t& map = *level.map;
+    r_mobj_t* mobj = level.player;
+    static const fixed_t kGaps[3] = {32 * FRACUNIT, 24 * FRACUNIT, 16 * FRACUNIT};
+    static const int kThirds[5] = {6, 4, 8, 3, 9};
+
+    for (std::uint32_t index = 0u; index < level.lineCount; ++index) {
+        if (level.lineSpecial[index] != 11) {
+            continue;
+        }
+        doom_line_t line;
+        uint16_t front = 0;
+        doom_map_get_line(&map, static_cast<uint16_t>(index), &line);
+        if (!p_line_front_sector(&map, &line, &front)) {
+            continue;
+        }
+        doom_vertex_t v1;
+        doom_vertex_t v2;
+        doom_map_get_vertex(&map, line.v1, &v1);
+        doom_map_get_vertex(&map, line.v2, &v2);
+        const fixed_t dx = v2.x - v1.x;
+        const fixed_t dy = v2.y - v1.y;
+        if (dx == 0 && dy == 0) {
+            continue;
+        }
+        const std::uint32_t lineAngle = p_point_to_angle(dx, dy);
+
+        for (int third = 0; third < 5; ++third) {
+            const fixed_t mx =
+                v1.x + static_cast<fixed_t>((static_cast<std::int64_t>(dx) * kThirds[third]) / 12);
+            const fixed_t my =
+                v1.y + static_cast<fixed_t>((static_cast<std::int64_t>(dy) * kThirds[third]) / 12);
+            for (int gapIndex = 0; gapIndex < 3; ++gapIndex) {
+                for (int sign = -1; sign <= 1; sign += 2) {
+                    const std::uint32_t normal =
+                        sign > 0 ? (lineAngle + ANG90) : (lineAngle + ANG270);
+                    const fixed_t px = mx + fixed_mul(kGaps[gapIndex], r_fine_cosine(normal));
+                    const fixed_t py =
+                        my + fixed_mul(kGaps[gapIndex], r_fine_sine[normal >> ANGLETOFINESHIFT]);
+                    p_position_result_t position;
+                    if (!p_check_position(&level.context, mobj, px, py, &position)
+                        || position.sector != front) {
+                        continue;
+                    }
+                    mobj->x = px;
+                    mobj->y = py;
+                    mobj->z = position.floorz;
+                    mobj->momx = 0;
+                    mobj->momy = 0;
+                    mobj->floorz = position.floorz;
+                    mobj->ceilingz = position.ceilingz;
+                    mobj->subsector = position.subsector;
+                    mobj->sector = position.sector;
+                    mobj->angle = p_point_to_angle(mx - px, my - py);
+                    std::snprintf(out, sizeof out,
+                                  "SHOW,level,script=stand,status=ok,level=%s,line=%u,"
+                                  "special=11,standoff=%ld,x=%ld,y=%ld,angle=%lu\n",
+                                  frameLevelMarker(), static_cast<unsigned>(index),
+                                  static_cast<long>(kGaps[gapIndex]), static_cast<long>(px),
+                                  static_cast<long>(py),
+                                  static_cast<unsigned long>(mobj->angle));
+                    writeLine(out);
+                    return true;
+                }
+            }
+        }
+    }
+
+    std::snprintf(out, sizeof out, "SHOW,level,script=stand,status=fail,reason=line,level=%s\n",
+                  frameLevelMarker());
+    writeLine(out);
+    return false;
+}
+#endif  // DOOM_LEVEL_TEST
+
 bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
     if (!gWorld.open) {
         return false;
@@ -3912,6 +4387,20 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
         // combat owns the counters that would read them.
         if (p_level_tic(&gWorld.level, &cmd, nullptr) != P_TICK_OK) {
             return false;
+        }
+        // S21: G_Ticker runs G_DoCompleted/G_DoWorldDone immediately after
+        // P_Ticker and before ST_Ticker, AM_Ticker and S_UpdateSounds, so this
+        // frame's HUD and sound work belong to the level the transition loaded --
+        // not to the one that just ended.
+        if (gWorld.level.exitRequest != static_cast<std::uint8_t>(P_EXIT_NONE)) {
+            if (!transitionLevel()) {
+                return false;
+            }
+            // The command was built for the level that ended. Upstream's action
+            // loop builds the next tic's command from the next input sample; a
+            // second tic of the same held button in the new level is not that, so
+            // the call stops here and the frame's next update asks again.
+            break;
         }
 #if defined(DOOM_AUDIO)
         // One tick per simulated tic: cue lifetimes, distance re-attenuation and
@@ -3936,13 +4425,22 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
 
 #if defined(DOOM_MENU) || DOOM_PERSISTENCE
 /*
- * G_InitNew()'s reload, shared by the menu's New Game and by a loaded save (T53).
+ * G_InitNew()'s reload, shared by the menu's New Game and by a loaded save (T53)
+ * and by the run's reset after a victory (S21).
  *
  * The skill goes into the rules, the random position is cleared (M_ClearRandom),
- * then G_DoLoadLevel's reload of E1M1 over the same arena -- the path the demo
- * gate already proves (`g_demo_reborn()`). Every THING is run again from the
- * map's own records under the new skill, the player is G_PlayerReborn's,
+ * then G_DoLoadLevel's reload of @p levelNumber over the same arena -- the path
+ * the demo gate already proves (`g_demo_reborn()`). Every THING is run again from
+ * the map's own records under the new skill, the player is G_PlayerReborn's,
  * leveltime is 0.
+ *
+ * S21: @p levelNumber is the level the world should be on, not "the one map the
+ * session opened". A New Game and the post-victory reset ask for `kFrameLevel`; a
+ * loaded record asks for the map its header names. When it differs from the map
+ * already bound, the session's map view is rebuilt from the container first, so
+ * `g_demo_reborn()` reloads the map the caller asked for rather than the one the
+ * previous level left in the struct. Nothing is allocated: the container is
+ * mapped for the whole session and a map view is a set of pointers into it.
  *
  * The renderer's live reader is UNBOUND for the reload and bound again after.
  * The reload copies the map's sectors with doom_map_get_sector(), which answers
@@ -3953,19 +4451,46 @@ bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
  * reproduces that with --perturb.
  *
  * A refused reload leaves the level zeroed (p_setup.h), so the fallback lays it
- * out again at the default skill, or closes the world so the frame keeps its
+ * out again through `layOutWorld()`, or closes the world so the frame keeps its
  * last picture. tools/menu_check.py --arena proves E1M1 fits at every skill in
  * this arena; the fallback is for a build whose measurement was changed.
  *
  * This does NOT run the idle tic a New Game needs: a save is applied to the
  * freshly built world first, and its restored state must not advance (T53).
+ *
+ * @param levelNumber 1..9, the map the caller wants the world on.
+ * @param skill       0..4.
+ * @return true when the level is laid out and presented at @p skill.
  */
-static bool reloadWorldAtSkill(int skill) {
-    if (!gWorld.open || skill < 0 || skill > P_SKILL_NIGHTMARE) {
+static bool reloadWorldAtLevel(std::uint8_t levelNumber, int skill) {
+    if (!gWorld.open || levelNumber < 1u || levelNumber > 9u || skill < 0
+        || skill > P_SKILL_NIGHTMARE) {
         return false;
     }
     p_level_t& level = gWorld.level;
     doom_map_t* map = &gSession.driver->map;
+    char (&line)[kFrameProfileLineCapacity] = gSessionLine;
+
+    // A same-level reload (New Game on the build's map, the post-victory reset)
+    // keeps the map view it already has: rebuilding it would be the same pointer
+    // set, and this path is the one the board's menu proof runs six times.
+    const std::uint8_t previousLevel = gRuntimeLevel;
+    const bool mapChanged = levelNumber != previousLevel;
+    if (mapChanged) {
+        doom_map_t nextView = {};
+        if (!openSessionMap(levelNumber, &nextView)) {
+            // openSessionMap() printed the reason; the world is the level it was
+            // on, untouched.
+            return false;
+        }
+        *map = nextView;
+    }
+
+    gRuntimeLevel = levelNumber;
+    gLevelState.episode = 1u;
+    gLevelState.map = levelNumber;
+    gLevelState.secretExit = 0u;
+    gVictoryPending = false;
 
     level.rules.skill = static_cast<p_skill_t>(skill);
     std::memset(&level.random, 0, sizeof level.random);
@@ -3974,34 +4499,17 @@ static bool reloadWorldAtSkill(int skill) {
     p_level_bind_render(&level, map);
 
     if (reloaded) {
-        hudStart();
-#if defined(DOOM_HUD)
-        // D5.3: a reloaded level has seen nothing yet, and the map goes down with
-        // the old level (upstream's P_SetupLevel re-reads every linedef flag).
-        resetAutomap();
-#endif
-#if defined(DOOM_AUDIO)
-        // G_DoLoadLevel is the same entry point for a New Game: the animation,
-        // the player's ear height and the music all start over. The reload
-        // carried the random position, not the channel table.
-        S_SetListener(level.playerState.mo);
-        S_Start();
-#endif
+        restartLevelPresentation(mapChanged);
         return true;
     }
 
-    zone_stats_t unused;
-    gFrameWorld = nullptr;
-    p_level_unbind_render(map);
-    if (probeWorld(map, gWorld.arena, gWorld.arenaBytes, &level, &unused) == P_SETUP_OK) {
-        gFrameWorld = &level;
-        p_level_bind_render(&level, map);
-        hudStart();
-#if defined(DOOM_HUD)
-        resetAutomap();
-#endif
-    } else {
-        gWorld.open = false;
+    // A refused reload left the level zeroed; the same map is laid out again
+    // through the one loader. The caller asked for this level, and a fresh copy
+    // of it is the promise every refusal makes.
+    if (!layOutWorld(map, skill)) {
+        std::snprintf(line, sizeof line, "SHOW,level,error=reload,level=%u,skill=%d\n",
+                      static_cast<unsigned>(levelNumber), skill);
+        writeLine(line);
     }
     return false;
 }
@@ -4009,7 +4517,8 @@ static bool reloadWorldAtSkill(int skill) {
 
 #if defined(DOOM_MENU)
 bool frameLevelNewGame(int skill) {
-    if (!reloadWorldAtSkill(skill)) {
+    // S21: a run starts on the build's map, whatever level the last run ended on.
+    if (!reloadWorldAtLevel(static_cast<std::uint8_t>(kFrameLevel), skill)) {
         return false;
     }
     // One idle tic, so the player's eye height (viewz, computed by the first
@@ -4038,22 +4547,53 @@ bool frameLevelArenaStats(std::uint32_t* inUse, std::uint32_t* freeBytes,
 }
 
 const char* frameLevelLastMissing() { return gFailTexture; }
+
+#if defined(DOOM_LEVEL_TEST)
+/*
+ * The E1M8 ending, from a map the board proof can reach (S21).
+ *
+ * The leveltest image plays E1M1 and never walks the other seven maps, so the
+ * victory branch would otherwise be proven only by test/unit/test_level's own
+ * worlds. This puts the world on E1M8 at the skill it is already running (the
+ * last map's, so the rules travel the way a transition's do) and raises the
+ * request sector special 11 raises -- the level's own field, which the next
+ * tic's transitionLevel() reads exactly as it reads a line's. What the branch
+ * then does is the shipped code: `g_completed_next` answers the victory, the run
+ * is reloaded on its first map and the scene opens the menu.
+ *
+ * It also answers a question no host gate can: whether E1M8 fits the arena the
+ * session sized from its own startup map. A refusal prints
+ * `SHOW,level,error=reload,level=8` and closes the world, which is the honest
+ * report of a dead end.
+ *
+ * Diagnostic only; never in the shipped image.
+ */
+bool frameLevelVictoryScript() {
+    if (!gWorld.open) {
+        return false;
+    }
+    if (!reloadWorldAtLevel(8u, static_cast<int>(gWorld.level.rules.skill))) {
+        return false;
+    }
+    gWorld.level.exitRequest = static_cast<std::uint8_t>(P_EXIT_NORMAL);
+    return true;
+}
+#endif  // DOOM_LEVEL_TEST
 #endif  // DOOM_MENU
 
 #if DOOM_PERSISTENCE
-/// The one map this session opens (see frameLevelSave). Stated once so the save
-/// layer's level number and the menu's label cannot drift.
-constexpr std::uint8_t kPersistenceLevelNumber = 1u;
-
 SaveStatus frameLevelSave(std::uint8_t* out, std::size_t capacity, std::size_t& written) {
     if (!gWorld.open) {
         // No world is not a save: a menu opened over a failed boot must report a
         // refusal rather than archive a zeroed level.
         return SaveStatus::ApplyFailed;
     }
-    // E1M1 is the session's one map, and `p_level_t` does not carry its number.
-    return saveWrite(gWorld.level, gWorld.level.playerState, kPersistenceLevelNumber, out,
-                     capacity, written);
+    // S21: the record names the level the world is actually on. `p_level_t` does
+    // not carry its number, the container's level marker is what the session
+    // loaded, and `gRuntimeLevel` is the one variable a transition and a load
+    // both move -- so a save written in E1M2 stamps 2 and loads back into E1M2.
+    return saveWrite(gWorld.level, gWorld.level.playerState, gRuntimeLevel, out, capacity,
+                     written);
 }
 
 SaveStatus frameLevelLoad(const std::uint8_t* in, std::size_t size, std::uint8_t levelNumber,
@@ -4061,7 +4601,11 @@ SaveStatus frameLevelLoad(const std::uint8_t* in, std::size_t size, std::uint8_t
     if (!gWorld.open || in == nullptr) {
         return SaveStatus::ApplyFailed;
     }
-    if (!reloadWorldAtSkill(static_cast<int>(skill))) {
+    // S21: the record names the map, so the reload opens *that* map before
+    // applying it -- not whatever level the world happens to be on. `carry=false`
+    // is implicit here: g_demo_reborn() is G_PlayerReborn's, and a restored
+    // player is a reborn one, never a carried one.
+    if (!reloadWorldAtLevel(levelNumber, static_cast<int>(skill))) {
         return SaveStatus::ApplyFailed;
     }
     const SaveStatus status =
@@ -4071,12 +4615,14 @@ SaveStatus frameLevelLoad(const std::uint8_t* in, std::size_t size, std::uint8_t
         // consumed leaves the level partially rebuilt. The caller is promised a
         // *freshly loaded* level on any failure, so lay it out again through the
         // same path -- never a second loader, and never a half-restored world.
-        (void)reloadWorldAtSkill(static_cast<int>(skill));
+        (void)reloadWorldAtLevel(levelNumber, static_cast<int>(skill));
         return status;
     }
     // The restored leveltime and player are what the status bar starts from; the
     // reload above ran hudStart() against the fresh level (leveltime 0).
+#if defined(DOOM_HUD)
     hudStart();
+#endif
     return SaveStatus::Ok;
 }
 #endif  // DOOM_PERSISTENCE

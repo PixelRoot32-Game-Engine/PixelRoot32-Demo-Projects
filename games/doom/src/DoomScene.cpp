@@ -1400,6 +1400,58 @@ void DoomScene::update(unsigned long deltaTime) {
     buttons = static_cast<std::uint8_t>(buttons | mapScriptButtons(mapScriptFrame_++));
 #endif
 
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_LEVEL_TEST)
+    // S21's board proof (env esp32dev_ILI9341_hud_leveltest): at frame 20 the
+    // avatar is put in front of E1M1's own exit switch, and from frame 24 B is
+    // held for three frames. B is bit 5 -- the world's USE -- so the press goes
+    // through the real tic path; the frames before it are what release the use
+    // latch G_PlayerReborn() left set.
+    if (showFrame_ == 20u) {
+        (void)doomc::frameLevelExitScript();
+    }
+    if (showFrame_ >= 24u && showFrame_ <= 26u) {
+        buttons = static_cast<std::uint8_t>(buttons | doomc::kButtonB);
+    }
+#if DOOM_PERSISTENCE
+    // The save half of the same proof, on the level the transition reached: write
+    // the live world -- slot 3, so the T54 power-cycle record in slot 0 is
+    // untouched -- go back to E1M1 with a New Game, then load the record. The load
+    // must reopen the level the record names (E1M2), not the level the world is
+    // on, which is the wiring S21 added.
+    if (showFrame_ == 60u) {
+        (void)gPersistence.saveSlot(3);
+    }
+    if (showFrame_ == 80u) {
+        (void)sceneRenderer_.newGame(2);
+    }
+    if (showFrame_ == 100u) {
+        (void)gPersistence.loadSlot(3);
+    }
+    if (showFrame_ == 120u) {
+        // The victory branch: on E1M8 with the exit requested, the next tic takes
+        // the shipped path (the run reloads on its first map, the menu opens).
+        (void)doomc::frameLevelVictoryScript();
+    }
+#endif
+#endif
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1)
+    // S21: the run ended (E1M8's ending has no finale screen). The driver has
+    // already put the world back on the level the run started on; this frame asks
+    // the menu to open over it, and `runMenu()` reports the open with its own
+    // line, so there is no second menu-state printer here.
+    {
+        const bool victory = doomc::frameLevelTakeVictory();
+#if defined(DOOM_MENU)
+        if (victory) {
+            victoryMenuPending_ = true;
+        }
+#else
+        (void)victory;
+#endif
+    }
+#endif
+
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
     // D4.2f: the world ticks on every frame, before the early return below. That
     // return exists for the shell's repaint and the INPUT line; it must not stop
@@ -1892,7 +1944,15 @@ std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
     buttons = static_cast<std::uint8_t>(
         buttons | menuScriptButtons(menuScriptFrame_++, menuScriptLoadOnly_));
 #endif
+    // S21: the run ended on the frame before this one. Opening here -- after the
+    // previous active state is sampled and before this frame's -- is what makes
+    // the open visible below: the same frame prints `SHOW,menu,state=open` and
+    // calls S_PauseSound, exactly as a Start press does.
     const bool wasActive = m_menu_active(&menu_) != 0;
+    if (victoryMenuPending_) {
+        victoryMenuPending_ = false;
+        m_menu_open(&menu_);
+    }
     const std::uint8_t worldButtons = m_menu_buttons(&menu_, buttons);
     const bool active = m_menu_active(&menu_) != 0;
     char line[160];

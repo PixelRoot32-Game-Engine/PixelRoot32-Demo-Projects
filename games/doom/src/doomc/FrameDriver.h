@@ -736,14 +736,72 @@ bool frameLevelSpawnView(LevelView* out);
  */
 bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons);
 
+/**
+ * @brief The level the session is on, as a number: 1..9 (S21).
+ *
+ * `gRuntimeLevel` starts at the build's map (`PIXELROOT32_DOOM_FRAME_LEVEL`),
+ * moves to the map an exit names, returns to the build's map on a New Game and
+ * after the run's victory, and is what a save record stamps and a load opens.
+ * Every existing environment therefore opens the map it always did.
+ */
+std::uint8_t frameLevelNumber();
+
+/**
+ * @brief The level the session is on, as its marker ("E1M1", S21).
+ *
+ * The same source as `frameLevelNumber()` through `frameMapMarker()`, so the two
+ * cannot disagree, and the answer is live: a transition moves it. The storage is
+ * the driver's one 5-byte buffer; a caller that keeps the string past the next
+ * call copies it.
+ */
+const char* frameLevelMarker();
+
+/**
+ * @brief Takes "the run ended" once (S21).
+ *
+ * E1M8's ending is sector special 11, and this port has no finale screen (Phase
+ * 5/S3 never built one), so the transition loads the run's start and answers
+ * true here exactly once. The scene opens the main menu on that frame; a caller
+ * that ignores it loses the report, not the world.
+ */
+bool frameLevelTakeVictory();
+
+#if defined(DOOM_LEVEL_TEST)
+/**
+ * @brief Diagnostic (env `esp32dev_ILI9341_hud_leveltest`): stand on E1M1's exit.
+ *
+ * Finds the level's own line special 11 (the exit switch) and puts the avatar on
+ * the front sector's side facing it, so the next USE press travels
+ * P_PlayerThink -> p_use_lines -> P_UseSpecialLine. Nothing here triggers the
+ * line, and the move is printed (`SHOW,level,script=stand,...`). Never in the
+ * shipped image.
+ */
+bool frameLevelExitScript();
+
+#if DOOM_PERSISTENCE
+/**
+ * @brief Diagnostic: the E1M8 ending, reached from a map the proof can load.
+ *
+ * Loads E1M8 at the running skill and raises the request sector special 11
+ * raises, so the next tic's transition takes the shipped victory branch (the run
+ * reloads on its first map and the scene opens the menu). It also proves E1M8
+ * fits the arena the session sized from its startup map. Never in the shipped
+ * image.
+ */
+bool frameLevelVictoryScript();
+#endif
+#endif
+
 #if defined(DOOM_MENU)
 /**
- * @brief The menu's New Game (D5.2): reloads the level at @p skill.
+ * @brief The menu's New Game (D5.2): reloads the build's map at @p skill.
  *
  * `rules.skill` takes @p skill, the random position is cleared (G_InitNew's
- * M_ClearRandom) and `g_demo_reborn()` re-lays E1M1 over the world's own arena
- * with every THING run again, the status bar restarted. The arena is sized at
- * nightmare under `DOOM_MENU`, so every skill fits (`tools/menu_check.py --arena`).
+ * M_ClearRandom) and `g_demo_reborn()` re-lays the build's map over the world's
+ * own arena with every THING run again, the status bar restarted. S21: a run
+ * always starts on `kFrameLevel`, whatever level the previous run ended on, so
+ * this also resets the runtime level number. The arena is sized at nightmare
+ * under `DOOM_MENU`, so every skill fits (`tools/menu_check.py --arena`).
  *
  * @param skill 0 (baby) .. 4 (nightmare).
  * @return true when the new game is running. false means the reload was refused:
@@ -782,8 +840,9 @@ const char* frameLevelLastMissing();
  * @brief D7.1 (T53): archives the live world into @p out.
  *
  * The scene never sees `gWorld`; this is the one seam that turns it into the
- * engine's bytes. `levelNumber` is E1M1's 1 -- the session opens one map and a
- * `p_level_t` does not carry its number.
+ * engine's bytes. S21: the record's map number is `frameLevelNumber()` -- the
+ * level the world is actually on -- because a `p_level_t` does not carry its
+ * number and a save written in E1M2 has to load back into E1M2.
  *
  * @param out      Destination; the caller owns it (the persistence layer's
  *                 payload buffer, not the stack).
@@ -794,13 +853,15 @@ const char* frameLevelLastMissing();
 SaveStatus frameLevelSave(std::uint8_t* out, std::size_t capacity, std::size_t& written);
 
 /**
- * @brief D7.1 (T53): reloads @p levelNumber at @p skill, then applies @p in.
+ * @brief D7.1 (T53): opens @p levelNumber at @p skill, then applies @p in.
  *
- * The reload is the same path a New Game drives (`g_demo_reborn()`: the rules'
- * skill, a cleared random position, `p_level_init()` + `p_spawn_specials()` over
- * the world's own arena) -- there is no second loader. `saveApply()` then
- * overwrites only the mutable state, which is why the record is applied to a
- * *fresh* world.
+ * S21: the reload opens the level the *record* names -- not whatever map the
+ * world is on -- through the same path a New Game drives (`g_demo_reborn()`:
+ * the rules' skill, a cleared random position, `p_level_init()` +
+ * `p_spawn_specials()` over the world's own arena). There is no second loader,
+ * and a restore is a reborn: the player's inventory comes from the record, never
+ * from a carried transition. `saveApply()` then overwrites only the mutable
+ * state, which is why the record is applied to a *fresh* world.
  *
  * If the reload is refused the function answers `ApplyFailed` and the world is
  * whatever `frameLevelNewGame()` leaves on its own refusal path. If the apply
