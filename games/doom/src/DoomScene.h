@@ -447,6 +447,17 @@ private:
      * labels so the next open shows what the medium now holds.
      */
     void handleSlotAction(int action, int slot);
+
+    /**
+     * @brief Forces the next `SHOW,frame` line after a successful load (T54).
+     *
+     * The frame line is written at the top of the *following* draw, and outside
+     * the first ten frames the cadence is one per second. A power-cycle proof
+     * needs the restored state immediately after `SHOW,load`, not up to a second
+     * later when the world has already ticked: this flag makes `drawSceneFrame()`
+     * report the first frame the restored world drew.
+     */
+    bool showReportAfterLoad_ = false;
 #endif
 
     /// Fade steps a level load runs: eight frames at the shipped rate is ~0.5 s.
@@ -465,6 +476,18 @@ private:
 #endif
     /// Frames the scripted-input diagnostic has played (DOOM_MENU_SCRIPT only).
     std::uint32_t menuScriptFrame_ = 0;
+
+    /**
+     * @brief Whether the scripted diagnostic booted with slot 0 already used
+     *        (DOOM_MENU_SCRIPT only, T54).
+     *
+     * The power-cycle proof needs two different boots from ONE image: the first
+     * (empty `saves` partition) writes the record and loads it, the second (slot
+     * 0 now used) only loads it. Reading one label at boot chooses between the
+     * two scripts, so no reflash sits between the save and the load and the
+     * reset is the only thing that happened.
+     */
+    bool menuScriptLoadOnly_ = false;
 #endif
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)

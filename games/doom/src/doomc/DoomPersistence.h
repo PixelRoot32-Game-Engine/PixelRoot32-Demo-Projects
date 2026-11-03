@@ -170,6 +170,27 @@ public:
      */
     bool loadSlot(int slot);
 
+#if defined(DOOM_SAVE_TEST)
+    /**
+     * @brief The board's codec self-test (T54): one valid and one CRC-invalid
+     *        record, written to slots 5 and 4 and read back.
+     *
+     * The valid record is the live world, wrapped by `saveRecord()` exactly as a
+     * menu save is. The invalid one is that same encoded record with one payload
+     * byte flipped in RAM and written through the slot store's `write()`: if it
+     * went through `saveRecord()` again the codec would recompute the CRC over
+     * the flipped payload and the record would be valid, which is precisely the
+     * property this test exists to distinguish. The read-back must therefore be
+     * `ok` for slot 5 and `Corrupt` for slot 4, proving the engine's CRC -- not
+     * the save layer's own checksum -- refused the corrupted bytes.
+     *
+     * Slots 4 and 5 are chosen so the proof never touches slot 0, which is the
+     * record the power-cycle run uses. Diagnostic builds only; it is never
+     * reached by the shipped image.
+     */
+    void runSaveTest();
+#endif
+
 private:
     bool ready() const { return settingsReady_ && savesReady_ && buffer_ != nullptr; }
     std::uint8_t* payload() { return buffer_; }

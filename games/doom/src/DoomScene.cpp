@@ -901,13 +901,49 @@ const ScriptStep kMenuScript[] = {
      */
     OPEN_MENU, DOWN3, TAP(M_BTN_A), WAIT(40), TAP(M_BTN_A), WAIT(60),
     OPEN_MENU, TAP(M_BTN_UP), TAP(M_BTN_A), WAIT(40), TAP(M_BTN_A), WAIT(120),
+    /*
+     * T54: a second used row, so the slot screen proves "more than one slot"
+     * rather than only the row the power-cycle proof uses. The load above left
+     * MAIN's cursor on LOAD GAME; DOWN reaches SAVE GAME, A opens it on row 0,
+     * DOWN moves to row 1, A writes it. A save changes no world state, so the
+     * forced `SHOW,frame` the load produced is still the captured "before".
+     */
+    OPEN_MENU, TAP(M_BTN_DOWN), TAP(M_BTN_A), WAIT(40),
+    TAP(M_BTN_DOWN), TAP(M_BTN_A), WAIT(80),
 #endif
 };
 
+#if DOOM_PERSISTENCE
+/*
+ * The second boot's script (T54): slot 0 already holds the record the first boot
+ * wrote, so this boot only opens the menu and loads it. MAIN starts on NEW GAME,
+ * so two DOWNs reach LOAD GAME and two A presses open row 0 and load it. This is
+ * the same image as `kMenuScript`, chosen at boot from slot 0's label, so no
+ * reflash sits between the save and the load: the reset is the only event.
+ */
+const ScriptStep kMenuLoadScript[] = {
+    WAIT(40),
+    OPEN_MENU,
+    TAP(M_BTN_DOWN), TAP(M_BTN_DOWN), TAP(M_BTN_A), WAIT(40),
+    TAP(M_BTN_A), WAIT(120),
+};
+#endif
+
 /// The buttons the script holds on @p frame, or 0 once it has ended.
-std::uint8_t menuScriptButtons(std::uint32_t frame) {
+/// @p loadOnly selects the T54 second-boot script (slot 0 already used).
+std::uint8_t menuScriptButtons(std::uint32_t frame, bool loadOnly) {
+#if DOOM_PERSISTENCE
+    const ScriptStep* script = loadOnly ? kMenuLoadScript : kMenuScript;
+    const std::size_t count = loadOnly ? (sizeof kMenuLoadScript / sizeof kMenuLoadScript[0])
+                                       : (sizeof kMenuScript / sizeof kMenuScript[0]);
+#else
+    (void)loadOnly;
+    const ScriptStep* script = kMenuScript;
+    const std::size_t count = sizeof kMenuScript / sizeof kMenuScript[0];
+#endif
     std::uint32_t at = 0;
-    for (const ScriptStep& step : kMenuScript) {
+    for (std::size_t index = 0; index < count; ++index) {
+        const ScriptStep& step = script[index];
         if (frame < at + step.frames) {
             return step.buttons;
         }
@@ -1012,6 +1048,17 @@ void DoomScene::init() {
     // printed once here and the game continues: settings default, slots answer
     // unavailable.
     (void)gPersistence.init();
+#if defined(DOOM_MENU_SCRIPT)
+    // T54: one image, two boots. A used slot 0 means the first boot already
+    // wrote the record this boot must load; an empty one means this is the first
+    // boot and the full script (settings, New Games, SAVE, LOAD) runs. Choosing
+    // from the medium is what keeps a reflash out of the save-to-load gap.
+    {
+        char labels[M_SLOT_COUNT][M_SLOT_LABEL_SIZE];
+        gPersistence.readSlotLabels(labels);
+        menuScriptLoadOnly_ = std::strcmp(labels[0], M_SLOT_EMPTY) != 0;
+    }
+#endif
 #endif
 #endif
 
@@ -1222,6 +1269,12 @@ void DoomScene::init() {
             (void)sceneRenderer_.verifySpawnFrame(pixels, engine.getRenderer().getLogicalWidth(),
                                                  engine.getRenderer().getLogicalHeight());
         }
+#if defined(DOOM_SAVE_TEST) && DOOM_PERSISTENCE
+        // T54: the codec self-test, after the world exists (the valid record is
+        // the live E1M1) and before any menu or input can change it. The two
+        // slots it touches are 4 and 5, never the power-cycle record in slot 0.
+        gPersistence.runSaveTest();
+#endif
     }
 
     // D4.0c's census: what the image owns in dram0_0_seg, what the heap holds,
@@ -1836,7 +1889,8 @@ void DoomScene::updatePaletteFlash() {
 
 std::uint8_t DoomScene::runMenu(std::uint8_t buttons) {
 #if defined(DOOM_MENU_SCRIPT)
-    buttons = static_cast<std::uint8_t>(buttons | menuScriptButtons(menuScriptFrame_++));
+    buttons = static_cast<std::uint8_t>(
+        buttons | menuScriptButtons(menuScriptFrame_++, menuScriptLoadOnly_));
 #endif
     const bool wasActive = m_menu_active(&menu_) != 0;
     const std::uint8_t worldButtons = m_menu_buttons(&menu_, buttons);
@@ -1943,6 +1997,16 @@ void DoomScene::refreshSlotLabels() {
         pointers[index] = labels[index];
     }
     m_menu_set_slot_labels(&menu_, pointers);
+#if defined(DOOM_MENU_SCRIPT)
+    // T54: the six rows are pixels the build host cannot read, so the scripted
+    // diagnostic prints them as well. The screen is the truth; this line is the
+    // same six strings at the same moment, used to report what it showed.
+    for (int index = 0; index < M_SLOT_COUNT; ++index) {
+        char line[64];
+        std::snprintf(line, sizeof line, "SHOW,slot,row=%d,label=%s\n", index, labels[index]);
+        writeConsoleLine(line);
+    }
+#endif
 }
 
 void DoomScene::handleSlotAction(int action, int slot) {
@@ -1966,6 +2030,11 @@ void DoomScene::handleSlotAction(int action, int slot) {
     // replayed, and D5.4's fade runs from black exactly as a New Game's does.
     worldTic_ = ticClock_.tic();
     startFade();
+    // T54: make the very next drawn frame report itself. The power-cycle proof
+    // compares the restored x/y/angle/health/tics with the previous boot's; the
+    // ordinary one-second cadence could already be a second of world tics past
+    // the restore, which would compare different states.
+    showReportAfterLoad_ = true;
 }
 #endif  // DOOM_PERSISTENCE
 
@@ -2162,6 +2231,16 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
     // written at the top of the *next* draw, and every field on it describes the
     // frame it reports.
     showPlayer_ = sceneRenderer_.player();
+#if DOOM_PERSISTENCE
+    // T54: a load asked for its first restored frame to be reported. The line is
+    // written at the top of the next draw and describes the state captured just
+    // above, so setting the flag here is what puts the restored x/y/angle/
+    // health/tics on the wire before the world can tick again.
+    if (showReportAfterLoad_) {
+        showReportAfterLoad_ = false;
+        showPendingReport_ = true;
+    }
+#endif
 #if defined(DOOM_MENU)
     // D5.4: a level load's fade owns the palette while it runs; asked before the
     // flash so the flash never rebuilds a full-brightness table mid-fade.

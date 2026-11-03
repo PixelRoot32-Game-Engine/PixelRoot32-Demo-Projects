@@ -248,6 +248,59 @@ bool DoomPersistence::loadSlot(int slot) {
     return true;
 }
 
+#if defined(DOOM_SAVE_TEST)
+void DoomPersistence::runSaveTest() {
+    char line[kPersistenceLineCapacity];
+
+    if (!ready()) {
+        std::snprintf(line, sizeof line, "SHOW,savetest,valid=%s,corrupt=%s\n",
+                      "unavailable", "not_run");
+        writeLine(line);
+        return;
+    }
+
+    std::size_t written = 0u;
+    const SaveStatus saved = frameLevelSave(payload(), kPayloadBytes, written);
+    if (saved != SaveStatus::Ok || written <= 8u) {
+        std::snprintf(line, sizeof line, "SHOW,savetest,valid=%s,corrupt=%s\n",
+                      saveStatusName(saved), "not_run");
+        writeLine(line);
+        return;
+    }
+
+    // The valid record, wrapped by the engine's codec and written to slot 5.
+    // `scratch()` keeps the encoded envelope afterwards, which is the RAM buffer
+    // the corrupt sample is made from.
+    using pixelroot32::persistence::RecordCodec;
+    using pixelroot32::persistence::StoreResult;
+    const StoreResult validWrite =
+        service_.saveRecord(5u, kSlotSchema, payload(), written, scratch(), kRecordBytes);
+    const std::size_t encoded = RecordCodec::kHeaderSize + written;
+
+    // One payload byte flipped in the encoded RAM buffer, then written straight
+    // through the slot store. Calling saveRecord() here would recompute the CRC
+    // over the flipped byte and store a *valid* record; the whole point is that
+    // the stored CRC no longer covers the payload, so the engine's decode() is
+    // what reports Corrupt.
+    if (validWrite == StoreResult::Ok && encoded <= kRecordBytes) {
+        scratch()[RecordCodec::kHeaderSize + 8u] ^= 0xFFu;
+        (void)service_.saves().write(4u, scratch(), encoded);
+    }
+
+    const std::uint8_t* record = nullptr;
+    pixelroot32::persistence::RecordInfo info{};
+    const StoreResult validRead =
+        service_.loadRecord(5u, scratch(), kRecordBytes, record, info);
+    pixelroot32::persistence::RecordInfo corruptInfo{};
+    const StoreResult corruptRead =
+        service_.loadRecord(4u, scratch(), kRecordBytes, record, corruptInfo);
+
+    std::snprintf(line, sizeof line, "SHOW,savetest,valid=%s,corrupt=%s\n",
+                  storeStatusName(validRead), storeStatusName(corruptRead));
+    writeLine(line);
+}
+#endif  // DOOM_SAVE_TEST
+
 }  // namespace doomc
 }  // namespace doom
 
