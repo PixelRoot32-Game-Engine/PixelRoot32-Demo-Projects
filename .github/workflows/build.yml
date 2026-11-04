@@ -59,31 +59,42 @@ jobs:
 
           files=""
           full=0
-          base="${{ github.event.pull_request.base.sha }}"
-          if [ -z "$base" ]; then
-            full=1
+          # A pull_request checkout is a synthetic merge commit: its first parent
+          # is the base tip GitHub merged onto, its second parent is the pull
+          # request head. Diffing those two is the pull request's own change set.
+          #
+          # Not the event payload's `base.sha`: when it lags behind the base
+          # branch, `git diff <that sha> HEAD` also reports everything main
+          # changed since the fork, so a game-only pull request reads as touching
+          # `.github/` (main's CI commit) and rebuilds the whole fleet.
+          if git rev-parse --verify -q HEAD^2 >/dev/null; then
+            files=$(git diff --name-only --diff-filter=d HEAD^1 HEAD)
+            echo "base=$(git rev-parse --short HEAD^1) head=$(git rev-parse --short HEAD^2)"
           else
-            files=$(git diff --name-only --diff-filter=d "$base" HEAD)
+            full=1
+          fi
 
-            # A workflow change builds everything: the only way to know the CI
-            # still works is to run all of it.
-            if echo "$files" | grep -Eq '^\.github/'; then
-              full=1
-            fi
+          # Bounded, so the log says what the decision was based on.
+          echo "$files" | head -20
 
-            # Root entries that are not documentation are repo-wide too. The
-            # emptiness guards matter twice over: `echo ""` is one blank line,
-            # which would read as a root entry outside the allowlist, and a
-            # non-matching grep exits 1, which `set -e` turns into a failed step.
-            if [ -n "$files" ]; then
-              root=$(echo "$files" | grep -Ev '/' || true)
-              if [ -n "$root" ]; then
-                bad=$(echo "$root" \
-                  | grep -Ev '^(README\.md|CONTRIBUTING\.md|LICENSE|\.editorconfig|\.gitignore)$' \
-                  || true)
-                if [ -n "$bad" ]; then
-                  full=1
-                fi
+          # A workflow change builds everything: the only way to know the CI
+          # still works is to run all of it.
+          if echo "$files" | grep -Eq '^\.github/'; then
+            full=1
+          fi
+
+          # Root entries that are not documentation are repo-wide too. The
+          # emptiness guards matter twice over: `echo ""` is one blank line,
+          # which would read as a root entry outside the allowlist, and a
+          # non-matching grep exits 1, which `set -e` turns into a failed step.
+          if [ -n "$files" ]; then
+            root=$(echo "$files" | grep -Ev '/' || true)
+            if [ -n "$root" ]; then
+              bad=$(echo "$root" \
+                | grep -Ev '^(README\.md|CONTRIBUTING\.md|LICENSE|\.editorconfig|\.gitignore)$' \
+                || true)
+              if [ -n "$bad" ]; then
+                full=1
               fi
             fi
           fi
