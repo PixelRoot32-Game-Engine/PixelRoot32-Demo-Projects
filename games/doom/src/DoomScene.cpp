@@ -51,6 +51,10 @@
 #error "DOOM_PERSISTENCE is wired to the menu's LOAD/SAVE screens: define DOOM_MENU too"
 #endif
 
+#if defined(DOOM_SCREENSHOT) && !defined(PLATFORM_NATIVE)
+#error "DOOM_SCREENSHOT writes the finished frame to a host file: it is native-only"
+#endif
+
 #if defined(DOOM_MENU) || defined(DOOM_HUD)
 #include "doomc/InputMap.h"  /* the button bits the menu and the automap read */
 #endif
@@ -72,6 +76,12 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+
+#if defined(DOOM_SCREENSHOT)
+#include <cstdlib>  /* std::exit: the capture's own reason to stop */
+#include <filesystem>
+#include <system_error>
+#endif
 
 #if defined(PLATFORM_NATIVE)
 #include <chrono>
@@ -2264,6 +2274,107 @@ void DoomScene::draw(Renderer& renderer) {
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
 
+#if defined(DOOM_SCREENSHOT)
+
+namespace {
+
+/*
+ * DOOM_SCREENSHOT (env native_shot_*): one finished frame, written to a file.
+ *
+ * The frame index and the path are compile-time, which is the whole point: this
+ * port runs the headless loop at several hundred frames a second, so a key press
+ * or a wall-clock timer cannot name a state, and a capture that could be retimed
+ * at run time would only move that problem into a build flag read at run time.
+ * `-D DOOM_SCREENSHOT=<frame>` names the frame; the frame's *state* is whatever
+ * the frame-indexed script (DOOM_MENU_SCRIPT and `kMenuScript`) has driven by
+ * then, so the three captures S7 needs are three frames of one script rather
+ * than three timings.
+ *
+ * The write happens after the RGB565 plane is complete -- the expansion above
+ * filled every pixel and the engine's present() has not run yet -- and reads the
+ * surface, not the window: it is the same picture with SDL_VIDEODRIVER=dummy and
+ * with a visible window, because the window is only the present's output.
+ *
+ * The file is a binary PPM (P6), three bytes per pixel behind a 15-byte text
+ * header. PPM because it needs no encoder and no new dependency here; Pillow
+ * reads it directly, which is what turns it into the committed PNG.
+ */
+
+/// The frame this build writes, and where.
+constexpr std::uint32_t kScreenshotFrame = static_cast<std::uint32_t>(DOOM_SCREENSHOT);
+
+#ifndef DOOM_SCREENSHOT_PATH
+#define DOOM_SCREENSHOT_PATH "doom-frame.ppm"
+#endif
+
+constexpr const char* kScreenshotPath = DOOM_SCREENSHOT_PATH;
+
+/// One P6 row: 320 pixels, three bytes each. The writer's only scratch.
+constexpr std::size_t kScreenshotRowBytes = static_cast<std::size_t>(DoomScene::kLogicalWidth) * 3u;
+
+/**
+ * @brief Writes @p pixels (RGB565, first row at the top) as a binary PPM.
+ *
+ * 5 -> 8 and 6 -> 8 bits are bit replication, not a shift. The engine packs a
+ * channel by truncation (`BaseDrawSurface::color565()` keeps the top five and
+ * six bits), so replication is what maps 31 -> 255 and 63 -> 255 and keeps white
+ * white; a plain shift would leave the brightest colour at 248/252 and dim the
+ * whole file by 3 %. The values are the quantised ones the surface holds, never
+ * the palette's original 8-bit entries: the file shows the frame the panel was
+ * given, which is the point of capturing the finished plane.
+ *
+ * @return false on a file that cannot be opened, written or closed, or a surface
+ *         wider than the logical frame (the buffer this writer sizes a row for).
+ */
+bool writeScreenshotPpm(const std::uint16_t* pixels, int width, int height, const char* path) {
+    if (pixels == nullptr || width <= 0 || height <= 0
+        || static_cast<std::size_t>(width) > static_cast<std::size_t>(DoomScene::kLogicalWidth)) {
+        return false;
+    }
+    // The documented path lives under `.pio/screenshots/`, and a capture should
+    // not need a mkdir first. `error_code` overloads, never the throwing ones:
+    // the firmware's flag list carries -fno-exceptions and this file is compiled
+    // with it, so a throw here would end the process instead of reporting.
+    std::error_code ignored;
+    const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, ignored);
+    }
+    std::FILE* file = std::fopen(path, "wb");
+    if (file == nullptr) {
+        return false;
+    }
+    const std::size_t rowBytes = static_cast<std::size_t>(width) * 3u;
+    bool ok = std::fprintf(file, "P6\n%d %d\n255\n", width, height) > 0;
+    std::uint8_t row[kScreenshotRowBytes];
+    for (int y = 0; y < height && ok; ++y) {
+        const std::uint16_t* source =
+            pixels + static_cast<std::size_t>(y) * static_cast<std::size_t>(width);
+        for (int x = 0; x < width; ++x) {
+            const std::uint16_t value = source[x];
+            const unsigned red = (value >> 11) & 0x1Fu;
+            const unsigned green = (value >> 5) & 0x3Fu;
+            const unsigned blue = value & 0x1Fu;
+            const std::size_t at = static_cast<std::size_t>(x) * 3u;
+            row[at + 0u] = static_cast<std::uint8_t>((red << 3) | (red >> 2));
+            row[at + 1u] = static_cast<std::uint8_t>((green << 2) | (green >> 4));
+            row[at + 2u] = static_cast<std::uint8_t>((blue << 3) | (blue >> 2));
+        }
+        ok = std::fwrite(row, 1u, rowBytes, file) == rowBytes;
+    }
+    // Closed before the caller reports: the SHOW line that names the file is
+    // written after the bytes it describes are on disk, so a reader that waits
+    // for that line never sees a partial frame.
+    if (std::fclose(file) != 0) {
+        ok = false;
+    }
+    return ok;
+}
+
+}  // namespace
+
+#endif  // DOOM_SCREENSHOT
+
 void DoomScene::drawSceneFrame(Renderer& renderer) {
     DrawSurface& surface = renderer.getDrawSurface();
     const int width = renderer.getLogicalWidth();
@@ -2520,6 +2631,55 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
         // drawn, so it is dropped in both cases.
         showPendingReport_ = false;
     }
+
+#if defined(DOOM_SCREENSHOT)
+    // The one frame this build was asked for. It sits after the two surface
+    // branches and after the refusal handling, so the plane is complete and the
+    // scene knows whether the picture is the game's: a frame that fell back to
+    // the shell (no session) or was refused exits non-zero and writes nothing,
+    // instead of leaving a file that claims to be the game.
+    //
+    // The build stops here on purpose. Leaving the loop running would make the
+    // caller time a kill, which is the clock this flag exists to remove, and a
+    // `pio run -e <env> -t exec` would never return. Every SHOW line is already
+    // flushed per call (platformPrint), so the log that names the file is
+    // complete when the process ends.
+    if (showFrame_ == kScreenshotFrame) {
+        const std::uint16_t* finished = surface.getPixelBuffer();
+        const bool drawn = rendered && finished != nullptr;
+        const bool wrote = drawn && writeScreenshotPpm(finished, width, height, kScreenshotPath);
+
+        const char* reason = "none";
+        if (!drawn) {
+            reason = !sceneRenderer_.isOpen() ? "nosession" : (rendered ? "nosurface" : refusedStage);
+        }
+#if defined(DOOM_MENU)
+        const char* menuState = m_menu_active(&menu_) != 0 ? "open" : "closed";
+#else
+        const char* menuState = "none";
+#endif
+        // What a P6 of this size must be: the 15-byte header plus three bytes a
+        // pixel, so a truncated file is caught here and not by the converter.
+        char header[32];
+        const int headerBytes = std::snprintf(header, sizeof header, "P6\n%d %d\n255\n", width, height);
+        const int bytes = wrote ? headerBytes + width * height * 3 : 0;
+
+        char line[288];
+        std::snprintf(line, sizeof line,
+                      "SHOW,screenshot,frame=%u,status=%s,w=%d,h=%d,bytes=%d,header=%d,"
+                      "menu=%s,reason=%s,x=%ld,y=%ld,angle=%lu,path=%s\n",
+                      static_cast<unsigned>(showFrame_), wrote ? "ok" : "fail",
+                      width, height, bytes, headerBytes, menuState, reason,
+                      static_cast<long>(showPlayer_.x), static_cast<long>(showPlayer_.y),
+                      static_cast<unsigned long>(showPlayer_.angle), kScreenshotPath);
+        writeConsoleLine(line);
+
+        // 0 for a written frame, 2 for a frame that was not the game, 3 for a
+        // file the filesystem refused. The distinct codes are what lets T5's
+        // loop stop on a real failure instead of converting whatever is there.
+        std::exit(wrote ? 0 : (drawn ? 3 : 2));
+    }
+#endif  // DOOM_SCREENSHOT
 
     showDrawStart_ = drawStart;
     showDrawEnd_ = sampleMicros();
