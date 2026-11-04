@@ -1,0 +1,147 @@
+// esp32dev_ILI9341 — the primary DOOM target: the ESP32-2432S028 "Cheap Yellow
+// Display", an ILI9341 240x320 panel mounted in portrait and rotated a quarter
+// turn. DOOM's 320x200 fits natively in the rotated 320x240 frame, so the port
+// shows it 1:1 with 20 px bars instead of squashing it.
+//
+// The build flags state the geometry in the panel's own portrait axes, and
+// DisplayConfig swaps them for us: applyRotationNormalization() exchanges
+// width/height -- and the offsets -- whenever the rotation is odd. So the flags
+// say 200 wide by 320 tall with X_OFF_SET 20, and the drawer receives 320x200
+// at offset (0, 20). Read the static_asserts below as the translation table.
+//
+// The pin map is copied from games/pong/src/platforms/esp32_dev_ILI9341.h,
+// which is where it was validated on hardware. The XPT2046 touch bus is left
+// unclaimed: the CYD has a touch controller, but the port defines no touch
+// input.
+#ifndef PLATFORM_ESP32DEV_ILI9341
+#error "esp32_dev_ILI9341.h included without PLATFORM_ESP32DEV_ILI9341"
+#else
+
+#include <Arduino.h>
+#include <cstdlib>  /* malloc: the scene block lives on the heap */
+#include <cstring>  /* memset: the zero-initialisation a static object gets */
+#include <new>      /* placement new over that block (an inline operator) */
+#include <drivers/esp32/TFT_eSPI_Drawer.h>
+#include <drivers/esp32/ESP32_I2S_AudioBackend.h>
+#include <core/Engine.h>
+#include <platforms/EngineConfig.h>
+
+#include "DoomScene.h"
+#include "doomc/DoomAudio.h"
+
+namespace pr32 = pixelroot32;
+
+// The surface the drawer and the renderer end up with, after the rotation swap.
+static constexpr int kSurfaceWidth = doom::DoomScene::kLogicalWidth;   // 320
+static constexpr int kSurfaceHeight = doom::DoomScene::kLogicalHeight;  // 200
+static constexpr int kPhysicalWidth = 320;
+static constexpr int kPhysicalHeight = 200;
+
+static_assert(kSurfaceWidth == 320 && kSurfaceHeight == 200,
+              "DOOM renders 320x200; the renderer is column-indexed by SCREENWIDTH");
+// Flags are stated pre-swap, so the logical pair arrives transposed.
+static_assert(LOGICAL_HEIGHT == kSurfaceWidth && LOGICAL_WIDTH == kSurfaceHeight,
+              "LOGICAL_WIDTH/HEIGHT are pre-swap panel axes: 200x320 becomes 320x200");
+static_assert(PHYSICAL_DISPLAY_HEIGHT == kPhysicalWidth &&
+              PHYSICAL_DISPLAY_WIDTH == kPhysicalHeight,
+              "PHYSICAL is pre-swap too: 200x320 becomes the 320x200 window");
+static_assert(kPhysicalHeight + 2 * X_OFF_SET == 240,
+              "the window plus both bars must fill the rotated panel's 240 px");
+
+// I2S output to a MAX98357A-class DAC: GPIO 5 (BCLK), 21 (LRCK), 19 (DOUT).
+const int I2S_BCLK = 5;
+const int I2S_LRCK = 21;
+const int I2S_DOUT = 19;
+
+// The six buttons on the board, in the engine's fixed order: Up, Down, Left,
+// Right, A, B, Start, Select.
+const int BTN_UP = 32;
+const int BTN_DOWN = 33;
+const int BTN_LEFT = 25;
+const int BTN_RIGHT = 26;
+const int BTN_A = 27;
+const int BTN_B = 13;
+const int BTN_PIN_START = 34;
+const int BTN_PIN_SELECT = 35;
+
+pr32::drivers::esp32::ESP32_I2S_AudioBackend audioBackend(I2S_BCLK, I2S_LRCK, I2S_DOUT, 22050);
+
+pr32::graphics::DisplayConfig config(
+    pr32::graphics::DisplayType::ILI9341_2,
+    DISPLAY_ROTATION,
+    PHYSICAL_DISPLAY_WIDTH,
+    PHYSICAL_DISPLAY_HEIGHT,
+    LOGICAL_WIDTH,
+    LOGICAL_HEIGHT,
+    X_OFF_SET,
+    Y_OFF_SET
+);
+
+pr32::input::InputConfig inputConfig(BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_A, BTN_B, BTN_PIN_START, BTN_PIN_SELECT);
+
+pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate());
+
+/*
+ * The scene is a HEAP object, not .bss.
+ *
+ * `dram0_0_seg` is the binding constraint of this image. With the engine and
+ * the scene both static the link comes out 891 B over the region; the scene
+ * alone is 744 B, and moving it to the heap is what makes the image fit with
+ * ~1.1 KB to spare. Nothing is given up: it is created once in setup() and
+ * lives until reset, the allocator returns internal DRAM, and every buffer it
+ * owns is allocated exactly as before.
+ *
+ * The ENGINE stays a global object on purpose. `DoomScene.cpp` declares
+ * `extern pixelroot32::core::Engine engine;` -- a global variable's symbol is its
+ * name, not its type, so a `Engine* engine` definition here would silently bind
+ * that declaration to a pointer and every `engine.getRenderer()` would read a
+ * pointer's bytes as an object. On the board that shape panics in
+ * `MusicPlayer::isPlaying()` (LoadProhibited at 0x28).
+ *
+ * The scene is placed with malloc + placement new, deliberately NOT with plain
+ * `new`: that pulls libstdc++'s operator-new/exception tail into this image,
+ * which measured +45 KB of flash. Placement new is an inline operator and costs
+ * nothing, and the block is zeroed first because a static object is
+ * zero-initialised before its constructor runs while malloc is not.
+ */
+pr32::core::Engine engine(config, inputConfig, audioConfig);
+doom::DoomScene* doomScene = nullptr;
+
+// The two numbers the APU already keeps -- blocks whose DMA ring
+// had drained, and the worst synthesis time of one block. The seam asks for
+// them once a second from the scene's report and never from the frame path, so
+// the cost is one indirect call and two atomic loads a second; `user` is the
+// backend this header owns. A build with no source prints `-`.
+static bool readApuTelemetry(void* user, doom::doomc::DoomAudioTelemetry* out) {
+    if (user == nullptr || out == nullptr) {
+        return false;
+    }
+    const auto* backend = static_cast<pr32::drivers::esp32::ESP32_I2S_AudioBackend*>(user);
+    out->underruns = backend->getUnderrunCount();
+    out->worstUs = backend->getWorstRenderUs();
+    return true;
+}
+
+void setup() {
+    // The scene block: malloc + placement new, zeroed first (see the comment
+    // above the pointers). A null block is the only failure mode, and there is no
+    // console line to print before the engine exists, so an empty loop() is the
+    // honest outcome of a heap that cannot hold 744 B at boot.
+    void* sceneBlock = malloc(sizeof(doom::DoomScene));
+    if (sceneBlock == nullptr) {
+        return;
+    }
+    memset(sceneBlock, 0, sizeof(doom::DoomScene));
+    doomScene = new (sceneBlock) doom::DoomScene();
+    engine.init();
+    // After init(), because that is what starts the audio task the counters
+    // belong to: before it, both would read a backend that has rendered nothing.
+    doom::doomc::doomAudioSetTelemetrySource(readApuTelemetry, &audioBackend);
+    engine.setScene(doomScene);
+}
+
+void loop() {
+    engine.run();
+}
+
+#endif  // PLATFORM_ESP32DEV_ILI9341

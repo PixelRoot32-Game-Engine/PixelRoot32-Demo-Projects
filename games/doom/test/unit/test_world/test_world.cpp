@@ -1,0 +1,3776 @@
+/*
+ * Behaviour tests for the world core: the mobj spawn path, the thinker
+ * list, the state machine, the action dispatch and the random sequence.
+ *
+ * Every map here is assembled byte for byte in the 1993 WAD record layout, so
+ * this suite needs no WAD, no container, no display and no engine. The zone is
+ * a local array, one per test, so each case starts from an arena whose bytes
+ * the test wrote.
+ *
+ * The tests go through the public C API only. They read `p_level_stats_t` and
+ * the level's counters, never an internal field that the API does not expose,
+ * and expected numbers are derived from the generated tables (`mobjinfo[]`,
+ * `states[]`) rather than written as literals: a test that hard-codes "radius
+ * is 1048576" cannot notice the table moving under it.
+ *
+ * WHAT EACH CASE IS FOR
+ *
+ *   spawn      ONFLOORZ, ONCEILINGZ, an explicit z, MF_SPAWNCEILING, and the
+ *              refusal of a bad type and of an arena too small for the mobj.
+ *   thinker    insertion order, deferred removal, a thinker that removes
+ *              itself and one that removes a thinker that has not run yet.
+ *   states     a state sets sprite/frame/tics, a zero-tic chain is followed,
+ *              and S_NULL removes the mobj.
+ *   rng        upstream's first sixteen numbers, and two independent indices.
+ *   filters    the skill bit, the single-player bit, MF_COUNTKILL/COUNTITEM,
+ *              player starts and deathmatch starts.
+ *   actions    A_Look is a counted stub; anything else is counted as not
+ *              implemented; ACT_NULL is neither.
+ */
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
+#include <unity.h>
+
+#include "g_game.h"
+#include "p_action.h"
+#include "p_ceilng.h"
+#include "p_doors.h"
+#include "p_floor.h"
+#include "p_lights.h"
+#include "p_inter.h"
+#include "p_map.h"
+#include "p_plats.h"
+#include "p_pspr.h"
+#include "p_setup.h"
+#include "p_spec.h"
+#include "p_user.h"
+#include "r_tables.h"
+
+#include "../../test_config.h"
+
+namespace {
+
+using u8 = std::uint8_t;
+using u16 = std::uint16_t;
+using i16 = std::int16_t;
+using u32 = std::uint32_t;
+using i32 = std::int32_t;
+
+constexpr fixed_t kFrac = FRACUNIT;
+constexpr i16 kFloorHeight = 0;
+constexpr i16 kCeilingHeight = 128;
+constexpr int16_t kNoSide = static_cast<int16_t>(DOOM_NO_SIDE_INDEX);
+
+/// Enough for a handful of mobjs plus the block headers around them.
+constexpr std::size_t kArenaBytes = 4096u;
+
+// --- The 1993 map layout ----------------------------------------------------
+
+void put16(std::vector<u8>& out, i16 value) {
+    const u16 bits = static_cast<u16>(value);
+    out.push_back(static_cast<u8>(bits & 0xFFu));
+    out.push_back(static_cast<u8>((bits >> 8) & 0xFFu));
+}
+
+void putName(std::vector<u8>& out, const char* name) {
+    const std::size_t length = std::strlen(name);
+
+    for (std::size_t i = 0; i < 8u; ++i) {
+        out.push_back(i < length ? static_cast<u8>(name[i]) : 0u);
+    }
+}
+
+/// Rewrites one eight-byte name field of an already-built lump.
+void replaceName(std::vector<u8>& lump, std::size_t at, const char* name) {
+    const std::size_t length = std::strlen(name);
+
+    for (std::size_t i = 0; i < 8u; ++i) {
+        lump[at + i] = i < length ? static_cast<u8>(name[i]) : 0u;
+    }
+}
+
+/// The packed name of a WAD name field, the way the accessors answer it.
+r_name_t packName(const char* name) {
+    u8 field[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    const std::size_t length = std::strlen(name);
+
+    for (std::size_t i = 0; i < 8u && i < length; ++i) {
+        field[i] = static_cast<u8>(name[i]);
+    }
+    return r_pack_name(field);
+}
+
+/*
+ * One sector, one subsector and one seg: the smallest map the spawn path needs.
+ * doom_map_open() accepts it because the five required lumps are non-empty and
+ * NODES may be empty (a map with no nodes is subsector 0, R_PointInSubsector's
+ * own special case). Every point is therefore in subsector 0, sector 0.
+ */
+struct MapBuilder {
+    std::vector<u8> things;
+    std::vector<u8> linedefs;
+    std::vector<u8> sidedefs;
+    std::vector<u8> vertexes;
+    std::vector<u8> segs;
+    std::vector<u8> ssectors;
+    std::vector<u8> sectors;
+
+    MapBuilder() {
+        put16(vertexes, 0);
+        put16(vertexes, 0);
+        put16(vertexes, 64);
+        put16(vertexes, 0);
+
+        put16(linedefs, 0);          // v1
+        put16(linedefs, 1);          // v2
+        put16(linedefs, 1);          // flags: blocking
+        put16(linedefs, 0);          // special
+        put16(linedefs, 0);          // tag
+        put16(linedefs, 0);          // side 0
+        put16(linedefs, kNoSide);    // no back side
+
+        put16(sidedefs, 0);          // texture offset
+        put16(sidedefs, 0);          // row offset
+        putName(sidedefs, "-");
+        putName(sidedefs, "-");
+        putName(sidedefs, "STARTAN3");
+        put16(sidedefs, 0);          // sector 0
+
+        put16(segs, 0);              // v1
+        put16(segs, 1);              // v2
+        put16(segs, 0);              // angle
+        put16(segs, 0);              // linedef 0
+        put16(segs, 0);              // side 0
+        put16(segs, 0);              // offset
+
+        put16(ssectors, 1);          // one seg
+        put16(ssectors, 0);          // starting at seg 0
+
+        put16(sectors, kFloorHeight);
+        put16(sectors, kCeilingHeight);
+        putName(sectors, "FLOOR4_8");
+        putName(sectors, "CEIL3_5");
+        put16(sectors, 160);         // light
+        put16(sectors, 0);           // special
+        put16(sectors, 0);           // tag
+    }
+
+    /// One THINGS record; the caller decides the options bits.
+    void addThing(i16 x, i16 y, i16 angle, i16 type, i16 options) {
+        put16(things, x);
+        put16(things, y);
+        put16(things, angle);
+        put16(things, type);
+        put16(things, options);
+    }
+
+    doom_map_error_t open(doom_map_t* map) const {
+        doom_map_source_t source{};
+
+        source.data[DOOM_MAP_THINGS] = things.empty() ? nullptr : things.data();
+        source.size[DOOM_MAP_THINGS] = things.size();
+        source.data[DOOM_MAP_LINEDEFS] = linedefs.data();
+        source.size[DOOM_MAP_LINEDEFS] = linedefs.size();
+        source.data[DOOM_MAP_SIDEDEFS] = sidedefs.data();
+        source.size[DOOM_MAP_SIDEDEFS] = sidedefs.size();
+        source.data[DOOM_MAP_VERTEXES] = vertexes.data();
+        source.size[DOOM_MAP_VERTEXES] = vertexes.size();
+        source.data[DOOM_MAP_SEGS] = segs.data();
+        source.size[DOOM_MAP_SEGS] = segs.size();
+        source.data[DOOM_MAP_SSECTORS] = ssectors.data();
+        source.size[DOOM_MAP_SSECTORS] = ssectors.size();
+        source.data[DOOM_MAP_SECTORS] = sectors.data();
+        source.size[DOOM_MAP_SECTORS] = sectors.size();
+
+        return doom_map_open(map, &source);
+    }
+};
+
+/* --- A whole world on the stack -------------------------------------------- */
+
+struct World {
+    MapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[kArenaBytes]{};
+    zone_state_t zone{};
+    p_thinker_list_t thinkers{};
+    m_random_t random{};
+    p_action_stats_t actions{};
+    p_mobj_context_t context{};
+
+    /// Builds the map, the zone and the context; aborts the test on failure.
+    void open() {
+        TEST_ASSERT_EQUAL_INT(DOOM_MAP_OK, builder.open(&map));
+        TEST_ASSERT_EQUAL_INT(ZONE_ERR_OK, z_init(&zone, arena, sizeof arena));
+        TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_list_init(&thinkers));
+        m_random_init(&random);
+        p_action_init(&actions);
+
+        context.zone = &zone;
+        context.thinkers = &thinkers;
+        context.map = &map;
+        context.random = &random;
+        context.actions = &actions;
+        context.rules = p_spawn_rules_default();
+    }
+
+    /// The zone's accounting, for the cases that must change nothing.
+    zone_stats_t stats() const { return z_stats(&zone); }
+
+    /// The number of live mobjs, by walking the thinker list.
+    u32 mobjCount() const {
+        u32 count = 0;
+
+        for (const p_thinker_t* thinker = p_thinker_first(&thinkers); thinker != nullptr;
+             thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == P_THINKER_MOBJ) {
+                ++count;
+            }
+        }
+        return count;
+    }
+};
+
+/// The first mobj type whose flags carry @p flag, so a test never hard-codes a
+/// table index that the generated table could move.
+mobjtype_t typeWithFlag(u32 flag) {
+    for (i32 type = 0; type < NUM_MOBJ_TYPES; ++type) {
+        if ((mobjinfo[type].flags & flag) != 0u) {
+            return static_cast<mobjtype_t>(type);
+        }
+    }
+    return MT_PLAYER;
+}
+
+/// The first state that chains through at least one zero-tic state.
+statenum_t zeroTicState() {
+    for (i32 state = 1; state < NUM_STATES; ++state) {
+        if (states[state].tics == 0 && states[state].nextstate != S_NULL) {
+            return static_cast<statenum_t>(state);
+        }
+    }
+    return S_NULL;
+}
+
+/// The state p_set_mobj_state() must stop at when it starts at @p start: the
+/// first state in the chain whose tics are not zero. Recomputed from the table
+/// here, independently of the implementation.
+statenum_t firstTimedState(statenum_t start) {
+    statenum_t state = start;
+
+    while (state != S_NULL && states[state].tics == 0) {
+        state = static_cast<statenum_t>(states[state].nextstate);
+    }
+    return state;
+}
+
+// --- Spawn position ---------------------------------------------------------
+
+void test_spawn_onfloorz_uses_the_sector_floor(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+
+    world.open();
+
+    r_mobj_t* mobj = p_spawn_mobj(&world.context, 10 * kFrac, 20 * kFrac, ONFLOORZ,
+                                  MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(mobj);
+    TEST_ASSERT_EQUAL_INT(P_MOBJ_OK, error);
+    TEST_ASSERT_EQUAL_INT32(10 * kFrac, mobj->x);
+    TEST_ASSERT_EQUAL_INT32(20 * kFrac, mobj->y);
+    TEST_ASSERT_EQUAL_INT32(kFloorHeight * kFrac, mobj->z);
+    TEST_ASSERT_EQUAL_INT32(kFloorHeight * kFrac, mobj->floorz);
+    TEST_ASSERT_EQUAL_INT32(kCeilingHeight * kFrac, mobj->ceilingz);
+    TEST_ASSERT_EQUAL_UINT16(0u, mobj->subsector);
+    TEST_ASSERT_EQUAL_UINT16(0u, mobj->sector);
+    TEST_ASSERT_EQUAL_INT32(mobjinfo[MT_PLAYER].radius, mobj->radius);
+    TEST_ASSERT_EQUAL_INT32(mobjinfo[MT_PLAYER].height, mobj->height);
+    TEST_ASSERT_EQUAL_INT32(mobjinfo[MT_PLAYER].spawnhealth, mobj->health);
+    TEST_ASSERT_EQUAL_UINT32(mobjinfo[MT_PLAYER].flags, mobj->flags);
+    TEST_ASSERT_EQUAL_INT(S_PLAY, mobj->state);
+    TEST_ASSERT_EQUAL_INT(states[S_PLAY].sprite, mobj->sprite);
+    TEST_ASSERT_EQUAL_INT(states[S_PLAY].tics, mobj->tics);
+    TEST_ASSERT_EQUAL_UINT32(1u, world.thinkers.count);
+    TEST_ASSERT_TRUE((mobj->flags & MF_SOLID) != 0u);
+}
+
+void test_spawn_onceilingz_subtracts_the_height(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+
+    world.open();
+
+    r_mobj_t* mobj = p_spawn_mobj(&world.context, 0, 0, ONCEILINGZ, MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(mobj);
+    TEST_ASSERT_EQUAL_INT(P_MOBJ_OK, error);
+    TEST_ASSERT_EQUAL_INT32((kCeilingHeight * kFrac) - mobjinfo[MT_PLAYER].height,
+                            mobj->z);
+}
+
+void test_spawn_explicit_z_is_not_clamped(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+    const fixed_t z = 40 * kFrac;
+
+    world.open();
+
+    // Vanilla's P_SpawnMobj leaves an explicit z alone, even outside the
+    // sector: P_ZMovement() is what brings the mobj back on the first tic.
+    r_mobj_t* mobj = p_spawn_mobj(&world.context, 0, 0, z, MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(mobj);
+    TEST_ASSERT_EQUAL_INT32(z, mobj->z);
+    TEST_ASSERT_EQUAL_INT32(kFloorHeight * kFrac, mobj->floorz);
+    TEST_ASSERT_EQUAL_INT32(kCeilingHeight * kFrac, mobj->ceilingz);
+}
+
+void test_spawn_map_thing_hanging_type_uses_onceilingz(void) {
+    World world;
+    p_mapthing_t thing{};
+
+    world.open();
+
+    const mobjtype_t hanging = typeWithFlag(MF_SPAWNCEILING);
+    TEST_ASSERT_TRUE((mobjinfo[hanging].flags & MF_SPAWNCEILING) != 0u);
+    TEST_ASSERT_TRUE(mobjinfo[hanging].doomednum >= 0);
+
+    thing.x = 4;
+    thing.y = 8;
+    thing.angle = 90;
+    thing.type = static_cast<i16>(mobjinfo[hanging].doomednum);
+    thing.options = 7;
+
+    const p_thing_outcome_t outcome = p_spawn_map_thing(&world.context, &thing);
+    TEST_ASSERT_EQUAL_INT(P_THING_SPAWNED, outcome.result);
+    TEST_ASSERT_NOT_NULL(outcome.mobj);
+    TEST_ASSERT_EQUAL_INT32((kCeilingHeight * kFrac) - mobjinfo[hanging].height,
+                            outcome.mobj->z);
+    TEST_ASSERT_TRUE((outcome.mobj->flags & MF_SPAWNCEILING) != 0u);
+    TEST_ASSERT_EQUAL_INT(hanging, outcome.mobj->type);
+    TEST_ASSERT_EQUAL_INT32(4 * kFrac, outcome.mobj->x);
+    TEST_ASSERT_EQUAL_UINT32(static_cast<u32>(ANG45 * (90 / 45)), outcome.mobj->angle);
+}
+
+void test_spawn_rejects_a_bad_type_and_touches_nothing(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+
+    world.open();
+
+    const zone_stats_t empty = world.stats();
+    r_mobj_t* mobj = p_spawn_mobj(&world.context, 0, 0, ONFLOORZ,
+                                  static_cast<mobjtype_t>(NUM_MOBJ_TYPES), &error);
+    TEST_ASSERT_NULL(mobj);
+    TEST_ASSERT_EQUAL_INT(P_MOBJ_ERR_BAD_TYPE, error);
+    TEST_ASSERT_EQUAL_UINT32(0u, world.thinkers.count);
+    TEST_ASSERT_EQUAL_UINT32(empty.inUse, world.stats().inUse);
+    TEST_ASSERT_EQUAL_UINT32(empty.freeBytes, world.stats().freeBytes);
+    TEST_ASSERT_EQUAL_UINT32(empty.failures, world.stats().failures);
+}
+
+void test_zone_too_small_reports_failure_without_touching_the_arena(void) {
+    // One block header and one minimum payload: enough for z_init(), never
+    // enough for a mobj.
+    alignas(8) u8 tiny[ZONE_MIN_ARENA]{};
+    zone_state_t zone;
+    p_thinker_list_t thinkers;
+    MapBuilder builder;
+    doom_map_t map{};
+    m_random_t random;
+    p_action_stats_t actions;
+    p_mobj_context_t context{};
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+
+    TEST_ASSERT_EQUAL_INT(DOOM_MAP_OK, builder.open(&map));
+    TEST_ASSERT_EQUAL_INT(ZONE_ERR_OK, z_init(&zone, tiny, sizeof tiny));
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_list_init(&thinkers));
+    m_random_init(&random);
+    p_action_init(&actions);
+    context.zone = &zone;
+    context.thinkers = &thinkers;
+    context.map = &map;
+    context.random = &random;
+    context.actions = &actions;
+    context.rules = p_spawn_rules_default();
+
+    const zone_stats_t before = z_stats(&zone);
+    r_mobj_t* mobj = p_spawn_mobj(&context, 0, 0, ONFLOORZ, MT_PLAYER, &error);
+    const zone_stats_t after = z_stats(&zone);
+
+    TEST_ASSERT_NULL(mobj);
+    TEST_ASSERT_EQUAL_INT(P_MOBJ_ERR_NO_MEMORY, error);
+    TEST_ASSERT_EQUAL_UINT32(0u, thinkers.count);
+    TEST_ASSERT_EQUAL_UINT32(before.inUse, after.inUse);
+    TEST_ASSERT_EQUAL_UINT32(before.freeBytes, after.freeBytes);
+    TEST_ASSERT_EQUAL_UINT32(before.overhead, after.overhead);
+    TEST_ASSERT_EQUAL_UINT32(before.largestFree, after.largestFree);
+    TEST_ASSERT_EQUAL_UINT32(before.failures + 1u, after.failures);
+    TEST_ASSERT_TRUE(sizeof(r_mobj_t) > (ZONE_MIN_ARENA - ZONE_HEADER_SIZE));
+}
+
+// --- The thinker list -------------------------------------------------------
+
+void test_thinkers_run_in_insertion_order(void) {
+    World world;
+    static int order[4];
+    static int position;
+
+    struct Recorder {
+        p_thinker_t thinker;
+        int value;
+    };
+    static Recorder recorders[4];
+
+    struct Context {
+        int* order;
+        int* position;
+    };
+    static Context context;
+
+    world.open();
+
+    struct Runner {
+        static void run(p_thinker_t* thinker, void* raw) {
+            Recorder* self = reinterpret_cast<Recorder*>(thinker);
+            Context* ctx = static_cast<Context*>(raw);
+
+            ctx->order[(*ctx->position)++] = self->value;
+        }
+
+        // Nothing is removed here, so the release is never called; it exists
+        // because a walk without one is refused (it would leak every removal).
+        static void release(void* raw, p_thinker_t* thinker) {
+            (void)raw;
+            (void)thinker;
+        }
+    };
+
+    context.order = order;
+    context.position = &position;
+    position = 0;
+
+    for (int i = 0; i < 4; ++i) {
+        recorders[i].value = i;
+        TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_init(&recorders[i].thinker,
+                                                        &Runner::run, P_THINKER_MOBJ));
+        TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_add(&world.thinkers,
+                                                       &recorders[i].thinker));
+    }
+    TEST_ASSERT_EQUAL_UINT32(4u, world.thinkers.count);
+
+    p_thinker_run_t stats{};
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_run_thinkers(&world.thinkers, &Runner::release,
+                                                    &context, &stats));
+    TEST_ASSERT_EQUAL_UINT32(4u, stats.executed);
+    TEST_ASSERT_EQUAL_UINT32(0u, stats.removed);
+    TEST_ASSERT_EQUAL_INT(0, order[0]);
+    TEST_ASSERT_EQUAL_INT(1, order[1]);
+    TEST_ASSERT_EQUAL_INT(2, order[2]);
+    TEST_ASSERT_EQUAL_INT(3, order[3]);
+}
+
+void test_thinker_removing_itself_and_a_later_one(void) {
+    static int self_calls;
+    static int second_calls;
+    static int third_calls;
+    static u32 released;
+
+    struct Node {
+        p_thinker_t thinker;
+        int* calls;
+    };
+
+    struct Context {
+        p_thinker_list_t* list;
+        p_thinker_t* victim;
+    };
+
+    // A -- removes itself; B -- removes C, which has not run yet; C -- must
+    // never run.
+    struct Runners {
+        static void selfRemover(p_thinker_t* thinker, void* raw) {
+            Node* self = reinterpret_cast<Node*>(thinker);
+            Context* ctx = static_cast<Context*>(raw);
+
+            *self->calls += 1;
+            TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_remove(ctx->list, thinker));
+        }
+
+        static void remover(p_thinker_t* thinker, void* raw) {
+            Node* self = reinterpret_cast<Node*>(thinker);
+            Context* ctx = static_cast<Context*>(raw);
+
+            *self->calls += 1;
+            TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_remove(ctx->list, ctx->victim));
+        }
+
+        static void plain(p_thinker_t* thinker, void* raw) {
+            Node* self = reinterpret_cast<Node*>(thinker);
+
+            (void)raw;
+            *self->calls += 1;
+        }
+
+        static void release(void* raw, p_thinker_t* thinker) {
+            (void)raw;
+            (void)thinker;
+            ++released;
+        }
+    };
+
+    p_thinker_list_t list;
+    Node a{{}, &self_calls};
+    Node b{{}, &second_calls};
+    Node c{{}, &third_calls};
+    Context context{&list, &c.thinker};
+    p_thinker_run_t stats{};
+
+    self_calls = second_calls = third_calls = 0;
+    released = 0;
+
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_list_init(&list));
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_init(&a.thinker, &Runners::selfRemover,
+                                                    P_THINKER_MOBJ));
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_init(&b.thinker, &Runners::remover,
+                                                    P_THINKER_MOBJ));
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_init(&c.thinker, &Runners::plain,
+                                                    P_THINKER_MOBJ));
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_add(&list, &a.thinker));
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_add(&list, &b.thinker));
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_add(&list, &c.thinker));
+
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_run_thinkers(&list, &Runners::release,
+                                                    &context, &stats));
+
+    TEST_ASSERT_EQUAL_INT(1, self_calls);
+    TEST_ASSERT_EQUAL_INT(1, second_calls);
+    TEST_ASSERT_EQUAL_INT(0, third_calls);
+    TEST_ASSERT_EQUAL_UINT32(2u, stats.executed);
+    TEST_ASSERT_EQUAL_UINT32(2u, stats.removed);
+    TEST_ASSERT_EQUAL_UINT32(2u, released);
+    // A removed itself and C was removed before its turn; B is untouched and
+    // is still the only entry, with no dangling next pointer.
+    TEST_ASSERT_EQUAL_UINT32(1u, list.count);
+    TEST_ASSERT_EQUAL_PTR(&b.thinker, p_thinker_first(&list));
+    TEST_ASSERT_EQUAL_UINT8(0u, b.thinker.removed);
+    TEST_ASSERT_NULL(p_thinker_next(&b.thinker));
+}
+
+void test_thinker_misuse_changes_nothing(void) {
+    p_thinker_list_t list;
+    p_thinker_t thinker{};
+    p_thinker_t alien{};
+    p_thinker_run_t stats{};
+
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_list_init(&list));
+    TEST_ASSERT_EQUAL_INT(P_TICK_ERR_NULL_LIST, p_thinker_add(nullptr, &thinker));
+    TEST_ASSERT_EQUAL_INT(P_TICK_ERR_NULL_THINKER, p_thinker_add(&list, nullptr));
+    TEST_ASSERT_EQUAL_INT(P_TICK_ERR_NOT_LINKED, p_thinker_remove(&list, &thinker));
+
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_init(&thinker, nullptr, P_THINKER_MOBJ));
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_add(&list, &thinker));
+    TEST_ASSERT_EQUAL_INT(P_TICK_ERR_ALREADY_LINKED, p_thinker_add(&list, &thinker));
+    TEST_ASSERT_EQUAL_UINT32(1u, list.count);
+
+    // A thinker from another list is not this list's to remove.
+    p_thinker_list_t other;
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_list_init(&other));
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_init(&alien, nullptr, P_THINKER_MOBJ));
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_thinker_add(&other, &alien));
+    TEST_ASSERT_EQUAL_INT(P_TICK_ERR_NOT_LINKED, p_thinker_remove(&list, &alien));
+    TEST_ASSERT_EQUAL_UINT32(1u, other.count);
+
+    // A run with no release callback is refused before it walks anything.
+    TEST_ASSERT_EQUAL_INT(P_TICK_ERR_NULL_RELEASE, p_run_thinkers(&list, nullptr,
+                                                                  nullptr, &stats));
+    TEST_ASSERT_EQUAL_UINT32(1u, list.count);
+    TEST_ASSERT_EQUAL_UINT32(0u, stats.executed);
+}
+
+// --- The state machine ------------------------------------------------------
+
+void test_set_state_advances_state_and_resets_tics(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+
+    world.open();
+    r_mobj_t* mobj = p_spawn_mobj(&world.context, 0, 0, ONFLOORZ, MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(mobj);
+
+    TEST_ASSERT_EQUAL_INT(1, p_set_mobj_state(&world.context, mobj, S_PLAY_RUN1, &error));
+    TEST_ASSERT_EQUAL_INT(P_MOBJ_OK, error);
+    TEST_ASSERT_EQUAL_INT(S_PLAY_RUN1, mobj->state);
+    TEST_ASSERT_EQUAL_INT(states[S_PLAY_RUN1].tics, mobj->tics);
+    TEST_ASSERT_EQUAL_INT(states[S_PLAY_RUN1].sprite, mobj->sprite);
+    TEST_ASSERT_EQUAL_INT32(states[S_PLAY_RUN1].frame, mobj->frame);
+    TEST_ASSERT_TRUE(mobj->tics > 0);
+}
+
+void test_set_state_follows_a_zero_tic_chain(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+
+    world.open();
+    r_mobj_t* mobj = p_spawn_mobj(&world.context, 0, 0, ONFLOORZ, MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(mobj);
+
+    const statenum_t start = zeroTicState();
+    TEST_ASSERT_TRUE(start != S_NULL);
+    TEST_ASSERT_EQUAL_INT(states[start].tics, 0);
+
+    const statenum_t expected = firstTimedState(start);
+    TEST_ASSERT_TRUE(expected != S_NULL);
+
+    TEST_ASSERT_EQUAL_INT(1, p_set_mobj_state(&world.context, mobj, start, &error));
+    TEST_ASSERT_EQUAL_INT(expected, mobj->state);
+    TEST_ASSERT_EQUAL_INT(states[expected].tics, mobj->tics);
+    TEST_ASSERT_TRUE(mobj->tics > 0);
+}
+
+void test_set_state_to_null_removes_the_mobj(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+
+    world.open();
+    r_mobj_t* mobj = p_spawn_mobj(&world.context, 0, 0, ONFLOORZ, MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(mobj);
+
+    TEST_ASSERT_EQUAL_INT(0, p_set_mobj_state(&world.context, mobj, S_NULL, &error));
+    TEST_ASSERT_EQUAL_INT(P_MOBJ_OK, error);
+    TEST_ASSERT_EQUAL_INT(S_NULL, mobj->state);
+    TEST_ASSERT_EQUAL_UINT8(1u, mobj->thinker.removed);
+}
+
+void test_remove_twice_is_a_noop_with_an_error(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+    p_thinker_run_t stats{};
+
+    world.open();
+    r_mobj_t* mobj = p_spawn_mobj(&world.context, 0, 0, ONFLOORZ, MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(mobj);
+
+    TEST_ASSERT_EQUAL_INT(P_MOBJ_OK, p_remove_mobj(&world.context, mobj));
+    TEST_ASSERT_EQUAL_UINT8(1u, mobj->thinker.removed);
+    TEST_ASSERT_EQUAL_UINT32(1u, world.thinkers.count);
+
+    const zone_stats_t held = world.stats();
+    TEST_ASSERT_EQUAL_INT(P_MOBJ_ERR_ALREADY_REMOVED,
+                          p_remove_mobj(&world.context, mobj));
+    TEST_ASSERT_EQUAL_UINT32(held.inUse, world.stats().inUse);
+    TEST_ASSERT_EQUAL_UINT32(held.freeBytes, world.stats().freeBytes);
+    TEST_ASSERT_EQUAL_UINT32(1u, world.thinkers.count);
+
+    // The removal is deferred: the next tick unlinks and frees it.
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_run_thinkers(&world.thinkers,
+                                                    &p_level_release_thinker,
+                                                    &world.context, &stats));
+    TEST_ASSERT_EQUAL_UINT32(1u, stats.removed);
+    TEST_ASSERT_EQUAL_UINT32(0u, stats.executed);
+    TEST_ASSERT_EQUAL_UINT32(0u, world.thinkers.count);
+    TEST_ASSERT_EQUAL_UINT32(0u, world.stats().inUse);
+    TEST_ASSERT_EQUAL_UINT32(sizeof world.arena - ZONE_HEADER_SIZE,
+                             world.stats().freeBytes);
+}
+
+// --- The random sequence ----------------------------------------------------
+
+void test_rng_returns_upstreams_first_sixteen_values(void) {
+    static const i32 expected[16] = {8, 109, 220, 222, 241, 149, 107, 75,
+                                     248, 254, 140, 16, 66, 74, 21, 211};
+    m_random_t random;
+    m_random_t other;
+
+    m_random_init(&random);
+    m_random_init(&other);
+
+    for (int i = 0; i < 16; ++i) {
+        const i32 value = p_random(&random);
+
+        TEST_ASSERT_EQUAL_INT32(expected[i], value);
+        TEST_ASSERT_TRUE(value >= 0 && value <= 255);
+        // A second world keeps its own index.
+        TEST_ASSERT_EQUAL_INT32(expected[i], p_random(&other));
+    }
+    TEST_ASSERT_EQUAL_UINT32(16u, random.index);
+}
+
+void test_rng_wraps_after_a_full_table(void) {
+    m_random_t random;
+    i32 first = 0;
+    i32 after = 0;
+
+    m_random_init(&random);
+    first = p_random(&random);
+    for (int i = 0; i < 255; ++i) {
+        (void)p_random(&random);
+    }
+    after = p_random(&random);
+
+    TEST_ASSERT_EQUAL_INT32(first, after);
+}
+
+// --- The map-thing filters --------------------------------------------------
+
+void test_skill_filter_accepts_and_rejects_the_right_things(void) {
+    World world;
+    p_mobj_context_t context{};
+
+    world.open();
+    context = world.context;
+    context.rules = p_spawn_rules_default();
+    context.rules.skill = P_SKILL_MEDIUM;   // bit 2
+
+    p_mapthing_t all{};
+    p_mapthing_t hardOnly{};
+    p_mapthing_t mediumOnly{};
+    p_mapthing_t notSingle{};
+
+    all.type = 3004;
+    all.options = 7;
+    hardOnly.type = 3004;
+    hardOnly.options = 4;
+    mediumOnly.type = 3004;
+    mediumOnly.options = 2;
+    notSingle.type = 3004;
+    notSingle.options = static_cast<i16>(2 | 16);
+
+    TEST_ASSERT_EQUAL_INT(P_THING_SPAWNED, p_spawn_map_thing(&context, &all).result);
+    TEST_ASSERT_EQUAL_INT(P_THING_SKIPPED_SKILL,
+                          p_spawn_map_thing(&context, &hardOnly).result);
+    TEST_ASSERT_EQUAL_INT(P_THING_SPAWNED,
+                          p_spawn_map_thing(&context, &mediumOnly).result);
+    TEST_ASSERT_EQUAL_INT(P_THING_SKIPPED_SINGLE,
+                          p_spawn_map_thing(&context, &notSingle).result);
+    TEST_ASSERT_EQUAL_UINT32(2u, world.mobjCount());
+}
+
+void test_unknown_doomednum_is_refused_not_spawned(void) {
+    World world;
+    p_mapthing_t thing{};
+
+    world.open();
+    thing.type = 32000;
+    thing.options = 7;
+
+    const p_thing_outcome_t outcome = p_spawn_map_thing(&world.context, &thing);
+    TEST_ASSERT_EQUAL_INT(P_THING_UNKNOWN_TYPE, outcome.result);
+    TEST_ASSERT_NULL(outcome.mobj);
+    TEST_ASSERT_EQUAL_UINT32(0u, world.mobjCount());
+}
+
+void test_level_counts_kills_items_and_player_starts(void) {
+    MapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[kArenaBytes]{};
+    p_level_t level{};
+
+    // One monster (MF_COUNTKILL), one health bonus (MF_COUNTITEM), four player
+    // starts and one deathmatch start.
+    builder.addThing(0, 0, 0, 3004, 7);
+    builder.addThing(8, 0, 0, 2014, 7);
+    builder.addThing(0, 8, 90, 1, 7);
+    builder.addThing(8, 8, 90, 2, 7);
+    builder.addThing(16, 8, 90, 3, 7);
+    builder.addThing(24, 8, 90, 4, 7);
+    builder.addThing(32, 8, 180, 11, 7);
+    TEST_ASSERT_EQUAL_INT(DOOM_MAP_OK, builder.open(&map));
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK,
+                          p_level_init(&level, &map, arena, sizeof arena, nullptr));
+    TEST_ASSERT_EQUAL_INT32(1, level.totalKills);
+    TEST_ASSERT_EQUAL_INT32(1, level.totalItems);
+    TEST_ASSERT_EQUAL_UINT32(7u, level.stats.things);
+    TEST_ASSERT_EQUAL_UINT32(3u, level.stats.spawned);       // monster, bonus, player 1
+    TEST_ASSERT_EQUAL_UINT32(4u, level.stats.playerStarts);
+    TEST_ASSERT_EQUAL_UINT32(1u, level.stats.deathmatchStarts);
+    TEST_ASSERT_EQUAL_UINT32(1u, level.deathmatchStartCount);
+    TEST_ASSERT_NOT_NULL(level.player);
+    TEST_ASSERT_EQUAL_INT(MT_PLAYER, level.player->type);
+    TEST_ASSERT_EQUAL_INT32(0, level.player->x);   // the type-1 record
+    TEST_ASSERT_EQUAL_INT32(8 * kFrac, level.player->y);
+    TEST_ASSERT_EQUAL_UINT32(static_cast<u32>(ANG45 * 2), level.player->angle);
+    TEST_ASSERT_EQUAL_INT32(100, level.player->health);
+    TEST_ASSERT_EQUAL_UINT32(3u, p_level_mobj_count(&level));
+
+    p_level_shutdown(&level);
+    TEST_ASSERT_EQUAL_INT(0, level.open);
+    TEST_ASSERT_EQUAL_UINT32(0u, level.thinkers.count);
+}
+
+void test_level_medium_skill_drops_hard_only_monsters(void) {
+    MapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[kArenaBytes]{};
+    p_level_t level{};
+    p_spawn_rules_t rules = p_spawn_rules_default();
+
+    builder.addThing(0, 0, 0, 3004, 7);
+    builder.addThing(8, 0, 0, 3004, 4);     // hard only: not on medium
+    builder.addThing(16, 0, 0, 3004, 1);    // baby only: not on medium
+    TEST_ASSERT_EQUAL_INT(DOOM_MAP_OK, builder.open(&map));
+
+    rules.skill = P_SKILL_MEDIUM;
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK,
+                          p_level_init(&level, &map, arena, sizeof arena, &rules));
+    TEST_ASSERT_EQUAL_INT32(1, level.totalKills);
+    TEST_ASSERT_EQUAL_UINT32(1u, level.stats.spawned);
+    TEST_ASSERT_EQUAL_UINT32(2u, level.stats.skippedSkill);
+
+    p_level_shutdown(&level);
+}
+
+// --- Action dispatch --------------------------------------------------------
+
+void test_action_dispatch_counts_what_is_missing(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+
+    world.open();
+    r_mobj_t* mobj = p_spawn_mobj(&world.context, 0, 0, ONFLOORZ, MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(mobj);
+
+    TEST_ASSERT_EQUAL_INT(P_ACTION_NONE, p_action_run(&world.context, mobj, ACT_NULL));
+    TEST_ASSERT_EQUAL_UINT32(0u, world.actions.calls);
+
+    // A_Look is real. With no level and no sound array in this hand-built
+    // context it has nothing to look at, but it ran: DONE, not STUB.
+    TEST_ASSERT_EQUAL_INT(P_ACTION_DONE, p_action_run(&world.context, mobj, A_Look));
+    TEST_ASSERT_EQUAL_UINT32(1u, world.actions.calls);
+    TEST_ASSERT_EQUAL_UINT32(1u, world.actions.done);
+    TEST_ASSERT_EQUAL_UINT32(0u, world.actions.notImplemented);
+
+    // A_Chase is real too. With no target and no level it falls back to
+    // the spawn state, but it ran: DONE, not STUB.
+    TEST_ASSERT_EQUAL_INT(P_ACTION_DONE, p_action_run(&world.context, mobj, A_Chase));
+    TEST_ASSERT_EQUAL_UINT32(2u, world.actions.calls);
+    TEST_ASSERT_EQUAL_UINT32(2u, world.actions.done);
+    TEST_ASSERT_EQUAL_UINT32(0u, world.actions.notImplemented);
+
+    // Everything else is still counted, never silently ignored. A_BossDeath is
+    // boss-level behaviour this port does not implement.
+    TEST_ASSERT_EQUAL_INT(P_ACTION_NOT_IMPLEMENTED,
+                          p_action_run(&world.context, mobj, A_BossDeath));
+    TEST_ASSERT_EQUAL_UINT32(3u, world.actions.calls);
+    TEST_ASSERT_EQUAL_UINT32(1u, world.actions.notImplemented);
+    TEST_ASSERT_EQUAL_UINT32(static_cast<u32>(A_BossDeath),
+                             world.actions.lastNotImplemented);
+
+    TEST_ASSERT_EQUAL_INT(P_ACTION_UNKNOWN,
+                          p_action_run(&world.context, mobj,
+                                       static_cast<action_t>(NUM_ACTIONS + 3)));
+    TEST_ASSERT_EQUAL_UINT32(1u, world.actions.unknown);
+    TEST_ASSERT_EQUAL_UINT32(4u, world.actions.calls);
+
+    TEST_ASSERT_EQUAL_INT(P_ACTION_NULL_MOBJ,
+                          p_action_run(&world.context, nullptr, A_Look));
+    TEST_ASSERT_EQUAL_UINT32(1u, world.actions.nullMobj);
+}
+
+void test_state_transition_dispatches_the_new_state_action(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+
+    world.open();
+    r_mobj_t* mobj = p_spawn_mobj(&world.context, 0, 0, ONFLOORZ, MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(mobj);
+
+    // S_POSS_STND's action is A_Look: setting the state must run it. The
+    // hand-built context has no level and no sound array, so it finds nothing,
+    // but the dispatch counts it as implemented.
+    TEST_ASSERT_EQUAL_INT(A_Look, states[S_POSS_STND].action);
+    TEST_ASSERT_EQUAL_INT(1, p_set_mobj_state(&world.context, mobj, S_POSS_STND, &error));
+    TEST_ASSERT_EQUAL_UINT32(1u, world.actions.calls);
+    TEST_ASSERT_EQUAL_UINT32(1u, world.actions.done);
+}
+
+/*
+ * A_Look's sound path: a sector that heard the player wakes the monster on its
+ * next look, even without a line of sight, and the see-sound draw still advances
+ * the random sequence by exactly one (the draw is kept, the sound is discarded).
+ */
+void test_action_look_wakes_on_a_sound_target(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+    p_sector_sound_t sound[1]{};
+    r_mobj_t* player = nullptr;
+    r_mobj_t* monster = nullptr;
+
+    world.open();
+    player = p_spawn_mobj(&world.context, 0, 0, ONFLOORZ, MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(player);
+    monster = p_spawn_mobj(&world.context, 40 * kFrac, 0, ONFLOORZ,
+                           MT_POSSESSED, &error);
+    TEST_ASSERT_NOT_NULL(monster);
+    TEST_ASSERT_EQUAL_INT(0, monster->sector);
+
+    // The sector's sound target is the player, as P_NoiseAlert would leave it.
+    sound[0].soundTarget = player;
+    world.context.sectorSound = sound;
+    world.context.sectorSoundCount = 1;
+
+    const u8 before = world.random.index;
+    TEST_ASSERT_EQUAL_INT(P_ACTION_DONE,
+                          p_action_run(&world.context, monster, A_Look));
+    TEST_ASSERT_EQUAL_PTR(player, monster->target);
+    TEST_ASSERT_EQUAL_INT(mobjinfo[MT_POSSESSED].seestate, monster->state);
+    // Four draws now: the discarded see sound (sfx_posit1, 36), then the three
+    // A_Chase makes on the see state P_SetMobjState runs immediately --
+    // P_NewChaseDir's direction draw, its P_TryWalk `movecount` draw, and the
+    // active sound's draw.
+    TEST_ASSERT_EQUAL_UINT8(static_cast<u8>((before + 4) & 0xFFu),
+                            world.random.index);
+}
+
+// --- The mobj thinker -------------------------------------------------------
+
+void test_ticking_a_mobj_advances_its_state(void) {
+    World world;
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+    p_thinker_run_t stats{};
+
+    world.open();
+    r_mobj_t* mobj = p_spawn_mobj(&world.context, 0, 0, ONFLOORZ, MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(mobj);
+    // Returns 1 while the mobj is still present: S_PLAY_RUN1 does not reach
+    // S_NULL, so it is not removed.
+    TEST_ASSERT_EQUAL_INT(1, p_set_mobj_state(&world.context, mobj, S_PLAY_RUN1,
+                                              &error));
+    const i16 tics = mobj->tics;
+    TEST_ASSERT_TRUE(tics > 0);
+
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_run_thinkers(&world.thinkers,
+                                                    &p_level_release_thinker,
+                                                    &world.context, &stats));
+    TEST_ASSERT_EQUAL_UINT32(1u, stats.executed);
+    TEST_ASSERT_EQUAL_INT(tics - 1, mobj->tics);
+}
+// --- Sector and line specials -----------------------------------------------
+
+/*
+ * One sector and one line as a test writes them. The builder below emits the
+ * 1993 record layout byte for byte, like MapBuilder; it exists separately
+ * because these cases need several sectors with heights that decide each
+ * other's targets, and an arbitrary number of tagged, two-sided lines.
+ */
+struct SpecSectorSpec {
+    i16 floor;
+    i16 ceiling;
+    i16 light;
+    i16 special;
+    i16 tag;
+};
+
+struct SpecMapBuilder {
+    std::vector<u8> things;
+    std::vector<u8> linedefs;
+    std::vector<u8> sidedefs;
+    std::vector<u8> vertexes;
+    std::vector<u8> segs;
+    std::vector<u8> ssectors;
+    std::vector<u8> sectors;
+    i16 lineCount = 0;
+    i16 sideCount = 0;
+    i16 segCount = 0;
+
+    explicit SpecMapBuilder(const std::vector<SpecSectorSpec>& specs) {
+        for (const SpecSectorSpec& sector : specs) {
+            put16(sectors, sector.floor);
+            put16(sectors, sector.ceiling);
+            putName(sectors, "FLOOR4_8");
+            putName(sectors, "CEIL3_5");
+            put16(sectors, sector.light);
+            put16(sectors, sector.special);
+            put16(sectors, sector.tag);
+        }
+    }
+
+    void addSide(i16 sector) {
+        put16(sidedefs, 0);          // texture offset
+        put16(sidedefs, 0);          // row offset
+        putName(sidedefs, "-");
+        putName(sidedefs, "-");
+        putName(sidedefs, "STARTAN3");
+        put16(sidedefs, sector);
+        sideCount = static_cast<i16>(sideCount + 1);
+    }
+
+    /// Replaces one sector's floor flat in the SECTORS record it emitted.
+    void setFloorPic(std::size_t index, const char* name) {
+        replaceName(sectors, index * DOOM_SECTOR_SIZE + 4u, name);
+    }
+
+    /// Replaces one side's middle texture in the SIDEDEFS record it emitted.
+    void setSideMidTexture(std::size_t index, const char* name) {
+        replaceName(sidedefs, index * DOOM_SIDEDEF_SIZE + 20u, name);
+    }
+
+    /// One THINGS record: position in map units, angle in degrees, DoomEd type.
+    void addThing(i16 x, i16 y, i16 angle, u16 type, u16 options = 7) {
+        put16(things, x);
+        put16(things, y);
+        put16(things, angle);
+        put16(things, type);
+        put16(things, options);
+    }
+
+    /// One line, two vertices and one seg (side 0). `twoSided` adds side 1.
+    void addLine(i16 flags, i16 special, i16 tag, i16 front, i16 back,
+                 bool twoSided) {
+        const i16 index = lineCount;
+
+        put16(vertexes, static_cast<i16>(index * 64));
+        put16(vertexes, 0);
+        put16(vertexes, static_cast<i16>(index * 64 + 32));
+        put16(vertexes, 0);
+
+        put16(linedefs, static_cast<i16>(index * 2));
+        put16(linedefs, static_cast<i16>(index * 2 + 1));
+        put16(linedefs, flags);
+        put16(linedefs, special);
+        put16(linedefs, tag);
+        put16(linedefs, sideCount);
+        if (twoSided) {
+            put16(linedefs, static_cast<i16>(sideCount + 1));
+        } else {
+            put16(linedefs, kNoSide);
+        }
+        addSide(front);
+        if (twoSided) {
+            addSide(back);
+        }
+
+        put16(segs, static_cast<i16>(index * 2));
+        put16(segs, static_cast<i16>(index * 2 + 1));
+        put16(segs, 0);
+        put16(segs, index);
+        put16(segs, 0);
+        put16(segs, 0);
+        lineCount = static_cast<i16>(lineCount + 1);
+        segCount = static_cast<i16>(segCount + 1);
+    }
+
+    doom_map_error_t open(doom_map_t* map) {
+        doom_map_source_t source{};
+
+        ssectors.clear();
+        put16(ssectors, segCount);
+        put16(ssectors, 0);
+
+        source.data[DOOM_MAP_THINGS] = things.empty() ? nullptr : things.data();
+        source.size[DOOM_MAP_THINGS] = things.size();
+        source.data[DOOM_MAP_LINEDEFS] = linedefs.data();
+        source.size[DOOM_MAP_LINEDEFS] = linedefs.size();
+        source.data[DOOM_MAP_SIDEDEFS] = sidedefs.data();
+        source.size[DOOM_MAP_SIDEDEFS] = sidedefs.size();
+        source.data[DOOM_MAP_VERTEXES] = vertexes.data();
+        source.size[DOOM_MAP_VERTEXES] = vertexes.size();
+        source.data[DOOM_MAP_SEGS] = segs.data();
+        source.size[DOOM_MAP_SEGS] = segs.size();
+        source.data[DOOM_MAP_SSECTORS] = ssectors.data();
+        source.size[DOOM_MAP_SSECTORS] = ssectors.size();
+        source.data[DOOM_MAP_SECTORS] = sectors.data();
+        source.size[DOOM_MAP_SECTORS] = sectors.size();
+        return doom_map_open(map, &source);
+    }
+};
+
+/* A whole level on the stack, with p_spawn_specials() already run. */
+struct SpecFixture {
+    SpecMapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[32768]{};
+    p_level_t level{};
+
+    explicit SpecFixture(const std::vector<SpecSectorSpec>& sectors)
+        : builder(sectors) {}
+
+    bool open() {
+        if (builder.open(&map) != DOOM_MAP_OK) {
+            return false;
+        }
+        if (p_level_init(&level, &map, arena, sizeof arena, nullptr) != P_SETUP_OK) {
+            return false;
+        }
+        return p_spawn_specials(&level) == P_SPEC_OK;
+    }
+
+    void tick(int count = 1) {
+        for (int i = 0; i < count; ++i) {
+            (void)p_level_tick(&level, nullptr);
+        }
+    }
+
+    p_thinker_t* first(i16 kind) {
+        for (const p_thinker_t* thinker = p_thinker_first(&level.thinkers);
+             thinker != nullptr; thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == kind) {
+                return const_cast<p_thinker_t*>(thinker);
+            }
+        }
+        return nullptr;
+    }
+
+    int count(i16 kind) const {
+        int found = 0;
+
+        for (const p_thinker_t* thinker = p_thinker_first(&level.thinkers);
+             thinker != nullptr; thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == kind) {
+                found += 1;
+            }
+        }
+        return found;
+    }
+
+    i16 sectorOfSlot(int slot) const {
+        int index = 0;
+
+        for (const p_thinker_t* thinker = p_thinker_first(&level.thinkers);
+             thinker != nullptr; thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == P_THINKER_MOBJ) {
+                continue;
+            }
+            if (index == slot) {
+                if (thinker->kind == P_THINKER_DOOR) {
+                    return static_cast<i16>(
+                        reinterpret_cast<const p_door_thinker_t*>(thinker)->sector);
+                }
+                if (thinker->kind == P_THINKER_FLOOR) {
+                    return static_cast<i16>(
+                        reinterpret_cast<const p_floor_thinker_t*>(thinker)->sector);
+                }
+                if (thinker->kind == P_THINKER_PLAT) {
+                    return static_cast<i16>(
+                        reinterpret_cast<const p_plat_thinker_t*>(thinker)->sector);
+                }
+                if (thinker->kind == P_THINKER_CEILING) {
+                    return static_cast<i16>(
+                        reinterpret_cast<const p_ceiling_thinker_t*>(thinker)->sector);
+                }
+                return static_cast<i16>(
+                    reinterpret_cast<const p_light_thinker_t*>(thinker)->sector);
+            }
+            index += 1;
+        }
+        return -1;
+    }
+};
+
+/* The thing a trigger is standing in for.
+ *
+ * A SpecFixture's map has no THINGS lump unless the test adds one, so most
+ * cases have no avatar mobj; the trigger's mode checks read only
+ * `thing->player`. Teleport fixtures add a real player start and get the real
+ * mobj, because EV_Teleport writes its position.
+ */
+r_mobj_t* playerActor(SpecFixture& fixture) {
+    static r_mobj_t standIn{};
+
+    standIn.player = 1;
+    return fixture.level.player != nullptr ? fixture.level.player : &standIn;
+}
+
+p_door_thinker_t* doorOf(p_thinker_t* thinker) {
+    return reinterpret_cast<p_door_thinker_t*>(thinker);
+}
+
+p_plat_thinker_t* platOf(p_thinker_t* thinker) {
+    return reinterpret_cast<p_plat_thinker_t*>(thinker);
+}
+
+p_ceiling_thinker_t* ceilingOf(p_thinker_t* thinker) {
+    return reinterpret_cast<p_ceiling_thinker_t*>(thinker);
+}
+
+p_light_thinker_t* lightOf(p_thinker_t* thinker) {
+    return reinterpret_cast<p_light_thinker_t*>(thinker);
+}
+
+/// Ticks until the predicate says stop, with a hard cap so a broken mover fails
+/// the case instead of hanging it.
+template <typename Predicate>
+int tickUntil(SpecFixture& fixture, Predicate done, int cap = 400) {
+    for (int i = 0; i < cap; ++i) {
+        if (done()) {
+            return i;
+        }
+        fixture.tick();
+    }
+    return -1;
+}
+
+void test_specs_door_opens_to_its_top_and_stops(void) {
+    // The door sector's ceiling is at the floor; the neighbour's is 128, so the
+    // top is 128 - 4 = 124 (p_doors.c EV_DoDoor).
+    SpecFixture fixture({{0, 0, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 4, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_DOOR));
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
+
+    p_thinker_t* door = fixture.first(P_THINKER_DOOR);
+    TEST_ASSERT_NOT_NULL(door);
+    TEST_ASSERT_EQUAL_INT(P_DOOR_NORMAL, doorOf(door)->type);
+    TEST_ASSERT_EQUAL_INT(1, doorOf(door)->direction);
+    TEST_ASSERT_EQUAL_INT32(124 * kFrac, doorOf(door)->topHeight);
+    TEST_ASSERT_EQUAL_INT32(2 * kFrac, doorOf(door)->speed);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return doorOf(door)->direction == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(124 * kFrac, fixture.level.sectors[0].ceilingHeight);
+    TEST_ASSERT_EQUAL_INT32(150, doorOf(door)->topCountdown);
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+}
+
+void test_specs_door_waits_then_closes_and_removes_itself(void) {
+    SpecFixture fixture({{0, 0, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 4, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
+    p_thinker_t* door = fixture.first(P_THINKER_DOOR);
+    TEST_ASSERT_NOT_NULL(door);
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return doorOf(door)->direction == 0;
+    }) >= 0);
+
+    // One tic short of the wait, the door is still waiting.
+    fixture.tick(149);
+    TEST_ASSERT_EQUAL_INT(0, doorOf(door)->direction);
+    fixture.tick();
+    TEST_ASSERT_EQUAL_INT(-1, doorOf(door)->direction);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_DOOR) == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.sectors[0].ceilingHeight);
+    TEST_ASSERT_NULL(fixture.level.sectors[0].specialdata);
+}
+
+void test_specs_door_closing_over_a_thing_stops_at_its_height(void) {
+    // A player stands in the door sector. P_ChangeSector runs the real
+    // P_ThingHeightClip, so the closing door stops at the player's height and
+    // reports "does not fit" every tic instead of reaching the floor. Special 3
+    // is this port's P_DOOR_CLOSE, whose crushed branch does not go back up
+    // (p_doors.c), so the door hovers; the player is not damaged and
+    // the counter says so.
+    SpecFixture fixture({{0, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 3, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+    r_mobj_t* mobj = p_spawn_mobj(&fixture.level.context, 0, 0, ONFLOORZ,
+                                  MT_PLAYER, &error);
+    TEST_ASSERT_NOT_NULL(mobj);
+    TEST_ASSERT_EQUAL_UINT16(0u, mobj->sector);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac, mobj->ceilingz);
+
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
+    p_thinker_t* door = fixture.first(P_THINKER_DOOR);
+    TEST_ASSERT_NOT_NULL(door);
+
+    // Open, wait 150, close: the first downward direction is -1.
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return doorOf(door)->direction == -1;
+    }) >= 0);
+
+    // The close is refused when the next step would leave less than the
+    // player's height; the plane is reverted to the last height that fits.
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.level.sectors[0].ceilingHeight == mobj->height;
+    }) >= 0);
+    fixture.tick(50);
+    TEST_ASSERT_EQUAL_INT32(mobj->height,
+                            fixture.level.sectors[0].ceilingHeight);
+    TEST_ASSERT_EQUAL_INT(-1, doorOf(door)->direction);
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+    TEST_ASSERT_EQUAL_INT32(mobj->height, mobj->ceilingz);
+    // A door that reverts damages nothing: the move is undone, so the thing is
+    // left behind but no crush is counted and its health is untouched.
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.level.specStats.crushedThings);
+    TEST_ASSERT_EQUAL_INT32(mobjinfo[MT_PLAYER].spawnhealth, mobj->health);
+    TEST_ASSERT_TRUE(fixture.level.specStats.changeSectorClear <
+                     fixture.level.specStats.changeSectorCalls);
+    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector_is_stubbed());
+    TEST_ASSERT_TRUE(fixture.level.specStats.thingRefreshes > 0u);
+}
+
+void test_specs_plat_goes_down_waits_and_returns(void) {
+    SpecFixture fixture({{64, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 88, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
+    p_thinker_t* thinker = fixture.first(P_THINKER_PLAT);
+    TEST_ASSERT_NOT_NULL(thinker);
+    TEST_ASSERT_EQUAL_INT(P_PLAT_DOWN_WAIT_UP_STAY, platOf(thinker)->type);
+    TEST_ASSERT_EQUAL_INT(P_PLAT_DOWN, platOf(thinker)->status);
+    TEST_ASSERT_EQUAL_INT32(0, platOf(thinker)->low);
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac, platOf(thinker)->high);
+    TEST_ASSERT_EQUAL_INT32(35 * P_PLATWAIT, platOf(thinker)->wait);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return platOf(thinker)->status == P_PLAT_WAITING;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.sectors[0].floorHeight);
+    TEST_ASSERT_EQUAL_INT32(35 * P_PLATWAIT, platOf(thinker)->count);
+
+    fixture.tick(35 * P_PLATWAIT);
+    TEST_ASSERT_EQUAL_INT(P_PLAT_UP, platOf(thinker)->status);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_PLAT) == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac, fixture.level.sectors[0].floorHeight);
+    TEST_ASSERT_NULL(fixture.level.sectors[0].specialdata);
+}
+
+void test_specs_raise_floor_stops_at_the_lowest_surrounding_ceiling(void) {
+    // The target is the neighbour's ceiling, not the sector's own (p_floor.c
+    // EV_DoFloor, raiseFloor).
+    SpecFixture fixture({{0, 256, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 5, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_FLOOR));
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac,
+                            reinterpret_cast<p_floor_thinker_t*>(
+                                fixture.first(P_THINKER_FLOOR))->destHeight);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_FLOOR) == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac, fixture.level.sectors[0].floorHeight);
+}
+
+void test_specs_lower_floor_stops_at_the_highest_surrounding_floor(void) {
+    // Two neighbours at 0 and 64: lowerFloor targets the higher one.
+    SpecFixture fixture({{128, 256, 160, 0, 1},
+                         {0, 256, 160, 0, 0},
+                         {64, 256, 160, 0, 0}});
+    fixture.builder.addLine(4, 19, 1, 0, 1, true);
+    fixture.builder.addLine(4, 0, 0, 0, 2, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac,
+                            reinterpret_cast<p_floor_thinker_t*>(
+                                fixture.first(P_THINKER_FLOOR))->destHeight);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_FLOOR) == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac, fixture.level.sectors[0].floorHeight);
+}
+
+void test_specs_ceiling_crush_and_raise_reverses(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 25, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
+    p_thinker_t* thinker = fixture.first(P_THINKER_CEILING);
+    TEST_ASSERT_NOT_NULL(thinker);
+    TEST_ASSERT_EQUAL_INT(P_CEIL_CRUSH_AND_RAISE, ceilingOf(thinker)->type);
+    TEST_ASSERT_EQUAL_INT32(8 * kFrac, ceilingOf(thinker)->bottomHeight);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return ceilingOf(thinker)->direction == 1;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(8 * kFrac, fixture.level.sectors[0].ceilingHeight);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return ceilingOf(thinker)->direction == -1;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac, fixture.level.sectors[0].ceilingHeight);
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_CEILING));
+}
+
+void test_specs_light_flash_period_uses_both_random_draws(void) {
+    // With no THINGS, p_level_init() leaves the RNG at 0, so the draws are
+    // upstream's 8, 109, 220, ... The first count is (8 & 64) + 1 = 9; the
+    // down phase uses maxtime (64), the up phase mintime (7).
+    SpecFixture fixture({{0, 128, 200, 1, 0}, {0, 128, 100, 0, 0}});
+    fixture.builder.addLine(4, 0, 0, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_LIGHTFLASH));
+    p_thinker_t* thinker = fixture.first(P_THINKER_LIGHTFLASH);
+    TEST_ASSERT_NOT_NULL(thinker);
+    TEST_ASSERT_EQUAL_INT(P_LIGHT_FLASH, lightOf(thinker)->type);
+    TEST_ASSERT_EQUAL_INT32(200, lightOf(thinker)->maxLight);
+    TEST_ASSERT_EQUAL_INT32(100, lightOf(thinker)->minLight);
+    TEST_ASSERT_EQUAL_INT32(1, lightOf(thinker)->count);   // (8 & 64) + 1
+    TEST_ASSERT_EQUAL_INT(200, fixture.level.sectors[0].lightLevel);
+
+    fixture.tick();
+    TEST_ASSERT_EQUAL_INT(100, fixture.level.sectors[0].lightLevel);
+    TEST_ASSERT_EQUAL_INT32(65, lightOf(thinker)->count);   // (109 & 64) + 1
+
+    fixture.tick(64);
+    TEST_ASSERT_EQUAL_INT32(1, lightOf(thinker)->count);
+    fixture.tick();
+    TEST_ASSERT_EQUAL_INT(200, fixture.level.sectors[0].lightLevel);
+    TEST_ASSERT_EQUAL_INT32(5, lightOf(thinker)->count);    // (220 & 7) + 1
+}
+
+void test_specs_strobe_two_phase_timing(void) {
+    // Sector special 12 is a slow strobe in sync: its count starts at 1 and
+    // then alternates dark 35 / bright 5.
+    SpecFixture fixture({{0, 128, 200, 12, 0}, {0, 128, 100, 0, 0}});
+    fixture.builder.addLine(4, 0, 0, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    p_thinker_t* thinker = fixture.first(P_THINKER_LIGHTFLASH);
+    TEST_ASSERT_NOT_NULL(thinker);
+    TEST_ASSERT_EQUAL_INT(P_LIGHT_STROBE, lightOf(thinker)->type);
+    TEST_ASSERT_EQUAL_INT32(1, lightOf(thinker)->count);
+    TEST_ASSERT_EQUAL_INT32(35, lightOf(thinker)->darkTime);
+    TEST_ASSERT_EQUAL_INT32(5, lightOf(thinker)->brightTime);
+
+    fixture.tick();
+    TEST_ASSERT_EQUAL_INT(100, fixture.level.sectors[0].lightLevel);
+    TEST_ASSERT_EQUAL_INT32(35, lightOf(thinker)->count);
+
+    fixture.tick(34);
+    TEST_ASSERT_EQUAL_INT(100, fixture.level.sectors[0].lightLevel);
+    fixture.tick();
+    TEST_ASSERT_EQUAL_INT(200, fixture.level.sectors[0].lightLevel);
+    TEST_ASSERT_EQUAL_INT32(5, lightOf(thinker)->count);
+
+    fixture.tick(4);
+    TEST_ASSERT_EQUAL_INT(200, fixture.level.sectors[0].lightLevel);
+    fixture.tick();
+    TEST_ASSERT_EQUAL_INT(100, fixture.level.sectors[0].lightLevel);
+    TEST_ASSERT_EQUAL_INT32(35, lightOf(thinker)->count);
+}
+
+void test_specs_perpetual_plat_stops_and_resumes_then_reverses(void) {
+    // 87/89 are the retrigger forms, so the line survives the first use.
+    SpecFixture fixture({{64, 128, 160, 0, 1},
+                         {0, 128, 160, 0, 0},
+                         {128, 256, 160, 0, 0}});
+    fixture.builder.addLine(4, 87, 1, 0, 1, true);
+    fixture.builder.addLine(4, 89, 1, 0, 2, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
+    p_thinker_t* thinker = fixture.first(P_THINKER_PLAT);
+    TEST_ASSERT_NOT_NULL(thinker);
+    TEST_ASSERT_EQUAL_INT32(0, platOf(thinker)->low);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac, platOf(thinker)->high);
+    // P_Random() at 0 answers 8, so 8 & 1 == 0 -> up.
+    TEST_ASSERT_EQUAL_INT(P_PLAT_UP, platOf(thinker)->status);
+
+    fixture.tick(10);
+    const fixed_t halfway = fixture.level.sectors[0].floorHeight;
+    TEST_ASSERT_TRUE(halfway > 64 * kFrac);
+
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 1,
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT(P_PLAT_IN_STASIS, platOf(thinker)->status);
+    fixture.tick(10);
+    TEST_ASSERT_EQUAL_INT32(halfway, fixture.level.sectors[0].floorHeight);
+
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT(P_PLAT_UP, platOf(thinker)->status);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return platOf(thinker)->status == P_PLAT_WAITING;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac, fixture.level.sectors[0].floorHeight);
+    fixture.tick(35 * P_PLATWAIT);
+    TEST_ASSERT_EQUAL_INT(P_PLAT_DOWN, platOf(thinker)->status);
+    fixture.tick(10);
+    TEST_ASSERT_TRUE(fixture.level.sectors[0].floorHeight < 128 * kFrac);
+}
+
+void test_specs_tag_door_twice_creates_one_thinker(void) {
+    SpecFixture fixture({{0, 0, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 2, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_do_door(&fixture.level.context, 0, P_DOOR_OPEN));
+    // The second call is EV_DoDoor's merge rule: the sector already has a
+    // thinker, so nothing is created and the call reports no change.
+    TEST_ASSERT_EQUAL_INT(0, p_do_door(&fixture.level.context, 0, P_DOOR_OPEN));
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+    TEST_ASSERT_EQUAL_INT(1, doorOf(fixture.first(P_THINKER_DOOR))->direction);
+}
+
+void test_specs_manual_door_twice_reverses_instead_of_duplicating(void) {
+    // The manual door uses the line's *back* sector (p_doors.c
+    // EV_VerticalDoor), so side 0 is the room and side 1 is the door.
+    SpecFixture fixture({{0, 0, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 1, 0, 1, 0, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE, playerActor(fixture), 0));
+    p_thinker_t* door = fixture.first(P_THINKER_DOOR);
+    TEST_ASSERT_NOT_NULL(door);
+    TEST_ASSERT_EQUAL_INT(1, doorOf(door)->direction);
+
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE, playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+    TEST_ASSERT_EQUAL_INT(-1, doorOf(door)->direction);
+}
+
+void test_specs_secret_sectors_and_unsupported_specials_are_counted(void) {
+    SpecFixture fixture({{0, 128, 160, 9, 0},
+                         {0, 128, 160, 9, 0},
+                         {0, 128, 160, 9, 0},
+                         {0, 128, 160, 15, 0}});
+    fixture.builder.addLine(4, 0, 0, 0, 1, true);
+
+    TEST_ASSERT_EQUAL_INT(DOOM_MAP_OK, fixture.builder.open(&fixture.map));
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK,
+                          p_level_init(&fixture.level, &fixture.map, fixture.arena,
+                                       sizeof fixture.arena, nullptr));
+    // p_level_init alone is the THINGS step: no special has run yet.
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.totalSecrets);
+    TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_LIGHTFLASH));
+
+    TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&fixture.level));
+    TEST_ASSERT_EQUAL_INT32(3, fixture.level.totalSecrets);
+    TEST_ASSERT_EQUAL_UINT32(3u, fixture.level.specStats.secrets);
+    // 15 is not a spawn case and not a player-in-sector case: upstream's
+    // P_PlayerInSpecialSector calls I_Error on it, so it stays the one number
+    // this port counts as a gap. 7 is P_PlayerInSpecialSector's.
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.unsupportedSectorSpecial);
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.level.specStats.spawned);
+    TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_LIGHTFLASH));
+}
+
+void test_specs_ignored_trigger_is_not_a_missing_handler(void) {
+    // Special 1 is a manual door: P_UseSpecialLine has a case for it but
+    // P_CrossSpecialLine does not, so a player walking over it is a no-op
+    // upstream. The port must do nothing and must not count it as a gap.
+    SpecFixture fixture({{0, 0, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 1, 0, 1, 0, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    p_spec_trace_t trace{};
+    fixture.level.context.specTrace = &trace;
+    trace.tic = 7u;
+
+    TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.level.specStats.unsupportedLineSpecial);
+    TEST_ASSERT_EQUAL_UINT32(1u, trace.count);
+    TEST_ASSERT_EQUAL_INT16(1, trace.entries[0].special);
+    TEST_ASSERT_EQUAL_INT16(static_cast<i16>(P_TRIGGER_CROSS),
+                            trace.entries[0].kind);
+    TEST_ASSERT_EQUAL_UINT16(0u, trace.entries[0].line);
+    TEST_ASSERT_EQUAL_UINT32(7u, trace.entries[0].firstTic);
+    TEST_ASSERT_EQUAL_UINT8(0u, trace.entries[0].unsupported);
+    TEST_ASSERT_EQUAL_UINT32(1u, trace.entries[0].hits);
+    TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_DOOR));
+}
+
+void test_specs_stairs_build8_chain_from_the_tagged_sector(void) {
+    // One tagged sector (floor 0, FLOOR4_8) whose two-sided line leads to a
+    // second sector (floor 16, the same picture): EV_BuildStairs raises the
+    // first to 8 and the neighbour to 16, both at FLOORSPEED/4 and both
+    // relative to the *tagged* sector's floor.
+    SpecFixture fixture({{0, 128, 160, 0, 1}, {16, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 8, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS,
+                                                    playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT(2, fixture.count(P_THINKER_FLOOR));
+    TEST_ASSERT_EQUAL_INT(0, fixture.level.lineSpecial[0]);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.triggers);
+
+    // Upstream never writes `floor->type` in EV_BuildStairs, so it is
+    // lowerFloor (0); T_MoveFloor's pastdest switch has no branch for it.
+    p_thinker_t* first = fixture.first(P_THINKER_FLOOR);
+    TEST_ASSERT_EQUAL_INT(P_FLOOR_LOWER,
+                          reinterpret_cast<p_floor_thinker_t*>(first)->type);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_FLOOR) == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(8 * kFrac, fixture.level.sectors[0].floorHeight);
+    TEST_ASSERT_EQUAL_INT32(16 * kFrac, fixture.level.sectors[1].floorHeight);
+}
+
+void test_specs_stairs_turbo16_and_the_use_clear(void) {
+    // 127 is P_UseSpecialLine's turbo16: 16 units a step at FLOORSPEED*4, and
+    // `if (EV_BuildStairs(...)) P_ChangeSwitchTexture(line, 0)` -- the clear is
+    // conditional, unlike every other switch in that switch.
+    SpecFixture fixture({{0, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 127, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE,
+                                                    playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT(2, fixture.count(P_THINKER_FLOOR));
+    TEST_ASSERT_EQUAL_INT(0, fixture.level.lineSpecial[0]);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.deferredLineSpecial);
+    TEST_ASSERT_EQUAL_INT32(4 * kFrac,
+                            reinterpret_cast<p_floor_thinker_t*>(
+                                fixture.first(P_THINKER_FLOOR))->speed);
+
+    TEST_ASSERT_TRUE(tickUntil(fixture, [&] {
+        return fixture.count(P_THINKER_FLOOR) == 0;
+    }) >= 0);
+    TEST_ASSERT_EQUAL_INT32(16 * kFrac, fixture.level.sectors[0].floorHeight);
+    TEST_ASSERT_EQUAL_INT32(32 * kFrac, fixture.level.sectors[1].floorHeight);
+}
+
+void test_specs_stairs_use_leaves_the_line_when_already_moving(void) {
+    // The second press finds the tagged sector's `specialdata` set, so
+    // EV_BuildStairs answers 0 and upstream does not run
+    // P_ChangeSwitchTexture: the line stays and nothing new is counted.
+    SpecFixture fixture({{0, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 7, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE,
+                                                    playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT(2, fixture.count(P_THINKER_FLOOR));
+    // Put the line back, as a second press on a retriggered switch would be.
+    fixture.level.lineSpecial[0] = 7;
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE,
+                                                    playerActor(fixture), 0));
+    TEST_ASSERT_EQUAL_INT(7, fixture.level.lineSpecial[0]);
+    TEST_ASSERT_EQUAL_INT(2, fixture.count(P_THINKER_FLOOR));
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.deferredLineSpecial);
+}
+
+void test_specs_teleport_moves_the_player_and_spawns_two_fogs(void) {
+    // One sector tagged 5 holds an MT_TELEPORTMAN (DoomEd 14) at (512, 0) with
+    // angle 90. EV_Teleport writes the actor's x/y, its z from the
+    // destination's floor, the teleportman's angle, and spawns two MT_TFOG
+    // mobjs: one at the source and one 20 units along that angle.
+    SpecFixture fixture({{0, 128, 160, 0, 5}});
+    fixture.builder.addThing(0, 0, 0, 1);              // single-player start
+    fixture.builder.addThing(512, 0, 90, 14);          // MT_TELEPORTMAN
+    fixture.builder.addLine(0, 39, 5, 0, 0, false);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_NOT_NULL(fixture.level.player);
+
+    const int fogsBefore = [&] {
+        int count = 0;
+        for (const r_mobj_t* mobj = p_level_first_mobj(&fixture.level);
+             mobj != nullptr; mobj = p_level_next_mobj(mobj)) {
+            if (mobj->type == MT_TFOG) {
+                count += 1;
+            }
+        }
+        return count;
+    }();
+
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS,
+                                                    fixture.level.player, 0));
+    // 39 is the one-shot number: the line is cleared.
+    TEST_ASSERT_EQUAL_INT(0, fixture.level.lineSpecial[0]);
+    TEST_ASSERT_EQUAL_INT32(512 * kFrac, fixture.level.player->x);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.player->y);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.player->z);
+    TEST_ASSERT_EQUAL_UINT32(ANG90, fixture.level.player->angle);
+    TEST_ASSERT_EQUAL_INT(P_TELEPORT_REACTIONTIME,
+                          fixture.level.player->reactiontime);
+
+    int fogs = 0;
+    fixed_t fogX = 0;
+    fixed_t fogY = 0;
+    for (const r_mobj_t* mobj = p_level_first_mobj(&fixture.level);
+         mobj != nullptr; mobj = p_level_next_mobj(mobj)) {
+        if (mobj->type == MT_TFOG) {
+            fogs += 1;
+            fogX = mobj->x;
+            fogY = mobj->y;
+        }
+    }
+    TEST_ASSERT_EQUAL_INT(fogsBefore + 2, fogs);
+    // The last fog is the destination one: (512, 0) + 20*(cos 90, sin 90). The
+    // fine table's cosine at a quarter turn is not exactly zero (-25 in 16.16
+    // here), so the expected x is the table's own product, not 512*FRACUNIT.
+    TEST_ASSERT_EQUAL_INT32(512 * kFrac +
+                                P_TELEPORT_FOG_DISTANCE * r_fine_cosine(ANG90),
+                            fogX);
+    TEST_ASSERT_EQUAL_INT32(P_TELEPORT_FOG_DISTANCE *
+                                r_fine_sine[ANG90 >> ANGLETOFINESHIFT],
+                            fogY);
+}
+
+void test_specs_teleport_retrigger_and_the_player_only_forms(void) {
+    // 97 keeps its line; 125 and 126 are monster-only, so a player crossing
+    // one runs nothing and the line is not cleared.
+    SpecFixture fixture({{0, 128, 160, 0, 5}});
+    fixture.builder.addThing(0, 0, 0, 1);
+    fixture.builder.addThing(512, 0, 0, 14);
+    fixture.builder.addLine(0, 97, 5, 0, 0, false);
+    fixture.builder.addLine(0, 125, 5, 0, 0, false);
+    fixture.builder.addLine(0, 126, 5, 0, 0, false);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* player = fixture.level.player;
+
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_CROSS, player, 0));
+    TEST_ASSERT_EQUAL_INT(97, fixture.level.lineSpecial[0]);
+    TEST_ASSERT_EQUAL_INT32(512 * kFrac, player->x);
+
+    TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 1,
+                                                    P_TRIGGER_CROSS, player, 0));
+    TEST_ASSERT_EQUAL_INT(125, fixture.level.lineSpecial[1]);
+    TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 2,
+                                                    P_TRIGGER_CROSS, player, 0));
+    TEST_ASSERT_EQUAL_INT(126, fixture.level.lineSpecial[2]);
+}
+
+void test_specs_teleport_refuses_the_back_side_and_missiles(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 5}});
+    fixture.builder.addThing(0, 0, 0, 1);
+    fixture.builder.addThing(512, 0, 0, 14);
+    fixture.builder.addLine(0, 39, 5, 0, 0, false);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* player = fixture.level.player;
+    const fixed_t startX = player->x;
+
+    // `if (side == 1) return 0;` -- the thing came from the back of the line.
+    TEST_ASSERT_EQUAL_INT(0, p_do_teleport(&fixture.level, 0, player, 1));
+    TEST_ASSERT_EQUAL_INT32(startX, player->x);
+
+    // `if (thing->flags & MF_MISSILE) return 0;` -- a missile never teleports.
+    player->flags |= MF_MISSILE;
+    TEST_ASSERT_EQUAL_INT(0, p_do_teleport(&fixture.level, 0, player, 0));
+    TEST_ASSERT_EQUAL_INT32(startX, player->x);
+}
+
+void test_specs_teleport_monster_refuses_an_occupied_destination(void) {
+    // PIT_StompThing: a monster teleporting onto a shootable thing is refused
+    // ("monsters don't stomp things except on boss level"); the player stomps
+    // it for 10000 instead.
+    SpecFixture fixture({{0, 128, 160, 0, 5}});
+    fixture.builder.addThing(0, 0, 0, 1);
+    fixture.builder.addThing(512, 0, 0, 14);
+    fixture.builder.addLine(0, 97, 5, 0, 0, false);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* player = fixture.level.player;
+    player->x = 512 * kFrac;
+    player->y = 0;
+
+    p_mobj_error_t error = P_MOBJ_ERR_NULL_MOBJ;
+    r_mobj_t* imp = p_spawn_mobj(&fixture.level.context, 0, 0, ONFLOORZ,
+                                 MT_TROOP, &error);
+    TEST_ASSERT_NOT_NULL(imp);
+    TEST_ASSERT_EQUAL_INT(0, p_do_teleport(&fixture.level, 0, imp, 0));
+    TEST_ASSERT_EQUAL_INT32(0, imp->x);
+    TEST_ASSERT_EQUAL_INT32(0, imp->y);
+
+    // The player, teleporting onto the imp now standing at the destination,
+    // damages it for 10000 and moves.
+    imp->x = 512 * kFrac;
+    imp->y = 0;
+    player->x = 0;
+    player->y = 0;
+    const int health = imp->health;
+    TEST_ASSERT_EQUAL_INT(1, p_do_teleport(&fixture.level, 0, player, 0));
+    TEST_ASSERT_EQUAL_INT32(512 * kFrac, player->x);
+    TEST_ASSERT_EQUAL_INT32(0, player->y);
+    TEST_ASSERT_EQUAL_INT(health - 10000, imp->health);
+}
+
+void test_specs_use_from_the_back_side_is_refused(void) {
+    // P_UseSpecialLine's prologue: `if (side) return false;` (124 aside).
+    SpecFixture fixture({{0, 128, 160, 0, 1}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(4, 29, 1, 0, 1, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(0, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE,
+                                                    playerActor(fixture), 1));
+    TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_DOOR));
+    TEST_ASSERT_EQUAL_INT(1, p_trigger_special_line(&fixture.level, 0,
+                                                    P_TRIGGER_USE,
+                                                    playerActor(fixture), 0));
+}
+
+
+void test_specs_spawn_order_is_sector_index_order(void) {
+    // 13 (sync fast strobe) on sector 0, 9 (secret) on 1, 1 (flash) on 2,
+    // 8 (glow) on 3: the thinkers must appear as 0, 2, 3.
+    SpecFixture fixture({{0, 128, 160, 13, 0},
+                         {0, 128, 160, 9, 0},
+                         {0, 128, 160, 1, 0},
+                         {0, 128, 160, 8, 0}});
+    fixture.builder.addLine(4, 0, 0, 0, 2, true);
+    fixture.builder.addLine(4, 0, 0, 2, 3, true);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_EQUAL_INT(3, fixture.count(P_THINKER_LIGHTFLASH));
+    TEST_ASSERT_EQUAL_INT(0, fixture.sectorOfSlot(0));
+    TEST_ASSERT_EQUAL_INT(2, fixture.sectorOfSlot(1));
+    TEST_ASSERT_EQUAL_INT(3, fixture.sectorOfSlot(2));
+    TEST_ASSERT_EQUAL_INT(P_LIGHT_STROBE,
+                          lightOf(fixture.first(P_THINKER_LIGHTFLASH))->type);
+}
+
+void test_specs_p_change_sector_counts_and_answers_clear(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addLine(1, 0, 0, 0, 0, false);
+
+    TEST_ASSERT_TRUE(fixture.open());
+    const u32 before = fixture.level.specStats.changeSectorCalls;
+    // With nothing in the sector the real rule answers "clear", and the
+    // function is not a stub.
+    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector_is_stubbed());
+    TEST_ASSERT_EQUAL_INT(0,
+                          p_spec_p_change_sector(&fixture.level.context, 0, 0));
+    TEST_ASSERT_EQUAL_INT(0,
+                          p_spec_p_change_sector(&fixture.level.context, 0, 0));
+    TEST_ASSERT_EQUAL_UINT32(before + 2u,
+                             fixture.level.specStats.changeSectorCalls);
+    TEST_ASSERT_EQUAL_UINT32(before + 2u,
+                             fixture.level.specStats.changeSectorClear);
+}
+
+// --- The line record carries its special and tag ----------------------------
+
+/*
+ * doom_line_t is the one description of a LINEDEF, so it carries the two fields
+ * every trigger reads instead of each of them re-reading the record's bytes.
+ * The map below stores distinctive values in both, and the assertions go
+ * through the public accessors only: the decoded record, the two accessors, and
+ * the size the on-disk layout requires.
+ */
+void test_line_record_exposes_special_and_tag(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 0}, {0, 128, 160, 0, 0}});
+    doom_line_t line{};
+
+    fixture.builder.addLine(4, 88, 3, 0, 1, true);
+    fixture.builder.addLine(4, 0, 0, 0, 1, true);
+
+    TEST_ASSERT_EQUAL_INT(DOOM_MAP_OK, fixture.builder.open(&fixture.map));
+
+    doom_map_get_line(&fixture.map, 0, &line);
+    TEST_ASSERT_EQUAL_INT16(88, line.special);
+    TEST_ASSERT_EQUAL_INT16(3, line.tag);
+    TEST_ASSERT_EQUAL_UINT16(0u, line.v1);
+    TEST_ASSERT_EQUAL_UINT16(1u, line.v2);
+    TEST_ASSERT_EQUAL_INT16(4, line.flags);
+    TEST_ASSERT_EQUAL_UINT16(0u, line.sideNum[0]);
+    TEST_ASSERT_EQUAL_UINT16(1u, line.sideNum[1]);
+
+    doom_map_get_line(&fixture.map, 1, &line);
+    TEST_ASSERT_EQUAL_INT16(0, line.special);
+    TEST_ASSERT_EQUAL_INT16(0, line.tag);
+
+    // The accessors answer the same two fields, decoded once per call.
+    TEST_ASSERT_EQUAL_INT16(88, p_line_special(&fixture.map, 0));
+    TEST_ASSERT_EQUAL_INT16(3, p_line_tag(&fixture.map, 0));
+    TEST_ASSERT_EQUAL_INT16(0, p_line_special(&fixture.map, 1));
+    TEST_ASSERT_EQUAL_INT16(0, p_line_tag(&fixture.map, 1));
+
+    // A line index outside the lump, and no map at all, still read 0.
+    TEST_ASSERT_EQUAL_INT16(0, p_line_special(&fixture.map, 2));
+    TEST_ASSERT_EQUAL_INT16(0, p_line_tag(&fixture.map, 2));
+    TEST_ASSERT_EQUAL_INT16(0, p_line_special(nullptr, 0));
+    TEST_ASSERT_EQUAL_INT16(0, p_line_tag(nullptr, 0));
+
+    // 14 bytes: the special and tag shorts fill what would be padding, so the struct
+    // is exactly the on-disk record's size and no caller pays for a wider one.
+    TEST_ASSERT_EQUAL_UINT32(DOOM_LINEDEF_SIZE, sizeof(doom_line_t));
+}
+
+// --- Movement and collision -------------------------------------------------
+
+/*
+ * A room with real geometry: four one-sided walls and, when a case needs one, a
+ * two-sided line whose back sector decides the floor under it. Every point is
+ * still in subsector 0 (the map has no NODES), so p_spawn_mobj places every
+ * thing in the first line's front sector -- which is exactly what the height
+ * rules then operate on.
+ */
+struct MoveMapBuilder {
+    std::vector<u8> things;
+    std::vector<u8> linedefs;
+    std::vector<u8> sidedefs;
+    std::vector<u8> vertexes;
+    std::vector<u8> segs;
+    std::vector<u8> ssectors;
+    std::vector<u8> sectors;
+    u16 vertexCount = 0;
+    i16 lineCount = 0;
+    i16 sideCount = 0;
+    i16 segCount = 0;
+
+    explicit MoveMapBuilder(const std::vector<SpecSectorSpec>& specs) {
+        for (const SpecSectorSpec& sector : specs) {
+            put16(sectors, sector.floor);
+            put16(sectors, sector.ceiling);
+            putName(sectors, "FLOOR4_8");
+            putName(sectors, "CEIL3_5");
+            put16(sectors, sector.light);
+            put16(sectors, sector.special);
+            put16(sectors, sector.tag);
+        }
+    }
+
+    u16 addVertex(i16 x, i16 y) {
+        put16(vertexes, x);
+        put16(vertexes, y);
+        return vertexCount++;
+    }
+
+    void addSide(i16 sector) {
+        put16(sidedefs, 0);
+        put16(sidedefs, 0);
+        putName(sidedefs, "-");
+        putName(sidedefs, "-");
+        putName(sidedefs, "STARTAN3");
+        put16(sidedefs, sector);
+        sideCount = static_cast<i16>(sideCount + 1);
+    }
+
+    /// One line and one seg. `back` of -1 is a one-sided line.
+    void addLine(u16 v1, u16 v2, i16 flags, i16 special, i16 tag, i16 front,
+                 i16 back) {
+        const i16 index = lineCount;
+
+        put16(linedefs, static_cast<i16>(v1));
+        put16(linedefs, static_cast<i16>(v2));
+        put16(linedefs, flags);
+        put16(linedefs, special);
+        put16(linedefs, tag);
+        put16(linedefs, sideCount);
+        if (back >= 0) {
+            put16(linedefs, static_cast<i16>(sideCount + 1));
+        } else {
+            put16(linedefs, kNoSide);
+        }
+        addSide(front);
+        if (back >= 0) {
+            addSide(back);
+        }
+
+        put16(segs, static_cast<i16>(v1));
+        put16(segs, static_cast<i16>(v2));
+        put16(segs, 0);
+        put16(segs, index);
+        put16(segs, 0);
+        put16(segs, 0);
+        lineCount = static_cast<i16>(lineCount + 1);
+        segCount = static_cast<i16>(segCount + 1);
+    }
+
+    /// The four walls of a 256 x 256 room from (-128,-128) to (128,128).
+    void addRoom(i16 front) {
+        const u16 v0 = addVertex(-128, -128);
+        const u16 v1 = addVertex(128, -128);
+        const u16 v2 = addVertex(128, 128);
+        const u16 v3 = addVertex(-128, 128);
+
+        addLine(v0, v1, DOOM_ML_BLOCKING, 0, 0, front, -1);
+        addLine(v1, v2, DOOM_ML_BLOCKING, 0, 0, front, -1);
+        addLine(v2, v3, DOOM_ML_BLOCKING, 0, 0, front, -1);
+        addLine(v3, v0, DOOM_ML_BLOCKING, 0, 0, front, -1);
+    }
+
+    /// One THINGS record, in the 1993 layout the loader reads.
+    void addThing(i16 x, i16 y, i16 angle, i16 type, i16 options) {
+        put16(things, x);
+        put16(things, y);
+        put16(things, angle);
+        put16(things, type);
+        put16(things, options);
+    }
+
+    doom_map_error_t open(doom_map_t* map) {
+        doom_map_source_t source{};
+
+        ssectors.clear();
+        put16(ssectors, segCount);
+        put16(ssectors, 0);
+
+        source.data[DOOM_MAP_THINGS] = things.empty() ? nullptr : things.data();
+        source.size[DOOM_MAP_THINGS] = things.size();
+        source.data[DOOM_MAP_LINEDEFS] = linedefs.data();
+        source.size[DOOM_MAP_LINEDEFS] = linedefs.size();
+        source.data[DOOM_MAP_SIDEDEFS] = sidedefs.data();
+        source.size[DOOM_MAP_SIDEDEFS] = sidedefs.size();
+        source.data[DOOM_MAP_VERTEXES] = vertexes.data();
+        source.size[DOOM_MAP_VERTEXES] = vertexes.size();
+        source.data[DOOM_MAP_SEGS] = segs.data();
+        source.size[DOOM_MAP_SEGS] = segs.size();
+        source.data[DOOM_MAP_SSECTORS] = ssectors.data();
+        source.size[DOOM_MAP_SSECTORS] = ssectors.size();
+        source.data[DOOM_MAP_SECTORS] = sectors.data();
+        source.size[DOOM_MAP_SECTORS] = sectors.size();
+        return doom_map_open(map, &source);
+    }
+};
+
+struct MoveFixture {
+    MoveMapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[16384]{};
+    zone_state_t zone{};
+    p_thinker_list_t thinkers{};
+    m_random_t random{};
+    p_action_stats_t actions{};
+    p_mobj_context_t context{};
+
+    explicit MoveFixture(const std::vector<SpecSectorSpec>& sectors)
+        : builder(sectors) {}
+
+    bool open() {
+        if (builder.open(&map) != DOOM_MAP_OK) {
+            return false;
+        }
+        if (z_init(&zone, arena, sizeof arena) != ZONE_ERR_OK) {
+            return false;
+        }
+        if (p_thinker_list_init(&thinkers) != P_TICK_OK) {
+            return false;
+        }
+        m_random_init(&random);
+        p_action_init(&actions);
+        context.zone = &zone;
+        context.thinkers = &thinkers;
+        context.map = &map;
+        context.random = &random;
+        context.actions = &actions;
+        context.rules = p_spawn_rules_default();
+        return true;
+    }
+
+    r_mobj_t* player(fixed_t x, fixed_t y, fixed_t z = ONFLOORZ) {
+        return p_spawn_mobj(&context, x, y, z, MT_PLAYER, nullptr);
+    }
+};
+
+constexpr fixed_t kThrustWalk = 0x19 * 2048;
+
+void test_move_check_position_refuses_a_one_sided_wall(void) {
+    // The room's bottom wall is at y = -128. A 32-unit box centred at y = -128
+    // straddles it, which is PIT_CheckLine's crossing test; a box that stays
+    // above it is a legal position and only the fit rules can refuse it.
+    MoveFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addRoom(0);
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* mobj = fixture.player(0, 0);
+    TEST_ASSERT_NOT_NULL(mobj);
+
+    p_position_result_t result{};
+    TEST_ASSERT_EQUAL_INT(0, p_check_position(&fixture.context, mobj, 0,
+                                              -128 * kFrac, &result));
+    TEST_ASSERT_EQUAL_INT32(0, result.floorz);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac, result.ceilingz);
+    // A point that leaves the box clear of the wall is free.
+    TEST_ASSERT_EQUAL_INT(1, p_check_position(&fixture.context, mobj, 0,
+                                              -64 * kFrac, &result));
+}
+
+void test_move_try_move_keeps_a_blocked_thing_in_place(void) {
+    MoveFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addRoom(0);
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* mobj = fixture.player(10 * kFrac, 20 * kFrac);
+    TEST_ASSERT_NOT_NULL(mobj);
+    p_move_stats_t stats{};
+    fixture.context.moveStats = &stats;
+
+    TEST_ASSERT_EQUAL_INT(0, p_try_move(&fixture.context, mobj, 10 * kFrac,
+                                        -128 * kFrac));
+    TEST_ASSERT_EQUAL_INT32(10 * kFrac, mobj->x);
+    TEST_ASSERT_EQUAL_INT32(20 * kFrac, mobj->y);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->floorz);
+    TEST_ASSERT_EQUAL_UINT32(1u, stats.blocked);
+    TEST_ASSERT_EQUAL_UINT32(1u, stats.checks);
+
+    // A move inside the room succeeds and copies the opening's heights.
+    TEST_ASSERT_EQUAL_INT(1, p_try_move(&fixture.context, mobj, 10 * kFrac,
+                                        20 * kFrac + 16 * kFrac));
+    TEST_ASSERT_EQUAL_INT32(20 * kFrac + 16 * kFrac, mobj->y);
+    TEST_ASSERT_EQUAL_UINT32(1u, stats.blocked);
+    TEST_ASSERT_EQUAL_UINT32(2u, stats.checks);
+}
+
+void test_move_step_up_is_the_twenty_four_unit_rule(void) {
+    // A two-sided line at y = 64: the back sector's floor is the step. 8 units
+    // is walkable; 32 is not (p_map.c's `tmfloorz - thing->z > 24*FRACUNIT`).
+    for (const i16 step : {static_cast<i16>(8), static_cast<i16>(32)}) {
+        MoveFixture fixture({{0, 128, 160, 0, 0}, {step, 128, 160, 0, 0}});
+        const u16 a = fixture.builder.addVertex(-128, 64);
+        const u16 b = fixture.builder.addVertex(128, 64);
+        fixture.builder.addLine(a, b, DOOM_ML_TWOSIDED, 0, 0, 0, 1);
+        TEST_ASSERT_TRUE(fixture.open());
+        r_mobj_t* mobj = fixture.player(0, 0);
+        TEST_ASSERT_NOT_NULL(mobj);
+
+        const int moved = p_try_move(&fixture.context, mobj, 0, 79 * kFrac);
+
+        if (step == 8) {
+            TEST_ASSERT_EQUAL_INT(1, moved);
+            TEST_ASSERT_EQUAL_INT32(8 * kFrac, mobj->floorz);
+        } else {
+            TEST_ASSERT_EQUAL_INT(0, moved);
+            TEST_ASSERT_EQUAL_INT32(0, mobj->floorz);
+            TEST_ASSERT_EQUAL_INT32(0, mobj->y);
+        }
+    }
+}
+
+void test_move_drop_off_needs_mf_dropoff(void) {
+    // A 64-unit drop over a two-sided line: refused for a thing without
+    // MF_DROPOFF, accepted with it. The floor itself stays the front sector's.
+    for (const bool dropoff : {false, true}) {
+        MoveFixture fixture({{0, 128, 160, 0, 0}, {-64, 128, 160, 0, 0}});
+        const u16 a = fixture.builder.addVertex(-128, 64);
+        const u16 b = fixture.builder.addVertex(128, 64);
+        fixture.builder.addLine(a, b, DOOM_ML_TWOSIDED, 0, 0, 0, 1);
+        TEST_ASSERT_TRUE(fixture.open());
+        r_mobj_t* mobj = fixture.player(0, 0);
+        TEST_ASSERT_NOT_NULL(mobj);
+        if (dropoff) {
+            mobj->flags |= MF_DROPOFF;
+        } else {
+            mobj->flags &= ~MF_DROPOFF;
+        }
+
+        TEST_ASSERT_EQUAL_INT(dropoff ? 1 : 0,
+                              p_try_move(&fixture.context, mobj, 0, 79 * kFrac));
+        TEST_ASSERT_EQUAL_INT32(0, mobj->floorz);
+    }
+}
+
+void test_move_thrust_and_friction_reach_the_stop_speed(void) {
+    MoveFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addRoom(0);
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* mobj = fixture.player(0, 0);
+    TEST_ASSERT_NOT_NULL(mobj);
+
+    p_thrust(&fixture.context, mobj, 0, kThrustWalk);
+    // The generated cosine at zero is 65535, not FRACUNIT: the table's
+    // half-angle offset leaves a one-unit rounding error the rule carries
+    // (documented in r_tables.h). The oracle's table has the same value.
+    TEST_ASSERT_EQUAL_INT32(static_cast<i32>(fixed_mul(kThrustWalk,
+                                                       r_fine_sine[FINEANGLES / 4])),
+                            mobj->momx);
+    // finesine[0] is 25, not 0: the table's half-angle offset gives a thrust
+    // along +x a 19-unit +y component, exactly as upstream's table does.
+    TEST_ASSERT_EQUAL_INT32(static_cast<i32>(fixed_mul(kThrustWalk,
+                                                       r_fine_sine[0])),
+                            mobj->momy);
+
+    {
+        const fixed_t before = mobj->momx;
+        p_xy_movement(&fixture.context, mobj);
+        TEST_ASSERT_EQUAL_INT32(static_cast<i32>(fixed_mul(before,
+                                                           P_ORIG_FRICTION)),
+                                mobj->momx);
+    }
+
+    // Below STOPSPEED in both axes the momentum is dropped, not scaled.
+    mobj->momx = P_STOPSPEED - 1;
+    mobj->momy = 0;
+    p_xy_movement(&fixture.context, mobj);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->momx);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->momy);
+
+    mobj->momx = P_STOPSPEED + 0x1000;
+    p_xy_movement(&fixture.context, mobj);
+    TEST_ASSERT_EQUAL_INT32(static_cast<i32>(fixed_mul(P_STOPSPEED + 0x1000,
+                                                       P_ORIG_FRICTION)),
+                            mobj->momx);
+}
+
+void test_move_z_movement_gravity_floor_and_ceiling(void) {
+    MoveFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addRoom(0);
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* mobj = fixture.player(0, 0, 64 * kFrac);
+    TEST_ASSERT_NOT_NULL(mobj);
+
+    // Airborne with no vertical momentum: one tic sets -2*GRAVITY, the next
+    // subtracts another GRAVITY (p_mobj.c P_ZMovement).
+    p_z_movement(&fixture.context, mobj);
+    TEST_ASSERT_EQUAL_INT32(-2 * kFrac, mobj->momz);
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac, mobj->z);
+    p_z_movement(&fixture.context, mobj);
+    TEST_ASSERT_EQUAL_INT32(62 * kFrac, mobj->z);
+    TEST_ASSERT_EQUAL_INT32(-3 * kFrac, mobj->momz);
+
+    // Landing clamps z to the floor and stops the descent.
+    mobj->z = kFrac / 2;
+    mobj->momz = -2 * kFrac;
+    p_z_movement(&fixture.context, mobj);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->z);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->momz);
+
+    // The ceiling clips the top of the thing, not its origin.
+    mobj->z = 100 * kFrac;
+    mobj->momz = 10 * kFrac;
+    p_z_movement(&fixture.context, mobj);
+    TEST_ASSERT_EQUAL_INT32(128 * kFrac - mobj->height, mobj->z);
+    TEST_ASSERT_EQUAL_INT32(0, mobj->momz);
+}
+
+void test_move_change_sector_reports_and_crushes_only_when_told_to(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addLine(1, 0, 0, 0, 0, false);
+    TEST_ASSERT_TRUE(fixture.open());
+    r_mobj_t* mobj = p_spawn_mobj(&fixture.level.context, 0, 0, ONFLOORZ,
+                                  MT_PLAYER, nullptr);
+    TEST_ASSERT_NOT_NULL(mobj);
+    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector_is_stubbed());
+
+    // A floor rising under a standing thing lifts it.
+    fixture.level.sectors[0].floorHeight = 10 * kFrac;
+    TEST_ASSERT_EQUAL_INT(0, p_spec_p_change_sector(&fixture.level.context, 0, 0));
+    TEST_ASSERT_EQUAL_INT32(10 * kFrac, mobj->z);
+    TEST_ASSERT_EQUAL_INT32(10 * kFrac, mobj->floorz);
+
+    // A ceiling that leaves less room than the thing's height does not fit. A
+    // move that may not crush reports the thing and leaves it completely alone:
+    // upstream's `if (crushchange && !(leveltime&3))` is the whole damage rule,
+    // and this is the half where the flag is false.
+    const u32 calls = fixture.level.specStats.changeSectorCalls;
+    const u32 clear = fixture.level.specStats.changeSectorClear;
+    const i32 health = mobj->health;
+    fixture.level.sectors[0].ceilingHeight = 40 * kFrac;
+    TEST_ASSERT_EQUAL_INT(1, p_spec_p_change_sector(&fixture.level.context, 0, 0));
+    TEST_ASSERT_EQUAL_UINT32(calls + 1u, fixture.level.specStats.changeSectorCalls);
+    TEST_ASSERT_EQUAL_UINT32(clear, fixture.level.specStats.changeSectorClear);
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.level.specStats.crushedThings);
+    TEST_ASSERT_EQUAL_INT32(health, mobj->health);
+
+    // The same thing under a move that may crush is damaged, once, by the rule's
+    // amount: PIT_ChangeSector calls P_DamageMobj (thing, NULL, NULL, 10) and
+    // the thing survives at spawnhealth - 10.
+    fixture.level.leveltime = 0;                     // `!(leveltime&3)`
+    TEST_ASSERT_EQUAL_INT(1, p_spec_p_change_sector(&fixture.level.context, 0, 1));
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.crushedThings);
+    TEST_ASSERT_EQUAL_INT32(health - 10, mobj->health);
+    TEST_ASSERT_EQUAL_INT32(mobjinfo[MT_PLAYER].spawnhealth - 10, mobj->health);
+
+    // One damage per fourth tic: the next tic's call reports again but does not
+    // damage, and the counter does not move.
+    fixture.level.leveltime = 1;
+    TEST_ASSERT_EQUAL_INT(1, p_spec_p_change_sector(&fixture.level.context, 0, 1));
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.specStats.crushedThings);
+    TEST_ASSERT_EQUAL_INT32(mobjinfo[MT_PLAYER].spawnhealth - 10, mobj->health);
+
+    // The plane itself is never written by the change: only things move.
+    TEST_ASSERT_EQUAL_INT32(40 * kFrac, fixture.level.sectors[0].ceilingHeight);
+}
+
+void test_move_use_lines_triggers_the_special_line_in_front(void) {
+    // The player stands 16 units behind a two-sided special line and looks
+    // along +y. P_UseLines traces USERANGE and uses the line it reaches.
+    SpecFixture fixture({{0, 128, 160, 0, 0}, {0, 128, 160, 0, 0}});
+    fixture.builder.addLine(DOOM_ML_TWOSIDED, 1, 0, 0, 1, true);
+    TEST_ASSERT_TRUE(fixture.open());
+    // x is the middle of the line, not its endpoint: the generated cosine at
+    // a right angle is -25/65536, so a ray from the endpoint drifts outside the
+    // line and upstream's divline test correctly reports no crossing.
+    r_mobj_t* mobj = p_spawn_mobj(&fixture.level.context, 16 * kFrac,
+                                  -16 * kFrac, ONFLOORZ, MT_PLAYER, nullptr);
+    TEST_ASSERT_NOT_NULL(mobj);
+    mobj->angle = ANG90;
+
+    p_use_lines(&fixture.level.context, mobj);
+
+    // Special 1 is a manual door on the line's back sector.
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+}
+
+void test_move_slide_along_a_diagonal_wall_uses_the_lines_direction(void) {
+    // P_InterceptVector multiplies the *line's* direction into the numerator.
+    // With a 45-degree wall a diagonal move has to slide along it; a numerator
+    // built from the trace's own direction picks a larger fraction, drives the
+    // body through the wall, and P_TryMove refuses the whole move.
+    MoveFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addRoom(0);
+    // From (96,0) to (0,-96), so this side is the line's front for a body
+    // coming from the room's centre; a one-sided line is not hit from behind.
+    const u16 a = fixture.builder.addVertex(96, 0);
+    const u16 b = fixture.builder.addVertex(0, -96);
+    fixture.builder.addLine(a, b, DOOM_ML_BLOCKING, 0, 0, 0, -1);
+    TEST_ASSERT_TRUE(fixture.open());
+
+    r_mobj_t* mobj = fixture.player(-32 * kFrac, -32 * kFrac);
+    TEST_ASSERT_NOT_NULL(mobj);
+    mobj->momx = 80 * kFrac;
+    mobj->momy = -80 * kFrac;
+
+    p_slide_move(&fixture.context, mobj);
+
+    // P_HitSlideLine projects the move onto the wall, so the momentum now lies
+    // along it: both components are the wall's own direction and equal to
+    // within the table's half-angle rounding.
+    TEST_ASSERT_TRUE(mobj->momx < 0);
+    TEST_ASSERT_TRUE(mobj->momy < 0);
+    TEST_ASSERT_TRUE(mobj->momy - mobj->momx <= -mobj->momx / 100);
+
+    // The leading corner stops one fudge (0x800 of the move) short of the wall.
+    // The wall is y = x - 96 and the corner approaches from y - x > -96, so the
+    // gap is positive and small -- about five map units in this sum, which is
+    // 0x800 * 80 * two axes, not the tens of units a transposed numerator
+    // leaves behind.
+    const fixed_t gap = (mobj->y - mobj->radius) - (mobj->x + mobj->radius) +
+                        96 * kFrac;
+    TEST_ASSERT_TRUE(gap >= 2 * kFrac);
+    TEST_ASSERT_TRUE(gap <= 7 * kFrac);
+}
+
+// --- The player -------------------------------------------------------------
+
+/*
+ * A whole level with a type-1 THING, so p_level_init runs P_SpawnPlayer and
+ * wires the player record the way the game does. The room is 256 x 256 with a
+ * 128-unit ceiling: enough to walk, turn and clamp the view without a WAD.
+ */
+struct PlayerFixture {
+    MoveMapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[32768]{};
+    p_level_t level{};
+
+    /// @p special is the one sector's special number: the player-in-sector
+    /// cases need a floor whose special survives P_SpawnSpecials.
+    PlayerFixture(i16 special = 0)
+        : builder({{0, 128, 160, special, 0}}) {
+        builder.addRoom(0);
+        builder.addThing(0, 0, 90, 1, 7);   // player 1, facing +y
+    }
+
+    bool open() {
+        if (builder.open(&map) != DOOM_MAP_OK) {
+            return false;
+        }
+        return p_level_init(&level, &map, arena, sizeof arena, nullptr) ==
+               P_SETUP_OK;
+    }
+
+    /// P_SetupLevel's order: the THINGS run, then P_SpawnSpecials. The second
+    /// half is what clears the light and door specials and restores sector 4.
+    bool openWithSpecials() {
+        return open() && p_spawn_specials(&level) == P_SPEC_OK;
+    }
+
+    p_player_t& player() { return level.playerState; }
+    r_mobj_t* mo() { return level.player; }
+
+    int count(i16 kind) const {
+        int found = 0;
+
+        for (const p_thinker_t* thinker = p_thinker_first(&level.thinkers);
+             thinker != nullptr; thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == kind) {
+                found += 1;
+            }
+        }
+        return found;
+    }
+};
+
+// A room with no THING: the caller spawns and wires its own avatar.
+struct SpawnFixture {
+    SpecMapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[32768]{};
+    p_level_t level{};
+
+    SpawnFixture() : builder({{0, 128, 160, 0, 0}, {0, 128, 160, 0, 0}}) {}
+
+    bool open() {
+        if (builder.open(&map) != DOOM_MAP_OK) {
+            return false;
+        }
+        return p_level_init(&level, &map, arena, sizeof arena, nullptr) ==
+               P_SETUP_OK;
+    }
+
+    p_player_t& player() { return level.playerState; }
+
+    int count(i16 kind) const {
+        int found = 0;
+
+        for (const p_thinker_t* thinker = p_thinker_first(&level.thinkers);
+             thinker != nullptr; thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == kind) {
+                found += 1;
+            }
+        }
+        return found;
+    }
+};
+
+// --- P_PlayerInSpecialSector ------------------------------------------------
+//
+// Upstream's P_PlayerThink asks the avatar's sector once per tic:
+// `if (player->mo->subsector->sector->special) P_PlayerInSpecialSector (player);`
+// The effect returns early unless the thing is *on* the floor, damages on
+// `!(leveltime&0x1f)`, and the four damage numbers are 5, 10, 20 and 20. These
+// cases drive the whole world tic (p_level_tic), so the hook is what is tested
+// and not just the function.
+
+void test_player_sector_7_damages_five_every_thirty_two_tics(void) {
+    PlayerFixture fixture(7);
+    TEST_ASSERT_TRUE(fixture.openWithSpecials());
+
+    p_ticcmd_t cmd{};
+    const i32 start = fixture.player().health;
+
+    // Tic 1 runs leveltime 0, so `!(leveltime&0x1f)` is true on the first think.
+    (void)p_level_tic(&fixture.level, &cmd, nullptr);
+    TEST_ASSERT_EQUAL_INT32(start - 5, fixture.player().health);
+    // P_DamageMobj mirrors the record onto the mobj it damages.
+    TEST_ASSERT_EQUAL_INT32(fixture.player().health, fixture.mo()->health);
+
+    for (int tic = 1; tic < 32; ++tic) {
+        (void)p_level_tic(&fixture.level, &cmd, nullptr);
+    }
+    TEST_ASSERT_EQUAL_INT32(start - 5, fixture.player().health);
+
+    (void)p_level_tic(&fixture.level, &cmd, nullptr);   // leveltime 32
+    TEST_ASSERT_EQUAL_INT32(start - 10, fixture.player().health);
+
+    // "Falling, not all the way down yet?" -- the same sector above the floor
+    // does nothing at all. The rule is the effect's, so it is asked directly:
+    // a whole tic would land the mobj again (P_ZMovement is a thinker).
+    fixture.mo()->z = fixture.level.sectors[0].floorHeight + 8 * kFrac;
+    p_player_in_special_sector(&fixture.level, &fixture.player());
+    TEST_ASSERT_EQUAL_INT32(start - 10, fixture.player().health);
+}
+
+void test_player_sector_4_and_16_damage_twenty_and_keep_their_special(void) {
+    // 16 is super hellslime, 4 is the fast strobe that also hurts. Upstream
+    // restores 4 after P_SpawnStrobeFlash clears the sector.
+    PlayerFixture slime(16);
+    PlayerFixture strobe(4);
+    p_ticcmd_t cmd{};
+
+    TEST_ASSERT_TRUE(slime.openWithSpecials());
+    TEST_ASSERT_TRUE(strobe.openWithSpecials());
+    TEST_ASSERT_EQUAL_INT16(16, slime.level.sectors[0].special);
+    TEST_ASSERT_EQUAL_INT16(4, strobe.level.sectors[0].special);
+    TEST_ASSERT_EQUAL_INT(1, strobe.count(P_THINKER_LIGHTFLASH));
+
+    (void)p_level_tic(&slime.level, &cmd, nullptr);
+    (void)p_level_tic(&strobe.level, &cmd, nullptr);
+    TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH - 20, slime.player().health);
+    TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH - 20, strobe.player().health);
+}
+
+void test_player_sector_11_exits_at_ten_percent_and_cannot_kill(void) {
+    PlayerFixture fixture(11);
+    TEST_ASSERT_TRUE(fixture.openWithSpecials());
+
+    p_ticcmd_t cmd{};
+    int tics = 0;
+
+    // Tics 1..97 are leveltime 0..96: a hit on 0, 32, 64 and 96.
+    while (tics < 97) {
+        (void)p_level_tic(&fixture.level, &cmd, nullptr);
+        tics += 1;
+    }
+    TEST_ASSERT_EQUAL_INT32(20, fixture.player().health);
+    // "END OF GAME HELL": at 20 health the next 20-point hit has not landed yet
+    // and the level is still running.
+    TEST_ASSERT_EQUAL_INT(P_EXIT_NONE, fixture.level.exitRequest);
+
+    // leveltime 97..128: the fifth hit is above the threshold, so
+    // P_DamageMobj clamps it to health-1 and the tic's own check fires.
+    while (tics < 129) {
+        (void)p_level_tic(&fixture.level, &cmd, nullptr);
+        tics += 1;
+    }
+    TEST_ASSERT_EQUAL_INT(129, tics);
+    TEST_ASSERT_EQUAL_INT32(1, fixture.player().health);
+    TEST_ASSERT_EQUAL_INT(P_PST_LIVE, fixture.player().playerstate);
+    TEST_ASSERT_EQUAL_INT(P_EXIT_NORMAL, fixture.level.exitRequest);
+
+    // P_DamageMobj's `sector->special == 11 && damage >= health` clamp is what
+    // makes this reachable: 20 damage cannot take the last point, so the boss
+    // map's own ending leaves the player alive at 1.
+    (void)p_level_tic(&fixture.level, &cmd, nullptr);   // leveltime 129: no hit
+    TEST_ASSERT_EQUAL_INT32(1, fixture.player().health);
+    TEST_ASSERT_EQUAL_INT(P_PST_LIVE, fixture.player().playerstate);
+    TEST_ASSERT_EQUAL_INT(P_EXIT_NORMAL, fixture.level.exitRequest);
+}
+
+void test_player_sector_damage_suit_blocks_five_and_seven_and_draws_for_sixteen(void) {
+    // `if (!player->powers[pw_ironfeet])` guards 5 and 7 completely; 4 and 16
+    // add `|| (P_Random()<5)`, which draws every tic the suit is on.
+    PlayerFixture nukage(7);
+    PlayerFixture slime(16);
+    p_ticcmd_t cmd{};
+
+    TEST_ASSERT_TRUE(nukage.openWithSpecials());
+    TEST_ASSERT_TRUE(slime.openWithSpecials());
+    nukage.player().powers[P_PW_IRONFEET] = 35 * 60;
+    slime.player().powers[P_PW_IRONFEET] = 35 * 60;
+
+    const u32 nukageRng = nukage.level.random.index;
+    const u32 slimeRng = slime.level.random.index;
+    for (int tic = 0; tic < 64; ++tic) {
+        (void)p_level_tic(&nukage.level, &cmd, nullptr);
+        (void)p_level_tic(&slime.level, &cmd, nullptr);
+    }
+
+    TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH, nukage.player().health);
+    // No draw at all in 5 and 7 ...
+    TEST_ASSERT_EQUAL_UINT32(nukageRng, nukage.level.random.index);
+    // ... while 16 draws one per tic even when the roll does not hurt.
+    TEST_ASSERT_EQUAL_UINT32(slimeRng + 64u, slime.level.random.index);
+}
+
+void test_player_sector_9_counts_one_secret_and_clears_itself(void) {
+    PlayerFixture fixture(9);
+    TEST_ASSERT_TRUE(fixture.openWithSpecials());
+    p_ticcmd_t cmd{};
+
+    // P_SpawnSpecials' totalsecret++ has already run; the player's own counter
+    // and the one-shot clear are P_PlayerInSpecialSector's.
+    TEST_ASSERT_EQUAL_INT32(1, fixture.level.totalSecrets);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.player().secretcount);
+
+    (void)p_level_tic(&fixture.level, &cmd, nullptr);
+    TEST_ASSERT_EQUAL_INT32(1, fixture.player().secretcount);
+    TEST_ASSERT_EQUAL_INT16(0, fixture.level.sectors[0].special);
+
+    (void)p_level_tic(&fixture.level, &cmd, nullptr);
+    TEST_ASSERT_EQUAL_INT32(1, fixture.player().secretcount);
+}
+
+void test_player_init_wires_the_avatar_and_reborn_defaults(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    TEST_ASSERT_NOT_NULL(fixture.level.player);
+
+    const p_player_t& player = fixture.level.playerState;
+    TEST_ASSERT_EQUAL_PTR(fixture.level.player, player.mo);
+    TEST_ASSERT_EQUAL_INT(P_PST_LIVE, player.playerstate);
+    TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH, player.health);
+    // `p->usedown = p->attackdown = true;	// don't do anything immediately`
+    TEST_ASSERT_EQUAL_INT32(1, player.usedown);
+    TEST_ASSERT_EQUAL_INT32(1, player.attackdown);
+    // G_PlayerReborn memsets the record: the view grows from zero on tic 0.
+    TEST_ASSERT_EQUAL_INT32(0, player.viewheight);
+    TEST_ASSERT_EQUAL_INT32(0, player.viewz);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.leveltime);
+    TEST_ASSERT_EQUAL_INT(0, player.cmd.forwardmove);
+    TEST_ASSERT_EQUAL_UINT8(0u, player.cmd.buttons);
+}
+
+void test_player_think_turns_walks_and_raises_the_view(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    p_ticcmd_t cmd{};
+    cmd.forwardmove = 0x19;
+    cmd.angleturn = -640;               // one slow-turn step, clockwise
+
+    const fixed_t walk = 0x19 * 2048;
+    const angle_t startAngle = fixture.mo()->angle;
+    p_player_think(&fixture.level, &cmd);
+
+    // `mo->angle += (cmd->angleturn<<16)`
+    const angle_t turned =
+        static_cast<angle_t>(startAngle + (static_cast<angle_t>(
+                                              static_cast<u32>(
+                                                  static_cast<i32>(-640))
+                                              << 16)));
+    TEST_ASSERT_EQUAL_UINT32(turned, fixture.mo()->angle);
+
+    // `P_Thrust (player, mo->angle, cmd->forwardmove*2048)`
+    TEST_ASSERT_EQUAL_INT32(
+        static_cast<i32>(fixed_mul(walk,
+                                   r_fine_sine[(turned >> ANGLETOFINESHIFT) +
+                                               FINEANGLES / 4])),
+        fixture.mo()->momx);
+    TEST_ASSERT_EQUAL_INT32(
+        static_cast<i32>(fixed_mul(walk, r_fine_sine[turned >>
+                                                     ANGLETOFINESHIFT])),
+        fixture.mo()->momy);
+
+    // The first P_CalcHeight grows the view from 0 to VIEWHEIGHT/2 and starts
+    // the half step: `deltaviewheight = 1` then `+= FRACUNIT/4`.
+    TEST_ASSERT_EQUAL_INT32(P_VIEWHEIGHT / 2, fixture.player().viewheight);
+    TEST_ASSERT_EQUAL_INT32(1 + kFrac / 4,
+                            fixture.player().deltaviewheight);
+
+    // bob is bounded horizontal momentum, and viewz is the first P_CalcHeight's
+    // `mo->z + viewheight + FixedMul(bob/2, finesine[0])` at leveltime 0.
+    const fixed_t expectedBob =
+        (fixed_mul(fixture.mo()->momx, fixture.mo()->momx) +
+         fixed_mul(fixture.mo()->momy, fixture.mo()->momy)) >> 2;
+    TEST_ASSERT_EQUAL_INT32(expectedBob, fixture.player().bob);
+    TEST_ASSERT_EQUAL_INT32(fixture.mo()->z + fixture.player().viewheight +
+                                fixed_mul(expectedBob / 2, r_fine_sine[0]),
+                            fixture.player().viewz);
+    TEST_ASSERT_EQUAL_INT(1, fixture.player().onground);
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.player().useTriggered);
+}
+
+void test_player_think_strafes_at_minus_ninety_degrees(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    fixture.mo()->angle = 0;
+
+    p_ticcmd_t cmd{};
+    cmd.sidemove = 0x19;
+    p_player_think(&fixture.level, &cmd);
+
+    // `P_Thrust (player, mo->angle-ANG90, cmd->sidemove*2048)`: positive
+    // sidemove is strafe right, which at angle 0 is -y.
+    const fixed_t side = 0x19 * 2048;
+    const uint32_t index = ANG270 >> ANGLETOFINESHIFT;
+    TEST_ASSERT_EQUAL_INT32(
+        static_cast<i32>(fixed_mul(side, r_fine_sine[index + FINEANGLES / 4])),
+        fixture.mo()->momx);
+    TEST_ASSERT_EQUAL_INT32(static_cast<i32>(fixed_mul(
+                                side, r_fine_sine[index])),
+                            fixture.mo()->momy);
+    TEST_ASSERT_TRUE(fixture.mo()->momy < 0);
+}
+
+void test_player_think_reactiontime_blocks_movement_and_keeps_the_view_low(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    fixture.mo()->reactiontime = 2;
+
+    p_ticcmd_t cmd{};
+    cmd.forwardmove = 0x19;
+    const angle_t startAngle = fixture.mo()->angle;
+
+    // `if (player->mo->reactiontime) player->mo->reactiontime--;`
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_EQUAL_INT16(1, fixture.mo()->reactiontime);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.mo()->momx);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.mo()->momy);
+    TEST_ASSERT_EQUAL_UINT32(startAngle, fixture.mo()->angle);
+
+    // P_MovePlayer never ran, so upstream's `onground` was never written: it
+    // is still 0, and P_CalcHeight takes the airborne branch `viewz = mo->z +
+    // viewheight` with viewheight still zero.
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.player().onground);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.player().viewheight);
+    TEST_ASSERT_EQUAL_INT32(fixture.mo()->z, fixture.player().viewz);
+
+    // The next tic decrements to zero (still no movement), and the one after
+    // it moves: `if (reactiontime) reactiontime--; else P_MovePlayer`.
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_EQUAL_INT16(0, fixture.mo()->reactiontime);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.mo()->momx);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.mo()->momy);
+
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_NOT_EQUAL(0, fixture.mo()->momx + fixture.mo()->momy);
+    TEST_ASSERT_EQUAL_UINT8(1u, fixture.player().onground);
+}
+
+void test_player_think_use_latches_and_counts_the_trigger(void) {
+    // A two-sided special line (1: manual door) in front of the avatar. The
+    // spawn record sets usedown, so the very first press is ignored, exactly as
+    // G_PlayerReborn's "don't do anything immediately" intends.
+    SpawnFixture fixture;
+    fixture.builder.addLine(DOOM_ML_TWOSIDED, 1, 0, 0, 1, true);
+    TEST_ASSERT_TRUE(fixture.open());
+
+    r_mobj_t* mobj = p_spawn_mobj(&fixture.level.context, 16 * kFrac,
+                                  -16 * kFrac, ONFLOORZ, MT_PLAYER, nullptr);
+    TEST_ASSERT_NOT_NULL(mobj);
+    mobj->angle = ANG90;
+    p_player_init(&fixture.level, mobj);
+
+    p_ticcmd_t cmd{};
+    cmd.buttons = BT_USE;
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_EQUAL_UINT32(0u, fixture.player().useTriggers);
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.player().useTriggered);
+    TEST_ASSERT_EQUAL_INT(0, fixture.count(P_THINKER_DOOR));
+
+    // Release clears the latch.
+    cmd.buttons = 0;
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.player().usedown);
+
+    // A new press runs P_UseLines once and opens the door.
+    cmd.buttons = BT_USE;
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().useTriggers);
+    TEST_ASSERT_EQUAL_UINT8(1u, fixture.player().useTriggered);
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+
+    // Holding the button does not use twice.
+    p_player_think(&fixture.level, &cmd);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().useTriggers);
+    TEST_ASSERT_EQUAL_INT(1, fixture.count(P_THINKER_DOOR));
+}
+
+void test_player_think_counts_the_deferred_buttons_and_death(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // The fire button is not counted here: A_WeaponReady reads it inside
+    // P_MovePsprites. The weapon must be up first -- P_SetupPsprites runs on the
+    // first live think and the raise takes fifteen A_Raise steps -- so sixteen
+    // idle tics reach the ready state and the press after them fires.
+    p_ticcmd_t idle{};
+    for (int i = 0; i < 16; ++i) {
+        p_player_think(&fixture.level, &idle);
+    }
+    TEST_ASSERT_EQUAL_INT(S_PISTOL, fixture.player().psprites[PS_WEAPON].state);
+
+    p_ticcmd_t attack{};
+    attack.buttons = BT_ATTACK;
+    p_player_think(&fixture.level, &attack);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.player().refire);   // no refire yet
+    TEST_ASSERT_EQUAL_INT32(P_WP_PISTOL, fixture.player().readyweapon);
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.player().noiseAlerts);
+    // The fire latched: A_WeaponReady set attackdown before firing.
+    TEST_ASSERT_EQUAL_INT32(1, fixture.player().attackdown);
+
+    // BT_CHANGE asks for a weapon the player owns; the shotgun is not owned, so
+    // nothing is pending.
+    p_ticcmd_t change{};
+    change.buttons = static_cast<u8>(BT_CHANGE | (2u << BT_WEAPONSHIFT));
+    p_player_think(&fixture.level, &change);
+    TEST_ASSERT_EQUAL_INT32(P_WP_NOCHANGE, fixture.player().pendingweapon);
+
+    // The fist is owned, so the same request for weapon 0 is accepted -- and
+    // because the shot is in flight the change waits for the psprite.
+    change.buttons = static_cast<u8>(BT_CHANGE | (0u << BT_WEAPONSHIFT));
+    p_player_think(&fixture.level, &change);
+    TEST_ASSERT_EQUAL_INT32(P_WP_FIST, fixture.player().pendingweapon);
+
+    // `if (cmd->buttons & BT_SPECIAL) cmd->buttons = 0;` clears every bit,
+    // including a fire bit sharing the word.
+    p_ticcmd_t special{};
+    special.buttons = static_cast<u8>(BT_SPECIAL | BT_ATTACK);
+    p_player_think(&fixture.level, &special);
+    TEST_ASSERT_EQUAL_UINT8(0u, fixture.player().cmd.buttons);
+
+    // PST_DEAD runs P_DeathThink: the view falls one map unit, P_CalcHeight reads
+    // the ground, and the command's movement does not move the corpse.
+    fixture.player().playerstate = P_PST_DEAD;
+    const fixed_t beforeHeight = fixture.player().viewheight;
+    const fixed_t beforeZ = fixture.player().viewz;
+    p_ticcmd_t walk{};
+    walk.forwardmove = 0x19;
+    p_player_think(&fixture.level, &walk);
+    TEST_ASSERT_EQUAL_INT(P_PST_DEAD, fixture.player().playerstate);
+    TEST_ASSERT_EQUAL_INT32(beforeHeight - kFrac,
+                            fixture.player().viewheight);
+    TEST_ASSERT_EQUAL_INT32(fixture.mo()->z + fixture.player().viewheight,
+                            fixture.player().viewz);
+    TEST_ASSERT_TRUE(fixture.player().viewz < beforeZ);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.mo()->momx);
+
+    // `if (player->cmd.buttons & BT_USE) player->playerstate = PST_REBORN;`
+    // G_Ticker's G_DoReborn owns that state; this layer stops there rather than
+    // running the live body against a zero-health player.
+    p_ticcmd_t respawn{};
+    respawn.buttons = BT_USE;
+    p_player_think(&fixture.level, &respawn);
+    TEST_ASSERT_EQUAL_INT(P_PST_REBORN, fixture.player().playerstate);
+    const fixed_t rebornHeight = fixture.player().viewheight;
+    p_player_think(&fixture.level, &respawn);
+    TEST_ASSERT_EQUAL_INT(P_PST_REBORN, fixture.player().playerstate);
+    TEST_ASSERT_EQUAL_INT32(rebornHeight, fixture.player().viewheight);
+}
+
+void test_player_calc_height_clamps_bob_and_ceiling(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // MAXMOVE in both axes: bob is clamped to MAXBOB, as
+    // `if (player->bob>MAXBOB) player->bob = MAXBOB;` does.
+    fixture.mo()->momx = 30 * kFrac;
+    fixture.mo()->momy = 30 * kFrac;
+    p_ticcmd_t idle{};
+    p_player_think(&fixture.level, &idle);
+    TEST_ASSERT_EQUAL_INT32(P_MAXBOB, fixture.player().bob);
+
+    // An active delta of one unit overshoots VIEWHEIGHT and settles: the view
+    // is clamped and the delta is zeroed, so the next tic does not grow it.
+    fixture.player().viewheight = P_VIEWHEIGHT - kFrac / 8;
+    fixture.player().deltaviewheight = kFrac;
+    p_player_think(&fixture.level, &idle);
+    TEST_ASSERT_EQUAL_INT32(P_VIEWHEIGHT, fixture.player().viewheight);
+    TEST_ASSERT_EQUAL_INT32(0, fixture.player().deltaviewheight);
+
+    // `if (player->viewz > mo->ceilingz-4*FRACUNIT) viewz = ...`
+    fixture.mo()->z = 0;
+    fixture.mo()->ceilingz = 10 * kFrac;
+    fixture.player().viewheight = P_VIEWHEIGHT;
+    fixture.player().deltaviewheight = 0;
+    p_player_think(&fixture.level, &idle);
+    TEST_ASSERT_EQUAL_INT32(10 * kFrac - 4 * kFrac, fixture.player().viewz);
+}
+
+void test_level_tic_runs_the_player_then_the_thinkers(void) {
+    PlayerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    p_ticcmd_t cmd{};
+    cmd.forwardmove = 0x19;
+    p_thinker_run_t stats{};
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_level_tic(&fixture.level, &cmd, &stats));
+
+    // `leveltime++` is P_Ticker's last statement.
+    TEST_ASSERT_EQUAL_INT32(1, fixture.level.leveltime);
+    // The player's own mobj thinker is in the walk, so the avatar moved and the
+    // view was computed before the move, as upstream orders it.
+    TEST_ASSERT_TRUE(stats.executed >= 1u);
+    TEST_ASSERT_TRUE(fixture.mo()->y > 0);
+    TEST_ASSERT_TRUE(fixture.player().viewz != 0);
+
+    // The split is real: p_level_tick alone never runs the player think, so it
+    // changes neither the view nor the clock. This is what keeps the two
+    // player-less gates byte-identical.
+    const fixed_t viewz = fixture.player().viewz;
+    TEST_ASSERT_EQUAL_INT(P_TICK_OK, p_level_tick(&fixture.level, nullptr));
+    TEST_ASSERT_EQUAL_INT32(1, fixture.level.leveltime);
+    TEST_ASSERT_EQUAL_INT32(viewz, fixture.player().viewz);
+}
+
+// --- The death, the reload and the stream (g_game.c's G_DoReborn) -----------
+
+/*
+ * A level with the player start and one sector special, so P_SpawnSpecials has
+ * a thinker to create and a P_Random() draw to make: without a draw, "the
+ * sequence was carried over" and "the sequence was reseeded" are the same
+ * observation.
+ */
+struct ReloadFixture {
+    MoveMapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[32768]{};
+    p_level_t level{};
+
+    // special 1 is FLICKERING LIGHTS, whose spawn draws P_Random().
+    ReloadFixture() : builder({{0, 128, 160, 1, 0}}) {
+        builder.addRoom(0);
+        builder.addThing(0, 0, 90, 1, 7);   // player 1, facing +y
+    }
+
+    bool open() {
+        if (builder.open(&map) != DOOM_MAP_OK) {
+            return false;
+        }
+        if (p_level_init(&level, &map, arena, sizeof arena, nullptr) !=
+            P_SETUP_OK) {
+            return false;
+        }
+        return p_spawn_specials(&level) == P_SPEC_OK;
+    }
+
+    int count(i16 kind) const {
+        int found = 0;
+
+        for (const p_thinker_t* thinker = p_thinker_first(&level.thinkers);
+             thinker != nullptr; thinker = p_thinker_next(thinker)) {
+            if (thinker->kind == kind) {
+                found += 1;
+            }
+        }
+        return found;
+    }
+
+    p_player_t& player() { return level.playerState; }
+    r_mobj_t* mo() { return level.player; }
+};
+
+void test_level_reload_carries_the_random_position_and_restarts_the_clock(void) {
+    ReloadFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // G_InitNew's M_ClearRandom() then P_SetupLevel's specials: the first load
+    // starts the sequence at zero and leaves it after the draws it made (one for
+    // P_SpawnMobj's `lastlook`, one for P_SpawnLightFlash).
+    const u32 firstLoadDraws = fixture.level.random.index;
+    TEST_ASSERT_TRUE(firstLoadDraws > 0u);
+
+    // Move the clock and the sequence by hand: a light thinker's draw per tic
+    // depends on its own count, and this test is about what a reload preserves,
+    // not about how many draws a tic makes.
+    fixture.level.leveltime = 1149;
+    for (int draw = 0; draw < 7; ++draw) {
+        (void)p_random(&fixture.level.random);
+    }
+    const u32 carried = fixture.level.random.index;
+    TEST_ASSERT_EQUAL_UINT32(firstLoadDraws + 7u, carried);
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_reload(&fixture.level));
+
+    // M_ClearRandom() belongs to G_InitNew(), not to P_SetupLevel(): the reload
+    // drew from where the sequence already was. Its own draws are the THINGS
+    // run's -- one spawned thing, one `lastlook` draw -- taken from `carried`.
+    const u32 afterThings = fixture.level.random.index;
+    TEST_ASSERT_EQUAL_UINT32(carried + 1u, afterThings);
+    // P_SetupLevel's `leveltime = 0;`
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.leveltime);
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_spawn_specials(&fixture.level));
+    // A reload consumes exactly the draws a first load consumes, continuing from
+    // where the sequence was. A reseeded load would land on `firstLoadDraws`.
+    TEST_ASSERT_EQUAL_UINT32(carried + firstLoadDraws,
+                             fixture.level.random.index);
+    TEST_ASSERT_TRUE(fixture.level.random.index != firstLoadDraws);
+}
+
+void test_level_reload_three_times_leaves_the_arena_and_the_world_unchanged(void) {
+    ReloadFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    const zone_stats_t loaded = z_stats(&fixture.level.zone);
+    const u32 mobjs = p_level_mobj_count(&fixture.level);
+    const u32 spawned = fixture.level.stats.spawned;
+    const int lights = fixture.count(P_THINKER_LIGHTFLASH);
+    TEST_ASSERT_TRUE(loaded.inUse > 0u);
+    TEST_ASSERT_EQUAL_INT(1, lights);
+
+    for (int reload = 0; reload < 3; ++reload) {
+        TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_reload(&fixture.level));
+        TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_spawn_specials(&fixture.level));
+
+        // The reload re-lays the same arena: no block survives, none is added,
+        // and the peak cannot grow. This is the assertion a reload that
+        // allocated a level's worth of blocks per death fails on.
+        const zone_stats_t again = z_stats(&fixture.level.zone);
+        TEST_ASSERT_EQUAL_UINT32(loaded.inUse, again.inUse);
+        TEST_ASSERT_EQUAL_UINT32(loaded.freeBytes, again.freeBytes);
+        TEST_ASSERT_EQUAL_UINT32(loaded.overhead, again.overhead);
+        TEST_ASSERT_EQUAL_UINT32(loaded.peakInUse, again.peakInUse);
+
+        // The world is the first load's, not the previous tic's: the same mobjs,
+        // one light thinker (not two), and the player rewired to its new avatar.
+        TEST_ASSERT_EQUAL_UINT32(mobjs, p_level_mobj_count(&fixture.level));
+        TEST_ASSERT_EQUAL_UINT32(spawned, fixture.level.stats.spawned);
+        TEST_ASSERT_EQUAL_INT(lights, fixture.count(P_THINKER_LIGHTFLASH));
+        TEST_ASSERT_EQUAL_PTR(fixture.level.player, fixture.player().mo);
+        TEST_ASSERT_EQUAL_INT(P_PST_LIVE, fixture.player().playerstate);
+        TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH, fixture.player().health);
+        TEST_ASSERT_EQUAL_INT32(0, fixture.level.leveltime);
+    }
+}
+
+void test_demo_reborn_answers_a_dead_player_with_a_reload(void) {
+    ReloadFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    // Kill the avatar the way P_DamageMobj does, walk it away from the start and
+    // let P_DeathThink's USE press set the state G_Ticker answers.
+    fixture.mo()->x = 64 * kFrac;
+    fixture.mo()->y = 64 * kFrac;
+    player.health = 0;
+    player.playerstate = P_PST_DEAD;
+    player.ammo[P_AM_CLIP] = 3;
+    player.killcount = 9;
+    player.viewheight = 30 * kFrac;
+    p_ticcmd_t respawn{};
+    respawn.buttons = BT_USE;
+    p_player_think(&fixture.level, &respawn);
+    TEST_ASSERT_EQUAL_INT(P_PST_REBORN, player.playerstate);
+    fixture.level.leveltime = 1149;
+
+    // The harness hook is the caller's: p_level_init() cannot see it, so the
+    // reload has to reinstate it or the counters stop counting.
+    p_action_trace_t trace{};
+    fixture.level.context.actionTrace = &trace;
+
+    TEST_ASSERT_EQUAL_INT(G_DEMO_OK, g_demo_reborn(&fixture.level));
+
+    TEST_ASSERT_EQUAL_PTR(&trace, fixture.level.context.actionTrace);
+    TEST_ASSERT_EQUAL_INT(P_PST_LIVE, player.playerstate);
+    TEST_ASSERT_EQUAL_PTR(fixture.level.player, player.mo);
+    TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH, player.health);
+    // G_PlayerReborn(): "don't do anything immediately", and the opening kit.
+    TEST_ASSERT_EQUAL_INT32(1, player.usedown);
+    TEST_ASSERT_EQUAL_INT32(1, player.attackdown);
+    TEST_ASSERT_EQUAL_INT32(0, player.viewheight);
+    TEST_ASSERT_EQUAL_INT32(50, player.ammo[P_AM_CLIP]);
+    TEST_ASSERT_EQUAL_INT32(0, player.killcount);
+    // P_SetupLevel restarts the clock with the level, and the avatar is at the
+    // map's own start record: tl.x = 0, tl.y = 0, angle 90 in this fixture.
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.leveltime);
+    TEST_ASSERT_EQUAL_INT32(0, player.mo->x);
+    TEST_ASSERT_EQUAL_INT32(0, player.mo->y);
+    TEST_ASSERT_EQUAL_UINT32(ANG45 * 2u, player.mo->angle);
+    // The stream is not the clock: the demo layer counts commands, and a reload
+    // moves none of them.
+    TEST_ASSERT_EQUAL_UINT32(1u, fixture.level.stats.playerStarts);
+}
+
+void test_demo_reborn_refuses_a_level_that_is_not_loaded(void) {
+    p_level_t level{};
+
+    TEST_ASSERT_EQUAL_INT(G_DEMO_ERR_NULL_LEVEL, g_demo_reborn(nullptr));
+    TEST_ASSERT_EQUAL_INT(G_DEMO_ERR_NOT_OPEN, g_demo_reborn(&level));
+    TEST_ASSERT_EQUAL_INT(P_SETUP_ERR_NOT_OPEN, p_level_reload(&level));
+    TEST_ASSERT_EQUAL_INT(P_SETUP_ERR_NULL_LEVEL, p_level_reload(nullptr));
+}
+
+// --- The level change, the next-map table and the exit request -------------
+
+/*
+ * Two levels over one arena: A has the player at the origin and one light
+ * special; B has the player at (64,-64) and one zombieman, so "the new world is
+ * B's" is visible in the start, in the thing count and in the draws the load
+ * makes.
+ */
+struct ChangeFixture {
+    MoveMapBuilder builderA;
+    MoveMapBuilder builderB;
+    doom_map_t mapA{};
+    doom_map_t mapB{};
+    alignas(8) u8 arena[32768]{};
+    p_level_t level{};
+
+    ChangeFixture()
+        : builderA({{0, 128, 160, 1, 0}}), builderB({{0, 128, 160, 0, 0}}) {
+        builderA.addRoom(0);
+        builderA.addThing(0, 0, 90, 1, 7);   // player 1, facing +y
+        builderB.addRoom(0);
+        builderB.addThing(64, -64, 90, 1, 7);
+        builderB.addThing(-64, 64, 0, 3004, 7); // a zombieman
+    }
+
+    bool open() {
+        if (builderA.open(&mapA) != DOOM_MAP_OK ||
+            builderB.open(&mapB) != DOOM_MAP_OK) {
+            return false;
+        }
+        if (p_level_init(&level, &mapA, arena, sizeof arena, nullptr) !=
+            P_SETUP_OK) {
+            return false;
+        }
+        return p_spawn_specials(&level) == P_SPEC_OK;
+    }
+};
+
+void test_level_change_loads_the_named_map_and_carries_the_sequence(void) {
+    ChangeFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // A fresh B load is the number the change must reproduce: the same map, the
+    // same arena size, the same rules, but starting from a zeroed sequence.
+    p_level_t reference{};
+    alignas(8) u8 referenceArena[32768]{};
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_init(&reference, &fixture.mapB,
+                                                   referenceArena,
+                                                   sizeof referenceArena,
+                                                   nullptr));
+    TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&reference));
+    const u32 referenceDraws = reference.random.index;
+    const u32 referenceArenaBytes = z_stats(&reference.zone).inUse;
+    TEST_ASSERT_EQUAL_UINT32(2u, reference.stats.spawned);
+    TEST_ASSERT_EQUAL_UINT32(2u, reference.stats.things);
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac, reference.player->x);
+    TEST_ASSERT_EQUAL_INT32(-64 * kFrac, reference.player->y);
+
+    // Move the clock and the sequence, then change level.
+    fixture.level.leveltime = 42;
+    for (int draw = 0; draw < 3; ++draw) {
+        (void)p_random(&fixture.level.random);
+    }
+    const u32 carried = fixture.level.random.index;
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_change(&fixture.level, &fixture.mapB));
+    TEST_ASSERT_EQUAL_PTR(&fixture.mapB, fixture.level.map);
+    TEST_ASSERT_EQUAL_UINT32(2u, fixture.level.stats.things);
+    TEST_ASSERT_EQUAL_UINT32(2u, fixture.level.stats.spawned);
+    TEST_ASSERT_EQUAL_UINT32(2u, p_level_mobj_count(&fixture.level));
+    TEST_ASSERT_EQUAL_PTR(fixture.level.player, fixture.level.playerState.mo);
+    TEST_ASSERT_EQUAL_INT(P_PST_LIVE, fixture.level.playerState.playerstate);
+    TEST_ASSERT_EQUAL_INT32(P_MAXHEALTH, fixture.level.playerState.health);
+    // B's own type-1 record, not A's.
+    TEST_ASSERT_EQUAL_INT32(64 * kFrac, fixture.level.player->x);
+    TEST_ASSERT_EQUAL_INT32(-64 * kFrac, fixture.level.player->y);
+    // P_SetupLevel's `leveltime = 0;`, and a fresh load has no exit request.
+    TEST_ASSERT_EQUAL_INT32(0, fixture.level.leveltime);
+    TEST_ASSERT_EQUAL_UINT8(P_EXIT_NONE, fixture.level.exitRequest);
+
+    TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&fixture.level));
+    // The carried position goes into the load: the change draws exactly what a
+    // fresh B load draws, continuing from where the sequence was.
+    TEST_ASSERT_EQUAL_UINT32(carried + referenceDraws, fixture.level.random.index);
+    // And it re-laid the arena rather than growing it.
+    TEST_ASSERT_EQUAL_UINT32(referenceArenaBytes,
+                             z_stats(&fixture.level.zone).inUse);
+
+    p_level_shutdown(&reference);
+}
+
+void test_level_change_back_and_forth_leaves_the_arena_at_each_map_s_cost(void) {
+    ChangeFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    const zone_stats_t aLoaded = z_stats(&fixture.level.zone);
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_change(&fixture.level, &fixture.mapB));
+    TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&fixture.level));
+    const zone_stats_t bLoaded = z_stats(&fixture.level.zone);
+    TEST_ASSERT_TRUE(bLoaded.inUse != aLoaded.inUse);
+
+    // Back to A: the in-use figure is A's again, not A's plus B's. A transition
+    // that allocated a second level's blocks would fail here on the first hop.
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_change(&fixture.level, &fixture.mapA));
+    TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&fixture.level));
+    const zone_stats_t aAgain = z_stats(&fixture.level.zone);
+    TEST_ASSERT_EQUAL_UINT32(aLoaded.inUse, aAgain.inUse);
+    TEST_ASSERT_EQUAL_UINT32(aLoaded.freeBytes, aAgain.freeBytes);
+    TEST_ASSERT_EQUAL_UINT32(aLoaded.overhead, aAgain.overhead);
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_OK, p_level_change(&fixture.level, &fixture.mapB));
+    TEST_ASSERT_EQUAL_INT(P_SPEC_OK, p_spawn_specials(&fixture.level));
+    TEST_ASSERT_EQUAL_UINT32(bLoaded.inUse, z_stats(&fixture.level.zone).inUse);
+}
+
+void test_level_change_refuses_a_bad_target_without_killing_the_level(void) {
+    ChangeFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // A NULL next map is a caller bug, not a reason to zero a live game.
+    TEST_ASSERT_EQUAL_INT(P_SETUP_ERR_NULL_MAP,
+                          p_level_change(&fixture.level, nullptr));
+    TEST_ASSERT_EQUAL_INT(1, fixture.level.open);
+    TEST_ASSERT_EQUAL_PTR(&fixture.mapA, fixture.level.map);
+    TEST_ASSERT_NOT_NULL(fixture.level.player);
+
+    TEST_ASSERT_EQUAL_INT(P_SETUP_ERR_NULL_LEVEL,
+                          p_level_change(nullptr, &fixture.mapB));
+    p_level_t closed{};
+    TEST_ASSERT_EQUAL_INT(P_SETUP_ERR_NOT_OPEN,
+                          p_level_change(&closed, &fixture.mapB));
+}
+
+void test_completed_next_is_upstreams_non_commercial_table(void) {
+    g_level_state_t game{};
+    g_level_next_t next{};
+
+    g_level_state_init(&game, 1u, 1u);
+    TEST_ASSERT_EQUAL_UINT8(0u, game.secretExit);
+    TEST_ASSERT_EQUAL_INT(1, g_completed_next(&game, &next));
+    TEST_ASSERT_EQUAL_UINT8(1u, next.episode);
+    TEST_ASSERT_EQUAL_UINT8(2u, next.map);
+
+    // A secret exit names map 9 from any map it can be reached on.
+    game.map = 3u;
+    g_secret_exit_level(&game);
+    TEST_ASSERT_EQUAL_UINT8(1u, game.secretExit);
+    TEST_ASSERT_EQUAL_INT(1, g_completed_next(&game, &next));
+    TEST_ASSERT_EQUAL_UINT8(9u, next.map);
+    TEST_ASSERT_EQUAL_UINT8(1u, next.secret);
+
+    // `else if (gamemap == 9)`: returning from the secret level, episode 1 -> 4.
+    game.map = 9u;
+    g_exit_level(&game);
+    TEST_ASSERT_EQUAL_UINT8(0u, game.secretExit);
+    TEST_ASSERT_EQUAL_INT(1, g_completed_next(&game, &next));
+    TEST_ASSERT_EQUAL_UINT8(4u, next.map);
+    // Episode 2's table entry, for the whole table and not only shareware's.
+    game.episode = 2u;
+    TEST_ASSERT_EQUAL_INT(1, g_completed_next(&game, &next));
+    TEST_ASSERT_EQUAL_UINT8(6u, next.map);
+
+    // `if (gamemap == 8) { gameaction = ga_victory; return; }` -- and it wins
+    // over a secret exit, so E1M8 has no E1M9 transition.
+    game.episode = 1u;
+    game.map = 8u;
+    g_secret_exit_level(&game);
+    TEST_ASSERT_EQUAL_INT(0, g_completed_next(&game, &next));
+    TEST_ASSERT_EQUAL_UINT8(1u, next.victory);
+
+    char name[8];
+    g_level_name(1u, 9u, name);
+    TEST_ASSERT_EQUAL_STRING("E1M9", name);
+    g_level_name(4u, 3u, name);
+    TEST_ASSERT_EQUAL_STRING("E4M3", name);
+}
+
+void test_exit_from_level_reads_the_request_the_trigger_wrote(void) {
+    g_level_state_t game{};
+    ChangeFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    g_level_state_init(&game, 1u, 1u);
+    fixture.level.exitRequest = P_EXIT_SECRET;
+    g_exit_from_level(&game, &fixture.level);
+    TEST_ASSERT_EQUAL_UINT8(1u, game.secretExit);
+
+    // G_ExitLevel clears `secretexit`; an empty request changes nothing.
+    fixture.level.exitRequest = P_EXIT_NORMAL;
+    g_exit_from_level(&game, &fixture.level);
+    TEST_ASSERT_EQUAL_UINT8(0u, game.secretExit);
+    fixture.level.exitRequest = P_EXIT_NONE;
+    game.secretExit = 1u;
+    g_exit_from_level(&game, &fixture.level);
+    TEST_ASSERT_EQUAL_UINT8(1u, game.secretExit);
+}
+
+// --- Weapons and the attack path (D4.2d2) ----------------------------------
+
+// A 256 x 256 room with one extra one-sided line 48 units north of the centre:
+// the nearest wall a melee swing can reach, because MELEERANGE is 64 units. The
+// bullet's reach is 2,048, so a shot also stops on it -- which is what makes the
+// two P_SpawnPuff branches comparable on the same map.
+struct AttackFixture {
+    MoveMapBuilder builder;
+    doom_map_t map{};
+    alignas(8) u8 arena[65536]{};
+    p_level_t level{};
+
+    AttackFixture() : builder({{0, 128, 160, 0, 0}}) {
+        builder.addRoom(0);
+        const u16 v0 = builder.addVertex(-128, 48);
+        const u16 v1 = builder.addVertex(128, 48);
+        builder.addLine(v0, v1, 0, 0, 0, 0, -1);
+        builder.addThing(0, 0, 90, 1, 7);   // player 1, facing +y
+    }
+
+    bool open() {
+        if (builder.open(&map) != DOOM_MAP_OK) {
+            return false;
+        }
+        return p_level_init(&level, &map, arena, sizeof arena, nullptr) ==
+               P_SETUP_OK;
+    }
+
+    p_player_t& player() { return level.playerState; }
+    r_mobj_t* mo() { return level.player; }
+
+    // The first mobj of a type, or nullptr.
+    r_mobj_t* first(mobjtype_t type) const {
+        for (const r_mobj_t* each = p_level_first_mobj(&level); each != nullptr;
+             each = p_level_next_mobj(each)) {
+            if (each->type == static_cast<i16>(type)) {
+                return const_cast<r_mobj_t*>(each);
+            }
+        }
+        return nullptr;
+    }
+};
+
+void test_weapon_set_psprite_runs_the_entry_action_and_follows_the_chain(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    // S_PUNCHDOWN's action is A_Lower and its tics are 1, so entering it steps sy
+    // by LOWERSPEED once. The chain then follows the state *after* the action.
+    p_set_psprite(&fixture.level.context, &player, PS_WEAPON, S_PUNCHDOWN);
+    TEST_ASSERT_EQUAL_INT(S_PUNCHDOWN, player.psprites[PS_WEAPON].state);
+    TEST_ASSERT_EQUAL_INT32(1, player.psprites[PS_WEAPON].tics);
+    TEST_ASSERT_EQUAL_INT32(0, player.psprites[PS_WEAPON].sx);
+    TEST_ASSERT_EQUAL_INT32(P_LOWERSPEED, player.psprites[PS_WEAPON].sy);
+
+    // S_NULL deactivates the layer: upstream's `if (!stnum) psp->state = NULL`.
+    p_set_psprite(&fixture.level.context, &player, PS_WEAPON, S_NULL);
+    TEST_ASSERT_EQUAL_INT(S_NULL, player.psprites[PS_WEAPON].state);
+
+    // A flash state that ends in S_LIGHTDONE, whose tics are 0 and whose action is
+    // A_Light0: the layer runs the action, follows the zero-tic nextstate to
+    // S_NULL and deactivates -- one call, no visible state in between.
+    p_set_psprite(&fixture.level.context, &player, PS_FLASH, S_PISTOLFLASH);
+    TEST_ASSERT_EQUAL_INT(S_PISTOLFLASH, player.psprites[PS_FLASH].state);
+    TEST_ASSERT_EQUAL_INT32(1, player.extralight);
+    p_set_psprite(&fixture.level.context, &player, PS_FLASH, S_LIGHTDONE);
+    TEST_ASSERT_EQUAL_INT(S_NULL, player.psprites[PS_FLASH].state);
+    TEST_ASSERT_EQUAL_INT32(0, player.extralight);
+}
+
+void test_weapon_setup_raises_the_pistol_to_the_ready_state(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    p_setup_psprites(&fixture.level.context, &player);
+    // P_SetPsprite runs A_Raise on entry, so the very first step is already taken.
+    TEST_ASSERT_EQUAL_INT(S_PISTOLUP, player.psprites[PS_WEAPON].state);
+    TEST_ASSERT_EQUAL_INT32(P_WEAPONBOTTOM - P_RAISESPEED,
+                            player.psprites[PS_WEAPON].sy);
+    TEST_ASSERT_EQUAL_INT32(P_WP_NOCHANGE, player.pendingweapon);
+    TEST_ASSERT_EQUAL_UINT8(1u, player.pspritesStarted);
+
+    // Fifteen more steps reach WEAPONTOP and the ready state, because
+    // 128 - 6*16 = 32 exactly.
+    for (int i = 0; i < 15; ++i) {
+        p_move_psprites(&fixture.level.context, &player);
+    }
+    TEST_ASSERT_EQUAL_INT(S_PISTOL, player.psprites[PS_WEAPON].state);
+    TEST_ASSERT_EQUAL_INT32(P_WEAPONTOP, player.psprites[PS_WEAPON].sy);
+    // The flash follows the gun every tic, in both axes.
+    TEST_ASSERT_EQUAL_INT32(player.psprites[PS_WEAPON].sy,
+                            player.psprites[PS_FLASH].sy);
+    TEST_ASSERT_EQUAL_INT32(player.psprites[PS_WEAPON].sx,
+                            player.psprites[PS_FLASH].sx);
+}
+
+void test_weapon_fire_spends_one_round_and_refire_chains(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+    mobjtype_t unused = MT_PUFF;
+    (void)unused;
+
+    p_setup_psprites(&fixture.level.context, &player);
+    for (int i = 0; i < 15; ++i) {
+        p_move_psprites(&fixture.level.context, &player);
+    }
+    TEST_ASSERT_EQUAL_INT(S_PISTOL, player.psprites[PS_WEAPON].state);
+
+    const int32_t clips = player.ammo[P_AM_CLIP];
+    player.cmd.buttons = BT_ATTACK;
+    p_move_psprites(&fixture.level.context, &player);
+
+    // A_WeaponReady fired: the avatar is in S_PLAY_ATK1, the weapon psprite is on
+    // the attack state and the button is latched. The round is not spent yet.
+    TEST_ASSERT_EQUAL_INT(S_PLAY_ATK1, fixture.mo()->state);
+    TEST_ASSERT_EQUAL_INT(S_PISTOL1, player.psprites[PS_WEAPON].state);
+    TEST_ASSERT_EQUAL_INT32(1, player.attackdown);
+    TEST_ASSERT_EQUAL_INT32(clips, player.ammo[P_AM_CLIP]);
+    TEST_ASSERT_EQUAL_UINT32(1u, player.noiseAlerts);
+
+    // Four tics later S_PISTOL2's A_FirePistol runs: one round, one sound.
+    for (int i = 0; i < 4; ++i) {
+        p_move_psprites(&fixture.level.context, &player);
+    }
+    TEST_ASSERT_EQUAL_INT(S_PISTOL2, player.psprites[PS_WEAPON].state);
+    TEST_ASSERT_EQUAL_INT32(clips - 1, player.ammo[P_AM_CLIP]);
+    TEST_ASSERT_EQUAL_UINT32(1u, player.silentSounds);
+    TEST_ASSERT_EQUAL_INT32(0, player.refire);
+
+    // Holding the trigger through S_PISTOL4's A_ReFire re-fires and grows
+    // `refire`, which is what makes the second bullet drift.
+    for (int i = 0; i < 12; ++i) {
+        p_move_psprites(&fixture.level.context, &player);
+    }
+    TEST_ASSERT_EQUAL_INT32(1, player.refire);
+    TEST_ASSERT_TRUE(player.ammo[P_AM_CLIP] < clips);
+
+    // Releasing the button stops the chain and clears the latch. The remaining
+    // attack chain is S_PISTOL1(4) + S_PISTOL2(6) + S_PISTOL3(4) + S_PISTOL4(5),
+    // so the ready state -- and A_WeaponReady's `else player->attackdown = 0` --
+    // is twenty tics away.
+    player.cmd.buttons = 0;
+    for (int i = 0; i < 30; ++i) {
+        p_move_psprites(&fixture.level.context, &player);
+    }
+    TEST_ASSERT_EQUAL_INT32(0, player.refire);
+    TEST_ASSERT_EQUAL_INT32(0, player.attackdown);
+    TEST_ASSERT_EQUAL_INT(S_PISTOL, player.psprites[PS_WEAPON].state);
+}
+
+void test_weapon_check_ammo_prefers_the_chaingun_then_the_pistol(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    player.weaponowned[P_WP_CHAINGUN] = 1u;
+    player.weaponowned[P_WP_SHOTGUN] = 1u;
+    player.readyweapon = P_WP_SHOTGUN;
+    player.ammo[P_AM_SHELL] = 0;
+    player.ammo[P_AM_CLIP] = 3;
+    TEST_ASSERT_EQUAL_INT(0, p_check_ammo(&fixture.level.context, &player));
+    TEST_ASSERT_EQUAL_INT32(P_WP_CHAINGUN, player.pendingweapon);
+    TEST_ASSERT_EQUAL_INT(S_SGUNDOWN, player.psprites[PS_WEAPON].state);
+
+    // No clips either, and no chainsaw, so it is the pistol on clips -- which
+    // there are none of, so the fist.
+    player.pendingweapon = P_WP_NOCHANGE;
+    player.ammo[P_AM_CLIP] = 0;
+    TEST_ASSERT_EQUAL_INT(0, p_check_ammo(&fixture.level.context, &player));
+    TEST_ASSERT_EQUAL_INT32(P_WP_FIST, player.pendingweapon);
+
+    // The fist needs no ammo, so it always answers yes and nothing changes.
+    player.readyweapon = P_WP_FIST;
+    player.pendingweapon = P_WP_NOCHANGE;
+    TEST_ASSERT_EQUAL_INT(1, p_check_ammo(&fixture.level.context, &player));
+    TEST_ASSERT_EQUAL_INT32(P_WP_NOCHANGE, player.pendingweapon);
+}
+
+void test_weapon_light_actions_write_the_extra_light(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    p_set_psprite(&fixture.level.context, &player, PS_FLASH, S_PISTOLFLASH);
+    TEST_ASSERT_EQUAL_INT32(1, player.extralight);
+    p_set_psprite(&fixture.level.context, &player, PS_FLASH, S_SGUNFLASH2);
+    TEST_ASSERT_EQUAL_INT32(2, player.extralight);
+    p_set_psprite(&fixture.level.context, &player, PS_FLASH, S_LIGHTDONE);
+    TEST_ASSERT_EQUAL_INT32(0, player.extralight);
+    TEST_ASSERT_EQUAL_INT(S_NULL, player.psprites[PS_FLASH].state);
+}
+
+void test_weapon_calc_swing_is_the_bob_projected_on_two_axes(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    player.bob = 16 * kFrac;
+    fixture.level.leveltime = 7;
+
+    fixed_t swingx = 0;
+    fixed_t swingy = 0;
+    p_calc_swing(&fixture.level, &player, &swingx, &swingy);
+
+    // `angle = (FINEANGLES/70*leveltime)&FINEMASK; swingx = FixedMul (swing,
+    // finesine[angle]);` then the same angle advanced half a turn for swingy,
+    // which is scaled by *swingx* and negated -- upstream's two statements.
+    const uint32_t base = (FINEANGLES / 70u) * 7u;
+    const fixed_t x = fixed_mul(player.bob, r_fine_sine[base & FINEMASK]);
+    const fixed_t y = -fixed_mul(x, r_fine_sine[(base + FINEANGLES / 2) & FINEMASK]);
+    TEST_ASSERT_EQUAL_INT32(x, swingx);
+    TEST_ASSERT_EQUAL_INT32(y, swingy);
+
+    // A still player does not swing.
+    player.bob = 0;
+    p_calc_swing(&fixture.level, &player, &swingx, &swingy);
+    TEST_ASSERT_EQUAL_INT32(0, swingx);
+    TEST_ASSERT_EQUAL_INT32(0, swingy);
+}
+
+void test_attack_bullet_sprays_blood_and_spends_the_damage(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // A tower of nothing but a possessed, 32 units north: inside the room's extra
+    // wall at 48, and inside the shot's reach from the avatar at the centre.
+    r_mobj_t* target = p_spawn_mobj(&fixture.level.context, 0, 32 * kFrac,
+                                    ONFLOORZ, MT_POSSESSED, nullptr);
+    TEST_ASSERT_NOT_NULL(target);
+    fixture.mo()->angle = ANG90;
+
+    p_line_attack(&fixture.level.context, fixture.mo(), ANG90, P_MISSILERANGE,
+                  0, 7);
+
+    // "damage < hit points" so it survives, takes the seven, and the trace put a
+    // blood spray on it rather than a puff (a possessed is not MF_NOBLOOD).
+    TEST_ASSERT_EQUAL_INT(20 - 7, target->health);
+    r_mobj_t* blood = fixture.first(MT_BLOOD);
+    TEST_ASSERT_NOT_NULL(blood);
+    TEST_ASSERT_EQUAL_INT(S_BLOOD3, blood->state);      // damage < 9
+    TEST_ASSERT_NULL(fixture.first(MT_PUFF));
+    TEST_ASSERT_EQUAL_INT32(2 * kFrac, blood->momz);    // the drops fall
+
+    // The target's own health is what P_DamageMobj wrote, and the shot's source
+    // made it the avatar's enemy.
+    TEST_ASSERT_EQUAL_PTR(fixture.mo(), target->target);
+}
+
+void test_attack_melee_puff_starts_at_the_third_frame(void) {
+    AttackFixture fixture;
+    TEST_ASSERT_TRUE(fixture.open());
+    p_player_t& player = fixture.player();
+
+    p_setup_psprites(&fixture.level.context, &player);
+    player.readyweapon = P_WP_FIST;
+    player.powers[P_PW_STRENGTH] = 0;
+    fixture.mo()->angle = ANG90;
+
+    a_punch(&fixture.level.context, &player);
+
+    // The fist's trace is MELEERANGE (64) and the wall is at 48, so the spark
+    // lands four units short of it and skips the burst's first two frames:
+    // `if (attackrange == MELEERANGE) P_SetMobjState (th, S_PUFF3)`.
+    r_mobj_t* puff = fixture.first(MT_PUFF);
+    TEST_ASSERT_NOT_NULL(puff);
+    TEST_ASSERT_EQUAL_INT(S_PUFF3, puff->state);
+    // Positioned a bit closer than the wall: `frac = in->frac - FixedDiv
+    // (4*FRACUNIT, attackrange)`, so four of the trace's 64 units back from 48.
+    // The intercept's own fixed-point fraction makes this an approximation, so the
+    // assertion is a two-unit band around 44 -- wide enough for the rounding and
+    // narrow enough that a wrong trace cannot pass it.
+    TEST_ASSERT_TRUE(puff->y >= 42 * kFrac);
+    TEST_ASSERT_TRUE(puff->y <= 46 * kFrac);
+    TEST_ASSERT_EQUAL_INT32(4, puff->tics);
+
+    // The bullet's identical shot at the same wall starts at the first frame, so
+    // the two branches really are different.
+    fixture.first(MT_PUFF)->thinker.removed = 1u;
+    p_line_attack(&fixture.level.context, fixture.mo(), ANG90, P_MISSILERANGE,
+                  0, 5);
+    for (const r_mobj_t* each = p_level_first_mobj(&fixture.level);
+         each != nullptr; each = p_level_next_mobj(each)) {
+        if (each->type == static_cast<i16>(MT_PUFF) &&
+            each->thinker.removed == 0u) {
+            TEST_ASSERT_EQUAL_INT(S_PUFF1, each->state);
+            return;
+        }
+    }
+    TEST_FAIL_MESSAGE("the bullet's shot left no puff");
+}
+
+// --- The animation reaches the renderer without costing a read --------------
+
+/*
+ * The animation seam has two halves, and both are about *when* the name is
+ * translated rather than whether:
+ *
+ *   flats    P_UpdateSpecials is upstream's flattranslation[] writer; the live
+ *            reader answers the frame that table selected, and the level's own
+ *            sector keeps the WAD's name because the simulation reads it.
+ *   sides    a map whose SIDEDEFS name no animated texture cannot have a
+ *            translated side, so the seam is not installed at all -- but the
+ *            scroll seam must still be, because a line special 48 also writes
+ *            a side.
+ *
+ * The cases below go through the map accessors only. The rendered bytes are the
+ * gate's job (sprite/door/rsegs and the demo pins); these pin the seam's answer
+ * so a double translation -- the one failure that would still hash and still
+ * animate, one frame off -- cannot pass.
+ */
+void test_live_reader_answers_the_animation_frame(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.setFloorPic(0, "NUKAGE3");
+    fixture.builder.addLine(1, 0, 0, 0, 0, false);
+    fixture.builder.addThing(-16, 16, 90, 1, 7);
+    TEST_ASSERT_TRUE(fixture.open());
+
+    // Nothing is bound and no tic has run: the accessor answers the lump.
+    doom_sector_t sector{};
+    doom_map_get_sector(&fixture.map, 0, &sector);
+    TEST_ASSERT_EQUAL_UINT64(packName("NUKAGE3"), sector.floorPic);
+
+    p_level_bind_render(&fixture.level, &fixture.map);
+
+    // Bound but still before the first P_UpdateSpecials: upstream's identity
+    // translation array, which is what keeps frame 00 at its pinned hash.
+    doom_map_get_sector(&fixture.map, 0, &sector);
+    TEST_ASSERT_EQUAL_UINT64(packName("NUKAGE3"), sector.floorPic);
+
+    // animTime 8 is the family's first phase (pic = (8/8 + 51 + 2) % 3 == 0).
+    fixture.level.leveltime = 8;
+    fixture.tick();
+    doom_map_get_sector(&fixture.map, 0, &sector);
+    TEST_ASSERT_EQUAL_UINT64(packName("NUKAGE1"), sector.floorPic);
+    // Exactly one translation: p_anim_frame(8, NUKAGE1) is NUKAGE2, so a seam
+    // that ran twice answers the wrong frame here.
+    TEST_ASSERT_EQUAL_UINT64(p_anim_frame(8, packName("NUKAGE3")), sector.floorPic);
+    TEST_ASSERT_NOT_EQUAL(p_anim_frame(8, packName("NUKAGE1")), sector.floorPic);
+    // The simulation keeps the WAD's own name: the frame lives in the seam, not
+    // in the sector a mover or a stair chain reads.
+    TEST_ASSERT_EQUAL_UINT64(packName("NUKAGE3"), fixture.level.sectors[0].floorPic);
+
+    // The next phase moves with the clock.
+    fixture.level.leveltime = 16;
+    fixture.tick();
+    doom_map_get_sector(&fixture.map, 0, &sector);
+    TEST_ASSERT_EQUAL_UINT64(packName("NUKAGE2"), sector.floorPic);
+
+    p_level_unbind_render(&fixture.map);
+}
+
+void test_live_reader_leaves_a_static_flat_alone(void) {
+    SpecFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addLine(1, 0, 0, 0, 0, false);
+    fixture.builder.addThing(-16, 16, 90, 1, 7);
+    TEST_ASSERT_TRUE(fixture.open());
+
+    p_level_bind_render(&fixture.level, &fixture.map);
+    fixture.level.leveltime = 8;
+    fixture.tick();
+
+    doom_sector_t sector{};
+    doom_map_get_sector(&fixture.map, 0, &sector);
+    TEST_ASSERT_EQUAL_UINT64(packName("FLOOR4_8"), sector.floorPic);
+    TEST_ASSERT_EQUAL_UINT64(packName("CEIL3_5"), sector.ceilingPic);
+
+    p_level_unbind_render(&fixture.map);
+}
+
+void test_bind_installs_the_texture_seam_only_when_a_map_animates_one(void) {
+    // A map whose sides name no animated texture: the animation cannot change a
+    // side's picture, so the seam is not installed and the name comes back as
+    // the WAD stored it.
+    {
+        SpecFixture fixture({{0, 128, 160, 0, 0}});
+        fixture.builder.addLine(1, 0, 0, 0, 0, false);
+        fixture.builder.addThing(-16, 16, 90, 1, 7);
+        TEST_ASSERT_TRUE(fixture.open());
+
+        p_level_bind_render(&fixture.level, &fixture.map);
+        fixture.level.leveltime = 8;
+        fixture.tick();
+
+        doom_side_t side{};
+        doom_map_get_side(&fixture.map, 0, &side);
+        TEST_ASSERT_EQUAL_UINT64(packName("STARTAN3"), side.midTexture);
+
+        p_level_unbind_render(&fixture.map);
+    }
+
+    // A map that names SLADRIP1: animTime 8 selects (8/8 + 61 + 0) % 3 == 2.
+    {
+        SpecFixture fixture({{0, 128, 160, 0, 0}});
+        fixture.builder.addLine(1, 0, 0, 0, 0, false);
+        fixture.builder.setSideMidTexture(0, "SLADRIP1");
+        fixture.builder.addThing(-16, 16, 90, 1, 7);
+        TEST_ASSERT_TRUE(fixture.open());
+
+        p_level_bind_render(&fixture.level, &fixture.map);
+        fixture.level.leveltime = 8;
+        fixture.tick();
+
+        doom_side_t side{};
+        doom_map_get_side(&fixture.map, 0, &side);
+        TEST_ASSERT_EQUAL_UINT64(packName("SLADRIP3"), side.midTexture);
+        TEST_ASSERT_NOT_EQUAL(p_anim_frame(8, packName("SLADRIP3")), side.midTexture);
+
+        p_level_unbind_render(&fixture.map);
+    }
+}
+
+void test_bind_keeps_the_scroll_seam_without_a_texture_animation(void) {
+    // Line special 48 writes a side's texture offset. The scroll seam is a side
+    // seam too, so the texture-animation decision above must not remove it.
+    SpecFixture fixture({{0, 128, 160, 0, 0}});
+    fixture.builder.addLine(1, 48, 0, 0, 0, false);
+    fixture.builder.addThing(-16, 16, 90, 1, 7);
+    TEST_ASSERT_TRUE(fixture.open());
+
+    p_level_bind_render(&fixture.level, &fixture.map);
+    fixture.tick(2);
+
+    doom_side_t side{};
+    doom_map_get_side(&fixture.map, 0, &side);
+    TEST_ASSERT_EQUAL_INT32(2 * P_SCROLL_STEP, side.textureOffset);
+    TEST_ASSERT_EQUAL_UINT64(packName("STARTAN3"), side.midTexture);
+
+    p_level_unbind_render(&fixture.map);
+    doom_map_get_side(&fixture.map, 0, &side);
+    TEST_ASSERT_EQUAL_INT32(0, side.textureOffset);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    (void)argc;
+    (void)argv;
+
+    test_setup();
+    UNITY_BEGIN();
+
+    RUN_TEST(test_spawn_onfloorz_uses_the_sector_floor);
+    RUN_TEST(test_spawn_onceilingz_subtracts_the_height);
+    RUN_TEST(test_spawn_explicit_z_is_not_clamped);
+    RUN_TEST(test_spawn_map_thing_hanging_type_uses_onceilingz);
+    RUN_TEST(test_spawn_rejects_a_bad_type_and_touches_nothing);
+    RUN_TEST(test_zone_too_small_reports_failure_without_touching_the_arena);
+    RUN_TEST(test_thinkers_run_in_insertion_order);
+    RUN_TEST(test_thinker_removing_itself_and_a_later_one);
+    RUN_TEST(test_thinker_misuse_changes_nothing);
+    RUN_TEST(test_set_state_advances_state_and_resets_tics);
+    RUN_TEST(test_set_state_follows_a_zero_tic_chain);
+    RUN_TEST(test_set_state_to_null_removes_the_mobj);
+    RUN_TEST(test_remove_twice_is_a_noop_with_an_error);
+    RUN_TEST(test_rng_returns_upstreams_first_sixteen_values);
+    RUN_TEST(test_rng_wraps_after_a_full_table);
+    RUN_TEST(test_skill_filter_accepts_and_rejects_the_right_things);
+    RUN_TEST(test_unknown_doomednum_is_refused_not_spawned);
+    RUN_TEST(test_level_counts_kills_items_and_player_starts);
+    RUN_TEST(test_level_medium_skill_drops_hard_only_monsters);
+    RUN_TEST(test_action_dispatch_counts_what_is_missing);
+    RUN_TEST(test_state_transition_dispatches_the_new_state_action);
+    RUN_TEST(test_action_look_wakes_on_a_sound_target);
+    RUN_TEST(test_ticking_a_mobj_advances_its_state);
+    RUN_TEST(test_specs_door_opens_to_its_top_and_stops);
+    RUN_TEST(test_specs_door_waits_then_closes_and_removes_itself);
+    RUN_TEST(test_specs_door_closing_over_a_thing_stops_at_its_height);
+    RUN_TEST(test_specs_plat_goes_down_waits_and_returns);
+    RUN_TEST(test_specs_raise_floor_stops_at_the_lowest_surrounding_ceiling);
+    RUN_TEST(test_specs_lower_floor_stops_at_the_highest_surrounding_floor);
+    RUN_TEST(test_specs_ceiling_crush_and_raise_reverses);
+    RUN_TEST(test_specs_light_flash_period_uses_both_random_draws);
+    RUN_TEST(test_specs_strobe_two_phase_timing);
+    RUN_TEST(test_specs_perpetual_plat_stops_and_resumes_then_reverses);
+    RUN_TEST(test_specs_tag_door_twice_creates_one_thinker);
+    RUN_TEST(test_specs_manual_door_twice_reverses_instead_of_duplicating);
+    RUN_TEST(test_specs_secret_sectors_and_unsupported_specials_are_counted);
+    RUN_TEST(test_player_sector_7_damages_five_every_thirty_two_tics);
+    RUN_TEST(test_player_sector_4_and_16_damage_twenty_and_keep_their_special);
+    RUN_TEST(test_player_sector_11_exits_at_ten_percent_and_cannot_kill);
+    RUN_TEST(test_player_sector_damage_suit_blocks_five_and_seven_and_draws_for_sixteen);
+    RUN_TEST(test_player_sector_9_counts_one_secret_and_clears_itself);
+    RUN_TEST(test_specs_ignored_trigger_is_not_a_missing_handler);
+    RUN_TEST(test_specs_stairs_build8_chain_from_the_tagged_sector);
+    RUN_TEST(test_specs_stairs_turbo16_and_the_use_clear);
+    RUN_TEST(test_specs_stairs_use_leaves_the_line_when_already_moving);
+    RUN_TEST(test_specs_teleport_moves_the_player_and_spawns_two_fogs);
+    RUN_TEST(test_specs_teleport_retrigger_and_the_player_only_forms);
+    RUN_TEST(test_specs_teleport_refuses_the_back_side_and_missiles);
+    RUN_TEST(test_specs_teleport_monster_refuses_an_occupied_destination);
+    RUN_TEST(test_specs_use_from_the_back_side_is_refused);
+    RUN_TEST(test_specs_spawn_order_is_sector_index_order);
+    RUN_TEST(test_specs_p_change_sector_counts_and_answers_clear);
+    RUN_TEST(test_line_record_exposes_special_and_tag);
+    RUN_TEST(test_move_check_position_refuses_a_one_sided_wall);
+    RUN_TEST(test_move_try_move_keeps_a_blocked_thing_in_place);
+    RUN_TEST(test_move_step_up_is_the_twenty_four_unit_rule);
+    RUN_TEST(test_move_drop_off_needs_mf_dropoff);
+    RUN_TEST(test_move_thrust_and_friction_reach_the_stop_speed);
+    RUN_TEST(test_move_z_movement_gravity_floor_and_ceiling);
+    RUN_TEST(test_move_change_sector_reports_and_crushes_only_when_told_to);
+    RUN_TEST(test_move_use_lines_triggers_the_special_line_in_front);
+    RUN_TEST(test_move_slide_along_a_diagonal_wall_uses_the_lines_direction);
+    RUN_TEST(test_player_init_wires_the_avatar_and_reborn_defaults);
+    RUN_TEST(test_player_think_turns_walks_and_raises_the_view);
+    RUN_TEST(test_player_think_strafes_at_minus_ninety_degrees);
+    RUN_TEST(test_player_think_reactiontime_blocks_movement_and_keeps_the_view_low);
+    RUN_TEST(test_player_think_use_latches_and_counts_the_trigger);
+    RUN_TEST(test_player_think_counts_the_deferred_buttons_and_death);
+    RUN_TEST(test_player_calc_height_clamps_bob_and_ceiling);
+    RUN_TEST(test_level_tic_runs_the_player_then_the_thinkers);
+    RUN_TEST(test_level_reload_carries_the_random_position_and_restarts_the_clock);
+    RUN_TEST(test_level_reload_three_times_leaves_the_arena_and_the_world_unchanged);
+    RUN_TEST(test_demo_reborn_answers_a_dead_player_with_a_reload);
+    RUN_TEST(test_demo_reborn_refuses_a_level_that_is_not_loaded);
+    RUN_TEST(test_level_change_loads_the_named_map_and_carries_the_sequence);
+    RUN_TEST(test_level_change_back_and_forth_leaves_the_arena_at_each_map_s_cost);
+    RUN_TEST(test_level_change_refuses_a_bad_target_without_killing_the_level);
+    RUN_TEST(test_completed_next_is_upstreams_non_commercial_table);
+    RUN_TEST(test_exit_from_level_reads_the_request_the_trigger_wrote);
+    RUN_TEST(test_weapon_set_psprite_runs_the_entry_action_and_follows_the_chain);
+    RUN_TEST(test_weapon_setup_raises_the_pistol_to_the_ready_state);
+    RUN_TEST(test_weapon_fire_spends_one_round_and_refire_chains);
+    RUN_TEST(test_weapon_check_ammo_prefers_the_chaingun_then_the_pistol);
+    RUN_TEST(test_weapon_light_actions_write_the_extra_light);
+    RUN_TEST(test_weapon_calc_swing_is_the_bob_projected_on_two_axes);
+    RUN_TEST(test_attack_bullet_sprays_blood_and_spends_the_damage);
+    RUN_TEST(test_attack_melee_puff_starts_at_the_third_frame);
+    RUN_TEST(test_live_reader_answers_the_animation_frame);
+    RUN_TEST(test_live_reader_leaves_a_static_flat_alone);
+    RUN_TEST(test_bind_installs_the_texture_seam_only_when_a_map_animates_one);
+    RUN_TEST(test_bind_keeps_the_scroll_seam_without_a_texture_animation);
+
+    const int result = UNITY_END();
+    test_teardown();
+    return result;
+}

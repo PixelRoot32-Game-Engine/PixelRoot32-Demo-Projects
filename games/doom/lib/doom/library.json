@@ -1,0 +1,10 @@
+{
+    "name": "doom",
+    "description": "DOOM (1993) core, kept as C: the tree this port compiles next to a C++ engine. See doom_link_probe.h for the seam.",
+    "version": "0.0.0",
+    "build": {
+        "unflags": [
+            "-fno-rtti"
+        ]
+    }
+}

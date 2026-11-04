@@ -1,0 +1,31 @@
+# GENERATED FILE -- do not edit. Regenerate with:
+#     python tools/gen_weapon_lumps.py --wad <path-to-DOOM1.WAD>
+# The weapon (psprite) patches the container keeps raw (--raw-list), one per line.
+CHGFA0
+CHGFB0
+CHGGA0
+CHGGB0
+MISFA0
+MISFB0
+MISFC0
+MISFD0
+MISGA0
+MISGB0
+PISFA0
+PISGA0
+PISGB0
+PISGC0
+PUNGA0
+PUNGB0
+PUNGC0
+PUNGD0
+SAWGA0
+SAWGB0
+SAWGC0
+SAWGD0
+SHTFA0
+SHTFB0
+SHTGA0
+SHTGB0
+SHTGC0
+SHTGD0
