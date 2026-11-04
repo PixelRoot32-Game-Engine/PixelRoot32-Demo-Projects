@@ -1,0 +1,14 @@
+[
+  { "demo": "games/chess", "env": "host_test" },
+  { "demo": "games/chess", "env": "dialog_test" },
+  { "demo": "games/pool", "env": "host_test" },
+  { "demo": "games/top_down_city", "env": "host_test" },
+  { "demo": "games/top_down_city", "env": "dialog_test" },
+  { "demo": "games/minesweeper", "env": "host_test" },
+  { "demo": "games/pacman", "env": "rules_test" },
+  { "demo": "games/pong", "env": "rules_test" },
+  { "demo": "games/space_invaders", "env": "host_test" },
+  { "demo": "input/digital_buttons", "env": "host_test" },
+  { "demo": "networking/pong", "env": "host_test" },
+  { "demo": "networking/pong", "env": "net_test" }
+]

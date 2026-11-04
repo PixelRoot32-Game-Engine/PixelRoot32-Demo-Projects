@@ -84,9 +84,13 @@ hardcoding a list, so a demo built for a specific board is covered without
 every other demo growing an environment it has no use for. Environments whose
 name contains `test` are skipped by the build job.
 
+A pull request builds only the demos it touches: `discover` diffs the branch
+against its base and hands the intersection to the build and test matrices.
+Manual runs, the weekly schedule, a change under `.github/`, and any pull
+request labelled `full-ci` build everything.
+
 If a demo grows a host-side test suite, name its environment `*_test` and add a
-row to the `test` job's matrix in
-[`.github/workflows/build.yml`](.github/workflows/build.yml) — that matrix is
+row to [`.github/test-matrix.json`](.github/test-matrix.json) — that list is
 hand-maintained, so a suite nobody lists is a suite CI never runs.
 
 Depend on the engine through the registry, pinned to a caret range:
