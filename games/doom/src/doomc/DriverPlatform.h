@@ -5,11 +5,12 @@
  *
  * FrameDriver.cpp is a renderer session (plus the boot probe) that is otherwise
  * portable C++: the ~4,450 lines that walk E1M1, bind the baked graphics and
- * run the four passes reach the board through exactly five services --
+ * run the four passes reach the board through exactly six services --
  *
  *   clock        a monotonic microsecond counter;
  *   allocator    an internal-DRAM block (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
  *   census       free heap, total heap and the largest free internal block;
+ *   arena        how large a world the allocator may be asked for;
  *   stack        the loop task's stack high-water mark;
  *   cycles       the CPU cycle counter r_bsp.h declares as r_probe_cycles().
  *
@@ -25,11 +26,11 @@
  * census and the stack watermark report 0: the desktop has no ESP32 heap and no
  * FreeRTOS loop task, and 0 is the sentinel the native census branch already
  * uses for "not measurable here" (DoomScene::reportMemoryCensus()). A native
- * build that wants an open world therefore fails its arena probe on a zero
- * largest block instead of pretending the board's numbers exist -- T3's problem
- * to solve, not this seam's.
+ * build that wants an open world therefore takes its arena from the separate
+ * budget below (kNativeArenaBudgetBytes) instead of from that zero, and every
+ * other consumer of the census keeps reading "not measurable".
  *
- * It is a seam, not a framework: eight functions, no state, no policy.
+ * It is a seam, not a framework: nine functions, no state, no policy.
  */
 
 #include <cstddef>
@@ -112,14 +113,56 @@ inline std::uint32_t driverHeapTotalBytes() {
 
 /// The largest single free block in that pool; 0 on the host.
 ///
-/// The arena probe sizes the world from this number, so a host build fails the
-/// probe rather than opening a world over a heap it cannot measure.
+/// The census half of the printed arithmetic (`heap_largest_before`,
+/// `heap_largest_after`), not the sizing input: the world is sized from
+/// driverArenaBudgetBytes()'s answer. On the board the two are the same
+/// measurement; on the host there is no ESP32 heap to read, so this one is 0.
 inline std::uint32_t driverLargestFreeBlockBytes() {
 #if defined(ESP32) || defined(ESP_PLATFORM)
     return static_cast<std::uint32_t>(
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 #else
     return 0u;
+#endif
+}
+
+#if !defined(ESP32) && !defined(ESP_PLATFORM)
+/// The arena budget the SDL2 simulator adopts, in bytes: 256 KB.
+///
+/// 256 KB is the arena the host tools already tick the world over (see the
+/// "THE WORLD" comment in FrameDriver.cpp), so the simulator reuses the gates'
+/// own figure instead of reading how much RAM the desktop happens to have. The
+/// arithmetic behind the value:
+///
+///   - the container is a 3,078,396 B file mapping, so it costs the process
+///     address space and page cache, not this arena's heap;
+///   - E1M1's whole world -- every mobj, thinker, sector and the linedef-special
+///     copy -- is what the board's 4 MB image opens in `chosen=18432` B, so
+///     262,144 B is fourteen times the figure the shipped build adopts;
+///   - the driver's rule (measured peak + 25 %, rounded up to 1 KB) still picks
+///     the kept arena from its own probe, so the budget only has to be large
+///     enough not to be the constraint -- which at ~14x it is not. On the host
+///     the probe measures 23,760 B and the kept arena comes out at 30,720 B.
+constexpr std::uint32_t kNativeArenaBudgetBytes = 256u * 1024u;
+#endif
+
+/// How large an arena the world may be given, in bytes.
+///
+/// This is the sizing input, and it is not the same question as the census
+/// above. Board: exactly the largest free internal block -- the same call and
+/// the same caps mask driverLargestFreeBlockBytes() makes, so the board's fit
+/// check still runs against real free memory and its capacity is unchanged.
+///
+/// Host: kNativeArenaBudgetBytes, because a desktop heap has no cap to measure
+/// and the census's 0 is "not measurable here". Returning 0 here would refuse
+/// every world on the simulator, which is a portability gap, not a decision
+/// about capacity.
+inline std::uint32_t driverArenaBudgetBytes() {
+#if defined(ESP32) || defined(ESP_PLATFORM)
+    return static_cast<std::uint32_t>(
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+#else
+    return kNativeArenaBudgetBytes;
 #endif
 }
 

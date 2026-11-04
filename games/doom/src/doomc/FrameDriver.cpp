@@ -2554,7 +2554,10 @@ bool gPlaypalValid = false;
  *
  * The host tools tick the world over a 256 KB malloc'd arena. On the board there
  * is no 256 KB to spend, so the arena is a number this file measures instead of
- * a number it assumes.
+ * a number it assumes; the SDL2 simulator has no ESP32 heap to measure, so it
+ * takes the tools' 256 KB as a fixed budget through
+ * `doomc::driverArenaBudgetBytes()` (DriverPlatform.h) and runs this same rule
+ * over it.
  *
  * THE ARENA'S SIZE IS A MEASUREMENT, THEN A RULE
  *
@@ -3106,7 +3109,14 @@ bool openWorldSession() {
 
     const std::uint32_t heapTotal = driverHeapTotalBytes();
     const std::uint32_t heapBefore = driverFreeHeapBytes();
-    const std::uint32_t largestBefore = driverLargestFreeBlockBytes();
+    // The capacity the world is sized against. On the board this is the largest
+    // free internal block, so the fit check is unchanged; on the host it is the
+    // seam's fixed budget, because the census is 0 there ("not measurable") and
+    // a zero capacity would refuse every world. `largestBefore` is what the
+    // printed `heap_largest_*` arithmetic carries on both, which on the host is
+    // the largest block the arena may come from: measured on the board, adopted
+    // on the desktop.
+    const std::uint32_t largestBefore = driverArenaBudgetBytes();
 
     // A generous arena: everything the largest hole has, less the reserve. This
     // is the "does it fit at all" number, so it is deliberately not the size the

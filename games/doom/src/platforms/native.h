@@ -34,7 +34,31 @@ pr32::graphics::DisplayConfig config(
     Y_OFF_SET
 );
 
-pr32::input::InputConfig inputConfig(SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT, SDL_SCANCODE_SPACE, SDL_SCANCODE_RETURN);
+// The engine's `InputConfig` order IS DOOM's button contract: DoomScene samples
+// index 0 up ... index 5 B into the world's button byte and paints its slots in
+// the same order (see doomc/InputMap.h), then samples two keys by index alone --
+// index 6 Start and index 7 Select -- and packs neither into that byte.
+//
+//   0 up        1 down      2 left      3 right
+//   4 A         fire, BT_ATTACK.
+//   5 B         use (alone) and the run modifier (with up).
+//   6 Start     Escape: the key a DOOM player presses to open the menu. The
+//               scene's kStartIndex is 6, so this entry is what makes the menu
+//               reachable on the desktop.
+//
+// Select (index 7, the automap's toggle on the board) stays unbound: the
+// keyboard has no second menu key in this layout and `isButtonDown(7)` on an
+// index past the configured count returns false, so the automap simply cannot
+// be opened from the simulator.
+pr32::input::InputConfig inputConfig(
+    SDL_SCANCODE_UP,      // 0 up
+    SDL_SCANCODE_DOWN,    // 1 down
+    SDL_SCANCODE_LEFT,    // 2 left
+    SDL_SCANCODE_RIGHT,   // 3 right
+    SDL_SCANCODE_SPACE,   // 4 A: fire
+    SDL_SCANCODE_RETURN,  // 5 B: use / run
+    SDL_SCANCODE_ESCAPE   // 6 Start: the menu
+);
 
 pr32::audio::AudioConfig audioConfig(&audioBackend, audioBackend.getSampleRate());
 
