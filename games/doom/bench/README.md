@@ -15,7 +15,7 @@ accident to fix.
 ## Environments
 
 All environments use `board = esp32dev`, `framework = arduino`, and the engine
-pinned to `#feature/doom-esp32`.
+pinned to the released 1.14.0.
 
 | Environment | Panel | Physical window | Logical | SPI | Lines/block | Measures |
 | --- | --- | --- | --- | --- | --- | --- |

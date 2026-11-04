@@ -13,8 +13,8 @@ fixed-point math, the WAD reader — is DOOM's own code in [`lib/doom/`](lib/doo
 kept at arm's length from the engine.
 
 Language: C++17 (+ C99 for the DOOM core)  
-Engine: `PixelRoot32-Game-Engine` branch `feature/doom-esp32` (referenced by
-branch in `platformio.ini`, not by a released version)  
+Engine: `PixelRoot32-Game-Engine` 1.14.0
+(`gperez88/PixelRoot32-Game-Engine@^1.14.0` from the PlatformIO registry)  
 Platform: `espressif32@7.1.2` (Arduino-ESP32 2.0.17), pinned in
 [`lib/platformio.ini`](lib/platformio.ini)  
 Shipped environment: `esp32dev_ILI9341_hud`  
@@ -97,15 +97,16 @@ repartition decision, not a routine update. The host test environments
 (it resolves to 2.2.0); the firmware gets the APU through the engine's own
 dependency.
 
-### What the engine branch carries
+### What 1.14.0 carries
 
-The port needs three things the released engine does not have: a present path
+The port needs four things the engine did not have before 1.14.0: a present path
 whose frame transfer can be closed before the next frame (the 20-line DMA
 block, `PIXELROOT32_DRAIN_PRESENT`), a caller-supplied 8bpp expansion table (the
-PLAYPAL path), and the persistence module (`PIXELROOT32_ENABLE_PERSISTENCE`: the
+PLAYPAL path), the persistence module (`PIXELROOT32_ENABLE_PERSISTENCE`: the
 key-value and slot stores, the `RecordCodec` envelope and the ESP32 NVS
-adapters). The `feature/doom-esp32` branch also contains the APU
-hybrid-synthesis work. The engine contains no DOOM source; the GPL boundary is
+adapters), and the APU hybrid-synthesis work with its render block. All four
+ship in that release, so the pin is `gperez88/PixelRoot32-Game-Engine@^1.14.0`.
+The engine contains no DOOM source; the GPL boundary is
 this demo's binary, not the engine tree (see [License](#license)).
 
 ## Get the WAD and build the container
