@@ -20,6 +20,26 @@ Platform: `espressif32@7.1.2` (Arduino-ESP32 2.0.17), pinned in
 Shipped environment: `esp32dev_ILI9341_hud`  
 Category: Games
 
+## Screenshots
+
+![Main menu](screenshots/menu.png)
+
+Main menu over the paused level.
+
+![Options](screenshots/settings.png)
+
+The `OPTIONS` screen at its default values.
+
+![E1M1 spawn](screenshots/gameplay.png)
+
+E1M1 at the spawn point, with the status bar.
+
+All three are the native build's own captures, one per `native_shot_*`
+environment (`native_shot_menu`, `native_shot_settings`, `native_shot_gameplay`):
+each run writes the finished 320x200 surface through `DOOM_SCREENSHOT` and then
+converts that PPM to PNG, so the frames reproduce byte for byte instead of being
+mock-ups.
+
 ## Quick path
 
 1. Build the firmware: `pio run -e esp32dev_ILI9341_hud` (from `games/doom`).
