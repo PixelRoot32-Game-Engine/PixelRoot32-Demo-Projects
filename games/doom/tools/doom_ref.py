@@ -10139,8 +10139,7 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
                              "implementation only, so the gate can prove it fails")
     parser.add_argument("--stairs", metavar="MAP",
                         help="run one stair/teleport fixture on MAP: one line "
-                             "triggered once, then the sector and thinker dumps "
-                             "(T34)")
+                             "triggered once, then the sector and thinker dumps")
     parser.add_argument("--stairs-fixture", metavar="LINE,SPECIAL,SIDE,TICS",
                         help="with --stairs: the fixture, e.g. 787,97,0,2")
     parser.add_argument("--stairs-perturb", choices=("none", "stairs", "teleport"),
@@ -10150,7 +10149,7 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
     parser.add_argument("--scrolls", metavar="MAP",
                         help="run P_UpdateSpecials on MAP: the scroll offsets of "
                              "every line special 48 and the animated pictures, "
-                             "every tic (T35)")
+                             "every tic")
     parser.add_argument("--scrolls-perturb",
                         choices=("none", "step", "speed", "phase"), default="none",
                         help="with --scrolls: move one constant in this "
@@ -10165,8 +10164,7 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
                              "and print the avatar and view every tic (D4.2c)")
     parser.add_argument("--door", metavar="NAME",
                         help="run the door script (block, BT_USE, open, walk "
-                             "through) and print the avatar and the door every tic "
-                             "(T26)")
+                             "through) and print the avatar and the door every tic")
     parser.add_argument("--damage", metavar="NAME",
                         help="run the damage/death/pickup/crush script against the "
                              "damage rules and print every mobj and the player "
@@ -10210,11 +10208,11 @@ SHA-256 hashes, so its output is safe to quote in a report or a commit message.
     parser.add_argument("--segs-scroll", metavar="SIDE,DX",
                         help="with --segs: add DX (16.16) to side SIDE's "
                              "textureoffset before rendering, which is what "
-                             "P_UpdateSpecials' line special 48 does (T35)")
+                             "P_UpdateSpecials' line special 48 does")
     parser.add_argument("--segs-view", metavar="X,Y,Z,ANGLE",
                         help="with --segs: render only this viewpoint instead of "
                              "the 20 sampled ones, so the gate can point the "
-                             "camera at a scrolling wall (T35)")
+                             "camera at a scrolling wall")
     parser.add_argument("--limit", type=int, metavar="N",
                         help="hash at most N items of each requested kind")
     return parser

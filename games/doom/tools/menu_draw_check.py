@@ -115,7 +115,7 @@ key down
 key enter
 tick 10
 draw options_mid_skull2
-# T53: LOAD GAME with two used slots and four EMPTY ones
+# LOAD GAME with two used slots and four EMPTY ones
 init 2 8 0
 slots E1M1 HURT 03:12|E1M1 MED 00:07|EMPTY|EMPTY|EMPTY|EMPTY
 open
@@ -123,7 +123,7 @@ key down
 key down
 key enter
 draw load_two_used
-# T53: SAVE GAME, the same labels, the last row (sixth slot) selected
+# SAVE GAME, the same labels, the last row (sixth slot) selected
 init 2 8 0
 slots E1M1 HURT 03:12|E1M1 MED 00:07|EMPTY|EMPTY|EMPTY|EMPTY
 open

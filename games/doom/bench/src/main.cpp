@@ -19,7 +19,7 @@
 // DOOM's renderer is 320 columns wide; the panel only changes the physical
 // window. A bench build that moved LOGICAL would measure a different product.
 static_assert(LOGICAL_WIDTH == 320 && LOGICAL_HEIGHT == 200,
-              "the DOOM surface is 320x200 in every configuration (S8)");
+              "the DOOM surface is 320x200 in every configuration");
 
 namespace {
 

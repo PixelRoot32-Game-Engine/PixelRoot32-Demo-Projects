@@ -85,7 +85,7 @@ public:
 
     /// Both numbers pinned: a table that says otherwise is a build
     /// failure, not a slot that silently shrinks.
-    static_assert(kSlotCount == 6, "S18/L56: six slots");
+    static_assert(kSlotCount == 6, "six slots");
     static_assert(M_SLOT_LABEL_SIZE == 16, "a label is 15 characters plus NUL");
 
     /**

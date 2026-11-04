@@ -785,7 +785,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true",
                         help="regenerate in memory and fail if the committed file differs")
     parser.add_argument("--headroom", type=int, default=DEFAULT_HEADROOM,
-                        help="flash bytes available to this task (pre-T47 measurement)")
+                        help="flash bytes available to this build")
     args = parser.parse_args(argv)
 
     if not args.wad.exists():

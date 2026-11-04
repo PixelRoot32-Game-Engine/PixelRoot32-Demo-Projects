@@ -273,7 +273,7 @@ def evaluate(cues: list[dict], measured: dict[int, dict]) -> tuple[list[dict], d
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="T46 SFX bank gate")
+    parser = argparse.ArgumentParser(description="SFX bank gate")
     parser.add_argument("--wad", type=Path, default=ROOT / "tools" / "DOOM1.WAD")
     parser.add_argument("--apu", type=Path,
                         default=ROOT / ".pio" / "libdeps" / "native" / "PixelRoot32-APU")

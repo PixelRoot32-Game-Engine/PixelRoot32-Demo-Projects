@@ -1102,8 +1102,8 @@ dropping and baking (both default off; the command records the choice):
                       or one name per line.
   --raw-list PATH     --raw for every name in a file, one per line. The shipped
                       container passes tools/hud_lumps.txt (and tools/weapon_lumps.txt, the 28 psprite
-                      patches of T38), the 86 status-bar
-                      patches D5.1 draws (T36): raw and 4-byte aligned, they are
+                      patches), the 86 status-bar
+                      patches D5.1 draws: raw and 4-byte aligned, they are 
                       read in place from the mapped partition by name, with no
                       manifest slot and no RAM.
   --sky NAME          the sky texture to bake (default SKY1).
