@@ -63,7 +63,7 @@ above and below — no scaling, no crop.
 
 | Environment | Window | What it does |
 | --- | --- | --- |
-| `native` | 320x200 | SDL2 window, 1:1 with the surface; runs the game with the HUD and the menu, from the same container file the board flashes |
+| `native` | 320x200 | SDL2 window, 1:1 with the surface; runs the game with the HUD, the menu, the palette flashes and the APU audio, from the same container file the board flashes |
 | `esp32dev_ILI9341` | 320x200 + 2x20 px bars | the CYD, 1:1 |
 
 ### Why the build flags look transposed
@@ -286,7 +286,7 @@ weapon with independent oracles pixel by pixel.
 
 ### The palette flashes
 
-`-D DOOM_PALFLASH=1` (on in `esp32dev_ILI9341_hud`, needs `DOOM_MENU` for the gamma)
+`-D DOOM_PALFLASH=1` (on in `esp32dev_ILI9341_hud` and `native`, needs `DOOM_MENU` for the gamma)
 ports `ST_doPaletteStuff`: once per rendered frame the scene asks
 `lib/doom/palflash.c` which of PLAYPAL's 14 pages the player's counters call for
 (red 1-8 for damage and the berserk fade, gold 9-12 for a pickup, green 13 for the
@@ -470,7 +470,7 @@ shipped image.
 
 ### Sound
 
-`esp32dev_ILI9341_hud` carries `-D DOOM_AUDIO=1`: DOOM's own sound API --
+`esp32dev_ILI9341_hud` and `native` carry `-D DOOM_AUDIO=1`: DOOM's own sound API --
 `S_StartSound`, `S_UpdateSounds`, `S_Start`, `S_ChangeMusic`, `S_PauseSound` --
 ported from linuxdoom's `s_sound.c` and `sounds.c` in `lib/doom/`, with the
 DMX half replaced by a narrow C seam into the APU (`src/doomc/DoomAudio.cpp`).
@@ -609,11 +609,10 @@ pointer plus one user pointer in `.bss`, asked for once a second by the scene's
 report and never from the frame path, so an audio subsystem nobody listens to
 costs the loop nothing. `pio test -e sound_test` proves both arms -- no source (or
 a source that answers false) keeps the line at `underruns=-,worst_us=-`, and an
-installed one puts its numbers on it -- with no engine and no APU. A build with
-no source keeps the dashes; the native simulator takes that state (it compiles
-the sound layer out entirely, and the SDL2 backend exposes no counters anyway),
-because a zero would claim a measurement nobody took. The wiring costs 44 B of
-flash.
+installed one puts its numbers on it -- with no engine and no APU. The native
+simulator has the sound layer but installs no source (SDL2's backend exposes no
+counters), so its line keeps the dashes too: a zero would claim a measurement
+nobody took. The wiring costs 44 B of flash.
 
 **The soak.** `esp32dev_ILI9341_hud_soak` is the shipped HUD build plus
 `-D DOOM_AUDIO_SOAK=1`. E1M1 plays from level load, and every four tics the scene
@@ -751,6 +750,11 @@ vol=..,pitch=..,dur_ms=..` line for each. The `dur_ms` is the fitted duration, s
 the board log can be checked against `tools/sfx_fit.txt` without ears. Flash it
 with `pio run -e esp32dev_ILI9341_hud_audiotest -t upload`. It is a diagnostic,
 never the shipped image.
+
+The same cue path runs on the desktop: `native` also carries `DOOM_AUDIO=1`, so
+`pio run -e native -t exec` plays the game's own sounds through SDL2, and adding
+`-D DOOM_AUDIO_SCRIPT=1` to `PLATFORMIO_BUILD_FLAGS` turns that window into the
+same twelve-cue listen test.
 
 ### The level transition's fade
 
