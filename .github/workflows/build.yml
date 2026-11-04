@@ -1,17 +1,22 @@
 name: build
 
-# Pull requests only. Everything reaches main through a pull request, so a
-# push-triggered run on main would rebuild the tree the PR just proved green
-# — roughly seven minutes of runner time for no new information.
+# Pull requests build only the demos the pull request touches, plus a weekly
+# full build as the safety net. Everything reaches main through a pull request,
+# so a push-triggered run on main would rebuild the tree the PR just proved
+# green — roughly seven minutes of runner time for no new information.
 #
 # The trade-off, stated so it is a choice and not an accident: nothing builds
 # main after a merge. GitHub tests a PR against main as it was when the run
 # started, so two PRs that are green apart can still merge into a broken main.
-# Re-run this workflow from the Actions tab (workflow_dispatch) if a merge
-# looks risky.
+# The weekly run closes that gap for demos no PR touches; re-run this workflow
+# from the Actions tab (workflow_dispatch), or label a PR `full-ci`, when a
+# merge looks risky.
 on:
   pull_request:
   workflow_dispatch:
+  # Weekly full build: the demos nothing touched since the last run.
+  schedule:
+    - cron: '0 4 * * 1'
 
 # A new push to the same branch cancels the previous run: the matrix is wide
 # and there is no value in finishing a build nobody will look at.
@@ -24,29 +29,87 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Discover every demo. A demo is any <category>/<demo>/platformio.ini at depth
-  # 3; lib/platformio.ini sits one level deeper and is a template, not a project.
-  # Discovering instead of hardcoding means a new demo is built the day it lands.
+  # Decide what to build. A demo is any <category>/<demo>/platformio.ini at
+  # depth 3; lib/platformio.ini sits one level deeper and is a template, not a
+  # project. Discovering instead of hardcoding means a new demo is built the day
+  # it lands.
+  #
+  # On a pull request the list is narrowed to the demos whose files changed, so
+  # a PR that touches only `games/doom` does not rebuild the other 38. Manual
+  # runs and the schedule build everything. Two things force a full run:
+  # a change under `.github/` (the CI has to prove itself) and the `full-ci`
+  # label.
   # ---------------------------------------------------------------------------
   discover:
     runs-on: ubuntu-latest
     outputs:
       demos: ${{ steps.list.outputs.demos }}
+      any: ${{ steps.list.outputs.any }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The diff against the pull request's base needs its history.
+          fetch-depth: 0
 
       - id: list
         run: |
-          demos=$(find . -mindepth 3 -maxdepth 3 -name platformio.ini \
+          all=$(find . -mindepth 3 -maxdepth 3 -name platformio.ini \
             | sed 's|^\./||; s|/platformio\.ini$||' \
-            | sort \
+            | sort)
+
+          files=""
+          full=0
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ]; then
+            full=1
+          else
+            files=$(git diff --name-only --diff-filter=d "$base" HEAD)
+
+            # A workflow change builds everything: the only way to know the CI
+            # still works is to run all of it.
+            if echo "$files" | grep -Eq '^\.github/'; then
+              full=1
+            fi
+
+            # Root entries that are not documentation are repo-wide too. The
+            # emptiness guards matter twice over: `echo ""` is one blank line,
+            # which would read as a root entry outside the allowlist, and a
+            # non-matching grep exits 1, which `set -e` turns into a failed step.
+            if [ -n "$files" ]; then
+              root=$(echo "$files" | grep -Ev '/' || true)
+              if [ -n "$root" ]; then
+                bad=$(echo "$root" \
+                  | grep -Ev '^(README\.md|CONTRIBUTING\.md|LICENSE|\.editorconfig|\.gitignore)$' \
+                  || true)
+                if [ -n "$bad" ]; then
+                  full=1
+                fi
+              fi
+            fi
+          fi
+
+          # Escape hatch for a pull request that suspects a shared assumption.
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}" = "true" ]; then
+            full=1
+          fi
+
+          if [ "$full" = "1" ]; then
+            changed="$all"
+          else
+            changed=$(echo "$files" | awk -F/ 'NF>=3 {print $1"/"$2}' | sort -u)
+          fi
+
+          demos=$(comm -12 <(echo "$all") <(printf '%s\n' "$changed" | sed '/^$/d') \
             | jq -R . | jq -sc .)
           echo "demos=$demos" >> "$GITHUB_OUTPUT"
-          echo "Discovered demos: $demos"
+          echo "any=$([ "$demos" = "[]" ] && echo 0 || echo 1)" >> "$GITHUB_OUTPUT"
+          echo "Discovered demos: $all"
+          echo "Building: $demos (full=$full)"
 
   # ---------------------------------------------------------------------------
   # Structure check — the rules CONTRIBUTING.md states, enforced. Cheap, and it
-  # fails in seconds instead of after a 20-minute matrix.
+  # fails in seconds instead of after a 20-minute matrix. It runs on the same
+  # narrowed list as the build: a new demo is always in it.
   # ---------------------------------------------------------------------------
   structure:
     runs-on: ubuntu-latest
@@ -94,6 +157,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     needs: [discover, structure]
+    # An empty matrix is a job failure, and a documentation-only pull request
+    # legitimately has nothing to build.
+    if: needs.discover.outputs.any == '1'
     strategy:
       fail-fast: false
       matrix:
@@ -145,40 +211,51 @@ jobs:
           exit $status
 
   # ---------------------------------------------------------------------------
-  # Host-side unit tests. This matrix is hand-maintained on purpose, per
+  # Host-side unit tests. The suites are hand-maintained on purpose, per
   # CONTRIBUTING.md: adding a *_test environment to a demo is not enough, the
-  # suite has to be listed here or CI never runs it.
+  # suite has to be listed in .github/test-matrix.json or CI never runs it.
+  #
+  # A matrix cannot be filtered by an `if` (the condition is evaluated before the
+  # matrix is expanded), so the filtering happens in `test_plan`: it intersects
+  # the hand-maintained list with the demos the pull request touches and hands
+  # the result to `test`. A pull request that leaves every listed suite untouched
+  # skips the job instead of expanding an empty matrix.
   # ---------------------------------------------------------------------------
+  test_plan:
+    runs-on: ubuntu-latest
+    needs: discover
+    outputs:
+      include: ${{ steps.filter.outputs.include }}
+      any: ${{ steps.filter.outputs.any }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: filter
+        env:
+          DEMOS: ${{ needs.discover.outputs.demos }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+
+          demos = set(json.loads(os.environ["DEMOS"]))
+          rows = json.loads(pathlib.Path(".github/test-matrix.json").read_text(encoding="utf-8"))
+          keep = [row for row in rows if row["demo"] in demos]
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("include=" + json.dumps(keep) + "\n")
+              fh.write("any=" + ("1" if keep else "0") + "\n")
+
+          print(f"{len(keep)} of {len(rows)} suites selected: {keep}")
+          PY
+
   test:
     runs-on: ubuntu-latest
+    needs: [discover, test_plan]
+    if: needs.test_plan.outputs.any == '1'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - demo: games/chess
-            env: host_test
-          - demo: games/chess
-            env: dialog_test
-          - demo: games/pool
-            env: host_test
-          - demo: games/top_down_city
-            env: host_test
-          - demo: games/top_down_city
-            env: dialog_test
-          - demo: games/minesweeper
-            env: host_test
-          - demo: games/pacman
-            env: rules_test
-          - demo: games/pong
-            env: rules_test
-          - demo: games/space_invaders
-            env: host_test
-          - demo: input/digital_buttons
-            env: host_test
-          - demo: networking/pong
-            env: host_test
-          - demo: networking/pong
-            env: net_test
+        include: ${{ fromJson(needs.test_plan.outputs.include) }}
     name: test ${{ matrix.demo }} (${{ matrix.env }})
     steps:
       - uses: actions/checkout@v7
