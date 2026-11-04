@@ -63,7 +63,7 @@ above and below — no scaling, no crop.
 
 | Environment | Window | What it does |
 | --- | --- | --- |
-| `native` | 320x200 | SDL2 window, 1:1 with the surface |
+| `native` | 320x200 | SDL2 window, 1:1 with the surface; runs the game with the HUD and the menu, from the same container file the board flashes |
 | `esp32dev_ILI9341` | 320x200 + 2x20 px bars | the CYD, 1:1 |
 
 ### Why the build flags look transposed
@@ -96,6 +96,24 @@ If `pio` is not on `PATH`, use the PlatformIO venv's copy
 The native build needs SDL2 (`libsdl2-dev` on Linux, `brew install sdl2` on
 macOS, MSYS2/MinGW on Windows). The `[env:native]` flags ship with the
 MSYS2 paths; swap them for the commented Homebrew lines on macOS.
+
+The simulator does not embed the game's data: it opens the same compressed
+container the firmware flashes, from disk. Build it once with
+[`tools/make_container.ps1`](tools/make_container.ps1) (or `tools/whd_encode.py`
+plus `tools/bake_graphics.py`); it lands at `tools/DOOM1.whd`, which is the
+default the host looks for relative to the working directory, so run the binary
+from `games/doom`. `DOOM_WHD` overrides the path. The container and the WAD are
+both gitignored, so regenerate rather than commit them.
+
+The native controls are the board's, on a keyboard: arrows walk and turn,
+**A** (attack) is Space, **B** (use and run) is Enter, and **Start** is Escape,
+which opens and closes the menu. Select has no native key, so the automap is
+board-only.
+
+Three environments exist only to produce the repository's screenshots:
+`native_shot_menu`, `native_shot_settings` and `native_shot_gameplay` each build
+the same game, run it headless, write one finished frame as a PPM and exit.
+`pio run -e native_shot_menu -t exec` is a complete capture.
 
 ```bash
 pio run -e esp32dev_ILI9341_hud --target upload
