@@ -292,7 +292,9 @@ constexpr std::uint32_t kDramImageRegionBytes = 124580u;
  *    comes from named in the field. The sizes are the driver's literals, not
  *    estimates: the sprite is `width*height + 1` because TFT_eSprite adds one
  *    off-screen guard pixel, the line buffers are two blocks of
- *    `physicalWidth * 2 B * linesPerBlock`, and the three LUTs are fixed.
+ *    `physicalWidth * 2 B * linesPerBlock`, and the three LUTs are fixed. The
+ *    line-buffer term is a TFT_eSPI board fact, so on PLATFORM_NATIVE it -- and
+ *    `lines_per_block` -- is reported as 0 rather than a made-up block size.
  *
  * The port's own 512 B RGB565 table (palette::playpal565Table()) is a static
  * array, not heap; it is named so the total is not silently larger than the
@@ -305,8 +307,19 @@ void reportMemoryCensus(Renderer& renderer) {
     // The driver runs 1:1 here (physical == logical), which is what makes the
     // line-buffer arithmetic below exact for this environment.
     const std::uint32_t spriteBytes = static_cast<std::uint32_t>(width) * height + 1u;
+#if defined(PLATFORM_NATIVE)
+    // The host presents through SDL2 and owns no TFT_eSPI DMA block, so the DMA
+    // term is not a host number to invent: `linesPerBlock` and the two line
+    // buffers are reported as 0, the same sentinel the pool figures below use.
+    const std::uint32_t dmaLineBytes = 0u;
+    const int linesPerBlock = 0;
+#else
+    // Two DMA line buffers of `physicalWidth * 2 B * linesPerBlock`: this is
+    // the board's TFT_eSPI layout, read from the macro the board build defines.
     const std::uint32_t dmaLineBytes =
         static_cast<std::uint32_t>(width) * 2u * PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK;
+    const int linesPerBlock = PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK;
+#endif
     const std::uint32_t dmaLineTotal = dmaLineBytes * 2u;
     const std::uint32_t paletteLutBytes = 256u * 2u;
     const std::uint32_t xLutBytes = static_cast<std::uint32_t>(width) * 2u;
@@ -386,7 +399,7 @@ void reportMemoryCensus(Renderer& renderer) {
                   static_cast<unsigned>(paletteLutBytes), static_cast<unsigned>(xLutBytes),
                   static_cast<unsigned>(yLutBytes),
                   static_cast<unsigned>(engineFrameBytes),
-                  static_cast<int>(PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK));
+                  linesPerBlock);
     writeConsoleLine(line);
 }
 

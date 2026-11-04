@@ -437,18 +437,18 @@ std::size_t frameProfileFormatAttributionSummary(const FrameProfileStats& stats,
 // --- The board driver --------------------------------------------------------
 
 #if (defined(PIXELROOT32_DOOM_FRAME_PROBE) || defined(PIXELROOT32_DOOM_SHOW_E1M1)) && \
-    (defined(ESP32) || defined(ESP_PLATFORM))
+    (defined(ESP32) || defined(ESP_PLATFORM) || defined(PLATFORM_NATIVE))
 
 #include <cstring>
 #include <cstddef>
 
-#include <esp_heap_caps.h>
-#include <esp_system.h>
-#include <esp_timer.h>
-// The loop task's stack margin. The firing path is the deepest call chain the
-// game has, so its margin is printed to rule a stack overflow in or out.
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
+// The five board services this session needs -- clock, internal-DRAM allocator,
+// heap census, stack watermark and the cycle counter r_bsp.h declares -- live
+// behind one seam. On the board each forwards to exactly the call this file
+// made before, so the ESP32 builds are unchanged; on PLATFORM_NATIVE the SDL2
+// simulator uses steady_clock and malloc and reports 0 for the two ESP32-only
+// censuses.
+#include "doomc/DriverPlatform.h"
 
 #include "doomc/BakedGraphics.h"
 #include "doomc/DoomConsole.h"
@@ -531,20 +531,18 @@ static_assert(DOOM_WHD_SOURCE_ERR_UNAVAILABLE == 6,
 /*
  * The CPU cycle counter the cycle attribution reads (r_bsp.h declares it).
  *
- * The Xtensa CCOUNT special register is the only counter with a cycle of its
- * own; esp_timer_get_time() is the reference for the phase table and these two
- * must agree on the total, which is what makes the per-pixel numbers
- * trustworthy. CCOUNT is 32 bits at 240 MHz, so it wraps every 17.9 s -- far
- * longer than a frame, and `now - start` on unsigned values is still correct
- * across a wrap as long as one interval is under that.
+ * The counter itself is a platform service and lives in DriverPlatform.h: the
+ * Xtensa CCOUNT special register on the board, 0 on the host (where
+ * `PIXELROOT32_DOOM_RASTER_PROBE` is never defined, so nothing calls it).
+ * CCOUNT is 32 bits at 240 MHz, so it wraps every 17.9 s -- far longer than a
+ * frame, and `now - start` on unsigned values is still correct across a wrap as
+ * long as one interval is under that.
  *
  * It is defined outside the anonymous namespace and with C linkage because
  * lib/doom/ is C and links against this symbol.
  */
 extern "C" std::uint32_t r_probe_cycles(void) {
-    std::uint32_t value;
-    __asm__ __volatile__("rsr %0, ccount" : "=a"(value));
-    return value;
+    return doom::doomc::driverProbeCycles();
 }
 
 namespace doom {
@@ -817,11 +815,11 @@ r_sprite_t* gSprites = nullptr;
  */
 void releaseWorkingSet() {
     if (gSprites != nullptr) {
-        heap_caps_free(gSprites);
+        driverFreeInternal(gSprites);
         gSprites = nullptr;
     }
     for (int index = 0; index < gLumpBlockCount; ++index) {
-        heap_caps_free(gLumpBlocks[index]);
+        driverFreeInternal(gLumpBlocks[index]);
         gLumpBlocks[index] = nullptr;
     }
     gLumpBlockCount = 0;
@@ -889,10 +887,12 @@ int gDecodeDepth = 0;
 // --- Timing -----------------------------------------------------------------
 
 std::int64_t nowMicros() {
-    // The ESP-IDF microsecond counter: integer, 64-bit, monotonic for the life of
-    // a boot. A difference of two samples never wraps, which is why the sample is
-    // taken in this width and only the per-phase results are narrowed to 32 bits.
-    return esp_timer_get_time();
+    // The monotonic microsecond counter behind DriverPlatform.h: the ESP-IDF
+    // counter on the board, steady_clock on the host. Both are integer and
+    // monotonic for the life of a boot (a difference of two samples never
+    // wraps), which is why the sample is taken in this width and only the
+    // per-phase results are narrowed to 32 bits.
+    return driverMicros();
 }
 
 std::uint32_t elapsedMicros(std::int64_t start) {
@@ -1672,8 +1672,7 @@ std::uint8_t* heapLump(std::size_t bytes) {
     if (gLumpBlockCount >= kExtraLumpBlocks) {
         return nullptr;
     }
-    std::uint8_t* at = static_cast<std::uint8_t*>(
-        heap_caps_malloc(aligned, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    std::uint8_t* at = static_cast<std::uint8_t*>(driverAllocInternal(aligned));
     if (at == nullptr) {
         return nullptr;
     }
@@ -2602,7 +2601,7 @@ constexpr std::uint32_t kArenaProbeReserveBytes = 4096u;
 struct LevelWorld {
     p_level_t level;
     std::uint8_t* arena;   ///< What z_init() was given: `block` rounded up to 8.
-    void* block;           ///< What heap_caps_free() must get back.
+    void* block;           ///< What driverFreeInternal() must get back.
     std::uint32_t arenaBytes;
     bool open;
 };
@@ -2884,13 +2883,12 @@ bool openAutomap() {
         writeLine(line);
         return false;
     }
-    gMapped = static_cast<std::uint8_t*>(
-        heap_caps_malloc(static_cast<std::size_t>(bytes), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    gMapped = static_cast<std::uint8_t*>(driverAllocInternal(static_cast<std::size_t>(bytes)));
     if (gMapped == nullptr) {
         std::snprintf(line, sizeof line,
                       "SHOW,map,init,status=fail,reason=alloc,bytes=%u,heap=%u\n",
                       static_cast<unsigned>(bytes),
-                      static_cast<unsigned>(esp_get_free_heap_size()));
+                      static_cast<unsigned>(driverFreeHeapBytes()));
         writeLine(line);
         return false;
     }
@@ -2899,7 +2897,7 @@ bool openAutomap() {
 
     am_clear_state(&gMap);
     if (!am_level_init(&gMap, &map, gMapped, gMappedBytes)) {
-        heap_caps_free(gMapped);
+        driverFreeInternal(gMapped);
         gMapped = nullptr;
         gMappedBytes = 0u;
         std::snprintf(line, sizeof line, "SHOW,map,init,status=fail,reason=level\n");
@@ -2931,7 +2929,7 @@ void closeAutomap() {
     gMap.mapped = nullptr;
     gMap.mappedBytes = 0u;
     if (gMapped != nullptr) {
-        heap_caps_free(gMapped);
+        driverFreeInternal(gMapped);
         gMapped = nullptr;
     }
     gMappedBytes = 0u;
@@ -2975,14 +2973,13 @@ std::uint32_t roundArenaUp(std::uint32_t bytes) {
 /**
  * @brief Takes @p bytes of internal DRAM and aligns the payload to the zone.
  *
- * `heap_caps_malloc()`'s alignment is the allocator's promise, not this file's,
- * and the zone refuses an arena that is not ZONE_ALIGNMENT-aligned. One extra
- * alignment unit is requested and the payload is aligned here, so the world
- * opens on any heap implementation; @p block is what must go back.
+ * `driverAllocInternal()`'s alignment is the allocator's promise, not this
+ * file's, and the zone refuses an arena that is not ZONE_ALIGNMENT-aligned. One
+ * extra alignment unit is requested and the payload is aligned here, so the
+ * world opens on any heap implementation; @p block is what must go back.
  */
 bool takeArena(std::uint32_t bytes, std::uint8_t** arena, void** block) {
-    void* raw = heap_caps_malloc(static_cast<std::size_t>(bytes) + ZONE_ALIGNMENT,
-                                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    void* raw = driverAllocInternal(static_cast<std::size_t>(bytes) + ZONE_ALIGNMENT);
     if (raw == nullptr) {
         *arena = nullptr;
         *block = nullptr;
@@ -3107,11 +3104,9 @@ bool openWorldSession() {
     // the 512 bytes are reused instead of bought twice.
     char (&line)[kFrameProfileLineCapacity] = gSessionLine;
 
-    const int caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    const std::uint32_t heapTotal = static_cast<std::uint32_t>(heap_caps_get_total_size(caps));
-    const std::uint32_t heapBefore = static_cast<std::uint32_t>(esp_get_free_heap_size());
-    const std::uint32_t largestBefore =
-        static_cast<std::uint32_t>(heap_caps_get_largest_free_block(caps));
+    const std::uint32_t heapTotal = driverHeapTotalBytes();
+    const std::uint32_t heapBefore = driverFreeHeapBytes();
+    const std::uint32_t largestBefore = driverLargestFreeBlockBytes();
 
     // A generous arena: everything the largest hole has, less the reserve. This
     // is the "does it fit at all" number, so it is deliberately not the size the
@@ -3132,9 +3127,8 @@ bool openWorldSession() {
         writeLine(line);
         return false;
     }
-    const std::uint32_t heapDuringProbe = static_cast<std::uint32_t>(esp_get_free_heap_size());
-    const std::uint32_t largestDuringProbe =
-        static_cast<std::uint32_t>(heap_caps_get_largest_free_block(caps));
+    const std::uint32_t heapDuringProbe = driverFreeHeapBytes();
+    const std::uint32_t largestDuringProbe = driverLargestFreeBlockBytes();
 
     zone_stats_t zone;
 #if defined(DOOM_MENU)
@@ -3189,7 +3183,7 @@ bool openWorldSession() {
     writeLine(line);
 
     p_level_shutdown(&gWorld.level);
-    heap_caps_free(probeBlock);
+    driverFreeInternal(probeBlock);
 
     if (probeSetup != P_SETUP_OK) {
         recordLevelFailure(LevelFailureReason::World, static_cast<int>(probeSetup), "probe");
@@ -3206,7 +3200,7 @@ bool openWorldSession() {
                       "heap_largest_before=%u,heap_largest=%u\n",
                       static_cast<unsigned>(zone.peakInUse), static_cast<unsigned>(chosenBytes),
                       static_cast<unsigned>(largestBefore),
-                      static_cast<unsigned>(heap_caps_get_largest_free_block(caps)));
+                      static_cast<unsigned>(driverLargestFreeBlockBytes()));
         writeLine(line);
         return false;
     }
@@ -3217,8 +3211,8 @@ bool openWorldSession() {
                       "SHOW,arena,fit,status=fail,reason=alloc,peak=%u,chosen=%u,"
                       "heap_free=%u,heap_largest=%u\n",
                       static_cast<unsigned>(zone.peakInUse), static_cast<unsigned>(chosenBytes),
-                      static_cast<unsigned>(esp_get_free_heap_size()),
-                      static_cast<unsigned>(heap_caps_get_largest_free_block(caps)));
+                      static_cast<unsigned>(driverFreeHeapBytes()),
+                      static_cast<unsigned>(driverLargestFreeBlockBytes()));
         writeLine(line);
         return false;
     }
@@ -3237,8 +3231,8 @@ bool openWorldSession() {
                       static_cast<int>(setup), static_cast<unsigned>(zone.peakInUse),
                       static_cast<unsigned>(chosenBytes),
                       static_cast<unsigned>(gWorld.arenaBytes),
-                      static_cast<unsigned>(esp_get_free_heap_size()),
-                      static_cast<unsigned>(heap_caps_get_largest_free_block(caps)));
+                      static_cast<unsigned>(driverFreeHeapBytes()),
+                      static_cast<unsigned>(driverLargestFreeBlockBytes()));
         writeLine(line);
         closeWorldSession();
         return false;
@@ -3277,8 +3271,8 @@ bool openWorldSession() {
                   static_cast<unsigned>(chosenBytes), static_cast<unsigned>(zone.peakInUse),
                   static_cast<unsigned>(live.inUse), static_cast<unsigned>(gWorld.arenaBytes),
                   static_cast<unsigned>(sizeof(LevelWorld)),
-                  static_cast<unsigned>(esp_get_free_heap_size()),
-                  static_cast<unsigned>(heap_caps_get_largest_free_block(caps)));
+                  static_cast<unsigned>(driverFreeHeapBytes()),
+                  static_cast<unsigned>(driverLargestFreeBlockBytes()));
     writeLine(line);
     return true;
 }
@@ -3292,7 +3286,7 @@ void closeWorldSession() {
         p_level_shutdown(&gWorld.level);
     }
     if (gWorld.block != nullptr) {
-        heap_caps_free(gWorld.block);
+        driverFreeInternal(gWorld.block);
     }
     gWorld = LevelWorld{};
 }
@@ -3407,7 +3401,7 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
     // keeps `sizeof line` meaningful at every snprintf below.
     char (&line)[kFrameProfileLineCapacity] = gSessionLine;
 
-    session->heapBefore = static_cast<std::uint32_t>(esp_get_free_heap_size());
+    session->heapBefore = driverFreeHeapBytes();
     const std::int64_t setupStart = nowMicros();
 
     const int openCode = doom_whd_source_open(&gWhd);
@@ -3447,8 +3441,7 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
         const std::int32_t playpalLumpBytes = doom_whd_source_lump_size(&gWhd, playpalLump);
         if (playpalLumpBytes >= static_cast<std::int32_t>(kPlaypalBytes)) {
             std::uint8_t* decode = static_cast<std::uint8_t*>(
-                heap_caps_malloc(static_cast<std::size_t>(playpalLumpBytes),
-                                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+                driverAllocInternal(static_cast<std::size_t>(playpalLumpBytes)));
             std::uint32_t decoded = 0u;
             if (decode != nullptr
                 && doom_whd_source_read_lump(&gWhd, playpalLump, decode,
@@ -3460,7 +3453,7 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
                 gPlaypalValid = true;
             }
             if (decode != nullptr) {
-                heap_caps_free(decode);
+                driverFreeInternal(decode);
             }
         }
     }
@@ -3511,9 +3504,8 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
                       static_cast<unsigned>(gNotRaw), directoriesLoaded ? 1 : 0,
                       static_cast<int>(mapError),
                       static_cast<unsigned>(gColormapBytes),
-                      static_cast<unsigned>(esp_get_free_heap_size()),
-                      static_cast<unsigned>(heap_caps_get_largest_free_block(
-                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                      static_cast<unsigned>(driverFreeHeapBytes()),
+                      static_cast<unsigned>(driverLargestFreeBlockBytes()),
                       static_cast<unsigned>(gLevelRamUsed));
         writeLine(line);
         doom_whd_source_close();
@@ -3570,17 +3562,15 @@ bool openLevelSession(LevelSession* session, Driver* driver, const char* tag,
         return false;
     }
     gSprites = static_cast<r_sprite_t*>(
-        heap_caps_malloc(static_cast<std::size_t>(spriteSlots) * sizeof(r_sprite_t),
-                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        driverAllocInternal(static_cast<std::size_t>(spriteSlots) * sizeof(r_sprite_t)));
     if (gSprites == nullptr) {
         recordLevelFailure(LevelFailureReason::Sprites, 0, "heap");
         std::snprintf(line, sizeof line,
                       "%s,setup,status=fail,reason=sprites,need=%u,heap=%u,"
                       "largest=%u\n",
                       tag, static_cast<unsigned>(spriteSlots * sizeof(r_sprite_t)),
-                      static_cast<unsigned>(esp_get_free_heap_size()),
-                      static_cast<unsigned>(heap_caps_get_largest_free_block(
-                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+                      static_cast<unsigned>(driverFreeHeapBytes()),
+                      static_cast<unsigned>(driverLargestFreeBlockBytes()));
         writeLine(line);
         releaseWorkingSet();
         doom_whd_source_close();
@@ -4693,11 +4683,11 @@ bool frameLevelPlayer(LevelPlayer* out) {
 const std::uint8_t* frameLevelPlaypal() { return gPlaypalValid ? gPlaypal : nullptr; }
 
 std::uint32_t frameStackFree() {
-    // uxTaskGetStackHighWaterMark() reports the *smallest* margin the task has
-    // ever had, in StackType_t units (one byte on this port), so a value near
-    // zero after firing is the deepest chain the game has reached.
-    return static_cast<std::uint32_t>(uxTaskGetStackHighWaterMark(nullptr)) *
-           static_cast<std::uint32_t>(sizeof(StackType_t));
+    // DriverPlatform.h's stack service: uxTaskGetStackHighWaterMark reports the
+    // *smallest* margin the loop task has ever had, in StackType_t units (one
+    // byte on this port), so a value near zero after firing is the deepest chain
+    // the game has reached. The host has no loop task and reports 0.
+    return driverStackFreeBytes();
 }
 
 #if defined(DOOM_FRAME_DUMP)
@@ -4988,7 +4978,7 @@ std::size_t frameLevelFormatMemory(char* out, std::size_t capacity) {
         return 0u;
     }
     formatMemoryLine("SHOW", true, out, capacity, gSession.heapBefore,
-                     static_cast<std::uint32_t>(esp_get_free_heap_size()));
+                     driverFreeHeapBytes());
     return std::strlen(out);
 }
 
@@ -5134,177 +5124,8 @@ void frameProbeRun(std::uint8_t* surface, int width, int height) {
     closeLevelSession();
 
     std::snprintf(line, sizeof line, "FRAMEPROF,heap,after_free=%u\n",
-                  static_cast<unsigned>(esp_get_free_heap_size()));
+                  static_cast<unsigned>(driverFreeHeapBytes()));
     writeLine(line);
-}
-
-}  // namespace doomc
-}  // namespace doom
-
-#elif defined(PIXELROOT32_DOOM_FRAME_PROBE)
-
-// Host build with the flag set: there is no partition to map and no
-// `esp_timer.h`, so the probe has nothing to measure. The accumulator and the
-// formatters above are what a host test drives.
-namespace doom {
-namespace doomc {
-
-void frameProbeRun(std::uint8_t* surface, int width, int height) {
-    (void)surface;
-    (void)width;
-    (void)height;
-}
-
-void frameLevelLastRefusal(const char** stage, int* code) {
-    // A host build with no board driver never refuses a frame: there is no
-    // session to walk, so the honest answer is "nothing refused".
-    if (stage != nullptr) {
-        *stage = "none";
-    }
-    if (code != nullptr) {
-        *code = 0;
-    }
-}
-
-}  // namespace doomc
-}  // namespace doom
-
-#elif defined(PIXELROOT32_DOOM_SHOW_E1M1)
-
-// Host build with the game flag set: there is no `wad` partition to map, so the
-// session cannot open. The shipped `_show` environment is an ESP32 one; this
-// branch exists so a host build that defines the flag still links and reports a
-// closed session instead of failing at link time.
-namespace doom {
-namespace doomc {
-
-bool frameLevelOpen(const char* tag, char marker[5]) {
-    (void)tag;
-    if (marker != nullptr) {
-        marker[0] = '\0';
-    }
-    return false;
-}
-
-bool frameLevelRenderSpawn(std::uint8_t* surface, int width, int height,
-                           FrameProfileSample* sample, char hash[65], bool wantHash,
-                           std::uint32_t* hashMicros) {
-    (void)surface;
-    (void)width;
-    (void)height;
-    (void)sample;
-    (void)wantHash;
-    if (hash != nullptr) {
-        hash[0] = '\0';
-    }
-    if (hashMicros != nullptr) {
-        *hashMicros = 0u;
-    }
-    return false;
-}
-
-bool frameLevelRenderView(std::uint8_t* surface, int width, int height, std::int32_t x,
-                          std::int32_t y, std::int32_t z, std::uint32_t angle,
-                          FrameProfileSample* sample, char hash[65], bool wantHash,
-                          std::uint32_t* hashMicros) {
-    (void)surface;
-    (void)width;
-    (void)height;
-    (void)x;
-    (void)y;
-    (void)z;
-    (void)angle;
-    (void)sample;
-    (void)wantHash;
-    if (hash != nullptr) {
-        hash[0] = '\0';
-    }
-    if (hashMicros != nullptr) {
-        *hashMicros = 0u;
-    }
-    return false;
-}
-
-bool frameLevelSpawnView(LevelView* out) {
-    (void)out;
-    return false;
-}
-
-bool frameLevelRunTics(std::uint32_t tics, std::uint8_t buttons) {
-    (void)tics;
-    (void)buttons;
-    return false;
-}
-
-#if defined(DOOM_MENU)
-bool frameLevelNewGame(int skill) {
-    (void)skill;
-    return false;
-}
-
-void frameLevelSetMenu(const m_menu* menu) { (void)menu; }
-
-bool frameLevelArenaStats(std::uint32_t* inUse, std::uint32_t* freeBytes,
-                          std::uint32_t* failures, std::uint32_t* mobjs) {
-    *inUse = 0u;
-    *freeBytes = 0u;
-    *failures = 0u;
-    *mobjs = 0u;
-    return false;
-}
-
-const char* frameLevelLastMissing() { return ""; }
-#endif
-
-bool frameLevelPlayer(LevelPlayer* out) {
-    if (out != nullptr) {
-        *out = LevelPlayer{};
-    }
-    return false;
-}
-
-void frameLevelClose() {}
-
-const std::uint8_t* frameLevelPlaypal() { return nullptr; }
-
-int frameLevelPaletteIndex() { return 0; }
-
-bool frameLevelPlaypalPage(int page, std::uint8_t* out) {
-    (void)page;
-    (void)out;
-    return false;
-}
-
-#if defined(DOOM_PALFLASH_SCRIPT)
-bool frameLevelPalflashScript(int step) {
-    (void)step;
-    return false;
-}
-#endif
-
-std::size_t frameLevelFormatMemory(char* out, std::size_t capacity) {
-    if (out != nullptr && capacity > 0u) {
-        out[0] = '\0';
-    }
-    return 0u;
-}
-
-void frameLevelLastRefusal(const char** stage, int* code) {
-    if (stage != nullptr) {
-        *stage = "none";
-    }
-    if (code != nullptr) {
-        *code = 0;
-    }
-}
-
-const LevelFailure& frameLevelFailure() {
-    // A host build with the game flag has no `wad` partition, so `open()` fails
-    // before anything is classified. The honest record is "no failure in the
-    // level session" -- the scene's own error is the closed session, not a
-    // fabricated container reason.
-    static const LevelFailure kNoFailure;
-    return kNoFailure;
 }
 
 }  // namespace doomc
