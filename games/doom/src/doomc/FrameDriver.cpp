@@ -612,8 +612,12 @@ constexpr int kClipPoolCapacity = 3200;
 #else
 /// The 20 sampled views need `clip_blocks_peak=15`, which includes the two
 /// reserved constants; the 13 real edges are at most 13 x 320 = 4,160 entries.
-/// 5,120 entries (10,240 B) is what the control's link budget was sized for.
-constexpr int kClipPoolCapacity = 5120;
+/// 4,608 entries (9,216 B) is that peak with about 10% margin, rounded to a
+/// multiple of 128. The earlier 5,120 (10,240 B) was sized by the control's link
+/// budget, and engine 1.14.0 grew `dram0_0_seg` past it by 488 B; the unused
+/// margin is the cheapest thing to give back, because the measured peak still
+/// fits and this environment never renders a walkable view.
+constexpr int kClipPoolCapacity = 4608;
 #endif
 
 /// The masked pass's sprite pool, sized for the whole episode: E1M2 submits 243
