@@ -153,20 +153,24 @@ named on stderr.
 
 OUTPUT
 
-`src/assets/music/MusE1M1.inc` is the committed asset: the melody array
-`kMusE1M1Notes`, the second/third/percussion arrays, three sub-track structs and
-`const MusicTrack kMusE1M1` with `loop = true`. It is deterministic: no
+`--lump NAME` writes `src/assets/music/Mus<Name>.inc`: the melody array
+`kMus<Name>Notes`, the second/third/percussion arrays, three sub-track structs
+and `const MusicTrack kMus<Name>` with `loop = true`. It is deterministic: no
 timestamps, no locale-dependent formatting (Python's `%.6f` always uses `.`),
 no unordered iteration. `--check` regenerates in memory and fails if the
-committed bytes differ.
+committed bytes differ, so it is run once per lump.
 
-Flash is the binding constraint. `sizeof(MusicNote)` is 16 B on the ESP32
-(1+1+2 pad+4+4+4), so `D_E1M1`'s emitted array is the number in its header and
-`D_INTER`'s would not fit the image; the tool prints the arithmetic for every
-`d_*` lump and only E1M1 is written.
+The nine level themes `D_E1M1`..`D_E1M9` are committed. `D_E1M1` is the one
+asset every build ships; the other eight are the native profile's
+(`DOOM_FULL_PROFILE`), which is not bound by the 4 MB flash headroom.
 
-    python tools/mus2tracks.py --wad tools/DOOM1.WAD
-    python tools/mus2tracks.py --wad tools/DOOM1.WAD --check
+Flash is the binding constraint for the 4 MB image. `sizeof(MusicNote)` is 16 B
+on the ESP32 (1+1+2 pad+4+4+4), so `D_E1M1`'s emitted array is the number in its
+header and `D_INTER`'s would not fit the image; the tool prints the arithmetic
+for every `d_*` lump it converts.
+
+    python tools/mus2tracks.py --wad tools/DOOM1.WAD --lump D_E1M2
+    python tools/mus2tracks.py --wad tools/DOOM1.WAD --lump D_E1M1 --check
 """
 from __future__ import annotations
 
@@ -844,17 +848,24 @@ def main(argv: list[str] | None = None) -> int:
         out.write_text(text, encoding="utf-8", newline="\n")
         print(f"wrote {out} ({len(text)} characters)")
 
-    # The arithmetic that decides what may ship. Only E1M1 is written.
+    # The arithmetic that decides what may ship.
     print(f"flash: sizeof(MusicNote) = {MUSIC_NOTE_BYTES} B on the ESP32")
-    for lump in ("D_INTRO", "D_INTER", "D_E1M1"):
+    profile_lumps = [f"D_E1M{level}" for level in range(1, 10)]
+    for lump in ["D_INTRO", "D_INTER"] + profile_lumps:
         entry = conversions.get(lump)
         if entry is None:
             continue
         size = entry.array_notes * MUSIC_NOTE_BYTES
-        verdict = "fits" if size <= args.headroom else "does not fit"
+        if lump == "D_E1M1":
+            verdict = (f"{'fits' if size <= args.headroom else 'does not fit'} "
+                       f"the {args.headroom:,} B 4 MB headroom; every build ships it")
+        elif lump in profile_lumps:
+            verdict = "native profile only (DOOM_FULL_PROFILE); not in a 4 MB image"
+        else:
+            verdict = (f"{'fits' if size <= args.headroom else 'does not fit'} "
+                       f"the {args.headroom:,} B 4 MB headroom; not committed")
         print(f"  {lump}: {entry.array_notes} notes * {MUSIC_NOTE_BYTES} = "
-              f"{size:,} B -- {verdict} the {args.headroom:,} B headroom")
-    print(f"  committed: {wanted} only.")
+              f"{size:,} B -- {verdict}")
 
     if findings:
         for finding in findings:

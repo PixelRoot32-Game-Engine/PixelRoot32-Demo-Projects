@@ -24,7 +24,9 @@
  *   - S_StopSound stops only that origin;
  *   - every id 1..108 has a cue inside the APU's legal ranges;
  *   - the 8 -> 4 selector never names a Reserved cue as a victim, for every
- *     class combination there is.
+ *     class combination there is;
+ *   - the music bank answers each of the nine level ids with its own committed
+ *     theme (this environment defines DOOM_FULL_PROFILE) and nullptr elsewhere.
  */
 #include <cstdint>
 #include <cstring>
@@ -678,69 +680,166 @@ void test_update_sounds_ticks_and_frees_a_finished_channel(void) {
 }
 
 // --- The music bank --------------------------------------------------------
+//
+// This environment defines DOOM_FULL_PROFILE, so the bank under test is the
+// one the native build links: one committed asset per level theme. The 4 MB
+// lookup (every level id -> E1M1) is not compiled here by design; the ESP32
+// image and the offline gate are what pin it.
 
-void test_the_music_bank_plays_e1m1_on_every_level(void) {
-    // The 4 MB build ships one track and answers it for all nine level ids;
-    // only the non-level ids are quiet. The S3 profile replaces the
-    // lookup so each id gets its own asset.
+namespace {
+
+/// One level theme as the bank must expose it.
+///
+/// The counts and the loop length are the generated asset's own numbers: the
+/// `MusicTrack` initialisers `tools/mus2tracks.py` emits, and the score grid
+/// its header records as `MusicNote`s and stored beats. A theme whose
+/// conversion changes moves them, so this table is the host-side record of
+/// what each committed `.inc` holds.
+struct ThemeExpectation {
+    int musicId;
+    const char* name;
+    std::size_t melody;
+    std::size_t second;  // the third melodic voice; 0 when the score has none
+    std::size_t bass;
+    std::size_t percussion;
+    float beats;  // the score's grid, which all four tracks must close on
+    bool hasSecond;
+};
+
+const ThemeExpectation kThemes[] = {
+    {(int)mus_e1m1, "e1m1", 657, 712, 263, 513, 480.0f, true},
+    {(int)mus_e1m2, "e1m2", 128, 254, 388, 535, 776.75f, true},
+    {(int)mus_e1m3, "e1m3", 166, 0, 2176, 1159, 1360.0f, false},
+    {(int)mus_e1m4, "e1m4", 446, 446, 541, 820, 853.25f, true},
+    {(int)mus_e1m5, "e1m5", 657, 237, 361, 6, 820.0f, true},
+    {(int)mus_e1m6, "e1m6", 385, 193, 193, 452, 420.0f, true},
+    {(int)mus_e1m7, "e1m7", 154, 164, 482, 222, 754.25f, true},
+    {(int)mus_e1m8, "e1m8", 48, 86, 79, 324, 760.0f, true},
+    {(int)mus_e1m9, "e1m9", 536, 293, 293, 882, 686.75f, true},
+};
+
+constexpr std::size_t kThemeCount = sizeof kThemes / sizeof kThemes[0];
+
+/// The stored beats a track advances; the offline gate closes every track on
+/// the same value, which is what keeps the four loops aligned.
+float trackBeats(const MusicTrack& track) {
+    float total = 0.0f;
+    for (std::size_t index = 0; index < track.count; ++index) {
+        total += track.notes[index].duration;
+    }
+    return total;
+}
+
+}  // namespace
+
+void test_the_music_bank_plays_the_nine_level_themes(void) {
+    // Nothing outside the nine level ids resolves, so S_ChangeMusic leaves the
+    // intermission, the title and the levels past NUMMUSIC quiet instead of
+    // holding a request that can never play.
     TEST_ASSERT_NULL(musicBankTrack(mus_None));
     TEST_ASSERT_NULL(musicBankTrack(mus_inter));
     TEST_ASSERT_NULL(musicBankTrack(mus_intro));
     TEST_ASSERT_NULL(musicBankTrack((int)NUMMUSIC));
+    TEST_ASSERT_NULL(musicBankTrack(-1));
 
+    const MusicTrack* answered[kThemeCount] = {};
+
+    for (std::size_t index = 0; index < kThemeCount; ++index) {
+        const ThemeExpectation& theme = kThemes[index];
+        const MusicTrack* track = musicBankTrack(theme.musicId);
+        TEST_ASSERT_NOT_NULL(track);
+        answered[index] = track;
+
+        // The melody is the id's own asset: its note count and the score grid
+        // it closes on identify the lump, not just "some track".
+        TEST_ASSERT_EQUAL_UINT32((unsigned)theme.melody, (unsigned)track->count);
+        TEST_ASSERT_TRUE(track->loop);
+        TEST_ASSERT_EQUAL((int)WaveType::PULSE, (int)track->channelType);
+        TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, 0.5f, track->duty);
+        TEST_ASSERT_FLOAT_WITHIN(0.01f, theme.beats, trackBeats(*track));
+
+        // The four-voice shape: melody on the main track, the second voice and
+        // the bass on the APU's parallel sub-tracks, one percussion track.
+        // E1M3's score carries two melodic channels, so its second voice is
+        // absent and the bass rides `thirdVoice` alone -- a real conversion
+        // shape this table records rather than papers over.
+        if (theme.hasSecond) {
+            TEST_ASSERT_NOT_NULL(track->secondVoice);
+            TEST_ASSERT_EQUAL_UINT32((unsigned)theme.second,
+                                     (unsigned)track->secondVoice->count);
+            TEST_ASSERT_EQUAL((int)WaveType::PULSE,
+                              (int)track->secondVoice->channelType);
+            TEST_ASSERT_FLOAT_WITHIN(1.0e-6f, 0.125f, track->secondVoice->duty);
+            TEST_ASSERT_TRUE(track->secondVoice->loop);
+            TEST_ASSERT_FLOAT_WITHIN(0.01f, theme.beats, trackBeats(*track->secondVoice));
+        } else {
+            TEST_ASSERT_NULL(track->secondVoice);
+        }
+
+        TEST_ASSERT_NOT_NULL(track->thirdVoice);
+        TEST_ASSERT_EQUAL_UINT32((unsigned)theme.bass,
+                                 (unsigned)track->thirdVoice->count);
+        TEST_ASSERT_EQUAL((int)WaveType::TRIANGLE,
+                          (int)track->thirdVoice->channelType);
+        TEST_ASSERT_TRUE(track->thirdVoice->loop);
+        TEST_ASSERT_FLOAT_WITHIN(0.01f, theme.beats, trackBeats(*track->thirdVoice));
+
+        TEST_ASSERT_NOT_NULL(track->percussion);
+        TEST_ASSERT_EQUAL_UINT32((unsigned)theme.percussion,
+                                 (unsigned)track->percussion->count);
+        TEST_ASSERT_EQUAL((int)WaveType::NOISE,
+                          (int)track->percussion->channelType);
+        TEST_ASSERT_TRUE(track->percussion->loop);
+        TEST_ASSERT_FLOAT_WITHIN(0.01f, theme.beats, trackBeats(*track->percussion));
+
+        // A drum is Rest + a duty-0 preset; ApuCore rejects any other shape,
+        // and a preset-less Rest is silence on the noise track.
+        int drums = 0;
+        for (std::size_t note = 0; note < track->percussion->count; ++note) {
+            const pixelroot32::audio::MusicNote& entry = track->percussion->notes[note];
+            TEST_ASSERT_EQUAL((int)Note::Rest, (int)entry.note);
+            if (entry.preset != nullptr) {
+                ++drums;
+                TEST_ASSERT_EQUAL_FLOAT(0.0f, entry.preset->duty);
+            }
+        }
+        TEST_ASSERT_GREATER_THAN(0, drums);
+    }
+
+    // One asset per id: a level change must start different music, not restart
+    // the same track. Equal pointers would make the nine-theme promise a lie
+    // even while every count above still matched.
+    for (std::size_t left = 0; left < kThemeCount; ++left) {
+        for (std::size_t right = left + 1; right < kThemeCount; ++right) {
+            TEST_ASSERT_TRUE(answered[left] != answered[right]);
+        }
+    }
+}
+
+void test_the_music_bank_keeps_the_e1m1_asset(void) {
+    // E1M1 is the one asset every build ships, gate or not. Its identity is
+    // unchanged from the 4 MB build: 2,145 emitted notes (657 melody) that
+    // close on 480.000 stored beats = the original 96 s at 300 BPM.
     const MusicTrack* track = musicBankTrack(mus_e1m1);
     TEST_ASSERT_NOT_NULL(track);
+    TEST_ASSERT_NOT_NULL(track->notes);
+    TEST_ASSERT_EQUAL_UINT32(657u, (unsigned)track->count);
     TEST_ASSERT_TRUE(track->loop);
     TEST_ASSERT_EQUAL((int)WaveType::PULSE, (int)track->channelType);
     TEST_ASSERT_EQUAL_FLOAT(0.5f, track->duty);
-    TEST_ASSERT_NOT_NULL(track->notes);
-    TEST_ASSERT_GREATER_THAN(0, (int)track->count);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 480.0f, trackBeats(*track));
 
-    // The four-voice shape: melody on the main track, the third voice and the
-    // bass on the APU's parallel sub-tracks, and one percussion track.
     TEST_ASSERT_NOT_NULL(track->secondVoice);
     TEST_ASSERT_NOT_NULL(track->thirdVoice);
     TEST_ASSERT_NOT_NULL(track->percussion);
-    TEST_ASSERT_EQUAL((int)WaveType::PULSE, (int)track->secondVoice->channelType);
-    TEST_ASSERT_EQUAL_FLOAT(0.125f, track->secondVoice->duty);
-    TEST_ASSERT_EQUAL((int)WaveType::TRIANGLE, (int)track->thirdVoice->channelType);
-    TEST_ASSERT_EQUAL((int)WaveType::NOISE, (int)track->percussion->channelType);
+    TEST_ASSERT_EQUAL_UINT32(712u, (unsigned)track->secondVoice->count);
+    TEST_ASSERT_EQUAL_UINT32(263u, (unsigned)track->thirdVoice->count);
+    TEST_ASSERT_EQUAL_UINT32(513u, (unsigned)track->percussion->count);
 
-    // Every track closes on the score's 480.000 stored beats (1,920 APU ticks
-    // at 300 BPM = the original 96 s), so the four loops stay aligned. This is
-    // the property the offline gate measures from the MUS.
-    auto beats = [](const MusicTrack& value) {
-        float total = 0.0f;
-        for (std::size_t index = 0; index < value.count; ++index) {
-            total += value.notes[index].duration;
-        }
-        return total;
-    };
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 480.0f, beats(*track));
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 480.0f, beats(*track->secondVoice));
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 480.0f, beats(*track->thirdVoice));
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 480.0f, beats(*track->percussion));
-
-    // Every level id resolves to the same asset: a level change restarts the
-    // track instead of going silent. The loop covers E1M1..E1M9 by value, so a
-    // reordered enum fails here rather than silently leaving a level quiet.
-    for (int id = (int)mus_e1m1; id <= (int)mus_e1m9; ++id) {
-        TEST_ASSERT_EQUAL_PTR(track, musicBankTrack(id));
-    }
-
-    // A drum is Rest + a duty-0 preset; ApuCore rejects any other shape.
-    int drums = 0;
-    for (std::size_t index = 0; index < track->percussion->count; ++index) {
-        const pixelroot32::audio::MusicNote& note = track->percussion->notes[index];
-        if (note.preset == nullptr) {
-            TEST_ASSERT_EQUAL((int)Note::Rest, (int)note.note);
-            continue;
-        }
-        ++drums;
-        TEST_ASSERT_EQUAL((int)Note::Rest, (int)note.note);
-        TEST_ASSERT_EQUAL_FLOAT(0.0f, note.preset->duty);
-    }
-    TEST_ASSERT_GREATER_THAN(0, drums);
+    // The one id outside the nine-theme range that used to answer a track
+    // still answers nothing: only the level ids changed.
+    TEST_ASSERT_NULL(musicBankTrack((int)mus_e1m1 - 1));
+    TEST_ASSERT_NULL(musicBankTrack((int)mus_e1m9 + 1));
 }
 
 // --- The APU telemetry seam ------------------------------------------------
@@ -876,7 +975,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_voice_selection_prefers_idle_then_the_least_important);
     RUN_TEST(test_no_class_combination_steals_a_reserved_voice);
     RUN_TEST(test_update_sounds_ticks_and_frees_a_finished_channel);
-    RUN_TEST(test_the_music_bank_plays_e1m1_on_every_level);
+    RUN_TEST(test_the_music_bank_plays_the_nine_level_themes);
+    RUN_TEST(test_the_music_bank_keeps_the_e1m1_asset);
     RUN_TEST(test_no_telemetry_source_prints_dashes);
     RUN_TEST(test_an_installed_source_reaches_the_line);
     RUN_TEST(test_a_source_that_answers_false_keeps_the_dashes);
