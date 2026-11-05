@@ -1069,6 +1069,12 @@ void DoomScene::init() {
                       static_cast<unsigned>(2u * kIndexPlaneBytes));
         writeConsoleLine(twinLine);
     }
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(PLATFORM_NATIVE)
+    // The melt borrows the twin planes rather than owning screen copies, so
+    // its state is scene storage too: one idle state, reused by every level
+    // transition, holding only the column fronts and the random position.
+    wipe_Init(&wipe_);
+#endif
 #endif
 
 #if defined(DOOM_MENU)
@@ -1476,10 +1482,25 @@ void DoomScene::update(unsigned long deltaTime) {
     // latch G_PlayerReborn() left set.
     if (showFrame_ == 20u) {
         (void)doomc::frameLevelExitScript(11);
+#if defined(PLATFORM_NATIVE)
+        // The desktop loop draws several times per 35 Hz tic, so the board's
+        // three-frame press can fall entirely between two tics and never reach
+        // a ticcmd. Latch the same USE press for the next four world tics, a
+        // frame-rate-independent window the world is guaranteed to sample.
+        levelTestPressTic_ = ticClock_.tic();
+#endif
     }
+#if defined(PLATFORM_NATIVE)
+    if (showFrame_ >= 24u
+        && (levelTestPressTic_ == 0xFFFFFFFFu
+            || ticClock_.tic() <= levelTestPressTic_ + 4u)) {
+        buttons = static_cast<std::uint8_t>(buttons | doomc::kButtonB);
+    }
+#else
     if (showFrame_ >= 24u && showFrame_ <= 26u) {
         buttons = static_cast<std::uint8_t>(buttons | doomc::kButtonB);
     }
+#endif
 #if DOOM_PERSISTENCE
     // The save half of the same proof, on the level the transition reached: write
     // the live world -- slot 3, so the power-cycle record in slot 0 is
@@ -1910,7 +1931,16 @@ void DoomScene::updateFade() {
     // reload too -- so a tic count that went backwards is the transition. No new
     // plumbing, and it cannot fire on a pause: a paused world does not run tics.
     if (showPlayer_.valid && showPlayer_.tics < fadeLastTics_) {
+#if defined(DOOM_FULL_PROFILE) && defined(PLATFORM_NATIVE)
+        // The full profile keeps the old level's finished frame and melts it
+        // into the new one. An explicit fade (New Game, LOAD) still owns its
+        // transition, and a melt already in flight is not restarted.
+        if (!fadeActive_ && !meltActive_) {
+            startMelt();
+        }
+#else
         startFade();
+#endif
     }
     if (showPlayer_.valid) {
         fadeLastTics_ = showPlayer_.tics;
@@ -1946,6 +1976,19 @@ void DoomScene::updateFade() {
         writeConsoleLine(line);
     }
 }
+
+#if defined(DOOM_FULL_PROFILE) && defined(PLATFORM_NATIVE)
+void DoomScene::startMelt() {
+    // The plane the last completed draw filled still holds the old level's
+    // final frame. Recording the other plane here is what freezes the flip in
+    // drawSceneFrame(): every melt frame renders the new level into
+    // `meltPlane_` and never advances `indexPlaneCurrent_` past it, so the
+    // old plane stays readable until every column reaches the bottom.
+    meltActive_ = true;
+    meltStep_ = 0;
+    meltPlane_ = static_cast<std::uint8_t>(indexPlaneCurrent_ ^ 1u);
+}
+#endif
 
 #if defined(DOOM_PALFLASH)
 
@@ -2559,7 +2602,20 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
         // so this frame draws into the plane the last expansion did not read,
         // leaving the other one holding the previous completed frame for the
         // level transition. A refused frame leaves that completed plane alone.
-        indexPlaneCurrent_ = static_cast<std::uint8_t>(indexPlaneCurrent_ ^ 1u);
+        //
+        // A melt freezes that pair instead: the old level's frame stays in
+        // `meltStartPlane_` and every melt frame renders into `meltPlane_`,
+        // which is also the composite destination. The offsets are drawn on
+        // the first melt frame, after the plane is fixed, so
+        // `previousIndexPlane()` names the old level's frame.
+        if (meltActive_) {
+            indexPlaneCurrent_ = meltPlane_;
+            if (meltStep_ == 0u) {
+                wipe_StartScreen(&wipe_, previousIndexPlane(), kLogicalWidth, kLogicalHeight);
+            }
+        } else {
+            indexPlaneCurrent_ = static_cast<std::uint8_t>(indexPlaneCurrent_ ^ 1u);
+        }
         std::uint8_t* indices = indexPlanes_[indexPlaneCurrent_];
 #else
         std::uint8_t* indices = indexPlane_;
@@ -2576,6 +2632,33 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
                 } else {
                     showHash_[0] = '\0';
                 }
+
+#if defined(DOOM_FULL_PROFILE)
+                if (meltActive_) {
+                    // The plane just rendered is the new level's frame and the
+                    // composite's destination; `previousIndexPlane()` is the
+                    // old level's last frame, held intact by the frozen flip.
+                    // The melt only reads that plane.
+                    wipe_EndScreen(&wipe_, indices);
+                    const int meltDone = wipe_DoMelt(&wipe_, indices, kMeltTicks);
+                    ++meltStep_;
+
+                    char meltLine[64];
+                    std::snprintf(meltLine, sizeof meltLine,
+                                  "SHOW,melt,frame=%u,step=%u,done=%u\n",
+                                  static_cast<unsigned>(showFrame_),
+                                  static_cast<unsigned>(meltStep_),
+                                  static_cast<unsigned>(meltDone > 0 ? 1u : 0u));
+                    writeConsoleLine(meltLine);
+
+                    if (meltDone > 0) {
+                        // The final composite is the new frame byte for byte;
+                        // hand the pair back to the normal alternating flip.
+                        meltActive_ = false;
+                        wipe_Shutdown(&wipe_);
+                    }
+                }
+#endif
 
                 // This surface stores colours, not indices, so the expansion is
                 // necessarily a pass here. It reads the same PLAYPAL -> RGB565

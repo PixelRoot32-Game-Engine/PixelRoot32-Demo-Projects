@@ -13,6 +13,10 @@
 #include "doomc/SceneRenderer.h"
 #endif
 
+#if defined(DOOM_FULL_PROFILE) && defined(PLATFORM_NATIVE)
+#include "f_wipe.h"
+#endif
+
 #include "time/TicClock.h"
 
 #if defined(DOOM_MENU)
@@ -278,6 +282,23 @@ private:
      */
     void drawSceneFrame(pixelroot32::graphics::Renderer& renderer);
 
+#if defined(DOOM_FULL_PROFILE) && defined(PLATFORM_NATIVE)
+    /**
+     * @brief Starts vanilla's column melt for the level transition in flight.
+     *
+     * Called from `updateFade()` where the 4 MB builds call `startFade()`: the
+     * tic count went backwards, so a new level is loaded and the plane the last
+     * completed draw left in `indexPlaneCurrent_` still holds the old level's
+     * final frame. The new level renders into the other plane, which is the
+     * melt's destination and its new-frame source.
+     *
+     * The column offsets are not drawn here: the first melt draw must render
+     * the new level into that other plane before `previousIndexPlane()` names
+     * the old frame, so `wipe_StartScreen()` runs there.
+     */
+    void startMelt();
+#endif
+
     /**
      * @brief Runs the world tics this frame owes the simulation.
      *
@@ -377,6 +398,10 @@ private:
      * after setup is 47,092 B). The 4 MB profile substitutes this
      * fade: the new frame ramps up from black through the PLAYPAL table the
      * palette path already owns, one table rebuild per step, no buffer.
+     *
+     * With `DOOM_FULL_PROFILE` a level change runs `startMelt()` instead; this
+     * fade still owns the explicit New Game and LOAD reloads, where there is no
+     * old frame to melt.
      */
     void startFade();
 
@@ -601,6 +626,13 @@ private:
     const char* showRefusalStage_[kShowRefusalKinds] = {};
     int showRefusalCode_[kShowRefusalKinds] = {};
     int showRefusalKinds_ = 0;
+
+#if defined(DOOM_LEVEL_TEST) && defined(PLATFORM_NATIVE)
+    /// The tic the level-exit diagnostic placed the player on. The desktop
+    /// loop draws several times per tic, so the board's three-frame USE press
+    /// is held for a few tics here instead (see the block in `update()`).
+    std::uint32_t levelTestPressTic_ = 0xFFFFFFFFu;
+#endif
 #endif
 
     /// Bytes in one 320x200 8-bit DOOM index plane.
@@ -627,6 +659,26 @@ private:
     /// Plane the next native frame renders into. Flipped before the render, so
     /// the other plane keeps the frame that just completed.
     std::uint8_t indexPlaneCurrent_ = 0;
+
+    /// Ticks the melt advances per rendered frame. Vanilla runs the wipe once a
+    /// 35 Hz tic; the desktop loop draws several times faster, so two ticks a
+    /// frame keeps the whole melt inside the 15-25 frame window.
+    static constexpr int kMeltTicks = 2;
+
+    /// Column fronts, borrowed screens and the M_Random() position of the melt
+    /// in flight, or an idle state between transitions.
+    wipe_state_t wipe_ = {};
+
+    /// True while a level transition's melt owns the plane pair.
+    bool meltActive_ = false;
+
+    /// The plane the melt renders every frame: the one that does not hold the
+    /// old level's last frame, so it is both the new-frame source and the
+    /// composite destination. `previousIndexPlane()` names the old frame.
+    std::uint8_t meltPlane_ = 0;
+
+    /// Melt frames already drawn; 0 means the first one has not rendered yet.
+    std::uint32_t meltStep_ = 0;
 #else
     std::uint8_t indexPlane_[kIndexPlaneBytes] = {};
 #endif
