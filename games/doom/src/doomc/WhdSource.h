@@ -40,9 +40,12 @@
  * THE HOST BUILD
  *
  * A host build has no partition, so the container is a file and open() reads it:
- * one path, resolved once per open from `$DOOM_WHD`, or `tools/DOOM1.whd`
- * relative to the working directory when that variable is unset or empty. The
- * default is the file `tools/make_container.ps1` writes; that script drives
+ * one path, resolved once per open from `$DOOM_WHD`, otherwise from the
+ * compile-time `DOOM_WHD_DEFAULT` -- `tools/DOOM1.whd` relative to the working
+ * directory unless the build defines it. `env:native` points it at
+ * `tools/DOOM1-full.whd` (`-D DOOM_WHD_DEFAULT="tools/DOOM1-full.whd"`), the
+ * full-sprite container; `$DOOM_WHD` still wins over either. The default is the
+ * file `tools/make_container.ps1` writes; that script drives
  * `tools/whd_encode.py` over `tools/DOOM1.WAD` and proves the result, and
  * neither the WAD nor the .whd is committed (see `tools/.gitignore`).
  *
@@ -175,7 +178,9 @@ extern "C" {
  * the mapping (or the host buffer) stays alive until doom_whd_source_close().
  *
  * The host build resolves the path once, here: `$DOOM_WHD` when it is set and
- * non-empty, otherwise `tools/DOOM1.whd` relative to the working directory.
+ * non-empty, otherwise the compile-time `DOOM_WHD_DEFAULT` -- `tools/DOOM1.whd`
+ * unless the build defines it, as `env:native` does with
+ * `tools/DOOM1-full.whd`. `$DOOM_WHD` still wins over the default.
  *
  * @param state Caller-owned reader state, rewritten by whd_open().
  * @return DOOM_WHD_SOURCE_OK or one of the codes above.

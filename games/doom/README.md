@@ -65,8 +65,28 @@ above and below — no scaling, no crop.
 
 | Environment | Window | What it does |
 | --- | --- | --- |
-| `native` | 320x200 | SDL2 window, 1:1 with the surface; runs the game with the HUD, the menu, the palette flashes and the APU audio, from the same container file the board flashes |
+| `native` | 640x400 (a 320x200 surface at 2x) | SDL2 window from `SDL2_Drawer` (`windowScale = 2`, integer nearest-neighbour); runs the full profile below -- per-level music, its own full-sprite container, vanilla's screen melt and twin index planes -- with the HUD, the menu, the palette flashes and the APU audio |
 | `esp32dev_ILI9341` | 320x200 + 2x20 px bars | the CYD, 1:1 |
+
+### The full native profile
+
+`[env:native]` defines `-D DOOM_FULL_PROFILE=1`; no shipped 4 MB environment
+does (the host `sound_test` defines it too, so its assertions exercise the native
+bank). It is the only additive gate: it adds features to `native`, changes
+nothing in a 4 MB build, and there is no separate profile environment. It turns
+on four things the 4 MB image leaves out:
+
+| Feature | What the gate adds | Evidence |
+| --- | --- | --- |
+| Per-level music | nine committed themes, `src/assets/music/MusE1M1..9.inc`, one per level id; 209,696 B of note data added (244,016 B in total, E1M1's 34,320 B included) | `SHOW,music,event=start,track=e1mN,...` names the level's theme |
+| Full sprite container | the default container becomes `tools/DOOM1-full.whd` through `-D DOOM_WHD_DEFAULT="tools/DOOM1-full.whd"`, built with `make_container.ps1 -FullSprites`; it keeps all 239 frames the shipped recipe drops | 3,349,928 B of the 3,375,104 B `wad` row (25,176 B spare), with 370/384 manifest entries |
+| Twin index planes | two 320x200 8bpp planes, alternated per frame; the previous completed plane feeds the melt | `SHOW,twin,planes=2,bytes=128000` at boot |
+| Vanilla screen melt | a level transition runs vanilla's column melt over its two screen copies and reports every step | `SHOW,melt,frame=..,step=..,done=..`, 18 steps (observed E1M1 to E1M2 beside `SHOW,level,from=E1M1,to=E1M2`) |
+
+The 4 MB image keeps every cut: it reads `tools/DOOM1.whd` (3,078,396 B,
+296,708 B spare), ships E1M1's theme only, keeps its 8-step palette fade
+(`SHOW,fade,steps=8`) and has no twin planes. The simulator is the only target
+with the full set; a 16 MB ESP32-S3 hardware profile does not exist.
 
 ### Why the build flags look transposed
 
@@ -543,12 +563,15 @@ be; whether it is pleasant takes a listening pass.
 `S_ChangeMusic`/`S_StartMusic`/`S_StopMusic`/`S_PauseSound`; the three
 `doom_music_*` calls they make are implemented in `src/doomc/DoomAudio.cpp`
 over the engine's `MusicPlayer`. `S_Start` asks for the map's own track
-(`mus_e1m1 + (episode-1)*9 + map-1`); `MusicBank` answers E1M1's track for every
-level id (`e1m1`..`e1m9`), so a level change restarts the same music instead of
-going silent. That is a 4 MB limitation: the other eight themes are ~270 KB and
-the app has 57,843 B free. The intermission and title answer nullptr. The menu's
-open/close calls `S_PauseSound`/`S_ResumeSound` (`DoomScene::runMenu`), so the
-pause path is upstream's, not a second control.
+(`mus_e1m1 + (episode-1)*9 + map-1`); in the 4 MB build `MusicBank` answers
+E1M1's track for every level id (`e1m1`..`e1m9`), so a level change restarts the
+same music instead of going silent. That is a 4 MB limitation: the other eight
+themes are another 209,696 B and the app has 57,843 B free. Native is not
+limited that way: under `DOOM_FULL_PROFILE` `MusicBank` selects one theme per
+level from the nine committed includes (244,016 B of note data in total). The
+intermission and title answer nullptr. The menu's open/close calls
+`S_PauseSound`/`S_ResumeSound` (`DoomScene::runMenu`), so the pause path is
+upstream's, not a second control.
 
 **The converter.** `tools/mus2tracks.py` reads a `d_*` MUS lump, parses it by
 `mus2mid.c`'s rules, and writes a deterministic C++ include. MUS has no tempo
@@ -583,15 +606,16 @@ drum's audible length is the preset's `defaultDuration`; the note's duration
 only advances the sequencer. This is a deliberate fidelity cost of one
 percussion voice.
 
-**What ships.** One theme: E1M1's. `MusicBank.cpp` includes
-`src/assets/music/MusE1M1.inc` once and answers it for every level id
+**What ships.** The 4 MB build ships one theme: E1M1's. `MusicBank.cpp`
+includes `src/assets/music/MusE1M1.inc` once and answers it for every level id
 (`mus_e1m1`..`mus_e1m9`). E1M1: 2,332 press events -> 2,145 `MusicNote`s ->
 **34,320 B** (melody ch0 657 array entries, third ch1 712, bass ch2 263,
 percussion 513). `D_INTRO` is 80 notes = 1,280 B and `D_INTER` is 3,975 =
 63,600 B; both are converted and gated in memory, but not committed. With
-57,843 B free in the app, one more theme would fit and the other eight do not; a
-16 MB ESP32-S3 profile is where each id would get its own track, and only
-`MusicBank`'s lookup changes.
+57,843 B free in the app, one more theme would fit and the other eight do not.
+Native (`DOOM_FULL_PROFILE`) ships all nine: `MusE1M1.inc` .. `MusE1M9.inc` are
+committed, and the eight extra themes add 209,696 B for 244,016 B in total.
+Only `MusicBank`'s lookup changes, so a 4 MB build still links one theme.
 
 **The gate.** `tools/music_check.py` converts `D_INTRO`, `D_INTER` and
 `D_E1M1` in memory, re-derives every press's pitch and grid start from the
@@ -780,13 +804,17 @@ same twelve-cue listen test.
 
 Vanilla's screen melt (`f_wipe.c`) copies `screens[2]` and `screens[3]` -- two
 more 64,000 B surfaces, plus column-major transposes of both. This board does not
-have them: the largest free block after setup is 47,092 B, so the melt is left
-for a 16 MB ESP32-S3 profile. The 4 MB build substitutes a **palette fade**,
-which needs no buffer at all: after every level load -- a map change, a death's
-reload and a New Game -- the first frame is painted black and the next eight
-steps ramp back through the PLAYPAL table the palette path already owns
-(`palette::applyGammaScaled()`: one integer scale per channel before the gamma
-table, then the two packings).
+have them: the largest free block after setup is 47,092 B, so the 4 MB build
+substitutes a **palette fade**, which needs no buffer at all: after every level
+load -- a map change, a death's reload and a New Game -- the first frame is
+painted black and the next eight steps ramp back through the PLAYPAL table the
+palette path already owns (`palette::applyGammaScaled()`: one integer scale per
+channel before the gamma table, then the two packings). Native runs vanilla's
+column melt instead, over the twin planes (`wipe_StartScreen`/`wipe_DoMelt`
+semantics), and it takes eighteen steps: every frame prints
+`SHOW,melt,frame=..,step=..,done=..`, and a transition observed from E1M1 to
+E1M2 prints `SHOW,level,from=E1M1,to=E1M2` beside it. The 4 MB build keeps the
+8-step fade and its `SHOW,fade,steps=8` line.
 
 **What it costs.** Eight table rebuilds per transition, measured on the CYD at
 **1.96-2.01 ms in total** (`SHOW,fade,steps=8,us=<total>`; ~245 us a step, well
@@ -831,7 +859,7 @@ That composition lives in
 [`src/doomc/LevelTransition.{h,cpp}`](src/doomc/LevelTransition.h), which is
 engine-free (lib/doom and `<string.h>`), so `pio test -e level_test` drives the
 same two calls the board runs. There is no intermission screen: the next map
-loads directly and the palette fade plays over it.
+loads directly and the palette fade (or, on native, the melt) plays over it.
 
 **What carries, and what resets.** Upstream finishes a level with
 `G_PlayerFinishLevel()` and does **not** recreate the inventory: `P_SpawnPlayer`
@@ -873,8 +901,9 @@ session, so a transition allocates nothing; the lump order is one function
 (`readMapLumps()`) so the startup map and a transition bind the same ten lumps in
 the same order the RAM probe measures. The automap is re-initialised for a new
 map (`am_level_init()` reads its linedef count and bounds), not merely stopped;
-the HUD restarts; `S_SetGameLevel`/`S_Start` run as G_DoLoadLevel's do. One
-track ships, so every map plays E1M1's theme rather than the wrong one.
+the HUD restarts; `S_SetGameLevel`/`S_Start` run as G_DoLoadLevel's do. The 4 MB
+build ships one track, so every map plays E1M1's theme rather than the wrong one;
+native selects each level's own theme.
 
 **The eye, before the first tic.** A load has no camera height until a tic
 computes it (`p_player_wire()` is G_PlayerReborn's `memset`; `P_CalcHeight` is
@@ -884,9 +913,9 @@ own tics would reach, in `restartLevelPresentation()` -- see
 [`src/doomc/FrameDriver.cpp`](src/doomc/FrameDriver.cpp). Without it, the frame
 after a load is drawn from the sector floor, where the wall and plane passes no
 longer meet and the surface's `0xFF` prefill fills the gap as a magenta bar at
-each edge of the view. The fade hides that on an ordinary transition; the
-victory does not, because the main menu opens on the next frame and freezes the
-world.
+each edge of the view. The fade (or native's melt) hides that on an ordinary
+transition; the victory does not, because the main menu opens on the next frame
+and freezes the world.
 
 **The serial lines**, one per event:
 
@@ -1554,12 +1583,12 @@ Run everything from **`games/doom`**. The suites and gates that read DOOM's data
 need `tools/DOOM1.WAD` and `tools/DOOM1.whd` (see "Get the WAD and build the
 container"); neither is committed.
 
-**Host suites.** Nineteen `pio test` environments, one per `test/unit/` suite:
+**Host suites.** Twenty `pio test` environments, one per `test/unit/` suite:
 
 ```powershell
-foreach ($e in 'clock_test','frame_log_test','link_test','wad_test','whd_test',
-               'zone_test','rdat_test','rbsp_test','rsegs_test','world_test',
-               'frameprof_test','input_test','menu_test','baked_test',
+foreach ($e in 'clock_test','frame_log_test','link_test','wad_test','wipe_test',
+               'whd_test','zone_test','rdat_test','rbsp_test','rsegs_test',
+               'world_test','frameprof_test','input_test','menu_test','baked_test',
                'flashprof_test','sound_test','boot_test','save_test','level_test') {
     pio test -e $e
 }
@@ -1609,20 +1638,24 @@ and require every stream to be consumed with both readers agreeing.
 
 ## Known limitations
 
-- **E1M1's music on every level.** The 4 MB build ships one theme; the
-  intermission and title are silent (see "Music").
-- **No screen melt, no finale, no intermission.** Level changes use a palette
-  fade; E1M8's ending opens the main menu (see "Level transitions").
-- **239 sprite frames are not in the container.** None is reachable: the sprite
-  table is the union bake (216 names from the nine levels' THINGS and state
-  chains) plus the 28 weapon patches kept raw by name. To restore one, first make
-  it addressable: add it to the union bake (`tools/e1m1_sprites.py`,
+- **E1M1's music on every level (4 MB).** The 4 MB build ships one theme; the
+  intermission and title are silent (see "Music"). Native ships all nine themes,
+  one per level.
+- **No screen melt, no finale, no intermission (4 MB).** Level changes use a
+  palette fade; E1M8's ending opens the main menu (see "Level transitions").
+  Native runs vanilla's column melt.
+- **239 sprite frames are not in the 4 MB container.** None is reachable: the
+  sprite table is the union bake (216 names from the nine levels' THINGS and
+  state chains) plus the 28 weapon patches kept raw by name. To restore one,
+  first make it addressable: add it to the union bake (`tools/e1m1_sprites.py`,
   `tools/sprite_check.py`) or to a raw-by-name list, rebuild the container, and
   keep it under `kBakedCapacity` (384; currently `manifest=370/384`) and inside
-  the container's spare (296,708 B; all 239 need 271,532 B).
-- **A 16 MB ESP32-S3 profile is the home for the remaining cuts:** per-level
-  music, the dropped sprite frames, vanilla's screen melt (two more 64,000 B
-  surfaces) and a twin framebuffer. None of it exists yet.
+  the container's spare (296,708 B; all 239 need 271,532 B). Native's full
+  container keeps them all.
+- **The four cuts above are 4 MB only.** Native (`DOOM_FULL_PROFILE`)
+  implements all four: per-level music, the full sprite set, vanilla's melt and
+  twin index planes. A 16 MB ESP32-S3 hardware profile still does not exist, and
+  nothing here claims S3 hardware support.
 - **The world-pass probe misses its own gate by 35 us** (20,035 against 20,000),
   and **1,725 us of the shipped render is unattributed** (see "Performance and
   settings"). Both are inside the flash-placement band; recovering them is a
@@ -1667,10 +1700,10 @@ games/doom/
 │   ├── palette/            # PLAYPAL, gamma and fade tables
 │   ├── perf/               # the SHOW,frame log
 │   ├── time/               # the drift-free 35 Hz tic clock
-│   ├── assets/music/       # the generated E1M1 track
+│   ├── assets/music/       # the nine generated level tracks
 │   └── platforms/          # native.h, esp32_dev_ILI9341.h
 ├── tools/                  # container encoder, generators, gates (*_check.py), perf_report.py
-├── test/unit/              # the 19 host suites
+├── test/unit/              # the 20 host suites
 └── bench/                  # standalone measurement firmware (not shipped)
 ```
 

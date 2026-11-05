@@ -20,8 +20,8 @@
 # SHTG/SHTF, CHGG/CHGF, MISG/MISF, PUNG, SAWG). Dropping the other 239 sprite
 # lumps (264,819 B stored, 402,464 B uncompressed) is what
 # tools/whd_encode.py --drop-unused-sprites does; it is not a fidelity loss,
-# because no removed frame is reachable. The container is 3,167,944 B, so `wad`
-# keeps 207,160 B spare. Both numbers are margins, not estimates -- they are the
+# because no removed frame is reachable. The container is 3,078,396 B, so `wad`
+# keeps 296,708 B spare. Both numbers are margins, not estimates -- they are the
 # sizes tools/make_container.ps1 and PlatformIO report.
 #
 # The save slots: 32 KB, six slots. 32 KB is 1,008 NVS entries of 32 B; a slot
