@@ -37,6 +37,34 @@
  *   8. whd_open() rejects the image           ERR_CONTAINER_INVALID (released)
  *   9. accepted: the mapping stays live       OK
  *
+ * THE HOST BUILD
+ *
+ * A host build has no partition, so the container is a file and open() reads it:
+ * one path, resolved once per open from `$DOOM_WHD`, otherwise from the
+ * compile-time `DOOM_WHD_DEFAULT` -- `tools/DOOM1.whd` relative to the working
+ * directory unless the build defines it. `env:native` points it at
+ * `tools/DOOM1-full.whd` (`-D DOOM_WHD_DEFAULT="tools/DOOM1-full.whd"`), the
+ * full-sprite container; `$DOOM_WHD` still wins over either. The default is the
+ * file `tools/make_container.ps1` writes; that script drives
+ * `tools/whd_encode.py` over `tools/DOOM1.WAD` and proves the result, and
+ * neither the WAD nor the .whd is committed (see `tools/.gitignore`).
+ *
+ * The host branch mirrors the device's steps instead of trusting the file: it
+ * reads the 40-byte header, checks the container's magic is "PWHD", and requires
+ * totalSize to be at least a header and no larger than the file, then reads
+ * exactly totalSize bytes into one heap buffer and hands that to whd_open(). A
+ * file longer than the container is accepted just as a partition holding a
+ * container is; only totalSize is passed on. base() and mapped_size() answer
+ * over that buffer, and close() releases it, so every caller above this file
+ * takes the same path on the desktop as on the panel.
+ *
+ * The codes keep their device meanings. A path that cannot be opened is
+ * ERR_PARTITION_MISSING (no container where this build looks), a file that
+ * exists but cannot be read whole is ERR_MMAP_FAILED, and a file whose header
+ * does not describe it -- wrong magic, too short, a totalSize outside it, or a
+ * whd_open() rejection -- is ERR_CONTAINER_INVALID. ERR_UNAVAILABLE is no longer
+ * returned by either target.
+ *
  * WHAT IS MAPPED, AND WHY IT IS A WINDOW AND NOT THE PARTITION
  *
  * `esp_partition_mmap()` only maps a page-aligned region, and the ESP32's data
@@ -96,14 +124,19 @@ extern "C" {
  *                                         accepted it
  *   DOOM_WHD_SOURCE_ERR_STATE_NULL        a NULL state struct was passed
  *   DOOM_WHD_SOURCE_ERR_ALREADY_OPEN      a mapping is already live; close first
- *   DOOM_WHD_SOURCE_ERR_PARTITION_MISSING no `wad` partition in this image
- *   DOOM_WHD_SOURCE_ERR_MMAP_FAILED       the partition exists but did not map
+ *   DOOM_WHD_SOURCE_ERR_PARTITION_MISSING no `wad` partition in this image; on
+ *                                         a host build, no container file at
+ *                                         the path open() resolved
+ *   DOOM_WHD_SOURCE_ERR_MMAP_FAILED       the partition exists but did not map;
+ *                                         on a host build, the file exists but
+ *                                         could not be read whole
  *   DOOM_WHD_SOURCE_ERR_CONTAINER_INVALID the mapping is not a container this
  *                                         reader accepts, or its own length
  *                                         cannot describe this mapping; the
  *                                         mapping was released again
- *   DOOM_WHD_SOURCE_ERR_UNAVAILABLE       this build has no flash mapping (a
- *                                         host build compiled this file)
+ *   DOOM_WHD_SOURCE_ERR_UNAVAILABLE       retired: neither target returns it
+ *                                         any more, and it stays defined
+ *                                         because callers already switch on it
  *   DOOM_WHD_SOURCE_ERR_LUMP_INDEX        the lump index is outside the
  *                                         directory (WHD_ERR_LUMP_INDEX)
  *   DOOM_WHD_SOURCE_ERR_NULL_OUTPUT       no buffer was given for a lump with
@@ -137,12 +170,17 @@ extern "C" {
 /* --- Public API ---------------------------------------------------------- */
 
 /**
- * @brief Maps the `wad` partition read-only and opens @p state over the
- *        container it holds.
+ * @brief Maps the `wad` partition read-only -- or, on a host build, reads the
+ *        container file -- and opens @p state over the container.
  *
- * Validation order and codes: see the file comment. On every failure the
- * mapping is released and @p state is left closed by whd_open(); on success the
- * mapping stays alive until doom_whd_source_close().
+ * Validation order and codes: see the file comment. On every failure whatever
+ * was taken is released and @p state is left closed by whd_open(); on success
+ * the mapping (or the host buffer) stays alive until doom_whd_source_close().
+ *
+ * The host build resolves the path once, here: `$DOOM_WHD` when it is set and
+ * non-empty, otherwise the compile-time `DOOM_WHD_DEFAULT` -- `tools/DOOM1.whd`
+ * unless the build defines it, as `env:native` does with
+ * `tools/DOOM1-full.whd`. `$DOOM_WHD` still wins over the default.
  *
  * @param state Caller-owned reader state, rewritten by whd_open().
  * @return DOOM_WHD_SOURCE_OK or one of the codes above.
@@ -150,29 +188,31 @@ extern "C" {
 int doom_whd_source_open(whd_state_t* state);
 
 /**
- * @brief Releases the mapping taken by doom_whd_source_open().
+ * @brief Releases the mapping -- or the host build's buffer -- taken by
+ *        doom_whd_source_open().
  *
  * Idempotent: calling it when nothing is mapped does nothing.
  *
- * A reader state opened over this mapping must not be used afterwards: its base
- * pointer now refers to unmapped flash. The reader owns no resource of its own,
- * so there is nothing else to release; call doom_whd_source_open() again (which
- * rewrites @p state) before reading.
+ * A reader state opened over this mapping (or buffer) must not be used
+ * afterwards: its base pointer then refers to unmapped flash, or to freed heap.
+ * The reader owns no resource of its own, so there is nothing else to release;
+ * call doom_whd_source_open() again (which rewrites @p state) before reading.
  */
 void doom_whd_source_close(void);
 
 /**
- * @brief Returns the mapped byte count: how much flash this adapter mapped.
+ * @brief Returns the mapped byte count: how much flash -- or, on a host build,
+ *        how much file -- this adapter holds.
  *
- * This is the window covering the container, rounded up to the 64 KB MMU page --
- * 3,014,656 B for the 2,999,544 B episode container, not the 3 MiB partition. The
- * container's own length is the accepted reader's @c state->size, and the
- * remainder of the window is the rest of the last page. 0 when nothing is
- * mapped, so the same call answers "how much did we map" and "is anything
- * mapped".
+ * On the board this is the window covering the container, rounded up to the
+ * 64 KB MMU page: 3,014,656 B for a 2,999,544 B episode container, not the 3 MiB
+ * partition. The container's own length is the accepted reader's @c state->size,
+ * and the remainder of the window is the rest of the last page. On a host build
+ * it is the container's own length, because the buffer is exactly totalSize
+ * bytes. 0 when nothing is mapped, so the same call answers "how much did we
+ * map" and "is anything mapped".
  *
- * @return Bytes mapped, or 0 when no mapping is live (including every host
- *         build, which maps nothing).
+ * @return Bytes mapped (or buffered), or 0 when nothing is live.
  */
 uint32_t doom_whd_source_mapped_size(void);
 
@@ -180,11 +220,11 @@ uint32_t doom_whd_source_mapped_size(void);
  * @brief The first byte of the container inside the live mapping.
  *
  * The address `whd_open()` was given, which is also the base every
- * doom_whd_source_lump_view() pointer falls inside. NULL when nothing is mapped
- * (including every host build).
+ * doom_whd_source_lump_view() pointer falls inside. NULL when nothing is mapped.
+ * On a host build it is the heap buffer read from the container file.
  *
- * The pointer is the mapping's: it must not be written through, and it is
- * invalid after doom_whd_source_close().
+ * The pointer is the mapping's (or buffer's): it must not be written through,
+ * and it is invalid after doom_whd_source_close().
  */
 const uint8_t* doom_whd_source_base(void);
 
@@ -217,8 +257,8 @@ int doom_whd_source_lump_is_raw(const whd_state_t* state, int lump, int* out);
  * @param lump  Lump index.
  * @param data  Receives the lump's first byte; untouched on failure.
  * @param size  Receives the lump's size; untouched on failure.
- * @return DOOM_WHD_SOURCE_OK, ERR_NOT_RAW, ERR_STATE_NULL, ERR_LUMP_INDEX,
- *         ERR_NULL_OUTPUT or ERR_UNAVAILABLE on a host build that maps nothing.
+ * @return DOOM_WHD_SOURCE_OK, ERR_NOT_RAW, ERR_STATE_NULL, ERR_LUMP_INDEX or
+ *         ERR_NULL_OUTPUT.
  */
 int doom_whd_source_lump_view(const whd_state_t* state, int lump, const uint8_t** data,
                               uint32_t* size);

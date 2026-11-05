@@ -4,10 +4,16 @@
  *
  * The flash path is behind the same guard WadSource.cpp uses. On the board this
  * file finds the `wad` partition, maps it read-only and hands the pointer to the
- * C reader; on a host build there is no flash partition, so the same translation
- * unit compiles to a stub that reports DOOM_WHD_SOURCE_ERR_UNAVAILABLE. That
- * stub is not a convenience: env:link_test compiles src/doomc/ on the host with
- * no engine dependency, and it must keep doing so.
+ * C reader; on a host build there is no partition, so the container is read from
+ * the file WhdSource.h names ($DOOM_WHD, or the compile-time default
+ * DOOM_WHD_DEFAULT) into one heap buffer and the same reader is opened over it.
+ * The default is tools/DOOM1.whd unless the build defines it, which is how the
+ * native environment selects the full-sprite container.
+ *
+ * The host branch has to keep compiling under env:link_test, which builds every
+ * src/doomc/ object with no engine dependency: it uses <cstdint>, <cstdio> and
+ * <cstdlib> only, and every failure is a returned code rather than an exception
+ * (both builds compile with -fno-exceptions).
  *
  * The accessors are not behind the guard. They only forward to whd.c, which is
  * compiled for the host too (a project library), so a host test can build a
@@ -280,21 +286,168 @@ extern "C" void doom_whd_source_close(void) {
 #else
 
 // Host build: src/doomc/WhdSource.cpp is compiled by env:link_test, which
-// installs no ESP-IDF headers. There is no partition to find and nothing to map,
-// so the flash entry points report deterministically that this build has none.
+// installs no ESP-IDF headers, and by env:native. There is no partition to find
+// and nothing to map, so the container is a file: open() reads it into one heap
+// buffer and opens the same C reader over that buffer. The buffer is what the
+// accessors answer over, and what close() releases.
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+
+/// The file open() reads, `$DOOM_WHD`. Unset or empty selects the default.
+const char* const kPathVariable = "DOOM_WHD";
+
+/// Written by tools/make_container.ps1 next to the WAD it encodes, and relative
+/// to the working directory: `pio run -e native -t exec` and a run from
+/// games/doom both find it there. A host build can name a different default at
+/// compile time (`-D DOOM_WHD_DEFAULT=\"...\"`): env:native points it at the
+/// full-sprite container, and `$DOOM_WHD` still wins over either.
+#ifndef DOOM_WHD_DEFAULT
+#define DOOM_WHD_DEFAULT "tools/DOOM1.whd"
+#endif
+
+/// The file open() reads when `$DOOM_WHD` is unset or empty.
+const char* const kDefaultPath = DOOM_WHD_DEFAULT;
+
+/// The field the device branch reads, at the same offset: magic (4) + version
+/// (2) + flags (2) + numLumps (4) + nameCount (4) + directoryOffset (4) +
+/// nameTableOffset (4) + dataOffset (4).
+constexpr std::size_t kTotalSizeOffset = 28;
+
+/// The live host buffer, if any. Same role as the device branch's mapping.
+std::uint8_t* gBuffer = nullptr;
+std::size_t gBufferSize = 0;
+
+std::uint32_t readUint32(const std::uint8_t* base, std::size_t offset) {
+    return static_cast<std::uint32_t>(base[offset])
+           | (static_cast<std::uint32_t>(base[offset + 1]) << 8)
+           | (static_cast<std::uint32_t>(base[offset + 2]) << 16)
+           | (static_cast<std::uint32_t>(base[offset + 3]) << 24);
+}
+
+/// The header's own magic, checked before any field read from it is trusted.
+bool hasContainerMagic(const std::uint8_t* header) {
+    return header[0] == WHD_MAGIC_0 && header[1] == WHD_MAGIC_1
+           && header[2] == WHD_MAGIC_2 && header[3] == WHD_MAGIC_3;
+}
+
+const char* containerPath(void) {
+    const char* path = std::getenv(kPathVariable);
+    return (path != nullptr && path[0] != '\0') ? path : kDefaultPath;
+}
+
+/// Drops a buffer an earlier attempt took, so a failed open leaves no state.
+void releaseBuffer(void) {
+    std::free(gBuffer);
+    gBuffer = nullptr;
+    gBufferSize = 0;
+}
+
+}  // namespace
+
 extern "C" uint32_t doom_whd_source_mapped_size(void) {
-    return 0u;
+    return gBuffer != nullptr ? static_cast<uint32_t>(gBufferSize) : 0u;
 }
 
 extern "C" const uint8_t* doom_whd_source_base(void) {
-    return nullptr;
+    return gBuffer;
 }
 
 extern "C" int doom_whd_source_open(whd_state_t* state) {
-    (void)state;
-    return DOOM_WHD_SOURCE_ERR_UNAVAILABLE;
+    if (state == nullptr) {
+        return DOOM_WHD_SOURCE_ERR_STATE_NULL;
+    }
+    if (gBuffer != nullptr) {
+        return DOOM_WHD_SOURCE_ERR_ALREADY_OPEN;
+    }
+
+    std::FILE* file = std::fopen(containerPath(), "rb");
+    if (file == nullptr) {
+        // No container where this build looks for one. The device's answer to
+        // the same situation is ERR_PARTITION_MISSING, so a caller's handler
+        // does not need a second table.
+        return DOOM_WHD_SOURCE_ERR_PARTITION_MISSING;
+    }
+
+    // The file's own length is what the device gets from the partition size: the
+    // upper bound the header's totalSize is checked against.
+    if (std::fseek(file, 0, SEEK_END) != 0) {
+        std::fclose(file);
+        return DOOM_WHD_SOURCE_ERR_MMAP_FAILED;
+    }
+    const long end = std::ftell(file);
+    if (end < 0 || std::fseek(file, 0, SEEK_SET) != 0) {
+        std::fclose(file);
+        return DOOM_WHD_SOURCE_ERR_MMAP_FAILED;
+    }
+
+    const std::size_t fileBytes = static_cast<std::size_t>(end);
+    if (fileBytes < static_cast<std::size_t>(WHD_HEADER_SIZE)) {
+        // A file too short to hold a header is not a container, which is the
+        // device branch's answer to a mapping shorter than the header.
+        std::fclose(file);
+        return DOOM_WHD_SOURCE_ERR_CONTAINER_INVALID;
+    }
+
+    std::uint8_t header[WHD_HEADER_SIZE];
+    if (std::fread(header, 1, sizeof header, file) != sizeof header) {
+        std::fclose(file);
+        return DOOM_WHD_SOURCE_ERR_MMAP_FAILED;
+    }
+    if (!hasContainerMagic(header)) {
+        // Rejected here rather than left to whd_open(): the magic is what tells
+        // a stray file (a WAD, a partition dump, an empty slot) apart before any
+        // size in it is believed.
+        std::fclose(file);
+        return DOOM_WHD_SOURCE_ERR_CONTAINER_INVALID;
+    }
+
+    const std::uint32_t containerSize = readUint32(header, kTotalSizeOffset);
+    if (containerSize < static_cast<std::uint32_t>(WHD_HEADER_SIZE)
+        || static_cast<std::size_t>(containerSize) > fileBytes) {
+        // Same rule as the device: the header's length must describe bytes this
+        // file actually has. A file larger than the container is accepted, as a
+        // partition holding a container is, and only totalSize is passed on.
+        std::fclose(file);
+        return DOOM_WHD_SOURCE_ERR_CONTAINER_INVALID;
+    }
+
+    std::uint8_t* buffer = static_cast<std::uint8_t*>(std::malloc(containerSize));
+    if (buffer == nullptr) {
+        std::fclose(file);
+        return DOOM_WHD_SOURCE_ERR_MMAP_FAILED;
+    }
+
+    if (std::fseek(file, 0, SEEK_SET) != 0) {
+        std::free(buffer);
+        std::fclose(file);
+        return DOOM_WHD_SOURCE_ERR_MMAP_FAILED;
+    }
+    const std::size_t readBytes = std::fread(buffer, 1, containerSize, file);
+    std::fclose(file);
+    if (readBytes != static_cast<std::size_t>(containerSize)) {
+        std::free(buffer);
+        return DOOM_WHD_SOURCE_ERR_MMAP_FAILED;
+    }
+
+    const whd_error_t whdError = whd_open(state, buffer, static_cast<size_t>(containerSize));
+    if (whdError != WHD_ERR_OK) {
+        // A right-sized file can still be a corrupted, truncated or older
+        // container. Release the buffer instead of leaving a half-open adapter.
+        std::free(buffer);
+        return DOOM_WHD_SOURCE_ERR_CONTAINER_INVALID;
+    }
+
+    gBuffer = buffer;
+    gBufferSize = static_cast<std::size_t>(containerSize);
+
+    return DOOM_WHD_SOURCE_OK;
 }
 
-extern "C" void doom_whd_source_close(void) {}
+extern "C" void doom_whd_source_close(void) {
+    releaseBuffer();
+}
 
 #endif

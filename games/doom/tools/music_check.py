@@ -4,15 +4,17 @@
 WHAT THIS PROVES
 
 `tools/mus2tracks.py` is the generator; this file is the independent check of
-its contract, and it needs no compiler. It converts `D_INTRO`, `D_INTER` and
-`D_E1M1` **in memory** from `tools/DOOM1.WAD` and then, for every emitted track:
+its contract, and it needs no compiler. It converts the nine level themes
+`D_E1M1`..`D_E1M9` (and `D_INTRO`/`D_INTER`, which no build ships) **in
+memory** from `tools/DOOM1.WAD` and then, for every emitted track:
 
   * every press event on a selected melodic channel appears exactly once, with
     the pitch the MUS names (after the documented octave 0..8 clamp) and a
     start within 25 ms (half an APU tick at 300 BPM) of `musTicks / 140`; the
     converter places it on the nearest 7-MUS-tick grid start;
-  * every press event on a channel that did not make the busiest three is named
-    in the printed drop list, and no other press is missing;
+  * every press event on a channel that did not make the level's arrangement
+    (`mus2tracks.LEVEL_ARRANGEMENTS`; the busiest three for D_INTRO/D_INTER) is
+    named in the printed drop list, and no other press is missing;
   * every percussion tick appears exactly once, carrying the preset of the
     highest-priority class on that tick (kick > snare > tom > open hi-hat >
     closed hi-hat > crash > ride > other), and every losing source hit is in
@@ -20,9 +22,20 @@ its contract, and it needs no compiler. It converts `D_INTRO`, `D_INTER` and
   * every track's stored durations sum to `round(scoreEnd / 7) / 4` beats and
     project to the same `round(scoreEnd / 7)` APU ticks, so the four loops
     close together exactly;
-  * the committed `src/assets/music/MusE1M1.inc` is byte-identical to a fresh
-    conversion and its parsed arrays hold the same notes (independent of the
-    renderer: the file is parsed back and compared with the MUS).
+  * S1 of `odd/tasks/doom-per-level-music.md`: every one of the nine level
+    themes puts a non-rest note within 5 stored beats (1.0 s) of the score
+    start, and its first 50 stored beats (10 s) carry melodic note-ons and,
+    when the score has percussion there, percussion hits. The melodic floor is
+    `min(8, the onsets the score itself has in that window)`: E1M2's score
+    presses only ch0/ch1 once each and holds them, so its floor is the two it
+    has; every other level carries eight or more. A level that regresses exits
+    non-zero with a line naming the level and the measured number;
+  * every committed include -- `src/assets/music/MusE1M1.inc` ..
+    `MusE1M9.inc` -- is byte-identical to a fresh conversion and its parsed
+    arrays hold the same notes (independent of the renderer: each file is
+    parsed back and compared with the MUS). A lump whose score carries only two
+    melodic channels (E1M3) must ship no second-voice array and a `nullptr`
+    `secondVoice`.
 
 The expected values are re-derived here from the parsed MUS and the documented
 rules, not read back from the converter's own structures. The only shared code
@@ -33,14 +46,16 @@ NEGATIVE CONTROLS
 A gate that can only pass proves nothing. `--perturb` shifts every melodic
 pitch by one semitone and `--stub` empties every track; both must make the run
 FAIL. The gate reports `OK ... the gate failed as it must` only when every one
-of the three converted lumps is caught.
+of the checked lumps is caught.
 
 THE FLASH ARITHMETIC
 
 The gate prints, and writes to `tools/music_check.txt`, the number of press
 events, emitted `MusicNote`s and bytes for each lump, and whether that would
-fit the shipped image's headroom. `D_E1M1` is the committed asset; `D_INTRO`
-and `D_INTER` are converted and checked but not written to `src/assets/`.
+fit the shipped image's headroom. `D_E1M1` is the one asset every build ships;
+`D_E1M2`..`D_E1M9` are committed for the native profile
+(`DOOM_FULL_PROFILE`) and are not in any 4 MB image; `D_INTRO` and `D_INTER`
+are converted and checked but not written to `src/assets/`.
 
     python tools/music_check.py --wad tools/DOOM1.WAD
     python tools/music_check.py --wad tools/DOOM1.WAD --perturb   # must FAIL
@@ -61,18 +76,37 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import mus2tracks  # noqa: E402
 
-LUMP_IDS = {"D_INTRO": "intro", "D_INTER": "inter", "D_E1M1": "e1m1"}
-COMMITTED_LUMP = "D_E1M1"
-ASSET = ROOT / "src" / "assets" / "music" / "MusE1M1.inc"
+LEVEL_LUMPS = [f"D_E1M{level}" for level in range(1, 10)]
+OTHER_LUMPS = ["D_INTRO", "D_INTER"]
+# Checked in this order: the nine committed level themes first, then the two
+# that are converted but never written.
+LUMP_IDS = {lump: lump[2:].lower() for lump in LEVEL_LUMPS + OTHER_LUMPS}
+COMMITTED_LUMPS = tuple(LEVEL_LUMPS)
+ASSET_DIR = ROOT / "src" / "assets" / "music"
 RECORD = ROOT / "tools" / "music_check.txt"
 
-ROLE_ARRAYS = {
-    "melody": "kMusE1M1Notes",
-    "third": "kMusE1M1SecondNotes",
-    "bass": "kMusE1M1ThirdNotes",
-    "percussion": "kMusE1M1PercussionNotes",
+
+def asset_path(lump: str) -> Path:
+    """The committed include for a lump: `src/assets/music/Mus<Lump>.inc`."""
+    return ASSET_DIR / mus2tracks.file_name(lump)
+
+
+# The array suffix and the `MusicTrack` shape each role is emitted with.
+ROLE_SUFFIX = {
+    mus2tracks.ROLE_MELODY: "Notes",
+    mus2tracks.ROLE_THIRD: "SecondNotes",
+    mus2tracks.ROLE_BASS: "ThirdNotes",
+    mus2tracks.ROLE_PERCUSSION: "PercussionNotes",
 }
-ARRAY_ROLE = {value: key for key, value in ROLE_ARRAYS.items()}
+SUFFIX_ROLE = {suffix: role for role, suffix in ROLE_SUFFIX.items()}
+ROLE_STRUCT = {
+    mus2tracks.ROLE_MELODY: ("", "PULSE", 0.5),
+    mus2tracks.ROLE_THIRD: ("SecondTrack", "PULSE", 0.125),
+    mus2tracks.ROLE_BASS: ("ThirdTrack", "TRIANGLE", 0.5),
+    mus2tracks.ROLE_PERCUSSION: ("PercussionTrack", "NOISE", 0.0),
+}
+# `MusicTrack::{secondVoice, thirdVoice, percussion}`, in declaration order.
+SUB_ROLES = [mus2tracks.ROLE_THIRD, mus2tracks.ROLE_BASS, mus2tracks.ROLE_PERCUSSION]
 NOTE_NAMES = mus2tracks.NOTE_NAMES
 NOTE_INDEX = {name: index for index, name in enumerate(NOTE_NAMES)}
 
@@ -95,14 +129,29 @@ def _channel_end(score: mus2tracks.MusScore, channel: int, last_tick: int) -> in
     return mus2tracks._channel_end_tick(score, channel, last_tick)
 
 
-def selected_roles(score: mus2tracks.MusScore) -> tuple[dict[str, int], list[int]]:
-    """The documented rule, re-derived: three busiest melodic channels, and
-    register (mean pitch) decides melody/third/bass among them."""
+def selected_roles(lump: str, score: mus2tracks.MusScore) -> tuple[dict[str, int], list[int]]:
+    """The documented rule, re-derived.
+
+    The nine level themes use the explicit row in `mus2tracks.LEVEL_ARRANGEMENTS`
+    (one melody/third/bass channel per level); a lump outside that table uses
+    the three busiest melodic channels, with register (mean pitch) deciding the
+    role among them.
+    """
+    arrangement = mus2tracks.arrangement_for(lump)
+    if arrangement is not None:
+        melody, third, bass, _reason = arrangement
+        role_of: dict[str, int] = {"melody": melody, "bass": bass}
+        if third is not None:
+            role_of["third"] = third
+        selected = [ch for ch in (melody, third, bass) if ch is not None]
+        melodic = [ch for ch in score.presses if ch != 15 and score.presses[ch]]
+        return role_of, sorted(ch for ch in melodic if ch not in selected)
+
     melodic = [ch for ch in score.presses if ch != 15 and score.presses[ch]]
     ranked = sorted(melodic, key=lambda ch: (-len(score.presses[ch]), ch))
     selected = ranked[:3]
     by_pitch = sorted(selected, key=lambda ch: (_mean([p for _, p in score.presses[ch]]), ch))
-    role_of: dict[str, int] = {}
+    role_of = {}
     if len(by_pitch) == 1:
         role_of["melody"] = by_pitch[0]
     elif len(by_pitch) == 2:
@@ -193,6 +242,78 @@ def expected_percussion(score: mus2tracks.MusScore) -> list[dict]:
     return rows
 
 
+OPENING_WINDOW_BEATS = 50.0   # the first 10 s
+FIRST_SOUND_BEATS = 5.0       # 1.0 s
+MIN_MELODIC_ONSETS = 8
+MIN_PERCUSSION_HITS = 4
+
+
+def source_onsets(score: mus2tracks.MusScore, percussion: bool = False) -> int:
+    """Note-ons the MUS itself carries inside the opening window.
+
+    The converter cannot invent material: E1M2's score has exactly two melodic
+    onsets in the first 10 s (ch0/ch1 press once each and hold), so its window
+    requirement is the two it has. Every other level carries eight or more.
+    """
+    limit = OPENING_WINDOW_BEATS * 4.0
+    if percussion:
+        return len({tick for tick, _ in score.presses.get(15, [])
+                    if mus2tracks._apu_tick(tick) < limit})
+    return sum(1 for channel, presses in score.presses.items() if channel != 15
+               for tick, _ in presses if mus2tracks._apu_tick(tick) < limit)
+
+
+def opening_figures(conv: mus2tracks.Conversion,
+                    tracks: dict[str, list[mus2tracks.EmittedNote]] | None = None) -> dict:
+    """First sound and first-window coverage of the emitted tracks, in beats."""
+    groups = (list(tracks.values()) if tracks is not None
+              else [role.notes for role in conv.roles])
+    first: float | None = None
+    melodic = 0
+    drums = 0
+    for notes in groups:
+        for note in notes:
+            if note.kind == "rest":
+                continue
+            if first is None or note.start_beat < first:
+                first = note.start_beat
+            if note.start_beat < OPENING_WINDOW_BEATS:
+                if note.kind == "drum":
+                    drums += 1
+                else:
+                    melodic += 1
+    return {
+        "first": first,
+        "melodic": melodic,
+        "percussion": drums,
+        "source_melodic": source_onsets(conv.score),
+        "source_percussion": source_onsets(conv.score, percussion=True),
+        "need_melodic": min(MIN_MELODIC_ONSETS, source_onsets(conv.score)),
+        "need_percussion": min(MIN_PERCUSSION_HITS, source_onsets(conv.score, percussion=True)),
+    }
+
+
+def check_opening(conv: mus2tracks.Conversion, failures: Failures,
+                  tracks: dict[str, list[mus2tracks.EmittedNote]] | None = None) -> None:
+    """S1: the first note within 5 stored beats and the first 50 beats covered."""
+    figures = opening_figures(conv, tracks)
+    first = figures["first"]
+    if first is None:
+        failures.add(f"{conv.lump}: no non-rest note on any track, expected the first "
+                     f"within {FIRST_SOUND_BEATS:.3f} stored beats (1.0 s)")
+    elif first > FIRST_SOUND_BEATS:
+        failures.add(f"{conv.lump}: first sound at {first:.3f} stored beats "
+                     f"({first * 0.2:.2f} s), expected <= {FIRST_SOUND_BEATS:.3f} (1.0 s)")
+    if figures["melodic"] < figures["need_melodic"]:
+        failures.add(f"{conv.lump}: {figures['melodic']} melodic note-ons in the first "
+                     f"{OPENING_WINDOW_BEATS:.0f} beats, expected >= {figures['need_melodic']} "
+                     f"(the score carries {figures['source_melodic']})")
+    if figures["percussion"] < figures["need_percussion"]:
+        failures.add(f"{conv.lump}: {figures['percussion']} percussion hits in the first "
+                     f"{OPENING_WINDOW_BEATS:.0f} beats, expected >= {figures['need_percussion']} "
+                     f"(the score carries {figures['source_percussion']})")
+
+
 def check_track(actual: list[mus2tracks.EmittedNote], expected: list[dict],
                 label: str, failures: Failures,
                 role_name: str | None = None) -> None:
@@ -248,7 +369,7 @@ def check_conversion(conv: mus2tracks.Conversion, failures: Failures,
     score = conv.score
     grid_end = mus2tracks._apu_tick(score.score_end_ticks)
     grid_beats = grid_end / 4.0
-    role_of, dropped = selected_roles(score)
+    role_of, dropped = selected_roles(conv.lump, score)
     reported = [entry[0] for entry in conv.dropped]
     if sorted(reported) != sorted(dropped):
         failures.add(f"{conv.lump}: drop list {sorted(reported)}, expected {sorted(dropped)}")
@@ -321,6 +442,10 @@ def check_conversion(conv: mus2tracks.Conversion, failures: Failures,
         failures.add(f"{conv.lump}: projected lengths differ or miss the grid: "
                      f"{projected} vs {grid_end}")
 
+    # S1: the nine committed level themes must open with their own material.
+    if conv.lump in COMMITTED_LUMPS:
+        check_opening(conv, failures, tracks)
+
     # Every press is accounted for: emitted, folded, or dropped.
     selected = set(role_of.values()) | {15}
     for channel, presses in score.presses.items():
@@ -330,12 +455,18 @@ def check_conversion(conv: mus2tracks.Conversion, failures: Failures,
             failures.add(f"{conv.lump}: ch{channel} has {len(presses)} presses and is unaccounted")
 
 
-def parse_asset(text: str) -> tuple[dict[str, list[mus2tracks.EmittedNote]], dict[str, object]]:
-    """Parse the committed include back into note lists plus the track fields."""
+def parse_asset(text: str, prefix: str) -> tuple[dict[str, list[mus2tracks.EmittedNote]], dict[str, object]]:
+    """Parse a committed include back into note lists plus the track fields.
+
+    `prefix` is the lump's C++ name (`kMusE1M1`), so the same parser reads
+    every asset without a hand-maintained array table.
+    """
     blocks = re.findall(r"const MusicNote (\w+)\[\] = \{(.*?)\n\};", text, re.S)
     tracks: dict[str, list[mus2tracks.EmittedNote]] = {}
     for name, body in blocks:
-        role = ARRAY_ROLE.get(name)
+        if not name.startswith(prefix):
+            continue
+        role = SUFFIX_ROLE.get(name[len(prefix):])
         if role is None:
             continue
         notes: list[mus2tracks.EmittedNote] = []
@@ -387,43 +518,64 @@ def parse_track_structs(text: str) -> dict[str, dict[str, object]]:
     return fields
 
 
-def check_committed(conv: mus2tracks.Conversion, failures: Failures) -> None:
-    if not ASSET.exists():
-        failures.add(f"{ASSET} does not exist")
+def check_committed(lump: str, conv: mus2tracks.Conversion, failures: Failures) -> None:
+    """Every committed include, parsed back, is the asset the MUS describes."""
+    path = asset_path(lump)
+    if not path.exists():
+        failures.add(f"{path} does not exist")
         return
-    text = ASSET.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
     fresh = mus2tracks.render_include(conv)
     if text != fresh:
-        failures.add(f"{ASSET} is not byte-identical to a fresh conversion")
-    tracks, _fields = parse_asset(text)
-    for role in ("melody", "third", "bass", "percussion"):
-        if role not in tracks:
-            failures.add(f"asset: no array for {role}")
+        failures.add(f"{path} is not byte-identical to a fresh conversion")
+
+    prefix = mus2tracks.cpp_name(lump)
+    tracks, _fields = parse_asset(text, prefix)
+    present = {role for role in ROLE_STRUCT if conv.role(role) is not None}
+    for role in ROLE_STRUCT:
+        if role in present and role not in tracks:
+            failures.add(f"{path.name}: no array for {role}")
+        if role not in present and role in tracks:
+            failures.add(f"{path.name}: array for absent role {role}")
 
     structs = parse_track_structs(text)
-    expected = {
-        "kMusE1M1": ("melody", "PULSE", 0.5),
-        "kMusE1M1SecondTrack": ("third", "PULSE", 0.125),
-        "kMusE1M1ThirdTrack": ("bass", "TRIANGLE", 0.5),
-        "kMusE1M1PercussionTrack": ("percussion", "NOISE", 0.0),
-    }
-    for name, (role, wave, duty) in expected.items():
+    for role, (suffix, wave, duty) in ROLE_STRUCT.items():
+        name = prefix + suffix
+        if role not in present:
+            if name in structs:
+                failures.add(f"{path.name}: {name} exists for an absent role")
+            continue
         entry = structs.get(name)
         if entry is None:
-            failures.add(f"asset: no {name} struct")
+            failures.add(f"{path.name}: no {name} struct")
             continue
         if entry["count"] != len(tracks.get(role, [])):
-            failures.add(f"asset: {name}.count {entry['count']}, "
+            failures.add(f"{path.name}: {name}.count {entry['count']}, "
                          f"{role} array {len(tracks.get(role, []))}")
         if entry["loop"] is not True:
-            failures.add(f"asset: {name}.loop is not true")
+            failures.add(f"{path.name}: {name}.loop is not true")
         if entry["wave"] != wave or abs(float(entry["duty"]) - duty) > 1e-9:
-            failures.add(f"asset: {name} is {entry['wave']} duty {entry['duty']}, "
+            failures.add(f"{path.name}: {name} is {entry['wave']} duty {entry['duty']}, "
                          f"expected {wave} {duty}")
-    main = structs.get("kMusE1M1", {})
+
+    # The main track names exactly the sub-tracks this score has: a `nullptr`
+    # for a role the lump does not carry (E1M3 has no third melodic channel)
+    # and a `&` pointer for every one it does.
+    main = structs.get(prefix, {})
     subs = main.get("subs", [])
-    if len(subs) != 3 or any(not str(sub).startswith("&") for sub in subs):
-        failures.add(f"asset: kMusE1M1 sub-track pointers {subs}, expected three &tracks")
+    if len(subs) != len(SUB_ROLES):
+        failures.add(f"{path.name}: {prefix} sub-track pointers {subs}, "
+                     f"expected {len(SUB_ROLES)}")
+    else:
+        for role, sub in zip(SUB_ROLES, subs):
+            suffix = ROLE_STRUCT[role][0]
+            if role in present:
+                wanted = f"&{prefix}{suffix}"
+            else:
+                wanted = "nullptr"
+            if sub != wanted:
+                failures.add(f"{path.name}: {prefix} sub-track for {role} is {sub}, "
+                             f"expected {wanted}")
 
     # The committed arrays are checked against the MUS, not only against the
     # in-memory conversion, so a renderer/parser-friendly bug cannot pass.
@@ -458,15 +610,42 @@ def worst_start_error_ms(conv: mus2tracks.Conversion, role_name: str) -> float:
     return max(errors) if errors else 0.0
 
 
-def arithmetic(conv: mus2tracks.Conversion, headroom: int) -> str:
+def arithmetic(conv: mus2tracks.Conversion, headroom: int,
+               verdict: str | None = None) -> str:
     size = conv.array_notes * mus2tracks.MUSIC_NOTE_BYTES
+    if verdict is None:
+        verdict = (f"{'fits' if size <= headroom else 'does not fit'} "
+                   f"the {headroom:,} B headroom")
     return (f"{conv.lump}: {conv.press_count} presses -> {conv.array_notes} MusicNotes"
-            f" * {mus2tracks.MUSIC_NOTE_BYTES} B = {size:,} B "
-            f"({'fits' if size <= headroom else 'does not fit'} the {headroom:,} B headroom)")
+            f" * {mus2tracks.MUSIC_NOTE_BYTES} B = {size:,} B ({verdict})")
+
+
+def lump_verdict(lump: str, conv: mus2tracks.Conversion, headroom: int) -> str:
+    """What this lump's byte count means for the two images.
+
+    The headroom is the 4 MB board's, so it decides what that image may ship.
+    The native profile is not bound by it: it commits a theme per level on
+    purpose.
+    """
+    size = conv.array_notes * mus2tracks.MUSIC_NOTE_BYTES
+    fits = size <= headroom
+    if lump == "D_E1M1":
+        return (f"the one asset every build ships; "
+                f"{'fits' if fits else 'does not fit'} the 4 MB image's "
+                f"{headroom:,} B headroom")
+    if lump in COMMITTED_LUMPS:
+        return ("committed for native only (DOOM_FULL_PROFILE); "
+                "not in any 4 MB image")
+    if lump == "D_INTRO":
+        return (f"{'fits' if fits else 'does not fit'} the {headroom:,} B headroom "
+                "but no scene requests mus_intro; checked in memory only")
+    return (f"{'fits' if fits else 'does not fit'} the {headroom:,} B headroom; "
+            "checked in memory only")
 
 
 def collect(wad_path: Path, headroom: int) -> tuple[dict[str, mus2tracks.Conversion], Failures]:
     lumps = mus2tracks.read_wad(wad_path)
+    music_names = mus2tracks.parse_music_table(ROOT / "lib" / "doom" / "sounds.c")
     conversions: dict[str, mus2tracks.Conversion] = {}
     failures = Failures()
     for lump, name in LUMP_IDS.items():
@@ -476,15 +655,13 @@ def collect(wad_path: Path, headroom: int) -> tuple[dict[str, mus2tracks.Convers
             continue
         try:
             conv = mus2tracks.convert(data, lump=lump,
-                                      music_id=mus2tracks.music_id_for(
-                                          mus2tracks.parse_music_table(
-                                              ROOT / "lib" / "doom" / "sounds.c"), name),
+                                      music_id=mus2tracks.music_id_for(music_names, name),
                                       music_name=name)
         except ValueError as error:
             failures.add(f"{lump}: {error}")
             continue
         conversions[lump] = conv
-        print(arithmetic(conv, headroom))
+        print(arithmetic(conv, headroom, lump_verdict(lump, conv, headroom)))
     return conversions, failures
 
 
@@ -512,8 +689,8 @@ def run_gate(conversions: dict[str, mus2tracks.Conversion], headroom: int,
                     note.note = NOTE_NAMES[index]
                     note.octave = octave
         check_conversion(conv, local)
-        if lump == COMMITTED_LUMP and not (perturb or stub):
-            check_committed(conv, local)
+        if lump in COMMITTED_LUMPS and not (perturb or stub):
+            check_committed(lump, conv, local)
         per_lump[lump] = local
         for finding in local:
             failures.add(finding)
@@ -573,12 +750,35 @@ def main(argv: list[str] | None = None) -> int:
                   f"({grid_end} APU ticks = {conv.score.score_end_ticks / 140.0:.2f} s)")
             print(f"   grid: {grid_end} ticks on every track, "
                   f"worst start error {worst:.2f} ms")
+            if lump in COMMITTED_LUMPS:
+                channels = {role.role: role.channel for role in conv.roles}
+                shape = ", ".join(f"{name} ch{channels[name]}"
+                                  for name in ("melody", "third", "bass")
+                                  if name in channels)
+                print(f"   arrangement: {shape} -- {conv.arrangement_reason}")
+                figures = opening_figures(conv)
+                first = figures["first"]
+                capped = ("" if figures["need_melodic"] == MIN_MELODIC_ONSETS
+                          else f"; the score has only {figures['source_melodic']}")
+                print(f"   opening: first sound {first:.3f} stored beats "
+                      f"({first * 0.2:.2f} s); first {OPENING_WINDOW_BEATS:.0f} beats: "
+                      f"{figures['melodic']} melodic note-ons "
+                      f"(need {figures['need_melodic']}{capped}), "
+                      f"{figures['percussion']} percussion hits "
+                      f"(need {figures['need_percussion']})")
     if failures:
         print(f"FAIL music_check: {len(failures)} finding(s)")
         return 1
 
-    # The committed file is the only asset; the other two are checked in
-    # memory. Say why they stay off the board.
+    # Every committed include was compared above. Say what the two images ship
+    # and why the intro/intermission stay off both.
+    committed_notes = sum(conversions[lump].array_notes for lump in COMMITTED_LUMPS)
+    e1m1_notes = conversions["D_E1M1"].array_notes
+    print(f"   native profile: {len(COMMITTED_LUMPS)} level themes, "
+          f"{committed_notes:,} MusicNotes = "
+          f"{committed_notes * mus2tracks.MUSIC_NOTE_BYTES:,} B")
+    print(f"   4 MB image: D_E1M1 only, {e1m1_notes} MusicNotes = "
+          f"{e1m1_notes * mus2tracks.MUSIC_NOTE_BYTES:,} B")
     intro = conversions.get("D_INTRO")
     inter = conversions.get("D_INTER")
     if intro is not None and inter is not None:
@@ -589,21 +789,35 @@ def main(argv: list[str] | None = None) -> int:
               f"does not fit the {args.headroom:,} B headroom")
     print(f"OK music_check: {len(conversions)} lumps converted, "
           f"{sum(len(conv.roles) for conv in conversions.values())} tracks, "
-          f"{COMMITTED_LUMP} committed")
+          f"{len(COMMITTED_LUMPS)} committed includes byte-identical")
 
     if not args.no_record:
         lines = ["music_check -- MUS -> four tracks (generated by tools/music_check.py)",
                  ""]
-        for lump in LUMP_IDS:
-            conv = conversions[lump]
-            lines.append(arithmetic(conv, args.headroom))
-            role_of, dropped = selected_roles(conv.score)
+        for lump, conv in conversions.items():
+            lines.append(arithmetic(conv, args.headroom,
+                                    lump_verdict(lump, conv, args.headroom)))
+            role_of, dropped = selected_roles(lump, conv.score)
             chosen = ", ".join(f"{role}:ch{channel}" for role, channel in role_of.items())
             dropped_text = ", ".join(f"ch{ch}({len(conv.score.presses[ch])})"
                                      for ch in dropped) or "none"
             lines.append(f"  chosen {chosen}; dropped {dropped_text}; "
                          f"folded {len(conv.folded)} drum hits; "
                          f"pitch wheels {conv.score.pitch_wheels}; clamped {len(conv.clamped)}")
+            if conv.arrangement_reason is not None:
+                lines.append(f"  arrangement: {conv.arrangement_reason}")
+            if lump in COMMITTED_LUMPS:
+                figures = opening_figures(conv)
+                first = figures["first"]
+                lines.append(
+                    f"  opening: first sound {first:.3f} stored beats "
+                    f"({first * 0.2:.2f} s); first {OPENING_WINDOW_BEATS:.0f} beats: "
+                    f"{figures['melodic']} melodic note-ons "
+                    f"(need {figures['need_melodic']} of the score's "
+                    f"{figures['source_melodic']}), "
+                    f"{figures['percussion']} percussion hits "
+                    f"(need {figures['need_percussion']} of the score's "
+                    f"{figures['source_percussion']})")
             for role in conv.roles:
                 ticks = playback_ticks(role.notes)
                 err = worst_start_error_ms(conv, role.role)
@@ -611,9 +825,17 @@ def main(argv: list[str] | None = None) -> int:
                              f"{role.beats:.3f} stored beats; {ticks} APU ticks "
                              f"({ticks / 4.0:.3f} beats); worst start {err:.2f} ms")
             lines.append("")
+        lines.append(f"native profile: {len(COMMITTED_LUMPS)} level themes = "
+                     f"{committed_notes:,} MusicNotes * "
+                     f"{mus2tracks.MUSIC_NOTE_BYTES} B = "
+                     f"{committed_notes * mus2tracks.MUSIC_NOTE_BYTES:,} B "
+                     "(DOOM_FULL_PROFILE only)")
+        lines.append(f"4 MB image: D_E1M1 only = {e1m1_notes} MusicNotes * "
+                     f"{mus2tracks.MUSIC_NOTE_BYTES} B = "
+                     f"{e1m1_notes * mus2tracks.MUSIC_NOTE_BYTES:,} B")
         lines.append(f"gate: {len(conversions)} lumps pass; every track closes on the "
-                     "score's 7-tick grid; " f"{COMMITTED_LUMP} is committed; "
-                     "D_INTRO/D_INTER are checked in memory only")
+                     "score's 7-tick grid; " f"{len(COMMITTED_LUMPS)} committed includes "
+                     "are byte-identical; D_INTRO/D_INTER are checked in memory only")
         RECORD.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
         print(f"   record: {RECORD.relative_to(ROOT)}")
     return 0

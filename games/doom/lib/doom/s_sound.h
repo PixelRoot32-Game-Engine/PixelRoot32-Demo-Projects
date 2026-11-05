@@ -74,7 +74,7 @@ extern int snd_MusicVolume;
  * The call-site gate.
  *
  * The port's DOOM core is compiled into builds that have no sound at all (the
- * 200-row `_show` image, the frame probes, every host test). In those a call to
+ * world-pass probe, the frame probes, every host test). In those a call to
  * S_StartSound() would still need the seven seam symbols to link, and the seam
  * lives in the application's src/doomc, not in this library. `DOOM_SOUND_START`
  * is therefore the real call where DOOM_AUDIO is defined and a no-op where it

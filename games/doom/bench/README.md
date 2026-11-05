@@ -1,6 +1,8 @@
 # DOOM on ESP32 - measurement bench
 
-Standalone firmware that measures the reference board and PixelRoot32's real
+Standalone firmware that measures the reference hardware -- an ESP32 DevKit, a
+classic ESP32 (the `esp32dev` PlatformIO board: 240 MHz dual core, 4 MB flash,
+no PSRAM) with a 240x320 ILI9341 panel wired to it -- through PixelRoot32's real
 present path. It carries **no DOOM code**, no WAD and no renderer, and prints
 one CSV line per measurement over serial. Each probe is named by the label it
 prints (`D0.1` to `D0.6`, see [Menu](#menu)).
@@ -26,10 +28,10 @@ pinned to the released 1.14.0.
 | `bench_lpb30` | ST7789 240x240 | 240x180, `Y_OFF_SET=30` | 320x200 | 40 MHz | 30 | D0.2 |
 | `bench_lpb20` | ST7789 240x240 | 240x180, `Y_OFF_SET=30` | 320x200 | 40 MHz | 20 | D0.2 |
 | `bench_lpb16` | ST7789 240x240 | 240x180, `Y_OFF_SET=30` | 320x200 | 40 MHz | 16 | D0.2 |
-| `bench_ili9341_55` | ILI9341 320x240 (CYD) | 320x200, `Y_OFF_SET=20`, rotation 3 | 320x200 | 55 MHz | 60 | D0.6 second panel |
+| `bench_ili9341_55` | ILI9341 320x240 | 320x200, `Y_OFF_SET=20`, rotation 3 | 320x200 | 55 MHz | 60 | D0.6 second panel |
 | `bench_flash` | ST7789 240x240 | 240x180, `Y_OFF_SET=30` | 320x200 | 40 MHz | 60 | D0.5, custom partition table |
 
-The ST7789 pin map is the pong demo's; the CYD map is the one in
+The ST7789 pin map is the pong demo's; the ILI9341 panel's map is the one in
 `games/doom/src/platforms/esp32_dev_ILI9341.h`. Both are reproduced as build
 flags, not included as headers, because the platform headers define an
 `Engine` and a scene.
@@ -156,7 +158,7 @@ At 240x180 the drawer allocates, from the flags alone:
 | 20 | 9,600 | 19,200 | 1,352 | 64,000 | 84,552 |
 | 16 | 7,680 | 15,360 | 1,352 | 64,000 | 80,712 |
 
-At 320x200 (CYD), 60 lines: 38,400 per buffer, 76,800 total, LUTs 1,552,
+At 320x200 on the board, 60 lines: 38,400 per buffer, 76,800 total, LUTs 1,552,
 surface 64,000, present state 142,352 B. At 20 lines: 12,800 / 25,600 /
 91,152 B. The `probe=STATIC` boot line prints the live values.
 

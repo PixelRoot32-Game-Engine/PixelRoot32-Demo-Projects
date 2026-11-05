@@ -79,7 +79,7 @@ struct ScenePlayerState {
  *
  * The class compiles in every environment, but `open()` succeeds only where
  * `PIXELROOT32_DOOM_SHOW_E1M1` is defined and the build has the `wad` partition:
- * the level is read from mapped flash, which is why the `_show` environment is an
+ * the level is read from mapped flash, which is why the shipped image is an
  * ESP32 one. Everywhere else `open()` returns false and the scene keeps painting
  * its shell, so a missing flag is a visible fallback instead of a link error.
  */

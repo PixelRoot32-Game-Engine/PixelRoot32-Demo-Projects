@@ -21,8 +21,8 @@
 #endif
 
 #if defined(DOOM_FRAME_DUMP)
-// The dump's button combination; `_hud` pulls InputMap in through its HUD path
-// and `_show` does not, so the include is the dump's own.
+// The dump's button combination; the shipped image pulls InputMap in through its
+// HUD path, while a build without the HUD does not, so the include is the dump's own.
 #include "doomc/InputMap.h"
 #endif
 
@@ -51,6 +51,10 @@
 #error "DOOM_PERSISTENCE is wired to the menu's LOAD/SAVE screens: define DOOM_MENU too"
 #endif
 
+#if defined(DOOM_SCREENSHOT) && !defined(PLATFORM_NATIVE)
+#error "DOOM_SCREENSHOT writes the finished frame to a host file: it is native-only"
+#endif
+
 #if defined(DOOM_MENU) || defined(DOOM_HUD)
 #include "doomc/InputMap.h"  /* the button bits the menu and the automap read */
 #endif
@@ -71,7 +75,14 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+
+#if defined(DOOM_SCREENSHOT)
+#include <cstdlib>  /* std::exit: the capture's own reason to stop */
+#include <filesystem>
+#include <system_error>
+#endif
 
 #if defined(PLATFORM_NATIVE)
 #include <chrono>
@@ -122,12 +133,12 @@ using pixelroot32::graphics::Renderer;
 /// comment in DoomScene.h).
 constexpr int kButtonCount = 6;
 
-/// The engine's `InputConfig` index of Start (GPIO 34 on the CYD): after the six
+/// The engine's `InputConfig` index of Start (GPIO 34 on the board): after the six
 /// game buttons, so the shell, the INPUT line and the on-screen slots never see it.
 /// Only the menu reads it.
 constexpr std::uint8_t kStartIndex = 6;
 
-/// The engine's `InputConfig` index of Select (GPIO 35 on the CYD): the automap's
+/// The engine's `InputConfig` index of Select (GPIO 35 on the board): the automap's
 /// toggle. Like Start it is not a game button: it is sampled on its own,
 /// never packed into the world's bits, so `kButtonCount` stays 6.
 constexpr std::uint8_t kSelectIndex = 7;
@@ -292,7 +303,9 @@ constexpr std::uint32_t kDramImageRegionBytes = 124580u;
  *    comes from named in the field. The sizes are the driver's literals, not
  *    estimates: the sprite is `width*height + 1` because TFT_eSprite adds one
  *    off-screen guard pixel, the line buffers are two blocks of
- *    `physicalWidth * 2 B * linesPerBlock`, and the three LUTs are fixed.
+ *    `physicalWidth * 2 B * linesPerBlock`, and the three LUTs are fixed. The
+ *    line-buffer term is a TFT_eSPI board fact, so on PLATFORM_NATIVE it -- and
+ *    `lines_per_block` -- is reported as 0 rather than a made-up block size.
  *
  * The port's own 512 B RGB565 table (palette::playpal565Table()) is a static
  * array, not heap; it is named so the total is not silently larger than the
@@ -305,8 +318,19 @@ void reportMemoryCensus(Renderer& renderer) {
     // The driver runs 1:1 here (physical == logical), which is what makes the
     // line-buffer arithmetic below exact for this environment.
     const std::uint32_t spriteBytes = static_cast<std::uint32_t>(width) * height + 1u;
+#if defined(PLATFORM_NATIVE)
+    // The host presents through SDL2 and owns no TFT_eSPI DMA block, so the DMA
+    // term is not a host number to invent: `linesPerBlock` and the two line
+    // buffers are reported as 0, the same sentinel the pool figures below use.
+    const std::uint32_t dmaLineBytes = 0u;
+    const int linesPerBlock = 0;
+#else
+    // Two DMA line buffers of `physicalWidth * 2 B * linesPerBlock`: this is
+    // the board's TFT_eSPI layout, read from the macro the board build defines.
     const std::uint32_t dmaLineBytes =
         static_cast<std::uint32_t>(width) * 2u * PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK;
+    const int linesPerBlock = PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK;
+#endif
     const std::uint32_t dmaLineTotal = dmaLineBytes * 2u;
     const std::uint32_t paletteLutBytes = 256u * 2u;
     const std::uint32_t xLutBytes = static_cast<std::uint32_t>(width) * 2u;
@@ -386,7 +410,7 @@ void reportMemoryCensus(Renderer& renderer) {
                   static_cast<unsigned>(paletteLutBytes), static_cast<unsigned>(xLutBytes),
                   static_cast<unsigned>(yLutBytes),
                   static_cast<unsigned>(engineFrameBytes),
-                  static_cast<int>(PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK));
+                  linesPerBlock);
     writeConsoleLine(line);
 }
 
@@ -824,7 +848,7 @@ static_assert(M_BTN_UP == doomc::kButtonUp && M_BTN_DOWN == doomc::kButtonDown
 
 #if defined(DOOM_MENU_SCRIPT)
 /*
- * DOOM_MENU_SCRIPT (env esp32dev_ILI9341_hud_menutest): the board has no buttons
+ * DOOM_MENU_SCRIPT (the shipped image with -D DOOM_MENU_SCRIPT=1): the board has no buttons
  * this build can press, so the diagnostic plays a fixed input script into the same
  * path a real press takes -- `m_menu_buttons()`, ORed onto the sampled buttons --
  * and the serial log shows what the menu did. Each step holds `buttons` for
@@ -955,7 +979,7 @@ std::uint8_t menuScriptButtons(std::uint32_t frame, bool loadOnly) {
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD) && defined(DOOM_MAP_SCRIPT)
 /*
- * DOOM_MAP_SCRIPT (env esp32dev_ILI9341_hud_mapcheck): the board's buttons cannot
+ * DOOM_MAP_SCRIPT (the shipped image with -D DOOM_MAP_SCRIPT=1): the board's buttons cannot
  * be pressed from the build host, so this diagnostic plays a fixed input script
  * into the same path a real press takes -- the sampled buttons plus the Select
  * bit, both read by `runMap()` -- and the serial log shows what the automap did.
@@ -1034,6 +1058,25 @@ void DoomScene::init() {
     // Nothing is held when the shell comes up; the first change edge is what
     // prints the INPUT line.
     buttons_ = 0;
+
+#if defined(DOOM_FULL_PROFILE)
+    // The twin index planes are scene storage, so the boot log states the cost
+    // the profile pays once instead of per frame. `SHOW,census,pool`'s
+    // `twin64` field is a different fact -- the board's single-block heap probe
+    // -- and keeps its own meaning and values.
+    {
+        char twinLine[64];
+        std::snprintf(twinLine, sizeof twinLine, "SHOW,twin,planes=2,bytes=%u\n",
+                      static_cast<unsigned>(2u * kIndexPlaneBytes));
+        writeConsoleLine(twinLine);
+    }
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(PLATFORM_NATIVE)
+    // The melt borrows the twin planes rather than owning screen copies, so
+    // its state is scene storage too: one idle state, reused by every level
+    // transition, holding only the column fronts and the random position.
+    wipe_Init(&wipe_);
+#endif
+#endif
 
 #if defined(DOOM_MENU)
     // A closed menu with the defaults, so a session that never opens (no
@@ -1407,6 +1450,78 @@ void DoomScene::update(unsigned long deltaTime) {
     // SHOW,level lines are the log of what the panel showed.
     if (!walkDone_) {
         const std::uint8_t level = doomc::frameLevelNumber();
+#if defined(PLATFORM_NATIVE)
+        // The desktop loop draws several hundred frames a second, so the
+        // board's 45-frame dwell is a tenth of a second -- less than one 35 Hz
+        // tic -- and its three-frame press falls between two tics and never
+        // reaches a ticcmd. The same walk is therefore paced in the clock the
+        // world itself runs on: 105 tics is the board's ~3 s, and the press is
+        // latched for four tics, the window `levelTestPressTic_` above already
+        // proves the world samples.
+        constexpr std::uint32_t kNativeDwellTics = 105u;
+        constexpr std::uint32_t kNativeUseTics = 4u;
+        constexpr std::uint32_t kNativeRetryTics = 21u;
+        const std::uint32_t tic = ticClock_.tic();
+
+        if (!walkStopRead_) {
+            // DOOM_WALK_STOP ends the run on one chosen level, after its dwell,
+            // so a capture's tail is that level's audio alone. Unset (or not
+            // 1..9) keeps the board's tour of all nine. The choice is printed
+            // once so the run's log names it instead of the environment.
+            walkStopRead_ = true;
+            const char* stop = std::getenv("DOOM_WALK_STOP");
+            if (stop != nullptr) {
+                const long value = std::strtol(stop, nullptr, 10);
+                if (value >= 1 && value <= 9) {
+                    walkStopLevel_ = static_cast<std::uint8_t>(value);
+                }
+            }
+            char line[48];
+            std::snprintf(line, sizeof line, "SHOW,walk,stop=%u\n",
+                          static_cast<unsigned>(walkStopLevel_));
+            writeConsoleLine(line);
+        }
+
+        if (level != walkLastLevel_) {
+            walkLastLevel_ = level;
+            walkArmTic_ = tic + kNativeDwellTics;
+            walkPressEndTic_ = kNoTic;
+            char line[64];
+            std::snprintf(line, sizeof line, "SHOW,walk,level=%u,tic=%u\n",
+                          static_cast<unsigned>(level), static_cast<unsigned>(tic));
+            writeConsoleLine(line);
+        }
+
+        if (walkPressEndTic_ != kNoTic && tic <= walkPressEndTic_) {
+            buttons = static_cast<std::uint8_t>(buttons | doomc::kButtonB);
+        } else if (tic >= walkArmTic_) {
+            if (walkStopLevel_ != 0 && level == walkStopLevel_) {
+                // The requested level has had its dwell: end the run here, with
+                // the success code `main()` returns, so the host's capture is
+                // this level's theme and nothing after it.
+                char line[64];
+                std::snprintf(line, sizeof line, "SHOW,walk,exit=level=%u,tic=%u\n",
+                              static_cast<unsigned>(level), static_cast<unsigned>(tic));
+                writeConsoleLine(line);
+                std::exit(0);
+            } else if (level == 8u) {
+                walkDone_ = true;
+#if DOOM_PERSISTENCE
+                (void)doomc::frameLevelVictoryScript();
+#endif
+            } else {
+                const int special = (level == 3u) ? 51 : 11;
+                if (!doomc::frameLevelExitScript(special)) {
+                    walkDone_ = true;
+                } else {
+                    walkPressEndTic_ = tic + kNativeUseTics;
+                    // A press that does not move the level retries after the
+                    // same cooldown the board's 40 frames give it.
+                    walkArmTic_ = tic + kNativeUseTics + kNativeRetryTics;
+                }
+            }
+        }
+#else
         if (level != walkLastLevel_) {
             walkLastLevel_ = level;
             walkTimer_ = 45;  // ~3 s at the shipped frame rate, fade included
@@ -1431,19 +1546,35 @@ void DoomScene::update(unsigned long deltaTime) {
             }
             walkTimer_ = 40;
         }
+#endif
     }
 #else
-    // The level-exit board proof (env esp32dev_ILI9341_hud_leveltest): at frame 20 the
+    // The level-exit board proof (the shipped image with -D DOOM_LEVEL_TEST=1): at frame 20 the
     // avatar is put in front of E1M1's own exit switch, and from frame 24 B is
     // held for three frames. B is bit 5 -- the world's USE -- so the press goes
     // through the real tic path; the frames before it are what release the use
     // latch G_PlayerReborn() left set.
     if (showFrame_ == 20u) {
         (void)doomc::frameLevelExitScript(11);
+#if defined(PLATFORM_NATIVE)
+        // The desktop loop draws several times per 35 Hz tic, so the board's
+        // three-frame press can fall entirely between two tics and never reach
+        // a ticcmd. Latch the same USE press for the next four world tics, a
+        // frame-rate-independent window the world is guaranteed to sample.
+        levelTestPressTic_ = ticClock_.tic();
+#endif
     }
+#if defined(PLATFORM_NATIVE)
+    if (showFrame_ >= 24u
+        && (levelTestPressTic_ == 0xFFFFFFFFu
+            || ticClock_.tic() <= levelTestPressTic_ + 4u)) {
+        buttons = static_cast<std::uint8_t>(buttons | doomc::kButtonB);
+    }
+#else
     if (showFrame_ >= 24u && showFrame_ <= 26u) {
         buttons = static_cast<std::uint8_t>(buttons | doomc::kButtonB);
     }
+#endif
 #if DOOM_PERSISTENCE
     // The save half of the same proof, on the level the transition reached: write
     // the live world -- slot 3, so the power-cycle record in slot 0 is
@@ -1874,7 +2005,16 @@ void DoomScene::updateFade() {
     // reload too -- so a tic count that went backwards is the transition. No new
     // plumbing, and it cannot fire on a pause: a paused world does not run tics.
     if (showPlayer_.valid && showPlayer_.tics < fadeLastTics_) {
+#if defined(DOOM_FULL_PROFILE) && defined(PLATFORM_NATIVE)
+        // The full profile keeps the old level's finished frame and melts it
+        // into the new one. An explicit fade (New Game, LOAD) still owns its
+        // transition, and a melt already in flight is not restarted.
+        if (!fadeActive_ && !meltActive_) {
+            startMelt();
+        }
+#else
         startFade();
+#endif
     }
     if (showPlayer_.valid) {
         fadeLastTics_ = showPlayer_.tics;
@@ -1910,6 +2050,19 @@ void DoomScene::updateFade() {
         writeConsoleLine(line);
     }
 }
+
+#if defined(DOOM_FULL_PROFILE) && defined(PLATFORM_NATIVE)
+void DoomScene::startMelt() {
+    // The plane the last completed draw filled still holds the old level's
+    // final frame. Recording the other plane here is what freezes the flip in
+    // drawSceneFrame(): every melt frame renders the new level into
+    // `meltPlane_` and never advances `indexPlaneCurrent_` past it, so the
+    // old plane stays readable until every column reaches the bottom.
+    meltActive_ = true;
+    meltStep_ = 0;
+    meltPlane_ = static_cast<std::uint8_t>(indexPlaneCurrent_ ^ 1u);
+}
+#endif
 
 #if defined(DOOM_PALFLASH)
 
@@ -2251,6 +2404,120 @@ void DoomScene::draw(Renderer& renderer) {
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
 
+#if defined(PLATFORM_NATIVE)
+const std::uint8_t* DoomScene::previousIndexPlane() const {
+#if defined(DOOM_FULL_PROFILE)
+    // The frame just drawn lives in `indexPlaneCurrent_`; the other plane is
+    // the one that still holds the frame before it. Without the gate there is
+    // no second plane and no previous frame to hand out.
+    return indexPlanes_[static_cast<std::size_t>(indexPlaneCurrent_ ^ 1u)];
+#else
+    return nullptr;
+#endif
+}
+#endif  // PLATFORM_NATIVE
+
+#if defined(DOOM_SCREENSHOT)
+
+namespace {
+
+/*
+ * DOOM_SCREENSHOT (env native_shot_*): one finished frame, written to a file.
+ *
+ * The frame index and the path are compile-time, which is the whole point: this
+ * port runs the headless loop at several hundred frames a second, so a key press
+ * or a wall-clock timer cannot name a state, and a capture that could be retimed
+ * at run time would only move that problem into a build flag read at run time.
+ * `-D DOOM_SCREENSHOT=<frame>` names the frame; the frame's *state* is whatever
+ * the frame-indexed script (DOOM_MENU_SCRIPT and `kMenuScript`) has driven by
+ * then, so the three captures S7 needs are three frames of one script rather
+ * than three timings.
+ *
+ * The write happens after the RGB565 plane is complete -- the expansion above
+ * filled every pixel and the engine's present() has not run yet -- and reads the
+ * surface, not the window: it is the same picture with SDL_VIDEODRIVER=dummy and
+ * with a visible window, because the window is only the present's output.
+ *
+ * The file is a binary PPM (P6), three bytes per pixel behind a 15-byte text
+ * header. PPM because it needs no encoder and no new dependency here; Pillow
+ * reads it directly, which is what turns it into the committed PNG.
+ */
+
+/// The frame this build writes, and where.
+constexpr std::uint32_t kScreenshotFrame = static_cast<std::uint32_t>(DOOM_SCREENSHOT);
+
+#ifndef DOOM_SCREENSHOT_PATH
+#define DOOM_SCREENSHOT_PATH "doom-frame.ppm"
+#endif
+
+constexpr const char* kScreenshotPath = DOOM_SCREENSHOT_PATH;
+
+/// One P6 row: 320 pixels, three bytes each. The writer's only scratch.
+constexpr std::size_t kScreenshotRowBytes = static_cast<std::size_t>(DoomScene::kLogicalWidth) * 3u;
+
+/**
+ * @brief Writes @p pixels (RGB565, first row at the top) as a binary PPM.
+ *
+ * 5 -> 8 and 6 -> 8 bits are bit replication, not a shift. The engine packs a
+ * channel by truncation (`BaseDrawSurface::color565()` keeps the top five and
+ * six bits), so replication is what maps 31 -> 255 and 63 -> 255 and keeps white
+ * white; a plain shift would leave the brightest colour at 248/252 and dim the
+ * whole file by 3 %. The values are the quantised ones the surface holds, never
+ * the palette's original 8-bit entries: the file shows the frame the panel was
+ * given, which is the point of capturing the finished plane.
+ *
+ * @return false on a file that cannot be opened, written or closed, or a surface
+ *         wider than the logical frame (the buffer this writer sizes a row for).
+ */
+bool writeScreenshotPpm(const std::uint16_t* pixels, int width, int height, const char* path) {
+    if (pixels == nullptr || width <= 0 || height <= 0
+        || static_cast<std::size_t>(width) > static_cast<std::size_t>(DoomScene::kLogicalWidth)) {
+        return false;
+    }
+    // The documented path lives under `.pio/screenshots/`, and a capture should
+    // not need a mkdir first. `error_code` overloads, never the throwing ones:
+    // the firmware's flag list carries -fno-exceptions and this file is compiled
+    // with it, so a throw here would end the process instead of reporting.
+    std::error_code ignored;
+    const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, ignored);
+    }
+    std::FILE* file = std::fopen(path, "wb");
+    if (file == nullptr) {
+        return false;
+    }
+    const std::size_t rowBytes = static_cast<std::size_t>(width) * 3u;
+    bool ok = std::fprintf(file, "P6\n%d %d\n255\n", width, height) > 0;
+    std::uint8_t row[kScreenshotRowBytes];
+    for (int y = 0; y < height && ok; ++y) {
+        const std::uint16_t* source =
+            pixels + static_cast<std::size_t>(y) * static_cast<std::size_t>(width);
+        for (int x = 0; x < width; ++x) {
+            const std::uint16_t value = source[x];
+            const unsigned red = (value >> 11) & 0x1Fu;
+            const unsigned green = (value >> 5) & 0x3Fu;
+            const unsigned blue = value & 0x1Fu;
+            const std::size_t at = static_cast<std::size_t>(x) * 3u;
+            row[at + 0u] = static_cast<std::uint8_t>((red << 3) | (red >> 2));
+            row[at + 1u] = static_cast<std::uint8_t>((green << 2) | (green >> 4));
+            row[at + 2u] = static_cast<std::uint8_t>((blue << 3) | (blue >> 2));
+        }
+        ok = std::fwrite(row, 1u, rowBytes, file) == rowBytes;
+    }
+    // Closed before the caller reports: the SHOW line that names the file is
+    // written after the bytes it describes are on disk, so a reader that waits
+    // for that line never sees a partial frame.
+    if (std::fclose(file) != 0) {
+        ok = false;
+    }
+    return ok;
+}
+
+}  // namespace
+
+#endif  // DOOM_SCREENSHOT
+
 void DoomScene::drawSceneFrame(Renderer& renderer) {
     DrawSurface& surface = renderer.getDrawSurface();
     const int width = renderer.getLogicalWidth();
@@ -2398,14 +2665,35 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
     }
 #if defined(PLATFORM_NATIVE)
     // The desktop mirror: SDL2 has no 8bpp surface, so the indices land in a
-    // scratch plane and are expanded to RGB565 exactly the way the panel's LUT
-    // expands them, which keeps the window showing the panel's colours instead of
-    // a second, slightly different conversion. Guarded by PLATFORM_NATIVE because
-    // on the board the scratch would cost 64,000 B of DRAM for a branch the TFT
-    // driver never takes.
+    // scene-owned plane and are expanded to RGB565 exactly the way the panel's
+    // LUT expands them, which keeps the window showing the panel's colours
+    // instead of a second, slightly different conversion. Guarded by
+    // PLATFORM_NATIVE because on the board the plane would cost DRAM for a
+    // branch the TFT driver never takes.
     else if (std::uint16_t* pixels = surface.getPixelBuffer()) {
-        static std::uint8_t indices[static_cast<std::size_t>(kLogicalWidth)
-                                    * static_cast<std::size_t>(kLogicalHeight)];
+#if defined(DOOM_FULL_PROFILE)
+        // Alternate the twin planes per native frame: flip before the render
+        // so this frame draws into the plane the last expansion did not read,
+        // leaving the other one holding the previous completed frame for the
+        // level transition. A refused frame leaves that completed plane alone.
+        //
+        // A melt freezes that pair instead: the old level's frame stays in
+        // `meltStartPlane_` and every melt frame renders into `meltPlane_`,
+        // which is also the composite destination. The offsets are drawn on
+        // the first melt frame, after the plane is fixed, so
+        // `previousIndexPlane()` names the old level's frame.
+        if (meltActive_) {
+            indexPlaneCurrent_ = meltPlane_;
+            if (meltStep_ == 0u) {
+                wipe_StartScreen(&wipe_, previousIndexPlane(), kLogicalWidth, kLogicalHeight);
+            }
+        } else {
+            indexPlaneCurrent_ = static_cast<std::uint8_t>(indexPlaneCurrent_ ^ 1u);
+        }
+        std::uint8_t* indices = indexPlanes_[indexPlaneCurrent_];
+#else
+        std::uint8_t* indices = indexPlane_;
+#endif
         if (sceneRenderer_.isOpen() && width == kLogicalWidth && height == kLogicalHeight) {
             doomc::SceneFrameMeasurements measured;
             if (sceneRenderer_.render(indices, width, height, showPendingReport_, &measured)) {
@@ -2418,6 +2706,33 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
                 } else {
                     showHash_[0] = '\0';
                 }
+
+#if defined(DOOM_FULL_PROFILE)
+                if (meltActive_) {
+                    // The plane just rendered is the new level's frame and the
+                    // composite's destination; `previousIndexPlane()` is the
+                    // old level's last frame, held intact by the frozen flip.
+                    // The melt only reads that plane.
+                    wipe_EndScreen(&wipe_, indices);
+                    const int meltDone = wipe_DoMelt(&wipe_, indices, kMeltTicks);
+                    ++meltStep_;
+
+                    char meltLine[64];
+                    std::snprintf(meltLine, sizeof meltLine,
+                                  "SHOW,melt,frame=%u,step=%u,done=%u\n",
+                                  static_cast<unsigned>(showFrame_),
+                                  static_cast<unsigned>(meltStep_),
+                                  static_cast<unsigned>(meltDone > 0 ? 1u : 0u));
+                    writeConsoleLine(meltLine);
+
+                    if (meltDone > 0) {
+                        // The final composite is the new frame byte for byte;
+                        // hand the pair back to the normal alternating flip.
+                        meltActive_ = false;
+                        wipe_Shutdown(&wipe_);
+                    }
+                }
+#endif
 
                 // This surface stores colours, not indices, so the expansion is
                 // necessarily a pass here. It reads the same PLAYPAL -> RGB565
@@ -2508,6 +2823,55 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
         showPendingReport_ = false;
     }
 
+#if defined(DOOM_SCREENSHOT)
+    // The one frame this build was asked for. It sits after the two surface
+    // branches and after the refusal handling, so the plane is complete and the
+    // scene knows whether the picture is the game's: a frame that fell back to
+    // the shell (no session) or was refused exits non-zero and writes nothing,
+    // instead of leaving a file that claims to be the game.
+    //
+    // The build stops here on purpose. Leaving the loop running would make the
+    // caller time a kill, which is the clock this flag exists to remove, and a
+    // `pio run -e <env> -t exec` would never return. Every SHOW line is already
+    // flushed per call (platformPrint), so the log that names the file is
+    // complete when the process ends.
+    if (showFrame_ == kScreenshotFrame) {
+        const std::uint16_t* finished = surface.getPixelBuffer();
+        const bool drawn = rendered && finished != nullptr;
+        const bool wrote = drawn && writeScreenshotPpm(finished, width, height, kScreenshotPath);
+
+        const char* reason = "none";
+        if (!drawn) {
+            reason = !sceneRenderer_.isOpen() ? "nosession" : (rendered ? "nosurface" : refusedStage);
+        }
+#if defined(DOOM_MENU)
+        const char* menuState = m_menu_active(&menu_) != 0 ? "open" : "closed";
+#else
+        const char* menuState = "none";
+#endif
+        // What a P6 of this size must be: the 15-byte header plus three bytes a
+        // pixel, so a truncated file is caught here and not by the converter.
+        char header[32];
+        const int headerBytes = std::snprintf(header, sizeof header, "P6\n%d %d\n255\n", width, height);
+        const int bytes = wrote ? headerBytes + width * height * 3 : 0;
+
+        char line[288];
+        std::snprintf(line, sizeof line,
+                      "SHOW,screenshot,frame=%u,status=%s,w=%d,h=%d,bytes=%d,header=%d,"
+                      "menu=%s,reason=%s,x=%ld,y=%ld,angle=%lu,path=%s\n",
+                      static_cast<unsigned>(showFrame_), wrote ? "ok" : "fail",
+                      width, height, bytes, headerBytes, menuState, reason,
+                      static_cast<long>(showPlayer_.x), static_cast<long>(showPlayer_.y),
+                      static_cast<unsigned long>(showPlayer_.angle), kScreenshotPath);
+        writeConsoleLine(line);
+
+        // 0 for a written frame, 2 for a frame that was not the game, 3 for a
+        // file the filesystem refused. The distinct codes are what lets T5's
+        // loop stop on a real failure instead of converting whatever is there.
+        std::exit(wrote ? 0 : (drawn ? 3 : 2));
+    }
+#endif  // DOOM_SCREENSHOT
+
     showDrawStart_ = drawStart;
     showDrawEnd_ = sampleMicros();
 
@@ -2531,7 +2895,7 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
 #endif
 
 #if defined(DOOM_FRAME_DUMP)
-    // Diagnostic (env `esp32dev_ILI9341_show_dump` / `_hud_dump`): hold A and
+    // Diagnostic (the shipped image with `-D DOOM_FRAME_DUMP=1`): hold A and
     // B together and the finished surface goes out over the console as RLE, so
     // the frame that looked wrong on the glass can be rebuilt on the host and
     // diffed against its own render of the same viewpoint.

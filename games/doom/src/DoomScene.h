@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include <core/Scene.h>
@@ -10,6 +11,10 @@
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
 #include "doomc/SceneRenderer.h"
+#endif
+
+#if defined(DOOM_FULL_PROFILE) && defined(PLATFORM_NATIVE)
+#include "f_wipe.h"
 #endif
 
 #include "time/TicClock.h"
@@ -161,6 +166,30 @@ public:
     void update(unsigned long deltaTime) override;
     void draw(pixelroot32::graphics::Renderer& renderer) override;
 
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(PLATFORM_NATIVE)
+    /**
+     * @brief The 320x200 8-bit plane holding the previous completed game frame.
+     *
+     * The desktop mirror renders DOOM's palette indices into scene-owned
+     * storage and expands them to RGB565 there; the level transition needs the
+     * frame that was already on the screen when the new level starts drawing,
+     * which is exactly the plane this frame does not render into. The scene
+     * alternates two planes per native frame, so the returned plane is the one
+     * the frame that just finished did not draw.
+     *
+     * With `DOOM_FULL_PROFILE` undefined the scene owns one plane only, there
+     * is no previous frame to reach, and this returns nullptr.
+     *
+     * The pointer is valid until the next `draw()`: its content may be
+     * overwritten then. Before the first completed frame the returned plane is
+     * the zero fill the scene was constructed with.
+     *
+     * @return The previous frame's plane, or nullptr on a build without
+     *         `DOOM_FULL_PROFILE`.
+     */
+    [[nodiscard]] const std::uint8_t* previousIndexPlane() const;
+#endif
+
 private:
     /**
      * @brief Drives the tic clock and reports every tic it reaches.
@@ -252,6 +281,23 @@ private:
      * untouched.
      */
     void drawSceneFrame(pixelroot32::graphics::Renderer& renderer);
+
+#if defined(DOOM_FULL_PROFILE) && defined(PLATFORM_NATIVE)
+    /**
+     * @brief Starts vanilla's column melt for the level transition in flight.
+     *
+     * Called from `updateFade()` where the 4 MB builds call `startFade()`: the
+     * tic count went backwards, so a new level is loaded and the plane the last
+     * completed draw left in `indexPlaneCurrent_` still holds the old level's
+     * final frame. The new level renders into the other plane, which is the
+     * melt's destination and its new-frame source.
+     *
+     * The column offsets are not drawn here: the first melt draw must render
+     * the new level into that other plane before `previousIndexPlane()` names
+     * the old frame, so `wipe_StartScreen()` runs there.
+     */
+    void startMelt();
+#endif
 
     /**
      * @brief Runs the world tics this frame owes the simulation.
@@ -352,6 +398,10 @@ private:
      * after setup is 47,092 B). The 4 MB profile substitutes this
      * fade: the new frame ramps up from black through the PLAYPAL table the
      * palette path already owns, one table rebuild per step, no buffer.
+     *
+     * With `DOOM_FULL_PROFILE` a level change runs `startMelt()` instead; this
+     * fade still owns the explicit New Game and LOAD reloads, where there is no
+     * old frame to melt.
      */
     void startFade();
 
@@ -435,17 +485,34 @@ private:
 
 #if defined(DOOM_LEVEL_WALK)
     /*
-     * The viewing walk (env esp32dev_ILI9341_hud_levelwalk). Frame-paced, not a
-     * measurement: the point is what a person sees on the panel. `walkLastLevel_`
-     * notices a transition and restarts the dwell, `walkTimer_` counts the dwell
-     * before the next press, `walkUse_` holds B for the press, and `walkDone_`
-     * stops after E1M8's ending (the world goes back to E1M1, so a level-change
-     * reset must not restart the tour).
+     * The viewing walk (the shipped image with -D DOOM_LEVEL_WALK=1, and the desktop
+     * proof `tools/music_walk_check.py`). `walkLastLevel_` notices a transition
+     * and restarts the dwell, `walkDone_` stops after E1M8's ending (the world
+     * goes back to E1M1, so a level-change reset must not restart the tour).
+     *
+     * The board paces the walk in frames (45 to dwell, 3 to press, 40 to retry),
+     * which is what its ~20 fps loop makes of them. The desktop loop draws
+     * several hundred frames a second, so the same counts are a tenth of a
+     * second and fall between two 35 Hz tics: there the dwell and the press are
+     * counted in world tics instead (see `update()`), the clock the world runs
+     * on, and the board's frame counts are untouched.
      */
     std::uint8_t walkLastLevel_ = 0;
+    bool walkDone_ = false;
+#if defined(PLATFORM_NATIVE)
+    /// Tic the next walk action (exit script, ending, or the requested stop)
+    /// may fire on. Reset to "arrival + dwell" on every level change.
+    std::uint32_t walkArmTic_ = 0;
+    /// Last tic the USE press is latched for; `kNoTic` while no press is armed.
+    std::uint32_t walkPressEndTic_ = kNoTic;
+    /// `DOOM_WALK_STOP`'s level (1..9), or 0 to walk all nine as the board does.
+    std::uint8_t walkStopLevel_ = 0;
+    /// Whether `DOOM_WALK_STOP` has been read: once, on the walk's first frame.
+    bool walkStopRead_ = false;
+#else
     std::uint8_t walkTimer_ = 0;
     std::uint8_t walkUse_ = 0;
-    bool walkDone_ = false;
+#endif
 #endif
 
 #if DOOM_PERSISTENCE
@@ -576,6 +643,62 @@ private:
     const char* showRefusalStage_[kShowRefusalKinds] = {};
     int showRefusalCode_[kShowRefusalKinds] = {};
     int showRefusalKinds_ = 0;
+
+#if defined(DOOM_LEVEL_TEST) && defined(PLATFORM_NATIVE)
+    /// The tic the level-exit diagnostic placed the player on. The desktop
+    /// loop draws several times per tic, so the board's three-frame USE press
+    /// is held for a few tics here instead (see the block in `update()`).
+    std::uint32_t levelTestPressTic_ = 0xFFFFFFFFu;
+#endif
+#endif
+
+    /// Bytes in one 320x200 8-bit DOOM index plane.
+    static constexpr std::size_t kIndexPlaneBytes =
+        static_cast<std::size_t>(kLogicalWidth) * static_cast<std::size_t>(kLogicalHeight);
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(PLATFORM_NATIVE)
+    /**
+     * @brief The native index planes DOOM renders into before RGB565 expansion.
+     *
+     * Scene storage instead of a function-local static, so the previous frame
+     * survives a level load: under `DOOM_FULL_PROFILE` there are two planes and
+     * each native frame alternates them, which is what lets the level
+     * transition read the frame that was already on screen. The arrays are
+     * value-initialised once at construction, not per frame; the renderer
+     * overwrites a plane's pixels on every draw that reaches it.
+     *
+     * Without the gate this is the single scratch plane the desktop mirror has
+     * always used, unchanged in size and meaning.
+     */
+#if defined(DOOM_FULL_PROFILE)
+    std::uint8_t indexPlanes_[2][kIndexPlaneBytes] = {};
+
+    /// Plane the next native frame renders into. Flipped before the render, so
+    /// the other plane keeps the frame that just completed.
+    std::uint8_t indexPlaneCurrent_ = 0;
+
+    /// Ticks the melt advances per rendered frame. Vanilla runs the wipe once a
+    /// 35 Hz tic; the desktop loop draws several times faster, so two ticks a
+    /// frame keeps the whole melt inside the 15-25 frame window.
+    static constexpr int kMeltTicks = 2;
+
+    /// Column fronts, borrowed screens and the M_Random() position of the melt
+    /// in flight, or an idle state between transitions.
+    wipe_state_t wipe_ = {};
+
+    /// True while a level transition's melt owns the plane pair.
+    bool meltActive_ = false;
+
+    /// The plane the melt renders every frame: the one that does not hold the
+    /// old level's last frame, so it is both the new-frame source and the
+    /// composite destination. `previousIndexPlane()` names the old frame.
+    std::uint8_t meltPlane_ = 0;
+
+    /// Melt frames already drawn; 0 means the first one has not rendered yet.
+    std::uint32_t meltStep_ = 0;
+#else
+    std::uint8_t indexPlane_[kIndexPlaneBytes] = {};
+#endif
 #endif
 
 #if defined(PIXELROOT32_DOOM_FRAME_LOG)

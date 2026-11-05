@@ -83,7 +83,7 @@ A fixed channel number would not survive the nine shareware levels:
     D_E1M5  bass ch1 (29.3)              D_E1M6  bass ch5 (29.7)
     D_INTER bass ch2 (29.7)              D_INTRO bass ch0 (8.0)
 
-So the rule is measured per lump:
+The generic rule is measured per lump:
 
   1. rank melodic channels by note count (ties broken by the lower channel
      number, so the result never depends on dict order);
@@ -97,6 +97,20 @@ A channel that does not make the three is dropped; the tool prints its number
 and note count, and the gate treats that printed list as the only allowed drop.
 A one-channel score becomes the melody (bass/melody need two registers to be
 distinguishable).
+
+THE NINE LEVEL THEMES HAVE AN EXPLICIT TABLE
+
+Ranking by note count is a good guess for a lump with no other information, but
+it is wrong for the level themes: on four of them the busiest channels enter
+late and the channel that opens the score is dropped. E1M2's ch0/ch1 sound at
+0 s and were dropped for ch2/ch3/ch4 (first sounds 14.1 s / 70.6 s / 113.0 s);
+E1M4 loses ch1's 0 s upper voice, E1M6 loses ch2's 0 s figure, and E1M7 loses
+ch0's entire 0-13.5 s opening phrase. `LEVEL_ARRANGEMENTS` below is the
+measured row per level -- melody/third/bass channel and the opening material
+the row keeps. A row overrides the ranking; a lump outside the table (D_INTRO,
+D_INTER) still uses the generic rule. The gate re-derives the row and requires
+the first sound within 5 stored beats (1.0 s) and the first 50 stored beats to
+carry material (see `tools/music_check.py`).
 
 THE NOTES
 
@@ -153,20 +167,24 @@ named on stderr.
 
 OUTPUT
 
-`src/assets/music/MusE1M1.inc` is the committed asset: the melody array
-`kMusE1M1Notes`, the second/third/percussion arrays, three sub-track structs and
-`const MusicTrack kMusE1M1` with `loop = true`. It is deterministic: no
+`--lump NAME` writes `src/assets/music/Mus<Name>.inc`: the melody array
+`kMus<Name>Notes`, the second/third/percussion arrays, three sub-track structs
+and `const MusicTrack kMus<Name>` with `loop = true`. It is deterministic: no
 timestamps, no locale-dependent formatting (Python's `%.6f` always uses `.`),
 no unordered iteration. `--check` regenerates in memory and fails if the
-committed bytes differ.
+committed bytes differ, so it is run once per lump.
 
-Flash is the binding constraint. `sizeof(MusicNote)` is 16 B on the ESP32
-(1+1+2 pad+4+4+4), so `D_E1M1`'s emitted array is the number in its header and
-`D_INTER`'s would not fit the image; the tool prints the arithmetic for every
-`d_*` lump and only E1M1 is written.
+The nine level themes `D_E1M1`..`D_E1M9` are committed. `D_E1M1` is the one
+asset every build ships; the other eight are the native profile's
+(`DOOM_FULL_PROFILE`), which is not bound by the 4 MB flash headroom.
 
-    python tools/mus2tracks.py --wad tools/DOOM1.WAD
-    python tools/mus2tracks.py --wad tools/DOOM1.WAD --check
+Flash is the binding constraint for the 4 MB image. `sizeof(MusicNote)` is 16 B
+on the ESP32 (1+1+2 pad+4+4+4), so `D_E1M1`'s emitted array is the number in its
+header and `D_INTER`'s would not fit the image; the tool prints the arithmetic
+for every `d_*` lump it converts.
+
+    python tools/mus2tracks.py --wad tools/DOOM1.WAD --lump D_E1M2
+    python tools/mus2tracks.py --wad tools/DOOM1.WAD --lump D_E1M1 --check
 """
 from __future__ import annotations
 
@@ -192,7 +210,7 @@ APU_TICKS_PER_BEAT = 4
 MUS_TICKS_PER_APU_TICK = MUS_TICKS_PER_SECOND * 60.0 / (PLAYER_BPM * APU_TICKS_PER_BEAT)  # 7.0
 MUSIC_NOTE_BYTES = 16  # sizeof(MusicNote) on the 32-bit ESP32
 
-# The flash headroom of the _hud image before any music was added. A fixed
+# The flash headroom of the shipped image before any music was added. A fixed
 # default keeps --check reproducible.
 DEFAULT_HEADROOM = 49_795
 
@@ -291,6 +309,54 @@ ROLE_CHANNEL_TYPE = {
     ROLE_PERCUSSION: "NOISE",
 }
 ROLE_DUTY = {ROLE_MELODY: 0.5, ROLE_THIRD: 0.125, ROLE_BASS: 0.5, ROLE_PERCUSSION: 0.0}
+
+# Explicit per-level arrangement (S2 of odd/tasks/doom-per-level-music.md).
+# `None` means the score has no third melodic channel. The reason is the
+# opening material the row keeps; it is written into the generated header when
+# the row differs from the generic "three busiest" ranking.
+#
+# Measured from tools/DOOM1.WAD with this file's parser: press count and first
+# press per melodic channel.
+LEVEL_ARRANGEMENTS: dict[str, tuple[int, int | None, int, str]] = {
+    "D_E1M1": (
+        0, 1, 2,
+        "ch1/ch2 open at 0 s (ch2 the bass) and ch0 takes the lead at 8.7 s -- "
+        "the full three-channel score, identical to the shipped 4 MB asset"),
+    "D_E1M2": (
+        1, 0, 2,
+        "ch0/ch1 are the 0 s opening pads (two 20-note voices, mean 32.6) and "
+        "ch2 carries the 386-note line from 14.1 s; ch3 (70.6 s) and ch4 "
+        "(113.0 s) start far too late"),
+    "D_E1M3": (
+        1, None, 0,
+        "ch0 opens at 0 s with 2,176 bass presses and ch1 answers from 8.0 s; "
+        "the score carries only two melodic channels"),
+    "D_E1M4": (
+        4, 1, 0,
+        "ch1's 0 s upper voice over ch0's 0 s drone is the opening and ch4 "
+        "carries the main line from 21.3 s; ch2 doubles ch1 and ch3 ch4"),
+    "D_E1M5": (
+        0, 3, 2,
+        "ch0's 656-note high pedal opens at 0 s; ch2 (48.3 s) and ch3 (88.3 s) "
+        "carry the later material"),
+    "D_E1M6": (
+        6, 2, 5,
+        "ch2's 64-note high figure lands 54 of the score's first-10 s onsets; "
+        "ch6's 384-note line and ch5's bass only enter at 12.0 s"),
+    "D_E1M7": (
+        6, 0, 1,
+        "ch0's opening phrase fills 0-13.5 s; ch1's 480-note bass and ch6's "
+        "162-note line enter at 13.7 s"),
+    "D_E1M8": (
+        4, 6, 0,
+        "ch0/ch6 are the 0 s E2 pedal and ch4 enters at 1.0 s as the high line: "
+        "10 melodic onsets in the first 10 s, where the old ch0/ch4/ch5 set "
+        "had 7 because ch5 starts at 24 s"),
+    "D_E1M9": (
+        0, 1, 2,
+        "ch0/ch1/ch2 all open at 0 s with 40 onsets each in the first 10 s; "
+        "ch0 keeps the lead to 684.8 beats and ch3 duplicates the opening"),
+}
 
 
 # --- WAD -------------------------------------------------------------------
@@ -423,12 +489,41 @@ class Conversion:
     press_count: int
     note_ons_emitted: int
     array_notes: int
+    arrangement_reason: str | None = None
+    arrangement_overrides: bool = False
 
     def role(self, name: str) -> Role | None:
         for role in self.roles:
             if role.role == name:
                 return role
         return None
+
+
+def arrangement_for(lump: str) -> tuple[int, int | None, int, str] | None:
+    """The documented row for a level lump, or None (generic ranking)."""
+    return LEVEL_ARRANGEMENTS.get(lump.upper())
+
+
+def generic_roles(score: MusScore) -> tuple[dict[str, int], list[int], list[int]]:
+    """The fallback rule: three busiest, register decides the role.
+
+    Returns (role -> channel, selected channels, dropped channels).
+    """
+    melodic = [ch for ch in score.presses if ch != 15 and score.presses[ch]]
+    ranked = sorted(melodic, key=lambda ch: (-len(score.presses[ch]), ch))
+    selected = ranked[:3]
+    by_pitch = sorted(selected, key=lambda ch: (_mean([p for _, p in score.presses[ch]]), ch))
+    role_of: dict[str, int] = {}
+    if len(by_pitch) == 1:
+        role_of[ROLE_MELODY] = by_pitch[0]
+    elif len(by_pitch) == 2:
+        role_of[ROLE_BASS] = by_pitch[0]
+        role_of[ROLE_MELODY] = by_pitch[1]
+    elif by_pitch:
+        role_of[ROLE_BASS] = by_pitch[0]
+        role_of[ROLE_MELODY] = by_pitch[-1]
+        role_of[ROLE_THIRD] = by_pitch[1]
+    return role_of, selected, ranked[3:]
 
 
 def _mean(values: list[int]) -> float:
@@ -487,22 +582,33 @@ def convert(data: bytes, lump: str = "D_E1M1", music_id: int = 1,
     press_count = sum(len(notes) for notes in score.presses.values())
 
     melodic = [ch for ch in score.presses if ch != 15 and score.presses[ch]]
-    ranked = sorted(melodic, key=lambda ch: (-len(score.presses[ch]), ch))
-    selected = ranked[:3]
-    dropped_channels = ranked[3:]
+    generic_role_of, _generic_selected, generic_dropped = generic_roles(score)
 
-    # Among the selected, register decides the role.
-    by_pitch = sorted(selected, key=lambda ch: (_mean([p for _, p in score.presses[ch]]), ch))
-    role_of: dict[str, int] = {}
-    if len(by_pitch) == 1:
-        role_of[ROLE_MELODY] = by_pitch[0]
-    elif len(by_pitch) == 2:
-        role_of[ROLE_BASS] = by_pitch[0]
-        role_of[ROLE_MELODY] = by_pitch[1]
-    elif by_pitch:
-        role_of[ROLE_BASS] = by_pitch[0]
-        role_of[ROLE_MELODY] = by_pitch[-1]
-        role_of[ROLE_THIRD] = by_pitch[1]
+    arrangement = arrangement_for(lump)
+    arrangement_reason: str | None = None
+    arrangement_overrides = False
+    if arrangement is None:
+        role_of = generic_role_of
+        dropped_channels = generic_dropped
+    else:
+        melody_ch, third_ch, bass_ch, arrangement_reason = arrangement
+        role_of = {ROLE_MELODY: melody_ch, ROLE_BASS: bass_ch}
+        if third_ch is not None:
+            role_of[ROLE_THIRD] = third_ch
+        selected = [ch for ch in (melody_ch, third_ch, bass_ch) if ch is not None]
+        if len(set(selected)) != len(selected):
+            raise ValueError(f"{lump}: the level table names a channel twice")
+        for channel in selected:
+            if channel not in score.presses or channel == 15:
+                raise ValueError(
+                    f"{lump}: the level table names ch{channel}, which is not a "
+                    "melodic channel of this score")
+        dropped_channels = [ch for ch in melodic if ch not in selected]
+        arrangement_overrides = role_of != generic_role_of
+        if not arrangement_overrides:
+            # Same choice as the ranking: keep its (count-ordered) drop list so
+            # a level whose table row changes nothing renders exactly as before.
+            dropped_channels = generic_dropped
 
     roles: list[Role] = []
     clamped: list[tuple[int, int, int, int]] = []
@@ -600,7 +706,9 @@ def convert(data: bytes, lump: str = "D_E1M1", music_id: int = 1,
         lump=lump, music_id=music_id, music_name=music_name, score=score,
         roles=roles, dropped=dropped, folded=folded, clamped=clamped,
         other_drums=sorted(set(other_drums)), press_count=press_count,
-        note_ons_emitted=note_ons_emitted, array_notes=array_notes)
+        note_ons_emitted=note_ons_emitted, array_notes=array_notes,
+        arrangement_reason=arrangement_reason,
+        arrangement_overrides=arrangement_overrides)
 
 
 # --- Rendering -------------------------------------------------------------
@@ -651,12 +759,16 @@ def render_include(conv: Conversion) -> str:
         else:
             lines.append(f"// {role.role}: MUS channel {role.channel}, {role.count} press events, "
                          f"mean pitch {role.mean_pitch:.2f}, {role.beats:.3f} beats")
+    if conv.arrangement_reason is not None and conv.arrangement_overrides:
+        lines.append(f"// Arrangement (level table): {conv.arrangement_reason}")
+    dropped_label = ("the level's arrangement" if conv.arrangement_overrides
+                     else "the busiest three")
     if conv.dropped:
         dropped = ", ".join(f"ch{ch}({count} notes, mean {mean:.2f})"
                             for ch, count, mean in conv.dropped)
-        lines.append(f"// Dropped (not in the busiest three): {dropped}")
+        lines.append(f"// Dropped (not in {dropped_label}): {dropped}")
     else:
-        lines.append("// Dropped (not in the busiest three): none")
+        lines.append(f"// Dropped (not in {dropped_label}): none")
     lines.append(f"// Folded simultaneous drum pairs: {len(conv.folded)}"
                  + ("" if not conv.folded else " -- priority kick > snare > tom > open hat > "
                     "closed hat > crash > ride > other"))
@@ -844,17 +956,24 @@ def main(argv: list[str] | None = None) -> int:
         out.write_text(text, encoding="utf-8", newline="\n")
         print(f"wrote {out} ({len(text)} characters)")
 
-    # The arithmetic that decides what may ship. Only E1M1 is written.
+    # The arithmetic that decides what may ship.
     print(f"flash: sizeof(MusicNote) = {MUSIC_NOTE_BYTES} B on the ESP32")
-    for lump in ("D_INTRO", "D_INTER", "D_E1M1"):
+    profile_lumps = [f"D_E1M{level}" for level in range(1, 10)]
+    for lump in ["D_INTRO", "D_INTER"] + profile_lumps:
         entry = conversions.get(lump)
         if entry is None:
             continue
         size = entry.array_notes * MUSIC_NOTE_BYTES
-        verdict = "fits" if size <= args.headroom else "does not fit"
+        if lump == "D_E1M1":
+            verdict = (f"{'fits' if size <= args.headroom else 'does not fit'} "
+                       f"the {args.headroom:,} B 4 MB headroom; every build ships it")
+        elif lump in profile_lumps:
+            verdict = "native profile only (DOOM_FULL_PROFILE); not in a 4 MB image"
+        else:
+            verdict = (f"{'fits' if size <= args.headroom else 'does not fit'} "
+                       f"the {args.headroom:,} B 4 MB headroom; not committed")
         print(f"  {lump}: {entry.array_notes} notes * {MUSIC_NOTE_BYTES} = "
-              f"{size:,} B -- {verdict} the {args.headroom:,} B headroom")
-    print(f"  committed: {wanted} only.")
+              f"{size:,} B -- {verdict}")
 
     if findings:
         for finding in findings:

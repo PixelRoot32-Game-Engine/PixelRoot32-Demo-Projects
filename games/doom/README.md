@@ -1,15 +1,16 @@
-# DOOM (PixelRoot32 port)
+﻿# DOOM (PixelRoot32 port)
 
-Shareware DOOM (1993), episode 1, running on the CYD — the ESP32-2432S028
-"Cheap Yellow Display": an ILI9341 240x320 panel mounted in portrait and rotated
-a quarter turn to a 320x240 frame, 240 MHz dual core, 4 MB flash, 327,680 B of
-DRAM, no PSRAM. All nine levels of E1 play with the status bar, the weapon, the
-menu, the automap, sound effects, music, level transitions and six save slots.
+Shareware DOOM (1993), episode 1, running on an ESP32 DevKit â€” a classic ESP32
+(the `esp32dev` PlatformIO board: 240 MHz dual core, 4 MB flash, 327,680 B of
+DRAM, no PSRAM) with a 240x320 ILI9341 panel wired to it, mounted in portrait
+and rotated a quarter turn to a 320x240 frame. All nine levels of E1 play with
+the status bar, the weapon, the menu, the automap, sound effects, music, level
+transitions and six save slots.
 
 The engine supplies what a 1993 renderer does not need to own again: an 8bpp
 surface, the 8bpp-to-panel present path, input, persistence and the APU audio
-backend. Everything above that line — the BSP renderer, the game loop, the
-fixed-point math, the WAD reader — is DOOM's own code in [`lib/doom/`](lib/doom/),
+backend. Everything above that line â€” the BSP renderer, the game loop, the
+fixed-point math, the WAD reader â€” is DOOM's own code in [`lib/doom/`](lib/doom/),
 kept at arm's length from the engine.
 
 Language: C++17 (+ C99 for the DOOM core)  
@@ -17,15 +18,38 @@ Engine: `PixelRoot32-Game-Engine` 1.14.0
 (`gperez88/PixelRoot32-Game-Engine@^1.14.0` from the PlatformIO registry)  
 Platform: `espressif32@7.1.2` (Arduino-ESP32 2.0.17), pinned in
 [`lib/platformio.ini`](lib/platformio.ini)  
-Shipped environment: `esp32dev_ILI9341_hud`  
+Shipped environment: `esp32dev_ILI9341`\
 Category: Games
+
+## Screenshots
+
+![Main menu](screenshots/menu.png)
+
+Main menu over the paused level.
+
+![Options](screenshots/settings.png)
+
+The `OPTIONS` screen at its default values.
+
+![E1M1 spawn](screenshots/gameplay.png)
+
+E1M1 at the spawn point, with the status bar.
+
+All three are the native build's own captures, produced by three `native` recipes
+(frame 20 for gameplay, 80 for the menu, 140 for the options screen) that set
+`DOOM_MENU_SCRIPT=1`, `DOOM_SCREENSHOT` and `DOOM_SCREENSHOT_PATH` through
+`PLATFORMIO_BUILD_FLAGS`; each writes the finished 320x200 surface as a PPM and
+then converts that PPM to PNG, so the frames reproduce byte for byte instead of
+being mock-ups.
 
 ## Quick path
 
-1. Build the firmware: `pio run -e esp32dev_ILI9341_hud` (from `games/doom`).
-2. Get the shareware `DOOM1.WAD` v1.9 and build the container:
-   `.\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD -Flash -Port COM4`.
-3. Flash the app: `pio run -e esp32dev_ILI9341_hud -t upload --upload-port COM4`.
+1. Build the firmware: `pio run -e esp32dev_ILI9341` (from `games/doom`).
+2. Get the shareware `DOOM1.WAD` v1.9 and build the containers: the board's
+   `.\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD -Flash -Port COM4`,
+   and for `native` the full-sprite
+   `.\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD -Out tools\DOOM1-full.whd -FullSprites`.
+3. Flash the app: `pio run -e esp32dev_ILI9341 -t upload --upload-port COM4`.
 4. Open the serial monitor at 115200 and look for
    `SHOW,boot,screen=game,level=E1M1,open_ms=...`.
 
@@ -38,18 +62,38 @@ DOOM renders **320x200**, and 320 is structural rather than a setting:
 `bottom[320]`), `floorclip` / `ceilingclip` and the status bar layout. So the
 logical surface is fixed at 320x200 on every environment.
 
-The rotated CYD frame is 320x240, so the surface fits **1:1** with a 20 px bar
-above and below — no scaling, no crop.
+The rotated ILI9341 frame is 320x240, so the surface fits **1:1** with a 20 px
+bar above and below â€” no scaling, no crop.
 
 | Environment | Window | What it does |
 | --- | --- | --- |
-| `native` | 320x200 | SDL2 window, 1:1 with the surface |
-| `esp32dev_ILI9341` | 320x200 + 2x20 px bars | the CYD, 1:1 |
+| `native` | 640x400 (a 320x200 surface at 2x) | SDL2 window from `SDL2_Drawer` (`windowScale = 2`, integer nearest-neighbour); runs the full profile below -- per-level music, its own full-sprite container, vanilla's screen melt and twin index planes -- with the HUD, the menu, the palette flashes and the APU audio |
+| `esp32dev_ILI9341` | 320x200 + 2x20 px bars | the board, 1:1 |
+
+### The full native profile
+
+`[env:native]` defines `-D DOOM_FULL_PROFILE=1`; no shipped 4 MB environment
+does (the host `sound_test` defines it too, so its assertions exercise the native
+bank). It is the only additive gate: it adds features to `native`, changes
+nothing in a 4 MB build, and there is no separate profile environment. It turns
+on four things the 4 MB image leaves out:
+
+| Feature | What the gate adds | Evidence |
+| --- | --- | --- |
+| Per-level music | nine committed themes, `src/assets/music/MusE1M1..9.inc`, one per level id; 192,816 B of note data added (227,136 B in total, E1M1's 34,320 B included) | `SHOW,music,event=start,track=e1mN,...` names the level's theme |
+| Full sprite container | the default container becomes `tools/DOOM1-full.whd` through `-D DOOM_WHD_DEFAULT="tools/DOOM1-full.whd"`, built with `make_container.ps1 -FullSprites`; it keeps all 239 frames the shipped recipe drops | 3,349,928 B of the 3,375,104 B `wad` row (25,176 B spare), with 370/384 manifest entries |
+| Twin index planes | two 320x200 8bpp planes, alternated per frame; the previous completed plane feeds the melt | `SHOW,twin,planes=2,bytes=128000` at boot |
+| Vanilla screen melt | a level transition runs vanilla's column melt over its two screen copies and reports every step | `SHOW,melt,frame=..,step=..,done=..`, 18 steps (observed E1M1 to E1M2 beside `SHOW,level,from=E1M1,to=E1M2`) |
+
+The 4 MB image keeps every cut: it reads `tools/DOOM1.whd` (3,078,396 B,
+296,708 B spare), ships E1M1's theme only, keeps its 8-step palette fade
+(`SHOW,fade,steps=8`) and has no twin planes. The simulator is the only target
+with the full set; a 16 MB ESP32-S3 hardware profile does not exist.
 
 ### Why the build flags look transposed
 
-`DisplayConfig::applyRotationNormalization()` swaps width and height — and the
-offsets — whenever the rotation is odd. The flags therefore state the geometry
+`DisplayConfig::applyRotationNormalization()` swaps width and height â€” and the
+offsets â€” whenever the rotation is odd. The flags therefore state the geometry
 in the panel's own portrait axes:
 
 | Flag | Value | After the swap |
@@ -67,7 +111,7 @@ From **`games/doom`**:
 
 ```bash
 pio run -e native
-pio run -e esp32dev_ILI9341_hud
+pio run -e esp32dev_ILI9341
 ```
 
 If `pio` is not on `PATH`, use the PlatformIO venv's copy
@@ -77,16 +121,44 @@ The native build needs SDL2 (`libsdl2-dev` on Linux, `brew install sdl2` on
 macOS, MSYS2/MinGW on Windows). The `[env:native]` flags ship with the
 MSYS2 paths; swap them for the commented Homebrew lines on macOS.
 
+The simulator does not embed the game's data: it opens a compressed container
+from disk, built once with
+[`tools/make_container.ps1`](tools/make_container.ps1) (or `tools/whd_encode.py`
+plus `tools/bake_graphics.py`). `native` reads `tools/DOOM1-full.whd`, the
+full-sprite build described under "Get the WAD and build the container"; the
+board reads `tools/DOOM1.whd`. Both live next to the WAD and are resolved
+relative to the working directory, so run the simulator from `games/doom`.
+`DOOM_WHD` overrides the path. The containers and the WAD are all gitignored, so
+regenerate rather than commit them.
+
+The native controls are the board's, on a keyboard: arrows walk and turn,
+**A** (attack) is Space, **B** (use and run) is Enter, and **Start** is Escape,
+which opens and closes the menu. Select has no native key, so the automap is
+board-only.
+
+The three `native` recipes each build the same game, run it headless, write one
+finished frame as a PPM and exit. Set `PLATFORMIO_BUILD_FLAGS` in the **same
+PowerShell invocation** as `pio run`: PlatformIO's build task rebuilds when the
+flags change, and it does not carry a variable set in another shell. Every flag
+recipe below uses that shape with the environment named in the text. A complete
+capture is
+
+```powershell
+$env:PLATFORMIO_BUILD_FLAGS='-D DOOM_MENU_SCRIPT=1 -D DOOM_SCREENSHOT=20 -D DOOM_SCREENSHOT_PATH=\".pio/screenshots/gameplay.ppm\"'; pio run -e native -t exec
+```
+
+with `DOOM_SCREENSHOT=80` and `menu.ppm` for the main menu and `140` and
+`settings.ppm` for the options screen.
+
 ```bash
-pio run -e esp32dev_ILI9341_hud --target upload
+pio run -e esp32dev_ILI9341 --target upload
 pio device monitor
 ```
 
-`esp32dev_ILI9341_hud` extends `esp32dev_ILI9341_show`, which extends
-`esp32dev_ILI9341`; the `_show` and `_hud` families select
-[`partitions_wad.csv`](partitions_wad.csv), the plain `esp32dev_ILI9341` does
-not. Every other `esp32dev_ILI9341_*` environment is a diagnostic or a
-measurement build and is never the shipped image.
+`esp32dev_ILI9341` is the one board environment and the shipped image: it
+selects [`partitions_wad.csv`](partitions_wad.csv) and carries the full feature
+set. The diagnostic and measurement builds below are flag recipes or local
+configuration edits on it, never a separate image.
 
 **Do not run `pio pkg update` on this project.** The platform pin is
 load-bearing: an unpinned update moves `espressif32@7.1.2` (Arduino-ESP32
@@ -123,7 +195,8 @@ v1.0 release listed on the same page is a different WAD: the port's container,
 partition sizes and graphics bake are all measured against v1.9, so a v1.0 file
 will not match them.
 
-Then turn it into the container the firmware reads, from **`games/doom`**:
+Then turn it into the containers, from **`games/doom`**. The board reads the
+trimmed container:
 
 ```powershell
 .\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD
@@ -152,6 +225,21 @@ texture's patch gaps are palette 0, which vanilla draws as black.
 ```powershell
 .\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD -Flash -Port COM4
 ```
+
+`native` reads `tools/DOOM1-full.whd`, the same recipe with `-FullSprites`: every
+sprite lump stays instead of the 239 frames no list can name (264,819 B stored).
+Those frames are not baked -- the PWBAKE manifest and `kBakedCapacity` are
+unchanged -- so they are decoded on demand through the container's name
+directory.
+
+```powershell
+.\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD -Out tools\DOOM1-full.whd -FullSprites
+```
+
+That build is native-only. It is a host file, not a flash image: the script
+measures it against the container format's own size field instead of the
+`wad` partition and refuses `-Flash`, because the board's image is the trimmed
+`tools/DOOM1.whd`.
 
 The encoder underneath is committed and usable on its own
 (`python tools/whd_encode.py --help`; `--check` re-decodes a container and
@@ -192,7 +280,7 @@ moves it changed what E1M1's spawn view looks like.
 
 ## Hardware
 
-The CYD is an `esp32dev` module: 240 MHz, dual core, 4 MB flash, no PSRAM. The
+The board is an `esp32dev` module: 240 MHz, dual core, 4 MB flash, no PSRAM. The
 pin map is copied from the pong demo, which is where it was validated; demos in
 this repository do not import each other's code.
 
@@ -205,12 +293,12 @@ this repository do not import each other's code.
 | D-pad up / down / left / right | 32 / 33 / 25 / 26 |
 | A / B | 27 / 13 |
 | Start / Select | 34 / 35 (external 10 kOhm pull-ups) |
-| Touch | XPT2046 present, bus not claimed |
+| Touch | none claimed (`TOUCH_CS=-1`); XPT2046 only if the panel module carries one |
 
 `PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK` is pinned to **20** in
 [`lib/platformio.ini`](lib/platformio.ini): the drawer allocates two DMA line
 buffers of `physicalWidth * 2 B * linesPerBlock` each, so 60 lines at 320 px
-costs 76,800 B against the 25,600 B a 20-line block costs — 51,200 B that the
+costs 76,800 B against the 25,600 B a 20-line block costs â€” 51,200 B that the
 port needs elsewhere. A 20-line block only renders cleanly with
 `PIXELROOT32_DRAIN_PRESENT` defined, which closes each frame's transfer instead
 of leaving its tail in flight into the next frame.
@@ -229,26 +317,29 @@ joint, and a 100 nF from the pin to GND filters the pulses if they persist.
 
 ### The status bar
 
-`esp32dev_ILI9341_hud` is `_show` plus `-D DOOM_HUD=1`: the 3D view shrinks to
+The shipped image carries `-D DOOM_HUD=1`: the 3D view shrinks to
 DOOM's screen size 9 (320x168, `centery` 84) and `lib/doom/st_stuff.c` repaints
 the bottom 32 rows every frame from the player the world already owns (ammo,
-health, armor, the arms digits, the three key boxes and the face). `_show` keeps
-the 200-row view whose frame-00 hash is `50fb3d9c...`; the HUD frame has its own,
-`1d8b3849...`. `esp32dev_ILI9341_hud_nofaces` is the CYD fall-back (the bar
-without the face widget), kept for the case the full bar misses its frame rate.
+health, armor, the arms digits, the three key boxes and the face). The HUD frame's
+frame-00 hash is `1d8b3849...`; the host harness still pins the 200-row view's
+`50fb3d9c...`, a separate render path that is not this image. Building
+`esp32dev_ILI9341` with `-D DOOM_HUD_NOFACES=1`
+gives the no-faces fall-back (the bar without the face widget), kept for the
+case the full bar misses its frame rate.
 `lib/doom/r_psprite.c` draws the weapon in hand over the view and under the bar
 (`R_DrawPlayerSprites`: the weapon and its muzzle flash, lit by the player's
 sector, full bright for the flash frames); its patches are the raw lumps of
-`tools/weapon_lumps.txt`. `esp32dev_ILI9341_hud_noweapon` is the same build
-without that call, kept only to measure what the weapon costs. Not drawn: the
-invisibility fuzz and the deathmatch frags (the palette flashes are below).
+`tools/weapon_lumps.txt`. Adding `-D DOOM_HUD_NOWEAPON=1` to the same
+environment gives the same build without that call, kept only to measure what
+the weapon costs. Not drawn: the invisibility fuzz and the deathmatch frags (the
+palette flashes are below).
 `python tools/hud_draw_check.py --wad DOOM1.WAD` and
 `python tools/weapon_draw_check.py --wad DOOM1.WAD` compare the bar and the
 weapon with independent oracles pixel by pixel.
 
 ### The palette flashes
 
-`-D DOOM_PALFLASH=1` (on in `esp32dev_ILI9341_hud`, needs `DOOM_MENU` for the gamma)
+`-D DOOM_PALFLASH=1` (on in `esp32dev_ILI9341` and `native`, needs `DOOM_MENU` for the gamma)
 ports `ST_doPaletteStuff`: once per rendered frame the scene asks
 `lib/doom/palflash.c` which of PLAYPAL's 14 pages the player's counters call for
 (red 1-8 for damage and the berserk fade, gold 9-12 for a pickup, green 13 for the
@@ -268,13 +359,14 @@ applied to each page.
 `python tools/palflash_check.py --wad DOOM1.WAD --container DOOM1.whd` compares
 the page selection, the 14 pages at five gamma levels and the decay on the real
 world with an independent oracle (`--perturb` must fail).
-`esp32dev_ILI9341_hud_palflashtest` plays a scripted damage and pickups into the
-real player state and prints every switch (`SHOW,palette,...`); a diagnostic, never
-the shipped image. `esp32dev_ILI9341_hud_nopalflash` compiles the feature out for A/B.
+Building `esp32dev_ILI9341` with `-D DOOM_PALFLASH_SCRIPT=1` plays a
+scripted damage and pickups into the real player state and prints every switch
+(`SHOW,palette,...`); a diagnostic, never the shipped image. `-UDOOM_PALFLASH`
+on the same environment compiles the feature out for A/B.
 
 ### The menu and the settings
 
-`esp32dev_ILI9341_hud` also carries `-D DOOM_MENU=1`: DOOM's menu, ported from
+`esp32dev_ILI9341` also carries `-D DOOM_MENU=1`: DOOM's menu, ported from
 linuxdoom's `m_menu.c` (`lib/doom/m_menu.c`), drawn over the finished frame with
 the container's own `M_*` patches and the HU font.
 
@@ -355,13 +447,13 @@ tools/DOOM1.whd` (New Game fits the board's arena at all five skills; under
 the WAD's), `python tools/menu_draw_check.py --wad DOOM1.WAD` (the menu screens
 against an independent drawer, pixel by pixel, the mute row included) and
 `pio test -e menu_test` (the mute codec and the volume mapping among its cases).
-`esp32dev_ILI9341_hud_menutest` plays a fixed input script into the real button
-path so the board can be driven without pressing anything; it is a diagnostic,
-never the shipped image.
+Building `esp32dev_ILI9341` with `-D DOOM_MENU_SCRIPT=1` plays a fixed input
+script into the real button path so the board can be driven without pressing
+anything; it is a diagnostic, never the shipped image.
 
 ### The automap
 
-`esp32dev_ILI9341_hud` also carries the automap: `lib/doom/am_map.c`, a
+`esp32dev_ILI9341` also carries the automap: `lib/doom/am_map.c`, a
 translation of linuxdoom's `am_map.c` (the window and its scale, the outcode
 clipper, the Bresenham rasteriser, the block-aligned grid, the wall colour ladder,
 the player arrow and the crosshair), drawn into the 168 rows above the status bar.
@@ -403,7 +495,7 @@ followers are not ported (no keyboard, no marks art, no cheats, one player).
 **Rate.** `AM_Ticker` runs once per 35 Hz world tic (not per frame), so a pan is
 140 px a second and a zoom 2x a second whatever the panel's frame rate is.
 
-**What it costs.** On the CYD a map frame costs **0.81-1.02 ms** (`us=` on every
+**What it costs.** On the board a map frame costs **0.81-1.02 ms** (`us=` on every
 `SHOW,map` line; mean 0.84-0.87 ms across two runs) against ~30 ms for the world
 frame; the shadow bitmap is 60 bytes of heap taken at level load and freed with
 the session, and the whole static cost is 240 B, the automap's state and two
@@ -424,15 +516,15 @@ bits) and compares the whole 320x200 surface with an independent oracle in
 light strobe, the grid, zoom-in, a pan with the follow cancelled, zoom-out to the
 clamp, the computer-map power-up, E1M2 with its own bounds, and the stopped map.
 Rows 168-199 must stay untouched. `--perturb colour|scale` moves one oracle
-constant and must fail. `esp32dev_ILI9341_hud_mapcheck` plays a fixed input script
-(Select, A, B, the d-pad, a walk, Select again) through the real button path and
-prints `SHOW,map` for every reported frame; it reads only the script's Select bit,
-so the pin's electrical noise cannot scramble the states. A diagnostic, never the
-shipped image.
+constant and must fail. Building `esp32dev_ILI9341` with
+`-D DOOM_MAP_SCRIPT=1` plays a fixed input script (Select, A, B, the d-pad, a
+walk, Select again) through the real button path and prints `SHOW,map` for every
+reported frame; it reads only the script's Select bit, so the pin's electrical
+noise cannot scramble the states. A diagnostic, never the shipped image.
 
 ### Sound
 
-`esp32dev_ILI9341_hud` carries `-D DOOM_AUDIO=1`: DOOM's own sound API --
+`esp32dev_ILI9341` and `native` carry `-D DOOM_AUDIO=1`: DOOM's own sound API --
 `S_StartSound`, `S_UpdateSounds`, `S_Start`, `S_ChangeMusic`, `S_PauseSound` --
 ported from linuxdoom's `s_sound.c` and `sounds.c` in `lib/doom/`, with the
 DMX half replaced by a narrow C seam into the APU (`src/doomc/DoomAudio.cpp`).
@@ -480,24 +572,27 @@ recorded, 0 failed. `--perturb` (frequency x1.5) and `--stub` (a fixed 440 Hz
 square) must both fail. The gate proves the cue **is** the sound it claims to
 be; whether it is pleasant takes a listening pass.
 
-**Music.** `esp32dev_ILI9341_hud` plays E1M1's track on every level.
+**Music.** `esp32dev_ILI9341` plays E1M1's track on every level.
 `lib/doom/s_sound.c` keeps upstream's
 `S_ChangeMusic`/`S_StartMusic`/`S_StopMusic`/`S_PauseSound`; the three
 `doom_music_*` calls they make are implemented in `src/doomc/DoomAudio.cpp`
 over the engine's `MusicPlayer`. `S_Start` asks for the map's own track
-(`mus_e1m1 + (episode-1)*9 + map-1`); `MusicBank` answers E1M1's track for every
-level id (`e1m1`..`e1m9`), so a level change restarts the same music instead of
-going silent. That is a 4 MB limitation: the other eight themes are ~270 KB and
-the app has 57,843 B free. The intermission and title answer nullptr. The menu's
-open/close calls `S_PauseSound`/`S_ResumeSound` (`DoomScene::runMenu`), so the
-pause path is upstream's, not a second control.
+(`mus_e1m1 + (episode-1)*9 + map-1`); in the 4 MB build `MusicBank` answers
+E1M1's track for every level id (`e1m1`..`e1m9`), so a level change restarts the
+same music instead of going silent. That is a 4 MB limitation: the other eight
+themes are another 192,816 B and the app has 57,699 B free. Native is not
+limited that way: under `DOOM_FULL_PROFILE` `MusicBank` selects one theme per
+level from the nine committed includes (227,136 B of note data in total). The
+intermission and title answer nullptr. The menu's open/close calls
+`S_PauseSound`/`S_ResumeSound` (`DoomScene::runMenu`), so the pause path is
+upstream's, not a second control.
 
 **The converter.** `tools/mus2tracks.py` reads a `d_*` MUS lump, parses it by
 `mus2mid.c`'s rules, and writes a deterministic C++ include. MUS has no tempo
 field: its clock is fixed at 140 ticks/s and a quarter note is 70 ticks.
 `ApuCore` clamps `tempoBPM` to 300, so the converter runs `MusicPlayer` at
 **300 BPM**, where a beat is 0.2 s and one sequencer tick is 1/4 beat = 0.05 s
-— exactly 7 MUS ticks, the finest grid the API allows. Every press's start is
+â€” exactly 7 MUS ticks, the finest grid the API allows. Every press's start is
 placed on the nearest grid tick (`round(cumulativeMusTicks / 7)`) and its
 `duration` is the difference of consecutive grid starts / 4 beats, an exact
 multiple of 0.25 that the sequencer's truncation returns unchanged. The track
@@ -525,15 +620,16 @@ drum's audible length is the preset's `defaultDuration`; the note's duration
 only advances the sequencer. This is a deliberate fidelity cost of one
 percussion voice.
 
-**What ships.** One theme: E1M1's. `MusicBank.cpp` includes
-`src/assets/music/MusE1M1.inc` once and answers it for every level id
+**What ships.** The 4 MB build ships one theme: E1M1's. `MusicBank.cpp`
+includes `src/assets/music/MusE1M1.inc` once and answers it for every level id
 (`mus_e1m1`..`mus_e1m9`). E1M1: 2,332 press events -> 2,145 `MusicNote`s ->
 **34,320 B** (melody ch0 657 array entries, third ch1 712, bass ch2 263,
 percussion 513). `D_INTRO` is 80 notes = 1,280 B and `D_INTER` is 3,975 =
 63,600 B; both are converted and gated in memory, but not committed. With
-57,843 B free in the app, one more theme would fit and the other eight do not; a
-16 MB ESP32-S3 profile is where each id would get its own track, and only
-`MusicBank`'s lookup changes.
+57,699 B free in the app, one more theme would fit and the other eight do not.
+Native (`DOOM_FULL_PROFILE`) ships all nine: `MusE1M1.inc` .. `MusE1M9.inc` are
+committed, and the eight extra themes add 192,816 B for 227,136 B in total.
+Only `MusicBank`'s lookup changes, so a 4 MB build still links one theme.
 
 **The gate.** `tools/music_check.py` converts `D_INTRO`, `D_INTER` and
 `D_E1M1` in memory, re-derives every press's pitch and grid start from the
@@ -553,7 +649,7 @@ samples (49.977 ms), a 0.045 % shortening shared by all four tracks, so it
 cannot desynchronise them. A finer grid would need a higher `TICKS_PER_BEAT` in
 the APU; the BPM clamp is the API's ceiling.
 
-**Telemetry.** The `SHOW,audio` line ends in two APU counters on the CYD.
+**Telemetry.** The `SHOW,audio` line ends in two APU counters on the board.
 `underruns=` and `worst_us=` are read once a second through
 `doomAudioSetTelemetrySource()`, which `src/platforms/esp32_dev_ILI9341.h`
 installs after `engine.init()` with the I2S backend it owns:
@@ -571,20 +667,19 @@ pointer plus one user pointer in `.bss`, asked for once a second by the scene's
 report and never from the frame path, so an audio subsystem nobody listens to
 costs the loop nothing. `pio test -e sound_test` proves both arms -- no source (or
 a source that answers false) keeps the line at `underruns=-,worst_us=-`, and an
-installed one puts its numbers on it -- with no engine and no APU. A build with
-no source keeps the dashes; the native simulator takes that state (it compiles
-the sound layer out entirely, and the SDL2 backend exposes no counters anyway),
-because a zero would claim a measurement nobody took. The wiring costs 44 B of
-flash.
+installed one puts its numbers on it -- with no engine and no APU. The native
+simulator has the sound layer but installs no source (SDL2's backend exposes no
+counters), so its line keeps the dashes too: a zero would claim a measurement
+nobody took. The wiring costs 44 B of flash.
 
-**The soak.** `esp32dev_ILI9341_hud_soak` is the shipped HUD build plus
-`-D DOOM_AUDIO_SOAK=1`. E1M1 plays from level load, and every four tics the scene
-submits all four longest one-shots -- `barexp`, `telept`, `rlaunc`, `pldeth` --
-from four distinct `S_SectorOrigin()` tokens. Each token re-fires its own origin,
-so re-arming a cue never has to steal a voice, and four sequencer tracks plus
-four SFX voices synthesise continuously (about 30 submits a second at the
-shipped frame rate, because a round runs at most once per frame). Once a minute
-it prints
+**The soak.** Building `esp32dev_ILI9341` with `-D DOOM_AUDIO_SOAK=1` adds
+the soak script to the shipped HUD build. E1M1 plays from level load, and every
+four tics the scene submits all four longest one-shots -- `barexp`, `telept`,
+`rlaunc`, `pldeth` -- from four distinct `S_SectorOrigin()` tokens. Each token
+re-fires its own origin, so re-arming a cue never has to steal a voice, and four
+sequencer tracks plus four SFX voices synthesise continuously (about 30 submits
+a second at the shipped frame rate, because a round runs at most once per
+frame). Once a minute it prints
 
 ```
 SHOW,audio,soak,t=60,plays=..,steals=..,refused=..,active=..,underruns=..,worst_us=..,fps_x10=..
@@ -604,8 +699,8 @@ incrementing a field. `pct_x10` is `worst_us` in tenths of a percent of the
 render block is **512 samples, 23.22 ms**, so divide that percentage by four to
 read it against the deadline an underrun is measured against.
 
-Recorded baseline, CYD, one 10-minute run
-(`pio run -e esp32dev_ILI9341_hud_soak -t upload`, whole log captured):
+Recorded baseline, the board, one 10-minute run
+(`$env:PLATFORMIO_BUILD_FLAGS='-D DOOM_AUDIO_SOAK=1'; pio run -e esp32dev_ILI9341 -t upload`, whole log captured):
 
 - `underruns` **0** at every minute and at the end -- the acceptance criterion.
 - `worst_us` 5,938 -> **5,971**, i.e. 102.8 % of the 5.80 ms reference and
@@ -617,7 +712,7 @@ Recorded baseline, CYD, one 10-minute run
   inside the same run reads 150-155, the shipped band.
 - `resets` 0, and the theme is still `playing=1` at the end.
 
-The shipped `_hud` build prints the same two counters with music alone
+The shipped image prints the same two counters with music alone
 (`underruns=0,worst_us=5314`), so the 5.97 ms is what four music voices plus four
 SFX voices cost, not what the soak's serial writes cost. The script, its
 counters and its lines live entirely inside `DOOM_AUDIO_SOAK`; the shipped HUD
@@ -660,19 +755,20 @@ fourth row and the flag in its model and its golden bytes (`444D01030C020149` is
 `(3, 12, 2)` muted), and `tools/menu_draw_check.py` a fifth options state (mute
 ON); both still fail under `--perturb`.
 
-Recorded on the board (COM4, CYD), NVS erased first:
+Recorded on the board (COM4), NVS erased first:
 
-- shipped `_hud`, nothing stored:
+- shipped image, nothing stored:
   `SHOW,menu,settings=default,skill=2,volume=8,gamma=0,mute=0,level=67` -- the
   default 8 of 15 is level 67 of 127, so the master gain is 0.527.
-- `esp32dev_ILI9341_hud_menutest`, one full script: the OPTIONS save reads
+- `-D DOOM_MENU_SCRIPT=1` on `esp32dev_ILI9341`, one full script: the
+  OPTIONS save reads
   `SHOW,menu,saved=ok,skill=2,volume=5,gamma=3,mute=1`, the five New Games keep
   `volume=5,gamma=3,mute=1`, and the last one leaves `skill=3`.
 - RTS reset of that image:
   `SHOW,menu,settings=nvs,skill=3,volume=5,gamma=3,mute=1,level=0` -- the
   volume, gamma and mute came back from NVS, the slider's stored value is 5 and
   the level the engine was given is 0, i.e. silence.
-- the shipped `_hud` flashed over it reads the same record
+- the shipped image flashed over it reads the same record
   (`nvs,...,volume=5,gamma=3,mute=1,level=0`; `skill` in that line is whatever
   the diagnostic's script had reached last), and `frame00` is unchanged.
 
@@ -704,29 +800,43 @@ underruns=0,worst_us=..` and the same `SHOW,music,event=periodic,...` line. Both
 trailing fields are the APU's own counters (see Telemetry above); a build with no
 source -- the native simulator -- prints `-` there.
 
-**How to hear it.** `esp32dev_ILI9341_hud_audiotest` is the shipped build plus
-`-D DOOM_AUDIO_SCRIPT=1`: at boot it plays twelve cues -- pistol, shotgun,
-door open, door close, switch, lift, imp sight, player pain, item pickup,
-teleport, barrel explosion, player death -- one every 700 ms through the real
-`S_StartSound` path, and prints a `SHOW,audio,play,id=..,name=..,voice=..,
-vol=..,pitch=..,dur_ms=..` line for each. The `dur_ms` is the fitted duration, so
-the board log can be checked against `tools/sfx_fit.txt` without ears. Flash it
-with `pio run -e esp32dev_ILI9341_hud_audiotest -t upload`. It is a diagnostic,
-never the shipped image.
+**How to hear it.** Building `esp32dev_ILI9341` with
+`-D DOOM_AUDIO_SCRIPT=1` adds the twelve-cue script to the shipped build: at
+boot it plays twelve cues -- pistol, shotgun, door open, door close, switch,
+lift, imp sight, player pain, item pickup, teleport, barrel explosion, player
+death -- one every 700 ms through the real `S_StartSound` path, and prints a
+`SHOW,audio,play,id=..,name=..,voice=..,vol=..,pitch=..,dur_ms=..` line for each.
+The `dur_ms` is the fitted duration, so the board log can be checked against
+`tools/sfx_fit.txt` without ears. Flash it with
+
+```powershell
+$env:PLATFORMIO_BUILD_FLAGS='-D DOOM_AUDIO_SCRIPT=1'; pio run -e esp32dev_ILI9341 -t upload
+```
+
+It is a diagnostic, never the shipped image.
+
+The same cue path runs on the desktop: `native` also carries `DOOM_AUDIO=1`, so
+`pio run -e native -t exec` plays the game's own sounds through SDL2, and adding
+`-D DOOM_AUDIO_SCRIPT=1` to `PLATFORMIO_BUILD_FLAGS` turns that window into the
+same twelve-cue listen test.
 
 ### The level transition's fade
 
 Vanilla's screen melt (`f_wipe.c`) copies `screens[2]` and `screens[3]` -- two
 more 64,000 B surfaces, plus column-major transposes of both. This board does not
-have them: the largest free block after setup is 47,092 B, so the melt is left
-for a 16 MB ESP32-S3 profile. The 4 MB build substitutes a **palette fade**,
-which needs no buffer at all: after every level load -- a map change, a death's
-reload and a New Game -- the first frame is painted black and the next eight
-steps ramp back through the PLAYPAL table the palette path already owns
-(`palette::applyGammaScaled()`: one integer scale per channel before the gamma
-table, then the two packings).
+have them: the largest free block after setup is 47,092 B, so the 4 MB build
+substitutes a **palette fade**, which needs no buffer at all: after every level
+load -- a map change, a death's reload and a New Game -- the first frame is
+painted black and the next eight steps ramp back through the PLAYPAL table the
+palette path already owns (`palette::applyGammaScaled()`: one integer scale per
+channel before the gamma table, then the two packings). Native runs vanilla's
+column melt instead, over the twin planes (`wipe_StartScreen`/`wipe_DoMelt`
+semantics), and it takes eighteen steps: every frame prints
+`SHOW,melt,frame=..,step=..,done=..`, and a transition observed from E1M1 to
+E1M2 prints `SHOW,level,from=E1M1,to=E1M2` beside it. The 4 MB build keeps the
+8-step fade and its `SHOW,fade,steps=8` line.
 
-**What it costs.** Eight table rebuilds per transition, measured on the CYD at
+**What it costs.** Eight table rebuilds per transition, measured on the board at
 **1.96-2.01 ms in total** (`SHOW,fade,steps=8,us=<total>`; ~245 us a step, well
 under one 28.57 ms tic) and nothing at all on the frames between transitions. A
 fade owns the palette while it runs, so the damage/pickup flashes are skipped for
@@ -769,7 +879,7 @@ That composition lives in
 [`src/doomc/LevelTransition.{h,cpp}`](src/doomc/LevelTransition.h), which is
 engine-free (lib/doom and `<string.h>`), so `pio test -e level_test` drives the
 same two calls the board runs. There is no intermission screen: the next map
-loads directly and the palette fade plays over it.
+loads directly and the palette fade (or, on native, the melt) plays over it.
 
 **What carries, and what resets.** Upstream finishes a level with
 `G_PlayerFinishLevel()` and does **not** recreate the inventory: `P_SpawnPlayer`
@@ -811,8 +921,9 @@ session, so a transition allocates nothing; the lump order is one function
 (`readMapLumps()`) so the startup map and a transition bind the same ten lumps in
 the same order the RAM probe measures. The automap is re-initialised for a new
 map (`am_level_init()` reads its linedef count and bounds), not merely stopped;
-the HUD restarts; `S_SetGameLevel`/`S_Start` run as G_DoLoadLevel's do. One
-track ships, so every map plays E1M1's theme rather than the wrong one.
+the HUD restarts; `S_SetGameLevel`/`S_Start` run as G_DoLoadLevel's do. The 4 MB
+build ships one track, so every map plays E1M1's theme rather than the wrong one;
+native selects each level's own theme.
 
 **The eye, before the first tic.** A load has no camera height until a tic
 computes it (`p_player_wire()` is G_PlayerReborn's `memset`; `P_CalcHeight` is
@@ -822,9 +933,9 @@ own tics would reach, in `restartLevelPresentation()` -- see
 [`src/doomc/FrameDriver.cpp`](src/doomc/FrameDriver.cpp). Without it, the frame
 after a load is drawn from the sector floor, where the wall and plane passes no
 longer meet and the surface's `0xFF` prefill fills the gap as a magenta bar at
-each edge of the view. The fade hides that on an ordinary transition; the
-victory does not, because the main menu opens on the next frame and freezes the
-world.
+each edge of the view. The fade (or native's melt) hides that on an ordinary
+transition; the victory does not, because the main menu opens on the next frame
+and freezes the world.
 
 **The serial lines**, one per event:
 
@@ -844,10 +955,10 @@ was on, and a world that cannot be re-laid is closed rather than drawn zeroed.
 `p_use`, E1M1 -> E1M2 with every carried and reset field, the no-carry control,
 E1M3's secret exit to E1M9, E1M8's ending, a save in E1M2 round-tripping into
 E1M2, the slot budget, the weapon repair, no request) and `tools/level_check.py`
-(the nine-change chain). On the board, `env:esp32dev_ILI9341_hud_leveltest` (the
-shipped image plus `DOOM_LEVEL_TEST`) stands the avatar in front of E1M1's own
-exit switch at frame 20 and holds USE through the real button byte from frame
-24. Captured on COM4:
+(the nine-change chain). On the board, `esp32dev_ILI9341` with
+`-D DOOM_LEVEL_TEST=1` (the shipped image plus the transition script) stands the
+avatar in front of E1M1's own exit switch at frame 20 and holds USE through the
+real button byte from frame 24. Captured on COM4:
 
 ```text
 SHOW,level,script=stand,status=ok,level=E1M1,line=330,special=11,standoff=2097152,...
@@ -873,13 +984,14 @@ arena the session sized from its startup map), the main menu opens and the fade
 runs again. `frame00` stays
 `1d8b3849ab3f76750056937f2827bf2bcbb2b98e82976fb3a7ce263d5273c9d3`.
 
-**Watching the whole episode.** `esp32dev_ILI9341_hud_levelwalk` is a viewing
-aid, never shipped: it walks E1M1 -> E1M2 -> E1M3 -> **E1M9** (E1M3's secret
-line 51) -> E1M4 -> E1M5 -> E1M6 -> E1M7 -> E1M8 -> the ending, dwelling about
-three seconds per level. Each press is the real one (`p_use` through the held B
-byte), and the driver's `SHOW,level,script=stand`, `from=...` and `victory=` lines
-are the record of what the panel showed. Flash it, reset, watch; reflash `_hud`
-to return to the game. On COM4 the sequence was:
+**Watching the whole episode.** Building `esp32dev_ILI9341` with
+`-D DOOM_LEVEL_TEST=1 -D DOOM_LEVEL_WALK=1` gives a viewing aid, never shipped:
+it walks E1M1 -> E1M2 -> E1M3 -> **E1M9** (E1M3's secret line 51) -> E1M4 ->
+E1M5 -> E1M6 -> E1M7 -> E1M8 -> the ending, dwelling about three seconds per
+level. Each press is the real one (`p_use` through the held B byte), and the
+driver's `SHOW,level,script=stand`, `from=...` and `victory=` lines are the record
+of what the panel showed. Flash it with those flags, reset, watch; reflash the
+shipped image to return to the game. On COM4 the sequence was:
 
 ```text
 E1M1 -> E1M2 -> E1M3 -> E1M9 -> E1M4 -> E1M5 -> E1M6 -> E1M7 -> E1M8
@@ -956,17 +1068,18 @@ lump or baked error that failed.
 board proves the two WAD-missing branches, because those are the failures a
 person can actually create.
 
-*A table with no `wad` row.* Build and flash the diagnostic environment, which
-is the shipped image over `partitions_nowad.csv`:
+*A table with no `wad` row.* Build the shipped image over `partitions_nowad.csv`:
+add `board_build.partitions = partitions_nowad.csv` to the kept
+`[env:esp32dev_ILI9341]` block in a local, uncommitted edit, then flash it:
 
 ```text
-pio run -e esp32dev_ILI9341_hud_nowad -t upload --upload-port COM4
+pio run -e esp32dev_ILI9341 -t upload --upload-port COM4
 ```
 
 It proves `ERR_PARTITION_MISSING`: `esp_partition_find_first("wad")` returns
 null, the serial keeps `SHOW,setup,status=fail,reason=open,code=3` and adds
 `SHOW,boot,screen=error,reason=partition_missing,code=3,detail=`, and the panel
-shows `NO WAD SLOT`, with no `SHOW,frame` and no panic. The environment is a
+shows `NO WAD SLOT`, with no `SHOW,frame` and no panic. That local build is a
 diagnostic, never the shipped image.
 
 *An erased container over the shipped table.* This one destroys the container on
@@ -1171,8 +1284,8 @@ persistence smoke tool has a fix this project does not wire in:
 `FLASH_EXTRA_IMAGES`/`UPLOADERFLAGS`; add it to the environments you flash if a
 reflash ever loses a settings record you need.
 
-**Flash and RAM budget (measured).** The shipped `_hud` image is **663,049 B of
-the 720,896 B app row (92.0 %)**, leaving 57,847 B; the container is
+**Flash and RAM budget (measured).** The shipped image is **663,197 B of
+the 720,896 B app row (92.0 %)**, leaving 57,699 B; the container is
 **3,078,396 B of 3,375,104 B**, leaving 296,708 B; `dram0_0_seg` keeps
 `seg_free=1124` (the image is 123,456 B of the region, 37.7 % of the chip's RAM).
 The save record (`src/doomc/SaveGame.cpp`) is 25,737 B and PlatformIO links every
@@ -1192,11 +1305,12 @@ engine's own persistence contract suite lives in the engine repository.
 ### Proving a save survives a reset
 
 The record has to outlive the run that wrote it. The board has no buttons the
-build host can press, so the proof is driven by `esp32dev_ILI9341_hud_menutest`
-(the shipped image plus `DOOM_MENU_SCRIPT`); the renderer, the world and the
-frame path are the shipped ones. The diagnostic chooses its script at boot from
-slot 0's label: empty means the full script (settings, six New Games, SAVE slot
-0, LOAD slot 0, SAVE slot 1), used means the load-only script. One image, two
+build host can press, so the proof is driven by `esp32dev_ILI9341` with
+`DOOM_MENU_SCRIPT` (`PLATFORMIO_BUILD_FLAGS='-D DOOM_MENU_SCRIPT=1'`); the
+renderer, the world and the frame path are the shipped ones. The diagnostic
+chooses its script at boot from slot 0's label: empty means the full script
+(settings, six New Games, SAVE slot 0, LOAD slot 0, SAVE slot 1), used means the
+load-only script. One image, two
 boots, and **no reflash between the save and the load** -- the reset is the only
 event between them.
 
@@ -1204,7 +1318,7 @@ The capture sequence, on COM4 at 115200:
 
 1. Erase `saves` (`esptool erase_region 0x3F8000 0x8000`) so all six rows start
    `EMPTY`, flash the diagnostic
-   (`pio run -e esp32dev_ILI9341_hud_menutest -t upload --upload-port COM4`),
+   (`$env:PLATFORMIO_BUILD_FLAGS='-D DOOM_MENU_SCRIPT=1'; pio run -e esp32dev_ILI9341 -t upload --upload-port COM4`),
    then reset and capture 100 s of the full script.
 2. Reset (open COM4, `RtsEnable=$true` for 150 ms, `RtsEnable=$false`) and
    capture 30 s; the same image now runs the load-only script.
@@ -1273,11 +1387,12 @@ rows the slot screen draws: two used, four `EMPTY`. A corrupt row is not loaded
 and not labelled: `DoomPersistence::readSlotLabels()` asks the engine's
 `loadRecord()` for each row, and a `Corrupt` answer leaves the row `EMPTY`;
 `loadSlot()` would print `SHOW,load,slot=N,status=corrupt`. The board-level proof
-is `esp32dev_ILI9341_hud_savetest`, which writes the live world to slot 5 through
-the real `saveRecord()` envelope, then writes the same encoded record to slot 4
-with one payload byte flipped in its RAM buffer and the slot store's raw
-`write()` (so the stored CRC no longer covers the payload; calling `saveRecord()`
-again would recompute it and store a valid record). Its boot line is:
+is `esp32dev_ILI9341` built with `-D DOOM_SAVE_TEST=1`, which writes the
+live world to slot 5 through the real `saveRecord()` envelope, then writes the
+same encoded record to slot 4 with one payload byte flipped in its RAM buffer
+and the slot store's raw `write()` (so the stored CRC no longer covers the
+payload; calling `saveRecord()` again would recompute it and store a valid
+record). Its boot line is:
 
 ```text
 SHOW,savetest,valid=ok,corrupt=corrupt
@@ -1297,9 +1412,15 @@ not a table typed from memory.
 
 Two stages are measured separately, and that separation is the point:
 
-- **the world-pass stage**, `env:esp32dev_ILI9341_frame`, which renders the world
-  pass alone (20 sampled views, two runs each, `-O2`), and
-- **the shipped image**, `env:esp32dev_ILI9341_hud`, which draws the same world
+- **the world-pass stage**, the `esp32dev_ILI9341` block with a local,
+  uncommitted edit that removes the shipped feature flags (`SHOW_E1M1`, `HUD`,
+  `MENU`, `PALFLASH`, `AUDIO`, the two persistence flags and `-Itools`) and adds
+  `-Os` to `build_unflags` (so the framework's `-Os` is removed), plus
+  `PLATFORMIO_BUILD_FLAGS` set to
+  `-D PIXELROOT32_DOOM_FRAME_PROBE=1`, `-D PIXELROOT32_DOOM_RASTER_PROBE=1`,
+  `-Itools` and `-O2`. It renders the world pass alone (20 sampled views, two
+  runs each, `-O2`), and
+- **the shipped image**, which draws the same world
   plus the status bar, the weapon and the sound seam.
 
 Comparing the two directly would call three shipped features a regression. The
@@ -1310,12 +1431,12 @@ against it member by member, below.
 
 | Panel | Role | Geometry | SPI | DMA block | Pixel format | Source |
 | --- | --- | --- | --- | --- | --- | --- |
-| ESP32-2432S028 CYD, ILI9341 | **shipped** | 240x320 panel rotated to a 320x240 frame (`DISPLAY_ROTATION=3`); 320x200 window at 1:1 with two 20 px bars | 40 MHz | 20 lines | RGB565 | `src/platforms/esp32_dev_ILI9341.h`, `platformio.ini` `[env:esp32dev_ILI9341]` |
+| ILI9341 240x320 (ESP32 DevKit) | **shipped** | 240x320 panel rotated to a 320x240 frame (`DISPLAY_ROTATION=3`); 320x200 window at 1:1 with two 20 px bars | 40 MHz | 20 lines | RGB565 | `src/platforms/esp32_dev_ILI9341.h`, `platformio.ini` `[env:esp32dev_ILI9341]` |
 | ST7789 240x240 | **bench, not shipped** | 240x180 window, 320x200 logical surface, `Y_OFF_SET=30` | 40 / 80 MHz | 60 lines | RGB565 | [`bench/README.md`](bench/README.md) |
 
 The ST7789 is a bench row, not a configuration of this project. There is no
 `esp32dev_ST7789` environment, and the bench rows were measured while the
-firmware drove the square panel's pin map on the CYD (no CS, no backlight), so
+firmware drove the square panel's pin map on the board (no CS, no backlight), so
 nothing reached a panel: the SPI and DMA work is real but each figure is a
 **pipeline** number, not a validated frame. Its recorded present cost for a
 240x180 window, and the block-size effect beside it, are:
@@ -1326,14 +1447,14 @@ nothing reached a panel: the SPI and DMA work is real but each figure is a
 | ST7789 240x180 (bench) | 40 MHz | 20 | 17,892 | pipeline only |
 | ST7789 240x180 (bench) | 80 MHz | 60 | 9,557 | pipeline only |
 
-On the shipped CYD the same 320x200 RGB565 window is 128,000 B, which is
+On the shipped board the same 320x200 RGB565 window is 128,000 B, which is
 25.6 ms of wire time at 40 MHz; the shipped `present_us` below is 26.98 ms, the
 wire time plus the DMA tail and the Arduino `yield()`. That is the number the
 present path is allowed to have, and it is measured, not modelled.
 
 ### The shipped image's frame (three 40 s runs)
 
-`env:esp32dev_ILI9341_hud`, container at `0xC0000`. Each run is a separate reset
+`env:esp32dev_ILI9341`, container at `0xC0000`. Each run is a separate reset
 and a separate 40 s capture. The table below is **world frames only**: these
 captures were taken while a bad solder joint on the Select pin (GPIO 35) kept
 opening the automap by itself, and a map frame renders in about 0.9 ms, so those
@@ -1351,7 +1472,7 @@ samples are excluded and counted rather than left to flatter the band.
 | `fps_x10` | 61 | 153 | 160 | 156.1 |
 
 Three facts about that table. `convert_us` is 0 on this path: the engine's
-present performs the 8bpp→RGB565 LUT, so `present_us` carries the conversion.
+present performs the 8bppâ†’RGB565 LUT, so `present_us` carries the conversion.
 `hash_us` is the diagnostic SHA-256 over the index surface, ~22.7 ms, which the
 firmware subtracts from the period: it is charged to the report, never to
 `frame_us` or `fps_x10`. And `update_us` is the tic work -- input, thinkers and
@@ -1375,14 +1496,14 @@ reset to the defaults first) excludes **0** frames and reads `render_us`
 **29,002.7** mean (28,849-29,663), `present_us` 26,987.9, `update_us` 2,667.4,
 `frame_us` 64,996.7, `fps_x10` **151-157, mean 153.4** -- still above the 150
 floor. The render is 1.6 ms above the three-run table: the image gained about
-2.5 KB of code (level transitions) and moved, which is inside the ±1.3-3.3 ms
+2.5 KB of code (level transitions) and moved, which is inside the Â±1.3-3.3 ms
 flash-placement band measured with the weapon A/B build
-(`esp32dev_ILI9341_hud_noweapon`); no renderer code changed.
+(`-D DOOM_HUD_NOWEAPON=1` on `esp32dev_ILI9341`); no renderer code changed.
 
 ### The world-pass stage, and the reconciliation
 
-`env:esp32dev_ILI9341_frame` prints one summary for the 20 sampled views, two
-measured runs each. The line, verbatim from the capture; a second capture agrees
+The world-pass build prints one summary for the 20 sampled views, two measured
+runs each. The line, verbatim from the capture; a second capture agrees
 on the mean (20,035 us) and on the gate, with min/max moving by 8 us and 1 us:
 
 ```text
@@ -1391,7 +1512,7 @@ FRAMEPROF,summary,views=20,runs=2,samples=40,frame_mean_us=20035,frame_min_us=90
 
 The probe's own gate is 20,000 us, so the summary reports `gate=fail` by 35 us.
 Two captures agree on the mean to the microsecond, so this is not jitter, and the
-honest record is a gate miss, not a rounding. It is within the ±1.3-3.3 ms
+honest record is a gate miss, not a rounding. It is within the Â±1.3-3.3 ms
 flash-placement sensitivity: neither the renderer's code nor the baked payloads
 it reads sit at fixed places in the flash cache as the images around them change
 (this probe image is 506,441 B). Which function pays it cannot be named from these
@@ -1411,8 +1532,9 @@ the world pass have recorded costs:
 | **unattributed** | **1,725 us** | 23.4% of the difference; 6.3% of the shipped render |
 
 One like-for-like check before calling that gap final. The shipped image always
-draws E1M1's spawn view, and `_frame`'s view 00 is 20,455 and 20,297 us in its
-two runs (mean **20,376 us**), not the 20,035 us mean over all 20 sampled views.
+draws E1M1's spawn view, and the world-pass build's view 00 is 20,455 and 20,297
+us in its two runs (mean **20,376 us**), not the 20,035 us mean over all 20
+sampled views.
 Against the view the shipped image actually draws, the difference is **7,034 us**:
 5,650 us is still attributed and **1,384 us** (19.7%) is not. The table above
 uses the 20,035 us mean because that is the probe's summary; the view-00 baseline
@@ -1421,8 +1543,8 @@ cheaper views.
 
 The remainder does not close. The first place to look is the flag split the two
 stages are built with: the shipped image is `-Os` (the framework appends it),
-`_frame` removes `-Os` and keeps `-O2`, so the 20,035 us baseline is an `-O2`
-world pass while the shipped world pass is compiled differently. That
+the world-pass build removes `-Os` and keeps `-O2`, so the 20,035 us baseline is
+an `-O2` world pass while the shipped world pass is compiled differently. That
 difference lives inside the 1,725 us and cannot be separated from flash
 placement with the captures that exist. It is reported as a gap, not assigned
 to a feature to make the arithmetic tidy.
@@ -1437,9 +1559,9 @@ are the features and the display settings below.
 
 | Setting | Value | Why it is what it is | Measured or assumed |
 | --- | --- | --- | --- |
-| Build environment | `esp32dev_ILI9341_hud` (extends `_show` → `esp32dev_ILI9341`) | the shipped image; `_frame` is the world-pass measurement build and is never shipped | measured (capture) |
+| Build environment | `esp32dev_ILI9341` | the shipped image; the world-pass configuration is the measurement build and is never shipped | measured (capture) |
 | Platform pin | `espressif32@7.1.2` = Arduino-ESP32 2.0.17 | load-bearing: an unpinned `pio pkg update` moves it to 8.0.0 (Arduino 3.x), which measured 686,446 B of flash and overflowed `dram0_0_seg` by 680 B. Bumping the pin is a repartition decision | measured |
-| Optimization | shipped `-Os`; `_frame` `-O2` with `-Os` removed | the framework appends `-Os` after `build_flags`, so only `build_unflags = -Os` lets `-O2` win. The split is deliberate and is why the two stages are not byte-comparable | measured (`pio run -t envdump`: shipped `CCFLAGS` end `-O2, -Os`; `_frame` has no `-Os` and ends `-O2`) |
+| Optimization | shipped `-Os`; world-pass build `-O2` with `-Os` removed | the framework appends `-Os` after `build_flags`, so only `build_unflags = -Os` lets `-O2` win. The split is deliberate and is why the two stages are not byte-comparable | measured (`pio run -t envdump`: shipped `CCFLAGS` end `-O2, -Os`; the world-pass build has no `-Os` and ends `-O2`) |
 | DMA block | `PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK=20` (`lib/platformio.ini` `[base_esp32]`) | two line buffers of `physicalWidth * 2 B * lines`; 20 lines at 320 px is 25,600 B, which is the DRAM budget; the engine's default is 60 (57,600 B at 240 px, 76,800 B at 320 px), which this project does not use | measured (40 MHz/60 18,198 vs 20 17,892 us on the bench) |
 | SPI clock | 40 MHz (`SPI_FREQUENCY=40000000`) | 80 MHz corrupts this panel on this wiring and 55 MHz is not an achievable divider step | measured (bench) |
 | Pixel format | RGB565 through a 256-entry LUT, byte-swapped for the panel | the engine's present path; DOOM renders 8bpp indices and pays one LUT lookup per pixel | measured (`present_us` matches 25.6 ms wire time) |
@@ -1448,19 +1570,21 @@ are the features and the display settings below.
 | Letterbox | 20 px bars; `X_OFF_SET=20`, `Y_OFF_SET=0` pre-swap | the 320x200 window is 1:1 on the rotated 320x240 panel; the bars are panel rows nothing writes | measured (geometry) |
 | Runtime defaults | `skill=2, volume=8, gamma=0, mute=0` | every capture boots `SHOW,menu,settings=default,...` after an NVS erase | measured (capture) |
 | Settings storage | `nvs` partition, namespace `doom`, key `cfg`, 8 checksummed bytes | the record's bytes are a contract; the engine's `IKeyValueStore` keeps the same namespace and key so a stored record survives | measured (source + capture) |
-| Save slots | six, 3,968 B each, `saves` at `0x3F8000` | not touched by a `_frame` flash because both environments use `partitions_wad.csv` | measured (`slots=6,record=3968`) |
+| Save slots | six, 3,968 B each, `saves` at `0x3F8000` | not touched by a world-pass flash because both builds use `partitions_wad.csv` | measured (`slots=6,record=3968`) |
 
 ### How to reproduce
 
 ```powershell
-# World-pass stage: world pass alone, -O2, 20 sampled views x 2 runs
-pio run -e esp32dev_ILI9341_frame
-pio run -e esp32dev_ILI9341_frame -t upload --upload-port COM4
+# World-pass stage: a local, uncommitted edit removes the shipped feature flags
+# from the esp32dev_ILI9341 block and adds -Os to build_unflags; the probe flags
+# go in the same shell, so the build task sees them:
+$env:PLATFORMIO_BUILD_FLAGS='-D PIXELROOT32_DOOM_FRAME_PROBE=1 -D PIXELROOT32_DOOM_RASTER_PROBE=1 -Itools -O2'; pio run -e esp32dev_ILI9341
+pio run -e esp32dev_ILI9341 -t upload --upload-port COM4
 # reset: open COM4, RtsEnable=$true for 150 ms, RtsEnable=$false; capture 60 s
 # the FRAMEPROF,summary,... line is the result
 
 # Shipped image: three separate 40 s captures, each after its own reset
-pio run -e esp32dev_ILI9341_hud -t upload --upload-port COM4
+pio run -e esp32dev_ILI9341 -t upload --upload-port COM4
 python tools/perf_report.py run1.log
 python tools/perf_report.py run2.log
 python tools/perf_report.py run3.log
@@ -1483,8 +1607,9 @@ no world frame or the world `fps_x10` minimum is under 150 (`--min-fps`).
 the parser and every rule on synthetic logs with no board; `--perturb` lowers
 the parsed band (on a capture, or on its synthetic log when no file is given)
 and must exit non-zero, which is what proves the gate can fail.
-Both environments use `partitions_wad.csv`, so flashing `_frame` and then
-`_hud` does not move `nvs`, `wad` or `saves`; leave the board on `_hud`.
+Both builds use `partitions_wad.csv`, so flashing the world-pass build and then
+the shipped image does not move `nvs`, `wad` or `saves`; leave the board on the
+shipped image.
 
 ## Testing
 
@@ -1492,12 +1617,12 @@ Run everything from **`games/doom`**. The suites and gates that read DOOM's data
 need `tools/DOOM1.WAD` and `tools/DOOM1.whd` (see "Get the WAD and build the
 container"); neither is committed.
 
-**Host suites.** Nineteen `pio test` environments, one per `test/unit/` suite:
+**Host suites.** Twenty `pio test` environments, one per `test/unit/` suite:
 
 ```powershell
-foreach ($e in 'clock_test','frame_log_test','link_test','wad_test','whd_test',
-               'zone_test','rdat_test','rbsp_test','rsegs_test','world_test',
-               'frameprof_test','input_test','menu_test','baked_test',
+foreach ($e in 'clock_test','frame_log_test','link_test','wad_test','wipe_test',
+               'whd_test','zone_test','rdat_test','rbsp_test','rsegs_test',
+               'world_test','frameprof_test','input_test','menu_test','baked_test',
                'flashprof_test','sound_test','boot_test','save_test','level_test') {
     pio test -e $e
 }
@@ -1547,28 +1672,34 @@ and require every stream to be consumed with both readers agreeing.
 
 ## Known limitations
 
-- **E1M1's music on every level.** The 4 MB build ships one theme; the
-  intermission and title are silent (see "Music").
-- **No screen melt, no finale, no intermission.** Level changes use a palette
-  fade; E1M8's ending opens the main menu (see "Level transitions").
-- **239 sprite frames are not in the container.** None is reachable: the sprite
-  table is the union bake (216 names from the nine levels' THINGS and state
-  chains) plus the 28 weapon patches kept raw by name. To restore one, first make
-  it addressable: add it to the union bake (`tools/e1m1_sprites.py`,
+- **E1M1's music on every level (4 MB).** The 4 MB build ships one theme; the
+  intermission and title are silent (see "Music"). Native ships all nine themes,
+  one per level.
+- **No screen melt, no finale, no intermission (4 MB).** Level changes use a
+  palette fade; E1M8's ending opens the main menu (see "Level transitions").
+  Native runs vanilla's column melt.
+- **239 sprite frames are not in the 4 MB container.** None is reachable: the
+  sprite table is the union bake (216 names from the nine levels' THINGS and
+  state chains) plus the 28 weapon patches kept raw by name. To restore one,
+  first make it addressable: add it to the union bake (`tools/e1m1_sprites.py`,
   `tools/sprite_check.py`) or to a raw-by-name list, rebuild the container, and
   keep it under `kBakedCapacity` (384; currently `manifest=370/384`) and inside
-  the container's spare (296,708 B; all 239 need 271,532 B).
-- **A 16 MB ESP32-S3 profile is the home for the remaining cuts:** per-level
-  music, the dropped sprite frames, vanilla's screen melt (two more 64,000 B
-  surfaces) and a twin framebuffer. None of it exists yet.
+  the container's spare (296,708 B; all 239 need 271,532 B). Native's full
+  container keeps them all.
+- **The four cuts above are 4 MB only.** Native (`DOOM_FULL_PROFILE`)
+  implements all four: per-level music, the full sprite set, vanilla's melt and
+  twin index planes. A 16 MB ESP32-S3 hardware profile still does not exist, and
+  nothing here claims S3 hardware support.
 - **The world-pass probe misses its own gate by 35 us** (20,035 against 20,000),
   and **1,725 us of the shipped render is unattributed** (see "Performance and
   settings"). Both are inside the flash-placement band; recovering them is a
   placement or renderer investigation.
-- **`esp32dev_ILI9341_frameram` cannot link, by design.** It is an A/B control
-  (the map decoded into RAM) and is never shipped; its environment comment
-  records that `dram0_0_seg` has 256 B free where the walkable capacity set needs
-  15,424 B. It exists to prove a measurement.
+- **The map-in-RAM A/B control cannot link, by design.** It is the world-pass
+  build plus the flags `-D PIXELROOT32_DOOM_MAP_IN_RAM=1`,
+  `-D PIXELROOT32_DOOM_SAMPLED_VIEW_CAPACITIES=1` and
+  `-D PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK=10`, a local build never shipped; its
+  configuration records that `dram0_0_seg` has 256 B free where the walkable
+  capacity set needs 15,424 B. It exists to prove a measurement.
 - **The loop task's stack is 12 KB, and that is a fix.** At the framework's 8 KB,
   entering the room before E1M1's exit and firing panicked the board
   (`LoadProhibited` inside `z_zone.c`'s `refreshLargestFree`) or hung it with no
@@ -1592,31 +1723,31 @@ and require every stream to be consumed with both readers agreeing.
 
 ```text
 games/doom/
-├── platformio.ini          # every environment: native, the CYD builds, diagnostics, host tests
-├── lib/platformio.ini      # [base] / [base_native] / [base_esp32] templates, platform pin
-├── partitions_wad.csv      # the shipped flash table (nvs / factory / wad / saves)
-├── partitions_nowad.csv    # a table with no wad row, for the failure-screen proof
-├── lib/doom/               # the DOOM core (GPLv2, see License and lib/doom/NOTICE)
-├── src/
-│   ├── main.cpp            # platform selector only
-│   ├── DoomScene.h/.cpp    # composition root: menu, automap, palette, audio, saves
-│   ├── doomc/              # the C<->C++ seam: FrameDriver, WAD/container readers,
-│   │                       # baked graphics, audio, saves, boot and failure screens
-│   ├── palette/            # PLAYPAL, gamma and fade tables
-│   ├── perf/               # the SHOW,frame log
-│   ├── time/               # the drift-free 35 Hz tic clock
-│   ├── assets/music/       # the generated E1M1 track
-│   └── platforms/          # native.h, esp32_dev_ILI9341.h
-├── tools/                  # container encoder, generators, gates (*_check.py), perf_report.py
-├── test/unit/              # the 19 host suites
-└── bench/                  # standalone measurement firmware (not shipped)
+â”œâ”€â”€ platformio.ini          # every environment: native, the esp32dev builds, host tests
+â”œâ”€â”€ lib/platformio.ini      # [base] / [base_native] / [base_esp32] templates, platform pin
+â”œâ”€â”€ partitions_wad.csv      # the shipped flash table (nvs / factory / wad / saves)
+â”œâ”€â”€ partitions_nowad.csv    # a table with no wad row, for the failure-screen proof
+â”œâ”€â”€ lib/doom/               # the DOOM core (GPLv2, see License and lib/doom/NOTICE)
+â”œâ”€â”€ src/
+â”‚   â”œâ”€â”€ main.cpp            # platform selector only
+â”‚   â”œâ”€â”€ DoomScene.h/.cpp    # composition root: menu, automap, palette, audio, saves
+â”‚   â”œâ”€â”€ doomc/              # the C<->C++ seam: FrameDriver, WAD/container readers,
+â”‚   â”‚                       # baked graphics, audio, saves, boot and failure screens
+â”‚   â”œâ”€â”€ palette/            # PLAYPAL, gamma and fade tables
+â”‚   â”œâ”€â”€ perf/               # the SHOW,frame log
+â”‚   â”œâ”€â”€ time/               # the drift-free 35 Hz tic clock
+â”‚   â”œâ”€â”€ assets/music/       # the nine generated level tracks
+â”‚   â””â”€â”€ platforms/          # native.h, esp32_dev_ILI9341.h
+â”œâ”€â”€ tools/                  # container encoder, generators, gates (*_check.py), perf_report.py
+â”œâ”€â”€ test/unit/              # the 20 host suites
+â””â”€â”€ bench/                  # standalone measurement firmware (not shipped)
 ```
 
 ## Measurement bench
 
 [`bench/`](bench/) is a standalone PlatformIO project, not a demo: it sits at
 depth 4, so the demo CI does not discover it, and it is not shipped. It measured
-the numbers the port is built on — SPI clock, DMA block size, fill throughput,
+the numbers the port is built on â€” SPI clock, DMA block size, fill throughput,
 DRAM census, the flash partition map and the letterbox. Its own README carries
 the env table, the serial commands and the results.
 
@@ -1645,3 +1776,4 @@ nowhere.
 **Assets are not GPL.** `DOOM1.WAD` is id Software's shareware data under its own
 terms; neither it nor the container built from it is committed. See
 "Get the WAD and build the container" above.
+

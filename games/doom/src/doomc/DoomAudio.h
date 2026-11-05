@@ -15,7 +15,7 @@
  *
  * `DOOM_AUDIO` is on in the shipped HUD environment and its children. Without
  * it the seam functions are defined as silent stubs, so lib/doom links in
- * every environment (the `_show`, `_frame` and `_wad` families, `native`) and
+ * every environment (the shipped image, the diagnostic builds, `native`) and
  * a build that never wanted sound carries no engine call, no event and no
  * voice table -- only an empty function apiece, which --gc-sections removes
  * from an image that never calls the sound layer.

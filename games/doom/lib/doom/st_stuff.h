@@ -119,7 +119,8 @@ void st_ticker(st_state_t* state, const p_player_t* player);
  *                   R_SCREEN_HEIGHT rows.
  * @param stride     Row stride of @p surface, in bytes.
  * @param withFaces  Draw the face widget. Zero leaves STBAR's own empty face
- *                   box, which is the CYD fall-back profile (Option B).
+ *                   box, which is the DOOM_HUD_NOFACES fall-back profile
+ *                   (Option B).
  * @return the number of patches that could not be drawn (missing or malformed);
  *         0 on a complete bar. A bad patch is skipped, never half-drawn.
  */
