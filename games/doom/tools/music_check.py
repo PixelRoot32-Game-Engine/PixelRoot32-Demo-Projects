@@ -12,8 +12,9 @@ memory** from `tools/DOOM1.WAD` and then, for every emitted track:
     the pitch the MUS names (after the documented octave 0..8 clamp) and a
     start within 25 ms (half an APU tick at 300 BPM) of `musTicks / 140`; the
     converter places it on the nearest 7-MUS-tick grid start;
-  * every press event on a channel that did not make the busiest three is named
-    in the printed drop list, and no other press is missing;
+  * every press event on a channel that did not make the level's arrangement
+    (`mus2tracks.LEVEL_ARRANGEMENTS`; the busiest three for D_INTRO/D_INTER) is
+    named in the printed drop list, and no other press is missing;
   * every percussion tick appears exactly once, carrying the preset of the
     highest-priority class on that tick (kick > snare > tom > open hi-hat >
     closed hi-hat > crash > ride > other), and every losing source hit is in
@@ -21,6 +22,14 @@ memory** from `tools/DOOM1.WAD` and then, for every emitted track:
   * every track's stored durations sum to `round(scoreEnd / 7) / 4` beats and
     project to the same `round(scoreEnd / 7)` APU ticks, so the four loops
     close together exactly;
+  * S1 of `odd/tasks/doom-per-level-music.md`: every one of the nine level
+    themes puts a non-rest note within 5 stored beats (1.0 s) of the score
+    start, and its first 50 stored beats (10 s) carry melodic note-ons and,
+    when the score has percussion there, percussion hits. The melodic floor is
+    `min(8, the onsets the score itself has in that window)`: E1M2's score
+    presses only ch0/ch1 once each and holds them, so its floor is the two it
+    has; every other level carries eight or more. A level that regresses exits
+    non-zero with a line naming the level and the measured number;
   * every committed include -- `src/assets/music/MusE1M1.inc` ..
     `MusE1M9.inc` -- is byte-identical to a fresh conversion and its parsed
     arrays hold the same notes (independent of the renderer: each file is
@@ -120,14 +129,29 @@ def _channel_end(score: mus2tracks.MusScore, channel: int, last_tick: int) -> in
     return mus2tracks._channel_end_tick(score, channel, last_tick)
 
 
-def selected_roles(score: mus2tracks.MusScore) -> tuple[dict[str, int], list[int]]:
-    """The documented rule, re-derived: three busiest melodic channels, and
-    register (mean pitch) decides melody/third/bass among them."""
+def selected_roles(lump: str, score: mus2tracks.MusScore) -> tuple[dict[str, int], list[int]]:
+    """The documented rule, re-derived.
+
+    The nine level themes use the explicit row in `mus2tracks.LEVEL_ARRANGEMENTS`
+    (one melody/third/bass channel per level); a lump outside that table uses
+    the three busiest melodic channels, with register (mean pitch) deciding the
+    role among them.
+    """
+    arrangement = mus2tracks.arrangement_for(lump)
+    if arrangement is not None:
+        melody, third, bass, _reason = arrangement
+        role_of: dict[str, int] = {"melody": melody, "bass": bass}
+        if third is not None:
+            role_of["third"] = third
+        selected = [ch for ch in (melody, third, bass) if ch is not None]
+        melodic = [ch for ch in score.presses if ch != 15 and score.presses[ch]]
+        return role_of, sorted(ch for ch in melodic if ch not in selected)
+
     melodic = [ch for ch in score.presses if ch != 15 and score.presses[ch]]
     ranked = sorted(melodic, key=lambda ch: (-len(score.presses[ch]), ch))
     selected = ranked[:3]
     by_pitch = sorted(selected, key=lambda ch: (_mean([p for _, p in score.presses[ch]]), ch))
-    role_of: dict[str, int] = {}
+    role_of = {}
     if len(by_pitch) == 1:
         role_of["melody"] = by_pitch[0]
     elif len(by_pitch) == 2:
@@ -218,6 +242,78 @@ def expected_percussion(score: mus2tracks.MusScore) -> list[dict]:
     return rows
 
 
+OPENING_WINDOW_BEATS = 50.0   # the first 10 s
+FIRST_SOUND_BEATS = 5.0       # 1.0 s
+MIN_MELODIC_ONSETS = 8
+MIN_PERCUSSION_HITS = 4
+
+
+def source_onsets(score: mus2tracks.MusScore, percussion: bool = False) -> int:
+    """Note-ons the MUS itself carries inside the opening window.
+
+    The converter cannot invent material: E1M2's score has exactly two melodic
+    onsets in the first 10 s (ch0/ch1 press once each and hold), so its window
+    requirement is the two it has. Every other level carries eight or more.
+    """
+    limit = OPENING_WINDOW_BEATS * 4.0
+    if percussion:
+        return len({tick for tick, _ in score.presses.get(15, [])
+                    if mus2tracks._apu_tick(tick) < limit})
+    return sum(1 for channel, presses in score.presses.items() if channel != 15
+               for tick, _ in presses if mus2tracks._apu_tick(tick) < limit)
+
+
+def opening_figures(conv: mus2tracks.Conversion,
+                    tracks: dict[str, list[mus2tracks.EmittedNote]] | None = None) -> dict:
+    """First sound and first-window coverage of the emitted tracks, in beats."""
+    groups = (list(tracks.values()) if tracks is not None
+              else [role.notes for role in conv.roles])
+    first: float | None = None
+    melodic = 0
+    drums = 0
+    for notes in groups:
+        for note in notes:
+            if note.kind == "rest":
+                continue
+            if first is None or note.start_beat < first:
+                first = note.start_beat
+            if note.start_beat < OPENING_WINDOW_BEATS:
+                if note.kind == "drum":
+                    drums += 1
+                else:
+                    melodic += 1
+    return {
+        "first": first,
+        "melodic": melodic,
+        "percussion": drums,
+        "source_melodic": source_onsets(conv.score),
+        "source_percussion": source_onsets(conv.score, percussion=True),
+        "need_melodic": min(MIN_MELODIC_ONSETS, source_onsets(conv.score)),
+        "need_percussion": min(MIN_PERCUSSION_HITS, source_onsets(conv.score, percussion=True)),
+    }
+
+
+def check_opening(conv: mus2tracks.Conversion, failures: Failures,
+                  tracks: dict[str, list[mus2tracks.EmittedNote]] | None = None) -> None:
+    """S1: the first note within 5 stored beats and the first 50 beats covered."""
+    figures = opening_figures(conv, tracks)
+    first = figures["first"]
+    if first is None:
+        failures.add(f"{conv.lump}: no non-rest note on any track, expected the first "
+                     f"within {FIRST_SOUND_BEATS:.3f} stored beats (1.0 s)")
+    elif first > FIRST_SOUND_BEATS:
+        failures.add(f"{conv.lump}: first sound at {first:.3f} stored beats "
+                     f"({first * 0.2:.2f} s), expected <= {FIRST_SOUND_BEATS:.3f} (1.0 s)")
+    if figures["melodic"] < figures["need_melodic"]:
+        failures.add(f"{conv.lump}: {figures['melodic']} melodic note-ons in the first "
+                     f"{OPENING_WINDOW_BEATS:.0f} beats, expected >= {figures['need_melodic']} "
+                     f"(the score carries {figures['source_melodic']})")
+    if figures["percussion"] < figures["need_percussion"]:
+        failures.add(f"{conv.lump}: {figures['percussion']} percussion hits in the first "
+                     f"{OPENING_WINDOW_BEATS:.0f} beats, expected >= {figures['need_percussion']} "
+                     f"(the score carries {figures['source_percussion']})")
+
+
 def check_track(actual: list[mus2tracks.EmittedNote], expected: list[dict],
                 label: str, failures: Failures,
                 role_name: str | None = None) -> None:
@@ -273,7 +369,7 @@ def check_conversion(conv: mus2tracks.Conversion, failures: Failures,
     score = conv.score
     grid_end = mus2tracks._apu_tick(score.score_end_ticks)
     grid_beats = grid_end / 4.0
-    role_of, dropped = selected_roles(score)
+    role_of, dropped = selected_roles(conv.lump, score)
     reported = [entry[0] for entry in conv.dropped]
     if sorted(reported) != sorted(dropped):
         failures.add(f"{conv.lump}: drop list {sorted(reported)}, expected {sorted(dropped)}")
@@ -345,6 +441,10 @@ def check_conversion(conv: mus2tracks.Conversion, failures: Failures,
                       or next(iter(projected.values())) != grid_end):
         failures.add(f"{conv.lump}: projected lengths differ or miss the grid: "
                      f"{projected} vs {grid_end}")
+
+    # S1: the nine committed level themes must open with their own material.
+    if conv.lump in COMMITTED_LUMPS:
+        check_opening(conv, failures, tracks)
 
     # Every press is accounted for: emitted, folded, or dropped.
     selected = set(role_of.values()) | {15}
@@ -650,6 +750,22 @@ def main(argv: list[str] | None = None) -> int:
                   f"({grid_end} APU ticks = {conv.score.score_end_ticks / 140.0:.2f} s)")
             print(f"   grid: {grid_end} ticks on every track, "
                   f"worst start error {worst:.2f} ms")
+            if lump in COMMITTED_LUMPS:
+                channels = {role.role: role.channel for role in conv.roles}
+                shape = ", ".join(f"{name} ch{channels[name]}"
+                                  for name in ("melody", "third", "bass")
+                                  if name in channels)
+                print(f"   arrangement: {shape} -- {conv.arrangement_reason}")
+                figures = opening_figures(conv)
+                first = figures["first"]
+                capped = ("" if figures["need_melodic"] == MIN_MELODIC_ONSETS
+                          else f"; the score has only {figures['source_melodic']}")
+                print(f"   opening: first sound {first:.3f} stored beats "
+                      f"({first * 0.2:.2f} s); first {OPENING_WINDOW_BEATS:.0f} beats: "
+                      f"{figures['melodic']} melodic note-ons "
+                      f"(need {figures['need_melodic']}{capped}), "
+                      f"{figures['percussion']} percussion hits "
+                      f"(need {figures['need_percussion']})")
     if failures:
         print(f"FAIL music_check: {len(failures)} finding(s)")
         return 1
@@ -681,13 +797,27 @@ def main(argv: list[str] | None = None) -> int:
         for lump, conv in conversions.items():
             lines.append(arithmetic(conv, args.headroom,
                                     lump_verdict(lump, conv, args.headroom)))
-            role_of, dropped = selected_roles(conv.score)
+            role_of, dropped = selected_roles(lump, conv.score)
             chosen = ", ".join(f"{role}:ch{channel}" for role, channel in role_of.items())
             dropped_text = ", ".join(f"ch{ch}({len(conv.score.presses[ch])})"
                                      for ch in dropped) or "none"
             lines.append(f"  chosen {chosen}; dropped {dropped_text}; "
                          f"folded {len(conv.folded)} drum hits; "
                          f"pitch wheels {conv.score.pitch_wheels}; clamped {len(conv.clamped)}")
+            if conv.arrangement_reason is not None:
+                lines.append(f"  arrangement: {conv.arrangement_reason}")
+            if lump in COMMITTED_LUMPS:
+                figures = opening_figures(conv)
+                first = figures["first"]
+                lines.append(
+                    f"  opening: first sound {first:.3f} stored beats "
+                    f"({first * 0.2:.2f} s); first {OPENING_WINDOW_BEATS:.0f} beats: "
+                    f"{figures['melodic']} melodic note-ons "
+                    f"(need {figures['need_melodic']} of the score's "
+                    f"{figures['source_melodic']}), "
+                    f"{figures['percussion']} percussion hits "
+                    f"(need {figures['need_percussion']} of the score's "
+                    f"{figures['source_percussion']})")
             for role in conv.roles:
                 ticks = playback_ticks(role.notes)
                 err = worst_start_error_ms(conv, role.role)

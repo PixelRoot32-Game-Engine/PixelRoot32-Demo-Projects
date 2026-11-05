@@ -7,17 +7,18 @@
 // finest grid the API allows. A duration is an integer number of APU
 // ticks / 4 (a multiple of 0.25), so the sequencer's truncation is exact.
 // Score: 21280 MUS ticks = 152.00 s = 3040 APU ticks = 760.000 stored beats.
-// Press events: 877; emitted MusicNotes: 537 (including leading/tail rests and folded drums).
+// Press events: 877; emitted MusicNotes: 489 (including leading/tail rests and folded drums).
 // Pitch-wheel events ignored: 323 (a few cents; the APU has no per-note bend on a track).
 //
 // melody: MUS channel 4, 46 press events, mean pitch 72.00, 760.000 beats
-// third: MUS channel 5, 85 press events, mean pitch 62.91, 760.000 beats
+// third: MUS channel 6, 38 press events, mean pitch 36.00, 760.000 beats
 // bass: MUS channel 0, 78 press events, mean pitch 36.00, 760.000 beats
 // percussion: MUS channel 15, 322 folded hits, 760.000 beats
-// Dropped (not in the busiest three): ch6(38 notes, mean 36.00), ch1(36 notes, mean 62.50), ch2(36 notes, mean 60.00), ch3(36 notes, mean 55.50)
+// Arrangement (level table): ch0/ch6 are the 0 s E2 pedal and ch4 enters at 1.0 s as the high line: 10 melodic onsets in the first 10 s, where the old ch0/ch4/ch5 set had 7 because ch5 starts at 24 s
+// Dropped (not in the level's arrangement): ch1(36 notes, mean 62.50), ch2(36 notes, mean 60.00), ch3(36 notes, mean 55.50), ch5(85 notes, mean 62.91)
 // Folded simultaneous drum pairs: 200 -- priority kick > snare > tom > open hat > closed hat > crash > ride > other
 // Pitch clamped into octave 0..8: none
-// Flash (ESP32): 537 * 16 B = 8,592 B
+// Flash (ESP32): 489 * 16 B = 7,824 B
 //
 // A note's `duration` is (next grid tick - this grid tick) / 4 beats,
 // an exact multiple of 0.25; 0.0 is a same-tick retrigger (no advance).
@@ -84,92 +85,44 @@ const MusicNote kMusE1M8Notes[] = {
 };
 
 const MusicNote kMusE1M8SecondNotes[] = {
-    {Note::Rest, 0, 120.000000f, 0.00f, nullptr},
-    {Note::G, 4, 15.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::F, 4, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 15.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::F, 4, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 15.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 5, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 4, 21.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 4, 15.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 5, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 5, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 5, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 15.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::F, 4, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 15.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::F, 4, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 4, 15.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 5, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 4, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 4, 15.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 5, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 5, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 5, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 3, 15.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 3, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::F, 3, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 3, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 3, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 3, 15.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 3, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::F, 3, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 3, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 3, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 3, 15.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 3, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 4, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 3, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 3, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 3, 15.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Gs, 3, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 4, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 4, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::E, 4, 13.250000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::E, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::D, 4, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 4, 10.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 4, 10.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::E, 4, 13.250000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::E, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::D, 4, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 4, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::E, 4, 13.250000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::E, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::D, 4, 1.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 4, 1.750000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::Ds, 4, 10.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 4, 7.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 3, 2.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 3, 7.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 3, 2.500000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::G, 3, 5.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::B, 3, 5.000000f, 0.28f, &INSTR_PULSE_HARMONY},
-    {Note::C, 4, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
+    {Note::C, 2, 20.000000f, 0.28f, &INSTR_PULSE_HARMONY},
 };
 
 const MusicNote kMusE1M8ThirdNotes[] = {
@@ -582,7 +535,7 @@ const MusicNote kMusE1M8PercussionNotes[] = {
 };
 
 const MusicTrack kMusE1M8SecondTrack = {
-    kMusE1M8SecondNotes, 86u, true, WaveType::PULSE, 0.125f,
+    kMusE1M8SecondNotes, 38u, true, WaveType::PULSE, 0.125f,
     nullptr, nullptr, nullptr};
 
 const MusicTrack kMusE1M8ThirdTrack = {

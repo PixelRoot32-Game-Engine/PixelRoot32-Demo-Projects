@@ -708,13 +708,13 @@ struct ThemeExpectation {
 
 const ThemeExpectation kThemes[] = {
     {(int)mus_e1m1, "e1m1", 657, 712, 263, 513, 480.0f, true},
-    {(int)mus_e1m2, "e1m2", 128, 254, 388, 535, 776.75f, true},
+    {(int)mus_e1m2, "e1m2", 21, 21, 388, 535, 776.75f, true},
     {(int)mus_e1m3, "e1m3", 166, 0, 2176, 1159, 1360.0f, false},
-    {(int)mus_e1m4, "e1m4", 446, 446, 541, 820, 853.25f, true},
+    {(int)mus_e1m4, "e1m4", 446, 99, 541, 820, 853.25f, true},
     {(int)mus_e1m5, "e1m5", 657, 237, 361, 6, 820.0f, true},
-    {(int)mus_e1m6, "e1m6", 385, 193, 193, 452, 420.0f, true},
-    {(int)mus_e1m7, "e1m7", 154, 164, 482, 222, 754.25f, true},
-    {(int)mus_e1m8, "e1m8", 48, 86, 79, 324, 760.0f, true},
+    {(int)mus_e1m6, "e1m6", 385, 65, 122, 452, 420.0f, true},
+    {(int)mus_e1m7, "e1m7", 164, 33, 482, 222, 754.25f, true},
+    {(int)mus_e1m8, "e1m8", 48, 38, 79, 324, 760.0f, true},
     {(int)mus_e1m9, "e1m9", 536, 293, 293, 882, 686.75f, true},
 };
 
@@ -728,6 +728,20 @@ float trackBeats(const MusicTrack& track) {
         total += track.notes[index].duration;
     }
     return total;
+}
+
+/// The stored-beat start of a track's first sound: a melodic note or a drum
+/// (Rest + preset), skipping plain rests.
+float firstSoundBeat(const MusicTrack& track) {
+    float start = 0.0f;
+    for (std::size_t index = 0; index < track.count; ++index) {
+        const pixelroot32::audio::MusicNote& entry = track.notes[index];
+        if (entry.note != Note::Rest || entry.preset != nullptr) {
+            return start;
+        }
+        start += entry.duration;
+    }
+    return start;
 }
 
 }  // namespace
@@ -804,6 +818,27 @@ void test_the_music_bank_plays_the_nine_level_themes(void) {
             }
         }
         TEST_ASSERT_GREATER_THAN(0, drums);
+
+        // S1: every theme opens within 5 stored beats (1.0 s at 300 BPM). The
+        // generic "three busiest" ranking left E1M2 silent for 70.5 beats
+        // (14.1 s) and E1M6/E1M7 for 60/68.25 beats, so the arrangement table
+        // must keep a channel with material at the score start.
+        float firstSound = firstSoundBeat(*track);
+        if (track->secondVoice != nullptr) {
+            const float second = firstSoundBeat(*track->secondVoice);
+            if (second < firstSound) {
+                firstSound = second;
+            }
+        }
+        const float bass = firstSoundBeat(*track->thirdVoice);
+        if (bass < firstSound) {
+            firstSound = bass;
+        }
+        const float percussion = firstSoundBeat(*track->percussion);
+        if (percussion < firstSound) {
+            firstSound = percussion;
+        }
+        TEST_ASSERT_TRUE(firstSound <= 5.0f);
     }
 
     // One asset per id: a level change must start different music, not restart
