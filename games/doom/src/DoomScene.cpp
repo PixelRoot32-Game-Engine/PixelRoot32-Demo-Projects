@@ -1058,6 +1058,19 @@ void DoomScene::init() {
     // prints the INPUT line.
     buttons_ = 0;
 
+#if defined(DOOM_FULL_PROFILE)
+    // The twin index planes are scene storage, so the boot log states the cost
+    // the profile pays once instead of per frame. `SHOW,census,pool`'s
+    // `twin64` field is a different fact -- the board's single-block heap probe
+    // -- and keeps its own meaning and values.
+    {
+        char twinLine[64];
+        std::snprintf(twinLine, sizeof twinLine, "SHOW,twin,planes=2,bytes=%u\n",
+                      static_cast<unsigned>(2u * kIndexPlaneBytes));
+        writeConsoleLine(twinLine);
+    }
+#endif
+
 #if defined(DOOM_MENU)
     // A closed menu with the defaults, so a session that never opens (no
     // partition, rejected container) still has a well-formed one. The real
@@ -2274,6 +2287,19 @@ void DoomScene::draw(Renderer& renderer) {
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1)
 
+#if defined(PLATFORM_NATIVE)
+const std::uint8_t* DoomScene::previousIndexPlane() const {
+#if defined(DOOM_FULL_PROFILE)
+    // The frame just drawn lives in `indexPlaneCurrent_`; the other plane is
+    // the one that still holds the frame before it. Without the gate there is
+    // no second plane and no previous frame to hand out.
+    return indexPlanes_[static_cast<std::size_t>(indexPlaneCurrent_ ^ 1u)];
+#else
+    return nullptr;
+#endif
+}
+#endif  // PLATFORM_NATIVE
+
 #if defined(DOOM_SCREENSHOT)
 
 namespace {
@@ -2522,14 +2548,22 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
     }
 #if defined(PLATFORM_NATIVE)
     // The desktop mirror: SDL2 has no 8bpp surface, so the indices land in a
-    // scratch plane and are expanded to RGB565 exactly the way the panel's LUT
-    // expands them, which keeps the window showing the panel's colours instead of
-    // a second, slightly different conversion. Guarded by PLATFORM_NATIVE because
-    // on the board the scratch would cost 64,000 B of DRAM for a branch the TFT
-    // driver never takes.
+    // scene-owned plane and are expanded to RGB565 exactly the way the panel's
+    // LUT expands them, which keeps the window showing the panel's colours
+    // instead of a second, slightly different conversion. Guarded by
+    // PLATFORM_NATIVE because on the board the plane would cost DRAM for a
+    // branch the TFT driver never takes.
     else if (std::uint16_t* pixels = surface.getPixelBuffer()) {
-        static std::uint8_t indices[static_cast<std::size_t>(kLogicalWidth)
-                                    * static_cast<std::size_t>(kLogicalHeight)];
+#if defined(DOOM_FULL_PROFILE)
+        // Alternate the twin planes per native frame: flip before the render
+        // so this frame draws into the plane the last expansion did not read,
+        // leaving the other one holding the previous completed frame for the
+        // level transition. A refused frame leaves that completed plane alone.
+        indexPlaneCurrent_ = static_cast<std::uint8_t>(indexPlaneCurrent_ ^ 1u);
+        std::uint8_t* indices = indexPlanes_[indexPlaneCurrent_];
+#else
+        std::uint8_t* indices = indexPlane_;
+#endif
         if (sceneRenderer_.isOpen() && width == kLogicalWidth && height == kLogicalHeight) {
             doomc::SceneFrameMeasurements measured;
             if (sceneRenderer_.render(indices, width, height, showPendingReport_, &measured)) {

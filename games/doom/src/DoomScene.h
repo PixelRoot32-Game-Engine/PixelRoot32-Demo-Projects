@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include <core/Scene.h>
@@ -160,6 +161,30 @@ public:
     void init() override;
     void update(unsigned long deltaTime) override;
     void draw(pixelroot32::graphics::Renderer& renderer) override;
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(PLATFORM_NATIVE)
+    /**
+     * @brief The 320x200 8-bit plane holding the previous completed game frame.
+     *
+     * The desktop mirror renders DOOM's palette indices into scene-owned
+     * storage and expands them to RGB565 there; the level transition needs the
+     * frame that was already on the screen when the new level starts drawing,
+     * which is exactly the plane this frame does not render into. The scene
+     * alternates two planes per native frame, so the returned plane is the one
+     * the frame that just finished did not draw.
+     *
+     * With `DOOM_FULL_PROFILE` undefined the scene owns one plane only, there
+     * is no previous frame to reach, and this returns nullptr.
+     *
+     * The pointer is valid until the next `draw()`: its content may be
+     * overwritten then. Before the first completed frame the returned plane is
+     * the zero fill the scene was constructed with.
+     *
+     * @return The previous frame's plane, or nullptr on a build without
+     *         `DOOM_FULL_PROFILE`.
+     */
+    [[nodiscard]] const std::uint8_t* previousIndexPlane() const;
+#endif
 
 private:
     /**
@@ -576,6 +601,35 @@ private:
     const char* showRefusalStage_[kShowRefusalKinds] = {};
     int showRefusalCode_[kShowRefusalKinds] = {};
     int showRefusalKinds_ = 0;
+#endif
+
+    /// Bytes in one 320x200 8-bit DOOM index plane.
+    static constexpr std::size_t kIndexPlaneBytes =
+        static_cast<std::size_t>(kLogicalWidth) * static_cast<std::size_t>(kLogicalHeight);
+
+#if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(PLATFORM_NATIVE)
+    /**
+     * @brief The native index planes DOOM renders into before RGB565 expansion.
+     *
+     * Scene storage instead of a function-local static, so the previous frame
+     * survives a level load: under `DOOM_FULL_PROFILE` there are two planes and
+     * each native frame alternates them, which is what lets the level
+     * transition read the frame that was already on screen. The arrays are
+     * value-initialised once at construction, not per frame; the renderer
+     * overwrites a plane's pixels on every draw that reaches it.
+     *
+     * Without the gate this is the single scratch plane the desktop mirror has
+     * always used, unchanged in size and meaning.
+     */
+#if defined(DOOM_FULL_PROFILE)
+    std::uint8_t indexPlanes_[2][kIndexPlaneBytes] = {};
+
+    /// Plane the next native frame renders into. Flipped before the render, so
+    /// the other plane keeps the frame that just completed.
+    std::uint8_t indexPlaneCurrent_ = 0;
+#else
+    std::uint8_t indexPlane_[kIndexPlaneBytes] = {};
+#endif
 #endif
 
 #if defined(PIXELROOT32_DOOM_FRAME_LOG)
