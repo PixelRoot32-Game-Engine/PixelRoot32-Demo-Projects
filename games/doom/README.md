@@ -34,11 +34,12 @@ The `OPTIONS` screen at its default values.
 
 E1M1 at the spawn point, with the status bar.
 
-All three are the native build's own captures, one per `native_shot_*`
-environment (`native_shot_menu`, `native_shot_settings`, `native_shot_gameplay`):
-each run writes the finished 320x200 surface through `DOOM_SCREENSHOT` and then
-converts that PPM to PNG, so the frames reproduce byte for byte instead of being
-mock-ups.
+All three are the native build's own captures, produced by three `native` recipes
+(frame 20 for gameplay, 80 for the menu, 140 for the options screen) that set
+`DOOM_MENU_SCRIPT=1`, `DOOM_SCREENSHOT` and `DOOM_SCREENSHOT_PATH` through
+`PLATFORMIO_BUILD_FLAGS`; each writes the finished 320x200 surface as a PPM and
+then converts that PPM to PNG, so the frames reproduce byte for byte instead of
+being mock-ups.
 
 ## Quick path
 
@@ -134,10 +135,19 @@ The native controls are the board's, on a keyboard: arrows walk and turn,
 which opens and closes the menu. Select has no native key, so the automap is
 board-only.
 
-Three environments exist only to produce the repository's screenshots:
-`native_shot_menu`, `native_shot_settings` and `native_shot_gameplay` each build
-the same game, run it headless, write one finished frame as a PPM and exit.
-`pio run -e native_shot_menu -t exec` is a complete capture.
+The three `native` recipes each build the same game, run it headless, write one
+finished frame as a PPM and exit. Set `PLATFORMIO_BUILD_FLAGS` in the **same
+PowerShell invocation** as `pio run`: PlatformIO's build task rebuilds when the
+flags change, and it does not carry a variable set in another shell. Every flag
+recipe below uses that shape with the environment named in the text. A complete
+capture is
+
+```powershell
+$env:PLATFORMIO_BUILD_FLAGS='-D DOOM_MENU_SCRIPT=1 -D DOOM_SCREENSHOT=20 -D DOOM_SCREENSHOT_PATH=\".pio/screenshots/gameplay.ppm\"'; pio run -e native -t exec
+```
+
+with `DOOM_SCREENSHOT=80` and `menu.ppm` for the main menu and `140` and
+`settings.ppm` for the options screen.
 
 ```bash
 pio run -e esp32dev_ILI9341_hud --target upload
@@ -147,8 +157,8 @@ pio device monitor
 `esp32dev_ILI9341_hud` extends `esp32dev_ILI9341_show`, which extends
 `esp32dev_ILI9341`; the `_show` and `_hud` families select
 [`partitions_wad.csv`](partitions_wad.csv), the plain `esp32dev_ILI9341` does
-not. Every other `esp32dev_ILI9341_*` environment is a diagnostic or a
-measurement build and is never the shipped image.
+not. The diagnostic and measurement builds below are flag recipes or local
+configuration edits on these environments, never the shipped image.
 
 **Do not run `pio pkg update` on this project.** The platform pin is
 load-bearing: an unpinned update moves `espressif32@7.1.2` (Arduino-ESP32
@@ -312,14 +322,16 @@ DOOM's screen size 9 (320x168, `centery` 84) and `lib/doom/st_stuff.c` repaints
 the bottom 32 rows every frame from the player the world already owns (ammo,
 health, armor, the arms digits, the three key boxes and the face). `_show` keeps
 the 200-row view whose frame-00 hash is `50fb3d9c...`; the HUD frame has its own,
-`1d8b3849...`. `esp32dev_ILI9341_hud_nofaces` is the CYD fall-back (the bar
-without the face widget), kept for the case the full bar misses its frame rate.
+`1d8b3849...`. Building `esp32dev_ILI9341_hud` with `-D DOOM_HUD_NOFACES=1`
+gives the CYD fall-back (the bar without the face widget), kept for the case the
+full bar misses its frame rate.
 `lib/doom/r_psprite.c` draws the weapon in hand over the view and under the bar
 (`R_DrawPlayerSprites`: the weapon and its muzzle flash, lit by the player's
 sector, full bright for the flash frames); its patches are the raw lumps of
-`tools/weapon_lumps.txt`. `esp32dev_ILI9341_hud_noweapon` is the same build
-without that call, kept only to measure what the weapon costs. Not drawn: the
-invisibility fuzz and the deathmatch frags (the palette flashes are below).
+`tools/weapon_lumps.txt`. Adding `-D DOOM_HUD_NOWEAPON=1` to the same
+environment gives the same build without that call, kept only to measure what
+the weapon costs. Not drawn: the invisibility fuzz and the deathmatch frags (the
+palette flashes are below).
 `python tools/hud_draw_check.py --wad DOOM1.WAD` and
 `python tools/weapon_draw_check.py --wad DOOM1.WAD` compare the bar and the
 weapon with independent oracles pixel by pixel.
@@ -346,9 +358,10 @@ applied to each page.
 `python tools/palflash_check.py --wad DOOM1.WAD --container DOOM1.whd` compares
 the page selection, the 14 pages at five gamma levels and the decay on the real
 world with an independent oracle (`--perturb` must fail).
-`esp32dev_ILI9341_hud_palflashtest` plays a scripted damage and pickups into the
-real player state and prints every switch (`SHOW,palette,...`); a diagnostic, never
-the shipped image. `esp32dev_ILI9341_hud_nopalflash` compiles the feature out for A/B.
+Building `esp32dev_ILI9341_hud` with `-D DOOM_PALFLASH_SCRIPT=1` plays a
+scripted damage and pickups into the real player state and prints every switch
+(`SHOW,palette,...`); a diagnostic, never the shipped image. `-UDOOM_PALFLASH`
+on the same environment compiles the feature out for A/B.
 
 ### The menu and the settings
 
@@ -433,9 +446,9 @@ tools/DOOM1.whd` (New Game fits the board's arena at all five skills; under
 the WAD's), `python tools/menu_draw_check.py --wad DOOM1.WAD` (the menu screens
 against an independent drawer, pixel by pixel, the mute row included) and
 `pio test -e menu_test` (the mute codec and the volume mapping among its cases).
-`esp32dev_ILI9341_hud_menutest` plays a fixed input script into the real button
-path so the board can be driven without pressing anything; it is a diagnostic,
-never the shipped image.
+Building `esp32dev_ILI9341_hud` with `-D DOOM_MENU_SCRIPT=1` plays a fixed input
+script into the real button path so the board can be driven without pressing
+anything; it is a diagnostic, never the shipped image.
 
 ### The automap
 
@@ -502,11 +515,11 @@ bits) and compares the whole 320x200 surface with an independent oracle in
 light strobe, the grid, zoom-in, a pan with the follow cancelled, zoom-out to the
 clamp, the computer-map power-up, E1M2 with its own bounds, and the stopped map.
 Rows 168-199 must stay untouched. `--perturb colour|scale` moves one oracle
-constant and must fail. `esp32dev_ILI9341_hud_mapcheck` plays a fixed input script
-(Select, A, B, the d-pad, a walk, Select again) through the real button path and
-prints `SHOW,map` for every reported frame; it reads only the script's Select bit,
-so the pin's electrical noise cannot scramble the states. A diagnostic, never the
-shipped image.
+constant and must fail. Building `esp32dev_ILI9341_hud` with
+`-D DOOM_MAP_SCRIPT=1` plays a fixed input script (Select, A, B, the d-pad, a
+walk, Select again) through the real button path and prints `SHOW,map` for every
+reported frame; it reads only the script's Select bit, so the pin's electrical
+noise cannot scramble the states. A diagnostic, never the shipped image.
 
 ### Sound
 
@@ -658,14 +671,14 @@ simulator has the sound layer but installs no source (SDL2's backend exposes no
 counters), so its line keeps the dashes too: a zero would claim a measurement
 nobody took. The wiring costs 44 B of flash.
 
-**The soak.** `esp32dev_ILI9341_hud_soak` is the shipped HUD build plus
-`-D DOOM_AUDIO_SOAK=1`. E1M1 plays from level load, and every four tics the scene
-submits all four longest one-shots -- `barexp`, `telept`, `rlaunc`, `pldeth` --
-from four distinct `S_SectorOrigin()` tokens. Each token re-fires its own origin,
-so re-arming a cue never has to steal a voice, and four sequencer tracks plus
-four SFX voices synthesise continuously (about 30 submits a second at the
-shipped frame rate, because a round runs at most once per frame). Once a minute
-it prints
+**The soak.** Building `esp32dev_ILI9341_hud` with `-D DOOM_AUDIO_SOAK=1` adds
+the soak script to the shipped HUD build. E1M1 plays from level load, and every
+four tics the scene submits all four longest one-shots -- `barexp`, `telept`,
+`rlaunc`, `pldeth` -- from four distinct `S_SectorOrigin()` tokens. Each token
+re-fires its own origin, so re-arming a cue never has to steal a voice, and four
+sequencer tracks plus four SFX voices synthesise continuously (about 30 submits
+a second at the shipped frame rate, because a round runs at most once per
+frame). Once a minute it prints
 
 ```
 SHOW,audio,soak,t=60,plays=..,steals=..,refused=..,active=..,underruns=..,worst_us=..,fps_x10=..
@@ -686,7 +699,7 @@ render block is **512 samples, 23.22 ms**, so divide that percentage by four to
 read it against the deadline an underrun is measured against.
 
 Recorded baseline, CYD, one 10-minute run
-(`pio run -e esp32dev_ILI9341_hud_soak -t upload`, whole log captured):
+(`$env:PLATFORMIO_BUILD_FLAGS='-D DOOM_AUDIO_SOAK=1'; pio run -e esp32dev_ILI9341_hud -t upload`, whole log captured):
 
 - `underruns` **0** at every minute and at the end -- the acceptance criterion.
 - `worst_us` 5,938 -> **5,971**, i.e. 102.8 % of the 5.80 ms reference and
@@ -746,7 +759,8 @@ Recorded on the board (COM4, CYD), NVS erased first:
 - shipped `_hud`, nothing stored:
   `SHOW,menu,settings=default,skill=2,volume=8,gamma=0,mute=0,level=67` -- the
   default 8 of 15 is level 67 of 127, so the master gain is 0.527.
-- `esp32dev_ILI9341_hud_menutest`, one full script: the OPTIONS save reads
+- `-D DOOM_MENU_SCRIPT=1` on `esp32dev_ILI9341_hud`, one full script: the
+  OPTIONS save reads
   `SHOW,menu,saved=ok,skill=2,volume=5,gamma=3,mute=1`, the five New Games keep
   `volume=5,gamma=3,mute=1`, and the last one leaves `skill=3`.
 - RTS reset of that image:
@@ -785,15 +799,20 @@ underruns=0,worst_us=..` and the same `SHOW,music,event=periodic,...` line. Both
 trailing fields are the APU's own counters (see Telemetry above); a build with no
 source -- the native simulator -- prints `-` there.
 
-**How to hear it.** `esp32dev_ILI9341_hud_audiotest` is the shipped build plus
-`-D DOOM_AUDIO_SCRIPT=1`: at boot it plays twelve cues -- pistol, shotgun,
-door open, door close, switch, lift, imp sight, player pain, item pickup,
-teleport, barrel explosion, player death -- one every 700 ms through the real
-`S_StartSound` path, and prints a `SHOW,audio,play,id=..,name=..,voice=..,
-vol=..,pitch=..,dur_ms=..` line for each. The `dur_ms` is the fitted duration, so
-the board log can be checked against `tools/sfx_fit.txt` without ears. Flash it
-with `pio run -e esp32dev_ILI9341_hud_audiotest -t upload`. It is a diagnostic,
-never the shipped image.
+**How to hear it.** Building `esp32dev_ILI9341_hud` with
+`-D DOOM_AUDIO_SCRIPT=1` adds the twelve-cue script to the shipped build: at
+boot it plays twelve cues -- pistol, shotgun, door open, door close, switch,
+lift, imp sight, player pain, item pickup, teleport, barrel explosion, player
+death -- one every 700 ms through the real `S_StartSound` path, and prints a
+`SHOW,audio,play,id=..,name=..,voice=..,vol=..,pitch=..,dur_ms=..` line for each.
+The `dur_ms` is the fitted duration, so the board log can be checked against
+`tools/sfx_fit.txt` without ears. Flash it with
+
+```powershell
+$env:PLATFORMIO_BUILD_FLAGS='-D DOOM_AUDIO_SCRIPT=1'; pio run -e esp32dev_ILI9341_hud -t upload
+```
+
+It is a diagnostic, never the shipped image.
 
 The same cue path runs on the desktop: `native` also carries `DOOM_AUDIO=1`, so
 `pio run -e native -t exec` plays the game's own sounds through SDL2, and adding
@@ -935,10 +954,10 @@ was on, and a world that cannot be re-laid is closed rather than drawn zeroed.
 `p_use`, E1M1 -> E1M2 with every carried and reset field, the no-carry control,
 E1M3's secret exit to E1M9, E1M8's ending, a save in E1M2 round-tripping into
 E1M2, the slot budget, the weapon repair, no request) and `tools/level_check.py`
-(the nine-change chain). On the board, `env:esp32dev_ILI9341_hud_leveltest` (the
-shipped image plus `DOOM_LEVEL_TEST`) stands the avatar in front of E1M1's own
-exit switch at frame 20 and holds USE through the real button byte from frame
-24. Captured on COM4:
+(the nine-change chain). On the board, `esp32dev_ILI9341_hud` with
+`-D DOOM_LEVEL_TEST=1` (the shipped image plus the transition script) stands the
+avatar in front of E1M1's own exit switch at frame 20 and holds USE through the
+real button byte from frame 24. Captured on COM4:
 
 ```text
 SHOW,level,script=stand,status=ok,level=E1M1,line=330,special=11,standoff=2097152,...
@@ -964,13 +983,14 @@ arena the session sized from its startup map), the main menu opens and the fade
 runs again. `frame00` stays
 `1d8b3849ab3f76750056937f2827bf2bcbb2b98e82976fb3a7ce263d5273c9d3`.
 
-**Watching the whole episode.** `esp32dev_ILI9341_hud_levelwalk` is a viewing
-aid, never shipped: it walks E1M1 -> E1M2 -> E1M3 -> **E1M9** (E1M3's secret
-line 51) -> E1M4 -> E1M5 -> E1M6 -> E1M7 -> E1M8 -> the ending, dwelling about
-three seconds per level. Each press is the real one (`p_use` through the held B
-byte), and the driver's `SHOW,level,script=stand`, `from=...` and `victory=` lines
-are the record of what the panel showed. Flash it, reset, watch; reflash `_hud`
-to return to the game. On COM4 the sequence was:
+**Watching the whole episode.** Building `esp32dev_ILI9341_hud` with
+`-D DOOM_LEVEL_TEST=1 -D DOOM_LEVEL_WALK=1` gives a viewing aid, never shipped:
+it walks E1M1 -> E1M2 -> E1M3 -> **E1M9** (E1M3's secret line 51) -> E1M4 ->
+E1M5 -> E1M6 -> E1M7 -> E1M8 -> the ending, dwelling about three seconds per
+level. Each press is the real one (`p_use` through the held B byte), and the
+driver's `SHOW,level,script=stand`, `from=...` and `victory=` lines are the record
+of what the panel showed. Flash it with those flags, reset, watch; reflash plain
+`_hud` to return to the game. On COM4 the sequence was:
 
 ```text
 E1M1 -> E1M2 -> E1M3 -> E1M9 -> E1M4 -> E1M5 -> E1M6 -> E1M7 -> E1M8
@@ -1047,17 +1067,18 @@ lump or baked error that failed.
 board proves the two WAD-missing branches, because those are the failures a
 person can actually create.
 
-*A table with no `wad` row.* Build and flash the diagnostic environment, which
-is the shipped image over `partitions_nowad.csv`:
+*A table with no `wad` row.* Build the shipped image over `partitions_nowad.csv`:
+add `board_build.partitions = partitions_nowad.csv` to the kept
+`[env:esp32dev_ILI9341_hud]` block in a local, uncommitted edit, then flash it:
 
 ```text
-pio run -e esp32dev_ILI9341_hud_nowad -t upload --upload-port COM4
+pio run -e esp32dev_ILI9341_hud -t upload --upload-port COM4
 ```
 
 It proves `ERR_PARTITION_MISSING`: `esp_partition_find_first("wad")` returns
 null, the serial keeps `SHOW,setup,status=fail,reason=open,code=3` and adds
 `SHOW,boot,screen=error,reason=partition_missing,code=3,detail=`, and the panel
-shows `NO WAD SLOT`, with no `SHOW,frame` and no panic. The environment is a
+shows `NO WAD SLOT`, with no `SHOW,frame` and no panic. That local build is a
 diagnostic, never the shipped image.
 
 *An erased container over the shipped table.* This one destroys the container on
@@ -1283,11 +1304,12 @@ engine's own persistence contract suite lives in the engine repository.
 ### Proving a save survives a reset
 
 The record has to outlive the run that wrote it. The board has no buttons the
-build host can press, so the proof is driven by `esp32dev_ILI9341_hud_menutest`
-(the shipped image plus `DOOM_MENU_SCRIPT`); the renderer, the world and the
-frame path are the shipped ones. The diagnostic chooses its script at boot from
-slot 0's label: empty means the full script (settings, six New Games, SAVE slot
-0, LOAD slot 0, SAVE slot 1), used means the load-only script. One image, two
+build host can press, so the proof is driven by `esp32dev_ILI9341_hud` with
+`DOOM_MENU_SCRIPT` (`PLATFORMIO_BUILD_FLAGS='-D DOOM_MENU_SCRIPT=1'`); the
+renderer, the world and the frame path are the shipped ones. The diagnostic
+chooses its script at boot from slot 0's label: empty means the full script
+(settings, six New Games, SAVE slot 0, LOAD slot 0, SAVE slot 1), used means the
+load-only script. One image, two
 boots, and **no reflash between the save and the load** -- the reset is the only
 event between them.
 
@@ -1295,7 +1317,7 @@ The capture sequence, on COM4 at 115200:
 
 1. Erase `saves` (`esptool erase_region 0x3F8000 0x8000`) so all six rows start
    `EMPTY`, flash the diagnostic
-   (`pio run -e esp32dev_ILI9341_hud_menutest -t upload --upload-port COM4`),
+   (`$env:PLATFORMIO_BUILD_FLAGS='-D DOOM_MENU_SCRIPT=1'; pio run -e esp32dev_ILI9341_hud -t upload --upload-port COM4`),
    then reset and capture 100 s of the full script.
 2. Reset (open COM4, `RtsEnable=$true` for 150 ms, `RtsEnable=$false`) and
    capture 30 s; the same image now runs the load-only script.
@@ -1364,11 +1386,12 @@ rows the slot screen draws: two used, four `EMPTY`. A corrupt row is not loaded
 and not labelled: `DoomPersistence::readSlotLabels()` asks the engine's
 `loadRecord()` for each row, and a `Corrupt` answer leaves the row `EMPTY`;
 `loadSlot()` would print `SHOW,load,slot=N,status=corrupt`. The board-level proof
-is `esp32dev_ILI9341_hud_savetest`, which writes the live world to slot 5 through
-the real `saveRecord()` envelope, then writes the same encoded record to slot 4
-with one payload byte flipped in its RAM buffer and the slot store's raw
-`write()` (so the stored CRC no longer covers the payload; calling `saveRecord()`
-again would recompute it and store a valid record). Its boot line is:
+is `esp32dev_ILI9341_hud` built with `-D DOOM_SAVE_TEST=1`, which writes the
+live world to slot 5 through the real `saveRecord()` envelope, then writes the
+same encoded record to slot 4 with one payload byte flipped in its RAM buffer
+and the slot store's raw `write()` (so the stored CRC no longer covers the
+payload; calling `saveRecord()` again would recompute it and store a valid
+record). Its boot line is:
 
 ```text
 SHOW,savetest,valid=ok,corrupt=corrupt
@@ -1388,8 +1411,13 @@ not a table typed from memory.
 
 Two stages are measured separately, and that separation is the point:
 
-- **the world-pass stage**, `env:esp32dev_ILI9341_frame`, which renders the world
-  pass alone (20 sampled views, two runs each, `-O2`), and
+- **the world-pass stage**, the kept `esp32dev_ILI9341` block with a local,
+  uncommitted edit adding `board_build.partitions = partitions_wad.csv` and
+  `-Os` to `build_unflags` (so the framework's `-Os` is removed), plus
+  `PLATFORMIO_BUILD_FLAGS` set to
+  `-D PIXELROOT32_DOOM_FRAME_PROBE=1`, `-D PIXELROOT32_DOOM_RASTER_PROBE=1`,
+  `-Itools` and `-O2`. It renders the world pass alone (20 sampled views, two
+  runs each, `-O2`), and
 - **the shipped image**, `env:esp32dev_ILI9341_hud`, which draws the same world
   plus the status bar, the weapon and the sound seam.
 
@@ -1468,12 +1496,12 @@ reset to the defaults first) excludes **0** frames and reads `render_us`
 floor. The render is 1.6 ms above the three-run table: the image gained about
 2.5 KB of code (level transitions) and moved, which is inside the ±1.3-3.3 ms
 flash-placement band measured with the weapon A/B build
-(`esp32dev_ILI9341_hud_noweapon`); no renderer code changed.
+(`-D DOOM_HUD_NOWEAPON=1` on `esp32dev_ILI9341_hud`); no renderer code changed.
 
 ### The world-pass stage, and the reconciliation
 
-`env:esp32dev_ILI9341_frame` prints one summary for the 20 sampled views, two
-measured runs each. The line, verbatim from the capture; a second capture agrees
+The world-pass build prints one summary for the 20 sampled views, two measured
+runs each. The line, verbatim from the capture; a second capture agrees
 on the mean (20,035 us) and on the gate, with min/max moving by 8 us and 1 us:
 
 ```text
@@ -1502,8 +1530,9 @@ the world pass have recorded costs:
 | **unattributed** | **1,725 us** | 23.4% of the difference; 6.3% of the shipped render |
 
 One like-for-like check before calling that gap final. The shipped image always
-draws E1M1's spawn view, and `_frame`'s view 00 is 20,455 and 20,297 us in its
-two runs (mean **20,376 us**), not the 20,035 us mean over all 20 sampled views.
+draws E1M1's spawn view, and the world-pass build's view 00 is 20,455 and 20,297
+us in its two runs (mean **20,376 us**), not the 20,035 us mean over all 20
+sampled views.
 Against the view the shipped image actually draws, the difference is **7,034 us**:
 5,650 us is still attributed and **1,384 us** (19.7%) is not. The table above
 uses the 20,035 us mean because that is the probe's summary; the view-00 baseline
@@ -1512,8 +1541,8 @@ cheaper views.
 
 The remainder does not close. The first place to look is the flag split the two
 stages are built with: the shipped image is `-Os` (the framework appends it),
-`_frame` removes `-Os` and keeps `-O2`, so the 20,035 us baseline is an `-O2`
-world pass while the shipped world pass is compiled differently. That
+the world-pass build removes `-Os` and keeps `-O2`, so the 20,035 us baseline is
+an `-O2` world pass while the shipped world pass is compiled differently. That
 difference lives inside the 1,725 us and cannot be separated from flash
 placement with the captures that exist. It is reported as a gap, not assigned
 to a feature to make the arithmetic tidy.
@@ -1528,9 +1557,9 @@ are the features and the display settings below.
 
 | Setting | Value | Why it is what it is | Measured or assumed |
 | --- | --- | --- | --- |
-| Build environment | `esp32dev_ILI9341_hud` (extends `_show` → `esp32dev_ILI9341`) | the shipped image; `_frame` is the world-pass measurement build and is never shipped | measured (capture) |
+| Build environment | `esp32dev_ILI9341_hud` (extends `_show` → `esp32dev_ILI9341`) | the shipped image; the world-pass configuration is the measurement build and is never shipped | measured (capture) |
 | Platform pin | `espressif32@7.1.2` = Arduino-ESP32 2.0.17 | load-bearing: an unpinned `pio pkg update` moves it to 8.0.0 (Arduino 3.x), which measured 686,446 B of flash and overflowed `dram0_0_seg` by 680 B. Bumping the pin is a repartition decision | measured |
-| Optimization | shipped `-Os`; `_frame` `-O2` with `-Os` removed | the framework appends `-Os` after `build_flags`, so only `build_unflags = -Os` lets `-O2` win. The split is deliberate and is why the two stages are not byte-comparable | measured (`pio run -t envdump`: shipped `CCFLAGS` end `-O2, -Os`; `_frame` has no `-Os` and ends `-O2`) |
+| Optimization | shipped `-Os`; world-pass build `-O2` with `-Os` removed | the framework appends `-Os` after `build_flags`, so only `build_unflags = -Os` lets `-O2` win. The split is deliberate and is why the two stages are not byte-comparable | measured (`pio run -t envdump`: shipped `CCFLAGS` end `-O2, -Os`; the world-pass build has no `-Os` and ends `-O2`) |
 | DMA block | `PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK=20` (`lib/platformio.ini` `[base_esp32]`) | two line buffers of `physicalWidth * 2 B * lines`; 20 lines at 320 px is 25,600 B, which is the DRAM budget; the engine's default is 60 (57,600 B at 240 px, 76,800 B at 320 px), which this project does not use | measured (40 MHz/60 18,198 vs 20 17,892 us on the bench) |
 | SPI clock | 40 MHz (`SPI_FREQUENCY=40000000`) | 80 MHz corrupts this panel on this wiring and 55 MHz is not an achievable divider step | measured (bench) |
 | Pixel format | RGB565 through a 256-entry LUT, byte-swapped for the panel | the engine's present path; DOOM renders 8bpp indices and pays one LUT lookup per pixel | measured (`present_us` matches 25.6 ms wire time) |
@@ -1539,14 +1568,16 @@ are the features and the display settings below.
 | Letterbox | 20 px bars; `X_OFF_SET=20`, `Y_OFF_SET=0` pre-swap | the 320x200 window is 1:1 on the rotated 320x240 panel; the bars are panel rows nothing writes | measured (geometry) |
 | Runtime defaults | `skill=2, volume=8, gamma=0, mute=0` | every capture boots `SHOW,menu,settings=default,...` after an NVS erase | measured (capture) |
 | Settings storage | `nvs` partition, namespace `doom`, key `cfg`, 8 checksummed bytes | the record's bytes are a contract; the engine's `IKeyValueStore` keeps the same namespace and key so a stored record survives | measured (source + capture) |
-| Save slots | six, 3,968 B each, `saves` at `0x3F8000` | not touched by a `_frame` flash because both environments use `partitions_wad.csv` | measured (`slots=6,record=3968`) |
+| Save slots | six, 3,968 B each, `saves` at `0x3F8000` | not touched by a world-pass flash because both builds use `partitions_wad.csv` | measured (`slots=6,record=3968`) |
 
 ### How to reproduce
 
 ```powershell
-# World-pass stage: world pass alone, -O2, 20 sampled views x 2 runs
-pio run -e esp32dev_ILI9341_frame
-pio run -e esp32dev_ILI9341_frame -t upload --upload-port COM4
+# World-pass stage: a local, uncommitted edit adds partitions_wad.csv to the
+# kept esp32dev_ILI9341 block and adds -Os to build_unflags; the probe flags go
+# in the same shell, so the build task sees them:
+$env:PLATFORMIO_BUILD_FLAGS='-D PIXELROOT32_DOOM_FRAME_PROBE=1 -D PIXELROOT32_DOOM_RASTER_PROBE=1 -Itools -O2'; pio run -e esp32dev_ILI9341
+pio run -e esp32dev_ILI9341 -t upload --upload-port COM4
 # reset: open COM4, RtsEnable=$true for 150 ms, RtsEnable=$false; capture 60 s
 # the FRAMEPROF,summary,... line is the result
 
@@ -1574,7 +1605,7 @@ no world frame or the world `fps_x10` minimum is under 150 (`--min-fps`).
 the parser and every rule on synthetic logs with no board; `--perturb` lowers
 the parsed band (on a capture, or on its synthetic log when no file is given)
 and must exit non-zero, which is what proves the gate can fail.
-Both environments use `partitions_wad.csv`, so flashing `_frame` and then
+Both builds use `partitions_wad.csv`, so flashing the world-pass build and then
 `_hud` does not move `nvs`, `wad` or `saves`; leave the board on `_hud`.
 
 ## Testing
@@ -1660,10 +1691,12 @@ and require every stream to be consumed with both readers agreeing.
   and **1,725 us of the shipped render is unattributed** (see "Performance and
   settings"). Both are inside the flash-placement band; recovering them is a
   placement or renderer investigation.
-- **`esp32dev_ILI9341_frameram` cannot link, by design.** It is an A/B control
-  (the map decoded into RAM) and is never shipped; its environment comment
-  records that `dram0_0_seg` has 256 B free where the walkable capacity set needs
-  15,424 B. It exists to prove a measurement.
+- **The map-in-RAM A/B control cannot link, by design.** It is the world-pass
+  build plus the flags `-D PIXELROOT32_DOOM_MAP_IN_RAM=1`,
+  `-D PIXELROOT32_DOOM_SAMPLED_VIEW_CAPACITIES=1` and
+  `-D PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK=10`, a local build never shipped; its
+  configuration records that `dram0_0_seg` has 256 B free where the walkable
+  capacity set needs 15,424 B. It exists to prove a measurement.
 - **The loop task's stack is 12 KB, and that is a fix.** At the framework's 8 KB,
   entering the room before E1M1's exit and firing panicked the board
   (`LoadProhibited` inside `z_zone.c`'s `refreshLargestFree`) or hung it with no
@@ -1687,7 +1720,7 @@ and require every stream to be consumed with both readers agreeing.
 
 ```text
 games/doom/
-├── platformio.ini          # every environment: native, the CYD builds, diagnostics, host tests
+├── platformio.ini          # every environment: native, the CYD builds, host tests
 ├── lib/platformio.ini      # [base] / [base_native] / [base_esp32] templates, platform pin
 ├── partitions_wad.csv      # the shipped flash table (nvs / factory / wad / saves)
 ├── partitions_nowad.csv    # a table with no wad row, for the failure-screen proof
