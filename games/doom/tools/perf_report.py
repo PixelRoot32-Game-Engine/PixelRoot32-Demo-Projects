@@ -18,7 +18,8 @@ Two line formats are understood, both written by the firmware itself:
   (``FrameDriver.cpp``), reported as its own table.
 
 WHY THE WORLD-FRAME FILTER EXISTS
-The CYD's GPIO 35 floats and opens DOOM's automap by itself. A map frame
+The board's GPIO 35 is input-only and has no internal pull-up, so a floating
+Select line opens DOOM's automap by itself. A map frame
 renders in about 0.9 ms, so a log that mixes world and map frames reports a
 band that is not the game's frame time (the all-frame band reads ~155-190).
 The default therefore keeps only samples with ``render_us > 20000`` and prints
@@ -53,7 +54,7 @@ import statistics
 import sys
 
 # The world pass is the only frame this project's frame-time record is about.
-# 20 ms is the floor every recorded CYD world frame clears (the cheapest sampled
+# 20 ms is the floor every recorded board world frame clears (the cheapest sampled
 # view is ~9 ms, and the automap is ~0.9 ms), so it separates the two
 # populations without guessing at a view's identity.
 WORLD_RENDER_FLOOR_US = 20000

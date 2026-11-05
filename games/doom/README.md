@@ -1,10 +1,11 @@
 # DOOM (PixelRoot32 port)
 
-Shareware DOOM (1993), episode 1, running on the CYD — the ESP32-2432S028
-"Cheap Yellow Display": an ILI9341 240x320 panel mounted in portrait and rotated
-a quarter turn to a 320x240 frame, 240 MHz dual core, 4 MB flash, 327,680 B of
-DRAM, no PSRAM. All nine levels of E1 play with the status bar, the weapon, the
-menu, the automap, sound effects, music, level transitions and six save slots.
+Shareware DOOM (1993), episode 1, running on an ESP32 DevKit — a classic ESP32
+(the `esp32dev` PlatformIO board: 240 MHz dual core, 4 MB flash, 327,680 B of
+DRAM, no PSRAM) with a 240x320 ILI9341 panel wired to it, mounted in portrait
+and rotated a quarter turn to a 320x240 frame. All nine levels of E1 play with
+the status bar, the weapon, the menu, the automap, sound effects, music, level
+transitions and six save slots.
 
 The engine supplies what a 1993 renderer does not need to own again: an 8bpp
 surface, the 8bpp-to-panel present path, input, persistence and the APU audio
@@ -61,13 +62,13 @@ DOOM renders **320x200**, and 320 is structural rather than a setting:
 `bottom[320]`), `floorclip` / `ceilingclip` and the status bar layout. So the
 logical surface is fixed at 320x200 on every environment.
 
-The rotated CYD frame is 320x240, so the surface fits **1:1** with a 20 px bar
-above and below — no scaling, no crop.
+The rotated ILI9341 frame is 320x240, so the surface fits **1:1** with a 20 px
+bar above and below — no scaling, no crop.
 
 | Environment | Window | What it does |
 | --- | --- | --- |
 | `native` | 640x400 (a 320x200 surface at 2x) | SDL2 window from `SDL2_Drawer` (`windowScale = 2`, integer nearest-neighbour); runs the full profile below -- per-level music, its own full-sprite container, vanilla's screen melt and twin index planes -- with the HUD, the menu, the palette flashes and the APU audio |
-| `esp32dev_ILI9341` | 320x200 + 2x20 px bars | the CYD, 1:1 |
+| `esp32dev_ILI9341` | 320x200 + 2x20 px bars | the board, 1:1 |
 
 ### The full native profile
 
@@ -280,7 +281,7 @@ moves it changed what E1M1's spawn view looks like.
 
 ## Hardware
 
-The CYD is an `esp32dev` module: 240 MHz, dual core, 4 MB flash, no PSRAM. The
+The board is an `esp32dev` module: 240 MHz, dual core, 4 MB flash, no PSRAM. The
 pin map is copied from the pong demo, which is where it was validated; demos in
 this repository do not import each other's code.
 
@@ -293,7 +294,7 @@ this repository do not import each other's code.
 | D-pad up / down / left / right | 32 / 33 / 25 / 26 |
 | A / B | 27 / 13 |
 | Start / Select | 34 / 35 (external 10 kOhm pull-ups) |
-| Touch | XPT2046 present, bus not claimed |
+| Touch | none claimed (`TOUCH_CS=-1`); XPT2046 only if the panel module carries one |
 
 `PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK` is pinned to **20** in
 [`lib/platformio.ini`](lib/platformio.ini): the drawer allocates two DMA line
@@ -323,8 +324,8 @@ the bottom 32 rows every frame from the player the world already owns (ammo,
 health, armor, the arms digits, the three key boxes and the face). `_show` keeps
 the 200-row view whose frame-00 hash is `50fb3d9c...`; the HUD frame has its own,
 `1d8b3849...`. Building `esp32dev_ILI9341_hud` with `-D DOOM_HUD_NOFACES=1`
-gives the CYD fall-back (the bar without the face widget), kept for the case the
-full bar misses its frame rate.
+gives the no-faces fall-back (the bar without the face widget), kept for the
+case the full bar misses its frame rate.
 `lib/doom/r_psprite.c` draws the weapon in hand over the view and under the bar
 (`R_DrawPlayerSprites`: the weapon and its muzzle flash, lit by the player's
 sector, full bright for the flash frames); its patches are the raw lumps of
@@ -494,7 +495,7 @@ followers are not ported (no keyboard, no marks art, no cheats, one player).
 **Rate.** `AM_Ticker` runs once per 35 Hz world tic (not per frame), so a pan is
 140 px a second and a zoom 2x a second whatever the panel's frame rate is.
 
-**What it costs.** On the CYD a map frame costs **0.81-1.02 ms** (`us=` on every
+**What it costs.** On the board a map frame costs **0.81-1.02 ms** (`us=` on every
 `SHOW,map` line; mean 0.84-0.87 ms across two runs) against ~30 ms for the world
 frame; the shadow bitmap is 60 bytes of heap taken at level load and freed with
 the session, and the whole static cost is 240 B, the automap's state and two
@@ -648,7 +649,7 @@ samples (49.977 ms), a 0.045 % shortening shared by all four tracks, so it
 cannot desynchronise them. A finer grid would need a higher `TICKS_PER_BEAT` in
 the APU; the BPM clamp is the API's ceiling.
 
-**Telemetry.** The `SHOW,audio` line ends in two APU counters on the CYD.
+**Telemetry.** The `SHOW,audio` line ends in two APU counters on the board.
 `underruns=` and `worst_us=` are read once a second through
 `doomAudioSetTelemetrySource()`, which `src/platforms/esp32_dev_ILI9341.h`
 installs after `engine.init()` with the I2S backend it owns:
@@ -698,7 +699,7 @@ incrementing a field. `pct_x10` is `worst_us` in tenths of a percent of the
 render block is **512 samples, 23.22 ms**, so divide that percentage by four to
 read it against the deadline an underrun is measured against.
 
-Recorded baseline, CYD, one 10-minute run
+Recorded baseline, the board, one 10-minute run
 (`$env:PLATFORMIO_BUILD_FLAGS='-D DOOM_AUDIO_SOAK=1'; pio run -e esp32dev_ILI9341_hud -t upload`, whole log captured):
 
 - `underruns` **0** at every minute and at the end -- the acceptance criterion.
@@ -754,7 +755,7 @@ fourth row and the flag in its model and its golden bytes (`444D01030C020149` is
 `(3, 12, 2)` muted), and `tools/menu_draw_check.py` a fifth options state (mute
 ON); both still fail under `--perturb`.
 
-Recorded on the board (COM4, CYD), NVS erased first:
+Recorded on the board (COM4), NVS erased first:
 
 - shipped `_hud`, nothing stored:
   `SHOW,menu,settings=default,skill=2,volume=8,gamma=0,mute=0,level=67` -- the
@@ -835,7 +836,7 @@ semantics), and it takes eighteen steps: every frame prints
 E1M2 prints `SHOW,level,from=E1M1,to=E1M2` beside it. The 4 MB build keeps the
 8-step fade and its `SHOW,fade,steps=8` line.
 
-**What it costs.** Eight table rebuilds per transition, measured on the CYD at
+**What it costs.** Eight table rebuilds per transition, measured on the board at
 **1.96-2.01 ms in total** (`SHOW,fade,steps=8,us=<total>`; ~245 us a step, well
 under one 28.57 ms tic) and nothing at all on the frames between transitions. A
 fade owns the palette while it runs, so the damage/pickup flashes are skipped for
@@ -1429,12 +1430,12 @@ against it member by member, below.
 
 | Panel | Role | Geometry | SPI | DMA block | Pixel format | Source |
 | --- | --- | --- | --- | --- | --- | --- |
-| ESP32-2432S028 CYD, ILI9341 | **shipped** | 240x320 panel rotated to a 320x240 frame (`DISPLAY_ROTATION=3`); 320x200 window at 1:1 with two 20 px bars | 40 MHz | 20 lines | RGB565 | `src/platforms/esp32_dev_ILI9341.h`, `platformio.ini` `[env:esp32dev_ILI9341]` |
+| ILI9341 240x320 (ESP32 DevKit) | **shipped** | 240x320 panel rotated to a 320x240 frame (`DISPLAY_ROTATION=3`); 320x200 window at 1:1 with two 20 px bars | 40 MHz | 20 lines | RGB565 | `src/platforms/esp32_dev_ILI9341.h`, `platformio.ini` `[env:esp32dev_ILI9341]` |
 | ST7789 240x240 | **bench, not shipped** | 240x180 window, 320x200 logical surface, `Y_OFF_SET=30` | 40 / 80 MHz | 60 lines | RGB565 | [`bench/README.md`](bench/README.md) |
 
 The ST7789 is a bench row, not a configuration of this project. There is no
 `esp32dev_ST7789` environment, and the bench rows were measured while the
-firmware drove the square panel's pin map on the CYD (no CS, no backlight), so
+firmware drove the square panel's pin map on the board (no CS, no backlight), so
 nothing reached a panel: the SPI and DMA work is real but each figure is a
 **pipeline** number, not a validated frame. Its recorded present cost for a
 240x180 window, and the block-size effect beside it, are:
@@ -1445,7 +1446,7 @@ nothing reached a panel: the SPI and DMA work is real but each figure is a
 | ST7789 240x180 (bench) | 40 MHz | 20 | 17,892 | pipeline only |
 | ST7789 240x180 (bench) | 80 MHz | 60 | 9,557 | pipeline only |
 
-On the shipped CYD the same 320x200 RGB565 window is 128,000 B, which is
+On the shipped board the same 320x200 RGB565 window is 128,000 B, which is
 25.6 ms of wire time at 40 MHz; the shipped `present_us` below is 26.98 ms, the
 wire time plus the DMA tail and the Arduino `yield()`. That is the number the
 present path is allowed to have, and it is measured, not modelled.
@@ -1720,7 +1721,7 @@ and require every stream to be consumed with both readers agreeing.
 
 ```text
 games/doom/
-├── platformio.ini          # every environment: native, the CYD builds, host tests
+├── platformio.ini          # every environment: native, the esp32dev builds, host tests
 ├── lib/platformio.ini      # [base] / [base_native] / [base_esp32] templates, platform pin
 ├── partitions_wad.csv      # the shipped flash table (nvs / factory / wad / saves)
 ├── partitions_nowad.csv    # a table with no wad row, for the failure-screen proof

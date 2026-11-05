@@ -2648,7 +2648,7 @@ bool gVictoryPending = false;
  * weapon name that missed would pay the linear name scan every frame. A name
  * that finds the table full is still looked up each time, never dropped.
  *
- * DOOM_HUD_NOFACES is the CYD fall-back: the bar without the face widget
+ * DOOM_HUD_NOFACES is the no-faces fall-back: the bar without the face widget
  * (STBAR's empty face box stays), kept for the case the full bar misses its
  * frame-rate target on the 4 MB board.
  */

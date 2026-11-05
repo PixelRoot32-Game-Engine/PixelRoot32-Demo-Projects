@@ -1,7 +1,8 @@
-// esp32dev_ILI9341 — the primary DOOM target: the ESP32-2432S028 "Cheap Yellow
-// Display", an ILI9341 240x320 panel mounted in portrait and rotated a quarter
-// turn. DOOM's 320x200 fits natively in the rotated 320x240 frame, so the port
-// shows it 1:1 with 20 px bars instead of squashing it.
+// esp32dev_ILI9341 — the primary DOOM target: an ESP32 DevKit, a classic ESP32
+// (the esp32dev PlatformIO board: 240 MHz dual core, 4 MB flash, no PSRAM) with
+// a 240x320 ILI9341 panel wired to it. The panel is mounted in portrait and
+// rotated a quarter turn. DOOM's 320x200 fits natively in the rotated 320x240
+// frame, so the port shows it 1:1 with 20 px bars instead of squashing it.
 //
 // The build flags state the geometry in the panel's own portrait axes, and
 // DisplayConfig swaps them for us: applyRotationNormalization() exchanges
@@ -11,8 +12,8 @@
 //
 // The pin map is copied from games/pong/src/platforms/esp32_dev_ILI9341.h,
 // which is where it was validated on hardware. The XPT2046 touch bus is left
-// unclaimed: the CYD has a touch controller, but the port defines no touch
-// input.
+// unclaimed: a module that carries a touch controller still gets no touch
+// input, because the port defines no touch path.
 #ifndef PLATFORM_ESP32DEV_ILI9341
 #error "esp32_dev_ILI9341.h included without PLATFORM_ESP32DEV_ILI9341"
 #else

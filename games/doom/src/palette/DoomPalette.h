@@ -231,7 +231,7 @@ constexpr std::uint16_t kFadeFull = 256u;
 /**
  * @brief Rebuilds the PLAYPAL tables for gamma *and* a fade scale.
  *
- * Vanilla's screen melt needs two more 64,000 B surfaces the CYD does not have
+ * Vanilla's screen melt needs two more 64,000 B surfaces the board does not have
  * (the largest free block after setup is 47,092 B), so the 4 MB
  * profile substitutes a palette fade: the frame ramps up from black after a
  * level load. This is its only colour step -- one table rebuild, no buffer, no

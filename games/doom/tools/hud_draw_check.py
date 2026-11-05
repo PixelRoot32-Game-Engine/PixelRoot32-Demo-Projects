@@ -549,7 +549,7 @@ FRAME00_VIEW = (69206016, -236978176, 2686976, 0)
 
 
 # The HUD frame-00 hash the board printed (`SHOW,frame00` in env
-# esp32dev_ILI9341_hud, COM4, CYD, 2026-11-01). The oracle rebuilds it from the
+# esp32dev_ILI9341_hud, COM4, 2026-11-01). The oracle rebuilds it from the
 # renderer oracle at a 168-row window plus the status-bar oracle; the view half
 # (8c5d2289...) and the bar half (5c8a45fb...) matched the board separately.
 # The 200-row `50fb3d9c...` is the `_show` environment's and is not this number.

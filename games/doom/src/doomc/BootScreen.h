@@ -14,7 +14,7 @@ namespace doomc {
  * module owns its own pixels: a 5x7 column font for ASCII 32..95 ships in
  * `BootScreen.cpp`, and the failure it must report includes "the WAD is
  * missing", where no WAD font is available to borrow. Uppercase-only is
- * deliberate -- the CYD's 0.75 downscale keeps capitals legible -- and it keeps
+ * deliberate -- the board's 0.75 downscale keeps capitals legible -- and it keeps
  * the table at 320 bytes.
  *
  * The painter writes RGB332 bytes, not DOOM palette indices. That is the regime

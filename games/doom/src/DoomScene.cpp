@@ -133,12 +133,12 @@ using pixelroot32::graphics::Renderer;
 /// comment in DoomScene.h).
 constexpr int kButtonCount = 6;
 
-/// The engine's `InputConfig` index of Start (GPIO 34 on the CYD): after the six
+/// The engine's `InputConfig` index of Start (GPIO 34 on the board): after the six
 /// game buttons, so the shell, the INPUT line and the on-screen slots never see it.
 /// Only the menu reads it.
 constexpr std::uint8_t kStartIndex = 6;
 
-/// The engine's `InputConfig` index of Select (GPIO 35 on the CYD): the automap's
+/// The engine's `InputConfig` index of Select (GPIO 35 on the board): the automap's
 /// toggle. Like Start it is not a game button: it is sampled on its own,
 /// never packed into the world's bits, so `kButtonCount` stays 6.
 constexpr std::uint8_t kSelectIndex = 7;
