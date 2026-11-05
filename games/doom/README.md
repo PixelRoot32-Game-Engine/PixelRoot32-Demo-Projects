@@ -1,6 +1,6 @@
-﻿# DOOM (PixelRoot32 port)
+# DOOM (PixelRoot32 port)
 
-Shareware DOOM (1993), episode 1, running on an ESP32 DevKit â€” a classic ESP32
+Shareware DOOM (1993), episode 1, running on an ESP32 DevKit — a classic ESP32
 (the `esp32dev` PlatformIO board: 240 MHz dual core, 4 MB flash, 327,680 B of
 DRAM, no PSRAM) with a 240x320 ILI9341 panel wired to it, mounted in portrait
 and rotated a quarter turn to a 320x240 frame. All nine levels of E1 play with
@@ -9,8 +9,8 @@ transitions and six save slots.
 
 The engine supplies what a 1993 renderer does not need to own again: an 8bpp
 surface, the 8bpp-to-panel present path, input, persistence and the APU audio
-backend. Everything above that line â€” the BSP renderer, the game loop, the
-fixed-point math, the WAD reader â€” is DOOM's own code in [`lib/doom/`](lib/doom/),
+backend. Everything above that line — the BSP renderer, the game loop, the
+fixed-point math, the WAD reader — is DOOM's own code in [`lib/doom/`](lib/doom/),
 kept at arm's length from the engine.
 
 Language: C++17 (+ C99 for the DOOM core)  
@@ -63,7 +63,7 @@ DOOM renders **320x200**, and 320 is structural rather than a setting:
 logical surface is fixed at 320x200 on every environment.
 
 The rotated ILI9341 frame is 320x240, so the surface fits **1:1** with a 20 px
-bar above and below â€” no scaling, no crop.
+bar above and below — no scaling, no crop.
 
 | Environment | Window | What it does |
 | --- | --- | --- |
@@ -92,8 +92,8 @@ with the full set; a 16 MB ESP32-S3 hardware profile does not exist.
 
 ### Why the build flags look transposed
 
-`DisplayConfig::applyRotationNormalization()` swaps width and height â€” and the
-offsets â€” whenever the rotation is odd. The flags therefore state the geometry
+`DisplayConfig::applyRotationNormalization()` swaps width and height — and the
+offsets — whenever the rotation is odd. The flags therefore state the geometry
 in the panel's own portrait axes:
 
 | Flag | Value | After the swap |
@@ -298,7 +298,7 @@ this repository do not import each other's code.
 `PIXELROOT32_TFT_ESPI_LINES_PER_BLOCK` is pinned to **20** in
 [`lib/platformio.ini`](lib/platformio.ini): the drawer allocates two DMA line
 buffers of `physicalWidth * 2 B * linesPerBlock` each, so 60 lines at 320 px
-costs 76,800 B against the 25,600 B a 20-line block costs â€” 51,200 B that the
+costs 76,800 B against the 25,600 B a 20-line block costs — 51,200 B that the
 port needs elsewhere. A 20-line block only renders cleanly with
 `PIXELROOT32_DRAIN_PRESENT` defined, which closes each frame's transfer instead
 of leaving its tail in flight into the next frame.
@@ -592,7 +592,7 @@ upstream's, not a second control.
 field: its clock is fixed at 140 ticks/s and a quarter note is 70 ticks.
 `ApuCore` clamps `tempoBPM` to 300, so the converter runs `MusicPlayer` at
 **300 BPM**, where a beat is 0.2 s and one sequencer tick is 1/4 beat = 0.05 s
-â€” exactly 7 MUS ticks, the finest grid the API allows. Every press's start is
+— exactly 7 MUS ticks, the finest grid the API allows. Every press's start is
 placed on the nearest grid tick (`round(cumulativeMusTicks / 7)`) and its
 `duration` is the difference of consecutive grid starts / 4 beats, an exact
 multiple of 0.25 that the sequencer's truncation returns unchanged. The track
@@ -1472,7 +1472,7 @@ samples are excluded and counted rather than left to flatter the band.
 | `fps_x10` | 61 | 153 | 160 | 156.1 |
 
 Three facts about that table. `convert_us` is 0 on this path: the engine's
-present performs the 8bppâ†’RGB565 LUT, so `present_us` carries the conversion.
+present performs the 8bpp→RGB565 LUT, so `present_us` carries the conversion.
 `hash_us` is the diagnostic SHA-256 over the index surface, ~22.7 ms, which the
 firmware subtracts from the period: it is charged to the report, never to
 `frame_us` or `fps_x10`. And `update_us` is the tic work -- input, thinkers and
@@ -1496,7 +1496,7 @@ reset to the defaults first) excludes **0** frames and reads `render_us`
 **29,002.7** mean (28,849-29,663), `present_us` 26,987.9, `update_us` 2,667.4,
 `frame_us` 64,996.7, `fps_x10` **151-157, mean 153.4** -- still above the 150
 floor. The render is 1.6 ms above the three-run table: the image gained about
-2.5 KB of code (level transitions) and moved, which is inside the Â±1.3-3.3 ms
+2.5 KB of code (level transitions) and moved, which is inside the ±1.3-3.3 ms
 flash-placement band measured with the weapon A/B build
 (`-D DOOM_HUD_NOWEAPON=1` on `esp32dev_ILI9341`); no renderer code changed.
 
@@ -1512,7 +1512,7 @@ FRAMEPROF,summary,views=20,runs=2,samples=40,frame_mean_us=20035,frame_min_us=90
 
 The probe's own gate is 20,000 us, so the summary reports `gate=fail` by 35 us.
 Two captures agree on the mean to the microsecond, so this is not jitter, and the
-honest record is a gate miss, not a rounding. It is within the Â±1.3-3.3 ms
+honest record is a gate miss, not a rounding. It is within the ±1.3-3.3 ms
 flash-placement sensitivity: neither the renderer's code nor the baked payloads
 it reads sit at fixed places in the flash cache as the images around them change
 (this probe image is 506,441 B). Which function pays it cannot be named from these
@@ -1723,31 +1723,31 @@ and require every stream to be consumed with both readers agreeing.
 
 ```text
 games/doom/
-â”œâ”€â”€ platformio.ini          # every environment: native, the esp32dev builds, host tests
-â”œâ”€â”€ lib/platformio.ini      # [base] / [base_native] / [base_esp32] templates, platform pin
-â”œâ”€â”€ partitions_wad.csv      # the shipped flash table (nvs / factory / wad / saves)
-â”œâ”€â”€ partitions_nowad.csv    # a table with no wad row, for the failure-screen proof
-â”œâ”€â”€ lib/doom/               # the DOOM core (GPLv2, see License and lib/doom/NOTICE)
-â”œâ”€â”€ src/
-â”‚   â”œâ”€â”€ main.cpp            # platform selector only
-â”‚   â”œâ”€â”€ DoomScene.h/.cpp    # composition root: menu, automap, palette, audio, saves
-â”‚   â”œâ”€â”€ doomc/              # the C<->C++ seam: FrameDriver, WAD/container readers,
-â”‚   â”‚                       # baked graphics, audio, saves, boot and failure screens
-â”‚   â”œâ”€â”€ palette/            # PLAYPAL, gamma and fade tables
-â”‚   â”œâ”€â”€ perf/               # the SHOW,frame log
-â”‚   â”œâ”€â”€ time/               # the drift-free 35 Hz tic clock
-â”‚   â”œâ”€â”€ assets/music/       # the nine generated level tracks
-â”‚   â””â”€â”€ platforms/          # native.h, esp32_dev_ILI9341.h
-â”œâ”€â”€ tools/                  # container encoder, generators, gates (*_check.py), perf_report.py
-â”œâ”€â”€ test/unit/              # the 20 host suites
-â””â”€â”€ bench/                  # standalone measurement firmware (not shipped)
+├── platformio.ini          # every environment: native, the esp32dev builds, host tests
+├── lib/platformio.ini      # [base] / [base_native] / [base_esp32] templates, platform pin
+├── partitions_wad.csv      # the shipped flash table (nvs / factory / wad / saves)
+├── partitions_nowad.csv    # a table with no wad row, for the failure-screen proof
+├── lib/doom/               # the DOOM core (GPLv2, see License and lib/doom/NOTICE)
+├── src/
+│   ├── main.cpp            # platform selector only
+│   ├── DoomScene.h/.cpp    # composition root: menu, automap, palette, audio, saves
+│   ├── doomc/              # the C<->C++ seam: FrameDriver, WAD/container readers,
+│   │                       # baked graphics, audio, saves, boot and failure screens
+│   ├── palette/            # PLAYPAL, gamma and fade tables
+│   ├── perf/               # the SHOW,frame log
+│   ├── time/               # the drift-free 35 Hz tic clock
+│   ├── assets/music/       # the nine generated level tracks
+│   └── platforms/          # native.h, esp32_dev_ILI9341.h
+├── tools/                  # container encoder, generators, gates (*_check.py), perf_report.py
+├── test/unit/              # the 20 host suites
+└── bench/                  # standalone measurement firmware (not shipped)
 ```
 
 ## Measurement bench
 
 [`bench/`](bench/) is a standalone PlatformIO project, not a demo: it sits at
 depth 4, so the demo CI does not discover it, and it is not shipped. It measured
-the numbers the port is built on â€” SPI clock, DMA block size, fill throughput,
+the numbers the port is built on — SPI clock, DMA block size, fill throughput,
 DRAM census, the flash partition map and the letterbox. Its own README carries
 the env table, the serial commands and the results.
 

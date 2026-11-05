@@ -1,4 +1,4 @@
-﻿# Partition table for the ERR_PARTITION_MISSING diagnostic image, whose
+# Partition table for the ERR_PARTITION_MISSING diagnostic image, whose
 # only purpose is to prove the ERR_PARTITION_MISSING screen on the board.
 #
 # It is partitions_wad.csv with the `wad` row removed, so the app still boots
