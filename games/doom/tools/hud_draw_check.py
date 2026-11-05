@@ -549,10 +549,11 @@ FRAME00_VIEW = (69206016, -236978176, 2686976, 0)
 
 
 # The HUD frame-00 hash the board printed (`SHOW,frame00` in env
-# esp32dev_ILI9341_hud, COM4, 2026-11-01). The oracle rebuilds it from the
+# esp32dev_ILI9341, COM4, 2026-11-01). The oracle rebuilds it from the
 # renderer oracle at a 168-row window plus the status-bar oracle; the view half
 # (8c5d2289...) and the bar half (5c8a45fb...) matched the board separately.
-# The 200-row `50fb3d9c...` is the `_show` environment's and is not this number.
+# The 200-row `50fb3d9c...` belongs to the host harness's separate render path
+# and is not this number.
 HUD_FRAME00 = "1d8b3849ab3f76750056937f2827bf2bcbb2b98e82976fb3a7ce263d5273c9d3"
 
 
@@ -564,8 +565,8 @@ def frame00_hash(wad_path: Path, perturb: bool = False) -> str:
     the status bar of a fresh player (ST_Start, no tic yet, so face 0 = STFST00).
     The hash covers the 64,000 index bytes then the 320 column-coverage bytes,
     as the driver's hashSurface() does. The board prints the same number as ``SHOW,frame00`` in the
-    ``esp32dev_ILI9341_hud`` environment; the 200-row ``50fb3d9c`` is the
-    ``_show`` environment's, untouched.
+    ``esp32dev_ILI9341`` environment; the 200-row ``50fb3d9c`` belongs to
+    the host harness's separate render path, untouched.
     """
     import hashlib
 

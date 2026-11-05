@@ -485,7 +485,7 @@ private:
 
 #if defined(DOOM_LEVEL_WALK)
     /*
-     * The viewing walk (env esp32dev_ILI9341_hud_levelwalk, and the desktop
+     * The viewing walk (the shipped image with -D DOOM_LEVEL_WALK=1, and the desktop
      * proof `tools/music_walk_check.py`). `walkLastLevel_` notices a transition
      * and restarts the dwell, `walkDone_` stops after E1M8's ending (the world
      * goes back to E1M1, so a level-change reset must not restart the tour).

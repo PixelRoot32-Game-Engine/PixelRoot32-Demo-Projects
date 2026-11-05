@@ -318,7 +318,7 @@ def parse_c(output: str) -> list[tuple[str, int, bytes]]:
 
 # E1M1's player 1 start as the game renders it once the weapon has finished
 # rising: the x, y and eye height the board printed in `SHOW,frame=` at tics=16
-# (esp32dev_ILI9341_hud, COM4, 2026-11-01), facing north. A stationary
+# (esp32dev_ILI9341, COM4, 2026-11-01), facing north. A stationary
 # player's pistol then rests at S_PISTOL, sx 1.0, sy 32.0 (no bob: no momentum).
 BOARD_VIEW = (69206016, -236978176, 2686976, 1073741824)
 

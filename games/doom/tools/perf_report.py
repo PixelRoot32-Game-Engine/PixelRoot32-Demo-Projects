@@ -10,7 +10,7 @@ Two line formats are understood, both written by the firmware itself:
 
 * ``SHOW,frame=<n>,x=...,render_us=...,convert_us=...,present_us=...,
   frame_us=...,fps_x10=...,update_us=...,hash_us=...,other_us=...,refused=...,
-  hash=...`` -- the shipped ``_hud`` cadence (``DoomScene::drawSceneFrame``).
+  hash=...`` -- the shipped image cadence (``DoomScene::drawSceneFrame``).
   Fields are looked up by name, never by position: the firmware has added
   fields before and will again, and a positional parser would read a shifted
   column as a real measurement.

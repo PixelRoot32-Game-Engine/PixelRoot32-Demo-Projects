@@ -1,4 +1,4 @@
-# Partition table for env:esp32dev_ILI9341_hud_nowad -- a DIAGNOSTIC image whose
+﻿# Partition table for the ERR_PARTITION_MISSING diagnostic image, whose
 # only purpose is to prove the ERR_PARTITION_MISSING screen on the board.
 #
 # It is partitions_wad.csv with the `wad` row removed, so the app still boots
@@ -24,3 +24,4 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,     0x9000,   0x6000,
 factory,  app,  factory, 0x10000,  0x3F0000,
+

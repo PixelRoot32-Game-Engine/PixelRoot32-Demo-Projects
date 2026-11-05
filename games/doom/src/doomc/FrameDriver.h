@@ -534,7 +534,7 @@ void frameProbeRun(std::uint8_t* surface, int width, int height);
  * is one implementation of "the level is loaded" and both callers use it:
  *
  *   - `frameProbeRun()` opens it, renders 20 views and closes it;
- *   - the shipped `_show` environment opens it once in `DoomScene::init()`,
+ *   - the shipped image opens it once in `DoomScene::init()`,
  *     ticks the world it owns and renders the player's viewpoint every frame,
  *     and closes it only at shutdown.
  *
@@ -759,7 +759,7 @@ bool frameLevelTakeVictory();
 
 #if defined(DOOM_LEVEL_TEST)
 /**
- * @brief Diagnostic (env `esp32dev_ILI9341_hud_leveltest`): stand on E1M1's exit.
+ * @brief Diagnostic (the shipped image with `-D DOOM_LEVEL_TEST=1`): stand on E1M1's exit.
  *
  * Finds the level's own line special 11 (the exit switch) and puts the avatar on
  * the front sector's side facing it, so the next USE press travels
@@ -771,7 +771,7 @@ bool frameLevelExitScript(int special);
 
 #if defined(DOOM_LEVEL_WALK)
 /**
- * @brief Diagnostic (env `esp32dev_ILI9341_hud_levelwalk`): walk every level.
+ * @brief Diagnostic (the shipped image with `-D DOOM_LEVEL_WALK=1`): walk every level.
  *
  * The scene calls `frameLevelExitScript(11)` on each level and 51 on E1M3, holds
  * USE through the real button byte, and calls `frameLevelVictoryScript()` on
@@ -978,7 +978,7 @@ std::uint32_t frameStackFree();
 
 #if defined(DOOM_FRAME_DUMP)
 /**
- * @brief Diagnostic (env `esp32dev_ILI9341_hud_dump`): writes one frame to the
+ * @brief Diagnostic (the shipped image with `-D DOOM_FRAME_DUMP=1`): writes one frame to the
  *        console as run-length pairs.
  *
  * A refused frame, a wrong palette page and a bad colormap row all look like

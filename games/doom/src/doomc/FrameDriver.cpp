@@ -761,7 +761,7 @@ constexpr int kFirstSkippedMapLump = DOOM_MAP_REJECT;
 ///   clip pool   2,459 entries     3,074  3,200
 ///   vis sprites  125 (E1M2 220)    256    256
 ///
-/// In env:esp32dev_ILI9341_show the census prints
+/// In the world-pass probe build the census prints
 /// `static_used=120,408,seg_free=4172` and the link map's `_bss_end`
 /// (0x3ffdb1b8) leaves 4,168 B of `dram0_0_seg`. env:esp32dev_ILI9341_frameram
 /// has 256 B and cannot carry the walkable set: it is the A/B control, renders
@@ -1326,7 +1326,7 @@ int buildSprites(const doom_map_t* map, const r_view_params_t* view) {
  * through p_level_first_mobj()/p_level_next_mobj(). The static THINGS list
  * above is only a stand-in for this path: it is kept for the two measurement
  * probes (FRAMEPROF, which measures a renderer and owns no world) and is never
- * built in the `_show` build while the world is open, so nothing is drawn
+ * built in the shipped image while the world is open, so nothing is drawn
  * twice.
  *
  * Each mobj contributes its own `x`, `y`, `z`, `angle` and the light of the
@@ -2749,7 +2749,7 @@ std::uint32_t gWeaponMicros = 0u;
 int gWeaponMissing = 0;
 
 #if defined(DOOM_WEAPON_DIAG)
-// DOOM_WEAPON_DIAG (env esp32dev_ILI9341_hud_weaponcheck): once, when the pistol
+// DOOM_WEAPON_DIAG (the shipped image with -D DOOM_WEAPON_DIAG=1): once, when the pistol
 // rests, print SHA-256 hashes of a box around it before and after it is drawn, so
 // the host can rebuild both (tools/weapon_draw_check.py --board-rect). Off in the
 // shipped HUD build: the extra code moves the flash layout, which costs frame time.
@@ -4304,7 +4304,7 @@ bool frameLevelTakeVictory() {
 
 #if defined(DOOM_LEVEL_TEST)
 /*
- * The level-exit board proof (env esp32dev_ILI9341_hud_leveltest): the panel's buttons
+ * The level-exit board proof (the shipped image with -D DOOM_LEVEL_TEST=1): the panel's buttons
  * cannot be pressed from the build host, so this finds E1M1's own exit switch
  * (line special 11) and stands the avatar in front of it, on the front sector's
  * side facing the line. The scene then holds USE through the real button byte, so

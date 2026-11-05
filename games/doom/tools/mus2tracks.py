@@ -210,7 +210,7 @@ APU_TICKS_PER_BEAT = 4
 MUS_TICKS_PER_APU_TICK = MUS_TICKS_PER_SECOND * 60.0 / (PLAYER_BPM * APU_TICKS_PER_BEAT)  # 7.0
 MUSIC_NOTE_BYTES = 16  # sizeof(MusicNote) on the 32-bit ESP32
 
-# The flash headroom of the _hud image before any music was added. A fixed
+# The flash headroom of the shipped image before any music was added. A fixed
 # default keeps --check reproducible.
 DEFAULT_HEADROOM = 49_795
 

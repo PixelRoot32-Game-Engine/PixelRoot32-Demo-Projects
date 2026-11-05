@@ -21,8 +21,8 @@
 #endif
 
 #if defined(DOOM_FRAME_DUMP)
-// The dump's button combination; `_hud` pulls InputMap in through its HUD path
-// and `_show` does not, so the include is the dump's own.
+// The dump's button combination; the shipped image pulls InputMap in through its
+// HUD path, while a build without the HUD does not, so the include is the dump's own.
 #include "doomc/InputMap.h"
 #endif
 
@@ -848,7 +848,7 @@ static_assert(M_BTN_UP == doomc::kButtonUp && M_BTN_DOWN == doomc::kButtonDown
 
 #if defined(DOOM_MENU_SCRIPT)
 /*
- * DOOM_MENU_SCRIPT (env esp32dev_ILI9341_hud_menutest): the board has no buttons
+ * DOOM_MENU_SCRIPT (the shipped image with -D DOOM_MENU_SCRIPT=1): the board has no buttons
  * this build can press, so the diagnostic plays a fixed input script into the same
  * path a real press takes -- `m_menu_buttons()`, ORed onto the sampled buttons --
  * and the serial log shows what the menu did. Each step holds `buttons` for
@@ -979,7 +979,7 @@ std::uint8_t menuScriptButtons(std::uint32_t frame, bool loadOnly) {
 
 #if defined(PIXELROOT32_DOOM_SHOW_E1M1) && defined(DOOM_HUD) && defined(DOOM_MAP_SCRIPT)
 /*
- * DOOM_MAP_SCRIPT (env esp32dev_ILI9341_hud_mapcheck): the board's buttons cannot
+ * DOOM_MAP_SCRIPT (the shipped image with -D DOOM_MAP_SCRIPT=1): the board's buttons cannot
  * be pressed from the build host, so this diagnostic plays a fixed input script
  * into the same path a real press takes -- the sampled buttons plus the Select
  * bit, both read by `runMap()` -- and the serial log shows what the automap did.
@@ -1549,7 +1549,7 @@ void DoomScene::update(unsigned long deltaTime) {
 #endif
     }
 #else
-    // The level-exit board proof (env esp32dev_ILI9341_hud_leveltest): at frame 20 the
+    // The level-exit board proof (the shipped image with -D DOOM_LEVEL_TEST=1): at frame 20 the
     // avatar is put in front of E1M1's own exit switch, and from frame 24 B is
     // held for three frames. B is bit 5 -- the world's USE -- so the press goes
     // through the real tic path; the frames before it are what release the use
@@ -2895,7 +2895,7 @@ void DoomScene::drawSceneFrame(Renderer& renderer) {
 #endif
 
 #if defined(DOOM_FRAME_DUMP)
-    // Diagnostic (env `esp32dev_ILI9341_show_dump` / `_hud_dump`): hold A and
+    // Diagnostic (the shipped image with `-D DOOM_FRAME_DUMP=1`): hold A and
     // B together and the finished surface goes out over the console as RLE, so
     // the frame that looked wrong on the glass can be rebuilt on the host and
     // diffed against its own render of the same viewpoint.

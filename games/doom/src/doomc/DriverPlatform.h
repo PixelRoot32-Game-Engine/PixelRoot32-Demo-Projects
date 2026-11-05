@@ -18,8 +18,9 @@
  * both targets instead of carrying a second, diverging copy of itself.
  *
  * ON THE BOARD every function forwards to exactly the call FrameDriver.cpp made
- * before this header existed, with the same arguments, so `esp32dev_ILI9341_hud`
- * and the probe environments do the same work they always did.
+ * before this header existed, with the same arguments, so the shipped
+ * `esp32dev_ILI9341` image and the probe environments do the same work they
+ * always did.
  *
  * ON THE HOST (PLATFORM_NATIVE, the SDL2 simulator) the clock is
  * std::chrono::steady_clock and the allocator is std::malloc/std::free. The

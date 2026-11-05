@@ -309,7 +309,7 @@ try {
     else {
         Write-Host ""
         Write-Host "Flash the app (and the new partition table) with:"
-        Write-Host "  & `"$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe`" run -e esp32dev_ILI9341_show -t upload"
+        Write-Host "  & `"$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe`" run -e esp32dev_ILI9341 -t upload"
         if ($FullSprites) {
             Write-Host "$Out is the native simulator's container; do not flash it."
             Write-Host "The board's image is the trimmed tools/DOOM1.whd, built without -FullSprites."

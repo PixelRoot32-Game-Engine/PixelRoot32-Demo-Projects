@@ -10,7 +10,7 @@ WHAT IT IS FOR
 
 HOW TO GET THE TWO SIDES
 
-  Board: flash `esp32dev_ILI9341_hud` with `-D DOOM_FRAME_DUMP=1` in
+  Board: flash `esp32dev_ILI9341` with `-D DOOM_FRAME_DUMP=1` in
   `PLATFORMIO_BUILD_FLAGS`, stand at the viewpoint, hold A+B for one burst and
   capture the console. The burst prints the frame as RLE
   (`DUMP,...`) and then the records (`VD,...`) plus the sector table
