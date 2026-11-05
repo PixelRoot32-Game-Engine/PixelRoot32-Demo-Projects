@@ -75,6 +75,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #if defined(DOOM_SCREENSHOT)
@@ -1449,6 +1450,78 @@ void DoomScene::update(unsigned long deltaTime) {
     // SHOW,level lines are the log of what the panel showed.
     if (!walkDone_) {
         const std::uint8_t level = doomc::frameLevelNumber();
+#if defined(PLATFORM_NATIVE)
+        // The desktop loop draws several hundred frames a second, so the
+        // board's 45-frame dwell is a tenth of a second -- less than one 35 Hz
+        // tic -- and its three-frame press falls between two tics and never
+        // reaches a ticcmd. The same walk is therefore paced in the clock the
+        // world itself runs on: 105 tics is the board's ~3 s, and the press is
+        // latched for four tics, the window `levelTestPressTic_` above already
+        // proves the world samples.
+        constexpr std::uint32_t kNativeDwellTics = 105u;
+        constexpr std::uint32_t kNativeUseTics = 4u;
+        constexpr std::uint32_t kNativeRetryTics = 21u;
+        const std::uint32_t tic = ticClock_.tic();
+
+        if (!walkStopRead_) {
+            // DOOM_WALK_STOP ends the run on one chosen level, after its dwell,
+            // so a capture's tail is that level's audio alone. Unset (or not
+            // 1..9) keeps the board's tour of all nine. The choice is printed
+            // once so the run's log names it instead of the environment.
+            walkStopRead_ = true;
+            const char* stop = std::getenv("DOOM_WALK_STOP");
+            if (stop != nullptr) {
+                const long value = std::strtol(stop, nullptr, 10);
+                if (value >= 1 && value <= 9) {
+                    walkStopLevel_ = static_cast<std::uint8_t>(value);
+                }
+            }
+            char line[48];
+            std::snprintf(line, sizeof line, "SHOW,walk,stop=%u\n",
+                          static_cast<unsigned>(walkStopLevel_));
+            writeConsoleLine(line);
+        }
+
+        if (level != walkLastLevel_) {
+            walkLastLevel_ = level;
+            walkArmTic_ = tic + kNativeDwellTics;
+            walkPressEndTic_ = kNoTic;
+            char line[64];
+            std::snprintf(line, sizeof line, "SHOW,walk,level=%u,tic=%u\n",
+                          static_cast<unsigned>(level), static_cast<unsigned>(tic));
+            writeConsoleLine(line);
+        }
+
+        if (walkPressEndTic_ != kNoTic && tic <= walkPressEndTic_) {
+            buttons = static_cast<std::uint8_t>(buttons | doomc::kButtonB);
+        } else if (tic >= walkArmTic_) {
+            if (walkStopLevel_ != 0 && level == walkStopLevel_) {
+                // The requested level has had its dwell: end the run here, with
+                // the success code `main()` returns, so the host's capture is
+                // this level's theme and nothing after it.
+                char line[64];
+                std::snprintf(line, sizeof line, "SHOW,walk,exit=level=%u,tic=%u\n",
+                              static_cast<unsigned>(level), static_cast<unsigned>(tic));
+                writeConsoleLine(line);
+                std::exit(0);
+            } else if (level == 8u) {
+                walkDone_ = true;
+#if DOOM_PERSISTENCE
+                (void)doomc::frameLevelVictoryScript();
+#endif
+            } else {
+                const int special = (level == 3u) ? 51 : 11;
+                if (!doomc::frameLevelExitScript(special)) {
+                    walkDone_ = true;
+                } else {
+                    walkPressEndTic_ = tic + kNativeUseTics;
+                    // A press that does not move the level retries after the
+                    // same cooldown the board's 40 frames give it.
+                    walkArmTic_ = tic + kNativeUseTics + kNativeRetryTics;
+                }
+            }
+        }
+#else
         if (level != walkLastLevel_) {
             walkLastLevel_ = level;
             walkTimer_ = 45;  // ~3 s at the shipped frame rate, fade included
@@ -1473,6 +1546,7 @@ void DoomScene::update(unsigned long deltaTime) {
             }
             walkTimer_ = 40;
         }
+#endif
     }
 #else
     // The level-exit board proof (env esp32dev_ILI9341_hud_leveltest): at frame 20 the

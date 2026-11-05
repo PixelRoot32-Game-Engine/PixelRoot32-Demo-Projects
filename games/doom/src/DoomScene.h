@@ -485,17 +485,34 @@ private:
 
 #if defined(DOOM_LEVEL_WALK)
     /*
-     * The viewing walk (env esp32dev_ILI9341_hud_levelwalk). Frame-paced, not a
-     * measurement: the point is what a person sees on the panel. `walkLastLevel_`
-     * notices a transition and restarts the dwell, `walkTimer_` counts the dwell
-     * before the next press, `walkUse_` holds B for the press, and `walkDone_`
-     * stops after E1M8's ending (the world goes back to E1M1, so a level-change
-     * reset must not restart the tour).
+     * The viewing walk (env esp32dev_ILI9341_hud_levelwalk, and the desktop
+     * proof `tools/music_walk_check.py`). `walkLastLevel_` notices a transition
+     * and restarts the dwell, `walkDone_` stops after E1M8's ending (the world
+     * goes back to E1M1, so a level-change reset must not restart the tour).
+     *
+     * The board paces the walk in frames (45 to dwell, 3 to press, 40 to retry),
+     * which is what its ~20 fps loop makes of them. The desktop loop draws
+     * several hundred frames a second, so the same counts are a tenth of a
+     * second and fall between two 35 Hz tics: there the dwell and the press are
+     * counted in world tics instead (see `update()`), the clock the world runs
+     * on, and the board's frame counts are untouched.
      */
     std::uint8_t walkLastLevel_ = 0;
+    bool walkDone_ = false;
+#if defined(PLATFORM_NATIVE)
+    /// Tic the next walk action (exit script, ending, or the requested stop)
+    /// may fire on. Reset to "arrival + dwell" on every level change.
+    std::uint32_t walkArmTic_ = 0;
+    /// Last tic the USE press is latched for; `kNoTic` while no press is armed.
+    std::uint32_t walkPressEndTic_ = kNoTic;
+    /// `DOOM_WALK_STOP`'s level (1..9), or 0 to walk all nine as the board does.
+    std::uint8_t walkStopLevel_ = 0;
+    /// Whether `DOOM_WALK_STOP` has been read: once, on the walk's first frame.
+    bool walkStopRead_ = false;
+#else
     std::uint8_t walkTimer_ = 0;
     std::uint8_t walkUse_ = 0;
-    bool walkDone_ = false;
+#endif
 #endif
 
 #if DOOM_PERSISTENCE

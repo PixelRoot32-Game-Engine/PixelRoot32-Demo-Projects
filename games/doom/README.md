@@ -78,7 +78,7 @@ on four things the 4 MB image leaves out:
 
 | Feature | What the gate adds | Evidence |
 | --- | --- | --- |
-| Per-level music | nine committed themes, `src/assets/music/MusE1M1..9.inc`, one per level id; 209,696 B of note data added (244,016 B in total, E1M1's 34,320 B included) | `SHOW,music,event=start,track=e1mN,...` names the level's theme |
+| Per-level music | nine committed themes, `src/assets/music/MusE1M1..9.inc`, one per level id; 192,816 B of note data added (227,136 B in total, E1M1's 34,320 B included) | `SHOW,music,event=start,track=e1mN,...` names the level's theme |
 | Full sprite container | the default container becomes `tools/DOOM1-full.whd` through `-D DOOM_WHD_DEFAULT="tools/DOOM1-full.whd"`, built with `make_container.ps1 -FullSprites`; it keeps all 239 frames the shipped recipe drops | 3,349,928 B of the 3,375,104 B `wad` row (25,176 B spare), with 370/384 manifest entries |
 | Twin index planes | two 320x200 8bpp planes, alternated per frame; the previous completed plane feeds the melt | `SHOW,twin,planes=2,bytes=128000` at boot |
 | Vanilla screen melt | a level transition runs vanilla's column melt over its two screen copies and reports every step | `SHOW,melt,frame=..,step=..,done=..`, 18 steps (observed E1M1 to E1M2 beside `SHOW,level,from=E1M1,to=E1M2`) |
@@ -566,9 +566,9 @@ over the engine's `MusicPlayer`. `S_Start` asks for the map's own track
 (`mus_e1m1 + (episode-1)*9 + map-1`); in the 4 MB build `MusicBank` answers
 E1M1's track for every level id (`e1m1`..`e1m9`), so a level change restarts the
 same music instead of going silent. That is a 4 MB limitation: the other eight
-themes are another 209,696 B and the app has 57,843 B free. Native is not
+themes are another 192,816 B and the app has 57,843 B free. Native is not
 limited that way: under `DOOM_FULL_PROFILE` `MusicBank` selects one theme per
-level from the nine committed includes (244,016 B of note data in total). The
+level from the nine committed includes (227,136 B of note data in total). The
 intermission and title answer nullptr. The menu's open/close calls
 `S_PauseSound`/`S_ResumeSound` (`DoomScene::runMenu`), so the pause path is
 upstream's, not a second control.
@@ -614,7 +614,7 @@ percussion 513). `D_INTRO` is 80 notes = 1,280 B and `D_INTER` is 3,975 =
 63,600 B; both are converted and gated in memory, but not committed. With
 57,843 B free in the app, one more theme would fit and the other eight do not.
 Native (`DOOM_FULL_PROFILE`) ships all nine: `MusE1M1.inc` .. `MusE1M9.inc` are
-committed, and the eight extra themes add 209,696 B for 244,016 B in total.
+committed, and the eight extra themes add 192,816 B for 227,136 B in total.
 Only `MusicBank`'s lookup changes, so a 4 MB build still links one theme.
 
 **The gate.** `tools/music_check.py` converts `D_INTRO`, `D_INTER` and
