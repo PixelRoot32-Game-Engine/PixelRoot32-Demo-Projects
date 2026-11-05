@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Builds the shipped DOOM1.whd container, and optionally flashes it.
+    Builds the shipped DOOM1.whd container (or the native-only full-sprite
+    container), and optionally flashes the shipped one.
 
 .DESCRIPTION
     The single reproducible command for the container. The container carries the whole
@@ -84,6 +85,17 @@
     The WAD is copyrighted shareware data and is never committed. tools/ is
     git-ignored for both DOOM1.WAD and DOOM1.whd.
 
+    With -FullSprites the container keeps every sprite lump between S_START and
+    S_END: the 239 frames --drop-unused-sprites removes (264,819 B stored,
+    402,464 B uncompressed) stay, so the file grows by their payloads and their
+    directory and name entries. That build is for the native simulator only.
+    It is a host file, not a flash image, and this script measures it against
+    the container format's own 32-bit size field instead of the 3,375,104 B
+    `wad` partition; -Flash is refused, because the board's image is the trimmed
+    tools/DOOM1.whd. The frames it adds are not baked: the PWBAKE manifest and
+    kBakedCapacity are unchanged, and the frames are addressable by name through
+    the container's directory for on-demand decode.
+
 .PARAMETER Wad
     The source IWAD. Defaults to tools/DOOM1.WAD beside this script.
 
@@ -96,17 +108,30 @@
 .PARAMETER Flash
     Flash the container after building it. The app image (and the partition
     table) is flashed separately with `pio run -e <env> -t upload`.
+    Incompatible with -FullSprites: that container is native-only and is never
+    written to the board.
+
+.PARAMETER FullSprites
+    Keep every episode sprite lump instead of the 239 frames no bake list and no
+    raw list names. The result is the native-only container (normally
+    tools/DOOM1-full.whd) that env:native opens by default: every frame is
+    addressable by name and decoded on demand, while the PWBAKE manifest and
+    kBakedCapacity stay as they are. It is measured against the container's own
+    4,294,967,295 B size field rather than the partition budget, and -Flash is
+    refused.
 
 .EXAMPLE
     .\tools\make_container.ps1
     .\tools\make_container.ps1 -Flash
+    .\tools\make_container.ps1 -FullSprites -Out tools\DOOM1-full.whd
 #>
 [CmdletBinding()]
 param(
     [string]$Wad,
     [string]$Out,
     [string]$Port = "COM4",
-    [switch]$Flash
+    [switch]$Flash,
+    [switch]$FullSprites
 )
 
 $ErrorActionPreference = "Stop"
@@ -125,7 +150,12 @@ $ContainerOffset = "0x0C0000"
 # partition starts. This number is the budget whd_encode.py checks: a larger value
 # would let a future rebuild write past 0x3F8000 and over the save slots, which
 # the container's own header would not notice.
+#
+# -FullSprites replaces it with the container format's own size-field limit: the
+# full file is a host file for env:native and is never flashed, so the partition
+# budget is not the bound that matters for it.
 $Budget = 3375104
+$HostFileBudget = 4294967295
 $Levels = "E1M1,E1M2,E1M3,E1M4,E1M5,E1M6,E1M7,E1M8,E1M9"
 $Root = Split-Path -Parent $PSScriptRoot
 
@@ -143,6 +173,16 @@ if ($null -eq $CapacityLine) {
     throw "kBakedCapacity not found in ${AdapterHeader}: the bake capacity check cannot run"
 }
 $BakedCapacity = [int]$CapacityLine.Matches[0].Groups[1].Value
+
+# The full-sprite container is a host file, so the flash partition is not its
+# bound: it is measured against the 32-bit totalSize the container header can
+# describe. Flashing it is refused for the same reason -- the board always runs
+# the trimmed container, and a full image would be the wrong file on the `wad`
+# partition even when its size happens to fit.
+if ($FullSprites) { $Budget = $HostFileBudget }
+if ($FullSprites -and $Flash) {
+    throw "-FullSprites builds the native-only container, which is not a flash image: it is measured against the container's 4,294,967,295 B size field, not the 3,375,104 B wad partition. Drop -Flash (env:native reads the file) and flash the trimmed tools/DOOM1.whd to the board."
+}
 
 Push-Location $Root
 try {
@@ -162,19 +202,41 @@ try {
         "--sprite-list", "tools/e1m1_sprites.inc",
         "--raw-list", "tools/hud_lumps.txt",
         "--raw-list", "tools/weapon_lumps.txt",
-        "--raw-list", "tools/menu_lumps.txt",
+        "--raw-list", "tools/menu_lumps.txt"
+    )
+    if (-not $FullSprites) {
         # The 239 sprite frames no list can name. The tool protects every name
         # the sprite list and the three raw lists carry, so the weapon patches
         # survive.
-        "--drop-unused-sprites",
+        $EncodeArgs += "--drop-unused-sprites"
+    }
+    # The full-sprite build keeps those frames instead: they stay addressable by
+    # name through the directory and are decoded on demand, so the bake manifest
+    # and kBakedCapacity are untouched.
+    $EncodeArgs += @(
         "--budget", $Budget,
         "--baked-capacity", $BakedCapacity
     )
 
-    Write-Host "== encode: nine levels, the named sprite frames, the HUD, weapon and menu art, the mapped PLAYPAL, union bake, 3,375,104 B budget, $BakedCapacity manifest entries =="
+    if ($FullSprites) {
+        Write-Host "== encode: nine levels, every episode sprite frame, the HUD, weapon and menu art, the mapped PLAYPAL, union bake, host-file bound 4,294,967,295 B only, $BakedCapacity manifest entries =="
+    } else {
+        Write-Host "== encode: nine levels, the named sprite frames, the HUD, weapon and menu art, the mapped PLAYPAL, union bake, 3,375,104 B budget, $BakedCapacity manifest entries =="
+    }
     & python tools/whd_encode.py $Wad -o $Out --force @EncodeArgs --stats
     if ($LASTEXITCODE -ne 0) {
         throw "whd_encode.py exited $LASTEXITCODE"
+    }
+
+    if ($FullSprites) {
+        # The container header stores totalSize in 32 bits, so a file past that
+        # cannot describe itself; fail before a later proof reads a truncated
+        # size. The WAD cannot produce such a file today, but the bound is the
+        # one this mode promised to enforce.
+        $BuiltBytes = (Get-Item -LiteralPath $Out).Length
+        if ($BuiltBytes -gt $HostFileBudget) {
+            throw "-FullSprites wrote $BuiltBytes B, past the container format's $HostFileBudget B size field: the container cannot describe itself and must not be used."
+        }
     }
 
     Write-Host "== prove: every source lump rebuilds byte for byte =="
@@ -248,8 +310,14 @@ try {
         Write-Host ""
         Write-Host "Flash the app (and the new partition table) with:"
         Write-Host "  & `"$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe`" run -e esp32dev_ILI9341_show -t upload"
-        Write-Host "Flash the container with:"
-        Write-Host "  & `"$env:USERPROFILE\.platformio\penv\Scripts\python.exe`" `"$env:USERPROFILE\.platformio\packages\tool-esptoolpy\esptool.py`" --chip esp32 --port $Port --baud 921600 write_flash $ContainerOffset $Out"
+        if ($FullSprites) {
+            Write-Host "$Out is the native simulator's container; do not flash it."
+            Write-Host "The board's image is the trimmed tools/DOOM1.whd, built without -FullSprites."
+        }
+        else {
+            Write-Host "Flash the container with:"
+            Write-Host "  & `"$env:USERPROFILE\.platformio\penv\Scripts\python.exe`" `"$env:USERPROFILE\.platformio\packages\tool-esptoolpy\esptool.py`" --chip esp32 --port $Port --baud 921600 write_flash $ContainerOffset $Out"
+        }
     }
 }
 finally {

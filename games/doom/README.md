@@ -43,8 +43,10 @@ mock-ups.
 ## Quick path
 
 1. Build the firmware: `pio run -e esp32dev_ILI9341_hud` (from `games/doom`).
-2. Get the shareware `DOOM1.WAD` v1.9 and build the container:
-   `.\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD -Flash -Port COM4`.
+2. Get the shareware `DOOM1.WAD` v1.9 and build the containers: the board's
+   `.\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD -Flash -Port COM4`,
+   and for `native` the full-sprite
+   `.\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD -Out tools\DOOM1-full.whd -FullSprites`.
 3. Flash the app: `pio run -e esp32dev_ILI9341_hud -t upload --upload-port COM4`.
 4. Open the serial monitor at 115200 and look for
    `SHOW,boot,screen=game,level=E1M1,open_ms=...`.
@@ -97,13 +99,15 @@ The native build needs SDL2 (`libsdl2-dev` on Linux, `brew install sdl2` on
 macOS, MSYS2/MinGW on Windows). The `[env:native]` flags ship with the
 MSYS2 paths; swap them for the commented Homebrew lines on macOS.
 
-The simulator does not embed the game's data: it opens the same compressed
-container the firmware flashes, from disk. Build it once with
+The simulator does not embed the game's data: it opens a compressed container
+from disk, built once with
 [`tools/make_container.ps1`](tools/make_container.ps1) (or `tools/whd_encode.py`
-plus `tools/bake_graphics.py`); it lands at `tools/DOOM1.whd`, which is the
-default the host looks for relative to the working directory, so run the binary
-from `games/doom`. `DOOM_WHD` overrides the path. The container and the WAD are
-both gitignored, so regenerate rather than commit them.
+plus `tools/bake_graphics.py`). `native` reads `tools/DOOM1-full.whd`, the
+full-sprite build described under "Get the WAD and build the container"; the
+board reads `tools/DOOM1.whd`. Both live next to the WAD and are resolved
+relative to the working directory, so run the simulator from `games/doom`.
+`DOOM_WHD` overrides the path. The containers and the WAD are all gitignored, so
+regenerate rather than commit them.
 
 The native controls are the board's, on a keyboard: arrows walk and turn,
 **A** (attack) is Space, **B** (use and run) is Enter, and **Start** is Escape,
@@ -161,7 +165,8 @@ v1.0 release listed on the same page is a different WAD: the port's container,
 partition sizes and graphics bake are all measured against v1.9, so a v1.0 file
 will not match them.
 
-Then turn it into the container the firmware reads, from **`games/doom`**:
+Then turn it into the containers, from **`games/doom`**. The board reads the
+trimmed container:
 
 ```powershell
 .\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD
@@ -190,6 +195,21 @@ texture's patch gaps are palette 0, which vanilla draws as black.
 ```powershell
 .\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD -Flash -Port COM4
 ```
+
+`native` reads `tools/DOOM1-full.whd`, the same recipe with `-FullSprites`: every
+sprite lump stays instead of the 239 frames no list can name (264,819 B stored).
+Those frames are not baked -- the PWBAKE manifest and `kBakedCapacity` are
+unchanged -- so they are decoded on demand through the container's name
+directory.
+
+```powershell
+.\tools\make_container.ps1 -Wad C:\path\to\DOOM1.WAD -Out tools\DOOM1-full.whd -FullSprites
+```
+
+That build is native-only. It is a host file, not a flash image: the script
+measures it against the container format's own size field instead of the
+`wad` partition and refuses `-Flash`, because the board's image is the trimmed
+`tools/DOOM1.whd`.
 
 The encoder underneath is committed and usable on its own
 (`python tools/whd_encode.py --help`; `--check` re-decodes a container and

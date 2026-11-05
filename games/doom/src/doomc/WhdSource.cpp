@@ -5,8 +5,10 @@
  * The flash path is behind the same guard WadSource.cpp uses. On the board this
  * file finds the `wad` partition, maps it read-only and hands the pointer to the
  * C reader; on a host build there is no partition, so the container is read from
- * the file WhdSource.h names ($DOOM_WHD, default tools/DOOM1.whd) into one heap
- * buffer and the same reader is opened over it.
+ * the file WhdSource.h names ($DOOM_WHD, or the compile-time default
+ * DOOM_WHD_DEFAULT) into one heap buffer and the same reader is opened over it.
+ * The default is tools/DOOM1.whd unless the build defines it, which is how the
+ * native environment selects the full-sprite container.
  *
  * The host branch has to keep compiling under env:link_test, which builds every
  * src/doomc/ object with no engine dependency: it uses <cstdint>, <cstdio> and
@@ -299,8 +301,15 @@ const char* const kPathVariable = "DOOM_WHD";
 
 /// Written by tools/make_container.ps1 next to the WAD it encodes, and relative
 /// to the working directory: `pio run -e native -t exec` and a run from
-/// games/doom both find it there.
-const char* const kDefaultPath = "tools/DOOM1.whd";
+/// games/doom both find it there. A host build can name a different default at
+/// compile time (`-D DOOM_WHD_DEFAULT=\"...\"`): env:native points it at the
+/// full-sprite container, and `$DOOM_WHD` still wins over either.
+#ifndef DOOM_WHD_DEFAULT
+#define DOOM_WHD_DEFAULT "tools/DOOM1.whd"
+#endif
+
+/// The file open() reads when `$DOOM_WHD` is unset or empty.
+const char* const kDefaultPath = DOOM_WHD_DEFAULT;
 
 /// The field the device branch reads, at the same offset: magic (4) + version
 /// (2) + flags (2) + numLumps (4) + nameCount (4) + directoryOffset (4) +
