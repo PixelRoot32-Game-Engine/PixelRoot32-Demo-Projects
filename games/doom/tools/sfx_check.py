@@ -34,6 +34,15 @@ PROVING THE GATE CAN FAIL, two ways:
   class and envelope all miss, so the run must fail.
   Without these, a gate that only ever sees the bank proves the bank runs.
 
+THE PROFILE IS A SEPARATE MEASUREMENT
+
+  The identity gate runs on `Legacy`, the profile `tools/sfx_design.py` fitted
+  the bank against and the one `tools/sfx_fit.txt` records. The shipped port
+  runs `Famicom`, so ``--profile famicom`` renders the shipped character. Its
+  numbers move for character reasons (stepped duty, unipolar noise, the NES mix
+  weights, the output stage), so such a run informs and does not replace the
+  gate. A non-Legacy run never rewrites `tools/sfx_fit.txt`.
+
 ACCEPTED DEVIATIONS
 
 A cue whose original RMS contour a single ADSR cannot follow is not hidden and
@@ -280,6 +289,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cxx", default="g++")
     parser.add_argument("--perturb", action="store_true")
     parser.add_argument("--stub", action="store_true")
+    parser.add_argument("--profile", choices=("legacy", "nes", "famicom"),
+                        default="legacy",
+                        help="APU character to render; the identity gate runs on legacy")
     parser.add_argument("--no-record", action="store_true")
     args = parser.parse_args(argv)
 
@@ -301,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
             command.append("--perturb")
         if args.stub:
             command.append("--stub")
+        command.extend(["--profile", args.profile])
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode != 0:
             print("FAIL render: " + (result.stderr or result.stdout))
@@ -320,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"OK {label}: the gate failed as it must ({len(findings)} checked ids)")
         return 0
 
-    if not args.no_record:
+    if not args.no_record and args.profile == "legacy":
         report = sfx_design.render_report(cues, record)
         (ROOT / "tools" / "sfx_fit.txt").write_text(report, encoding="utf-8", newline="\n")
 
@@ -337,7 +350,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     worst = min(correlations) if correlations else 1.0
     mean = sum(correlations) / len(correlations) if correlations else 1.0
-    print(f"OK sfx_check: {checked} measured, {checked - accepted} pass, "
+    label = "" if args.profile == "legacy" else f" [{args.profile}]"
+    print(f"OK sfx_check{label}: {checked} measured, {checked - accepted} pass, "
           f"{accepted} accepted-deviation, 0 failed")
     print(f"   envelope r: worst {worst:.3f}, mean {mean:.3f}")
     return 0

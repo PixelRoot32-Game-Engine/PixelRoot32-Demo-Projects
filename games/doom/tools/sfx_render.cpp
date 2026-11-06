@@ -22,6 +22,16 @@
  *   Duration, class, envelope and centroid all miss, so the check must exit
  *   non-zero.
  *
+ * --profile <legacy|nes|famicom> PICKS THE APU CHARACTER
+ *
+ *   The default is `legacy`, which is the profile tools/sfx_design.py fitted
+ *   the bank against and the one tools/sfx_fit.txt records. The shipped port
+ *   runs `famicom`, so `--profile famicom` renders the shipped character and
+ *   lets a run compare the two. It is a measurement, not the identity gate:
+ *   the NES profiles own stepped duty, unipolar noise, the NES mix weights and
+ *   the output stage, so their analysis numbers move for reasons that are
+ *   character, not a wrong cue.
+ *
  * Run it by hand only for debugging; tools/sfx_check.py compiles and invokes
  * it with the flags it needs.
  */
@@ -273,10 +283,37 @@ void perturb(SfxCue* cue) {
 int main(int argc, char** argv) {
     bool doPerturb = false;
     bool doStub = false;
+    pixelroot32::audio::SoundProfile profile =
+        pixelroot32::audio::SoundProfile::Legacy;
+    const char* profileName = "legacy";
     for (int index = 1; index < argc; ++index) {
-        if (std::strcmp(argv[index], "--perturb") == 0) doPerturb = true;
-        if (std::strcmp(argv[index], "--stub") == 0) doStub = true;
+        if (std::strcmp(argv[index], "--perturb") == 0) {
+            doPerturb = true;
+        } else if (std::strcmp(argv[index], "--stub") == 0) {
+            doStub = true;
+        } else if (std::strcmp(argv[index], "--profile") == 0) {
+            if (index + 1 >= argc) {
+                std::fprintf(stderr, "--profile needs a value\n");
+                return 2;
+            }
+            const char* value = argv[++index];
+            if (std::strcmp(value, "legacy") == 0) {
+                profile = pixelroot32::audio::SoundProfile::Legacy;
+                profileName = "legacy";
+            } else if (std::strcmp(value, "nes") == 0) {
+                profile = pixelroot32::audio::SoundProfile::Nes;
+                profileName = "nes";
+            } else if (std::strcmp(value, "famicom") == 0
+                       || std::strcmp(value, "hybrid") == 0) {
+                profile = pixelroot32::audio::SoundProfile::Famicom;
+                profileName = "famicom";
+            } else {
+                std::fprintf(stderr, "--profile must be legacy, nes or famicom\n");
+                return 2;
+            }
+        }
     }
+    std::printf("# profile=%s\n", profileName);
 
     static const InstrumentPreset kStubPreset = [] {
         InstrumentPreset preset{};
@@ -319,6 +356,7 @@ int main(int argc, char** argv) {
 
         ApuCore apu;
         apu.init(kRate);
+        apu.setSoundProfile(profile);
         AudioCommand command{};
         command.type = AudioCommandType::PLAY_EVENT;
         command.event = event;

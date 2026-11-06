@@ -165,9 +165,9 @@ load-bearing: an unpinned update moves `espressif32@7.1.2` (Arduino-ESP32
 2.0.17) to `8.0.0` (Arduino 3.x), and the same sources then measure 686,446 B of
 flash and overflow `dram0_0_seg` by 680 B. Bumping the platform is a
 repartition decision, not a routine update. The host test environments
-`link_test` and `sound_test` name `gperez88/PixelRoot32-APU@^2.0.0` explicitly
-(it resolves to 2.2.0); the firmware gets the APU through the engine's own
-dependency.
+`link_test` and `sound_test` name `gperez88/PixelRoot32-APU@^2.3.0` explicitly;
+the firmware gets the APU through the engine's own dependency (the engine
+requires `^2.3.0`).
 
 ### What 1.14.0 carries
 
@@ -177,7 +177,7 @@ block, `PIXELROOT32_DRAIN_PRESENT`), a caller-supplied 8bpp expansion table (the
 PLAYPAL path), the persistence module (`PIXELROOT32_ENABLE_PERSISTENCE`: the
 key-value and slot stores, the `RecordCodec` envelope and the ESP32 NVS
 adapters), and the APU hybrid-synthesis work with its render block. All four
-ship in that release, so the pin is `gperez88/PixelRoot32-Game-Engine@^1.14.0`.
+ship in that release, so the pin is `gperez88/PixelRoot32-Game-Engine@^1.14.1`.
 The engine contains no DOOM source; the GPL boundary is
 this demo's binary, not the engine tree (see [License](#license)).
 
@@ -528,8 +528,10 @@ noise cannot scramble the states. A diagnostic, never the shipped image.
 `S_StartSound`, `S_UpdateSounds`, `S_Start`, `S_ChangeMusic`, `S_PauseSound` --
 ported from linuxdoom's `s_sound.c` and `sounds.c` in `lib/doom/`, with the
 DMX half replaced by a narrow C seam into the APU (`src/doomc/DoomAudio.cpp`).
-Every cue is **pure APU synthesis** on the Legacy profile: four SFX voices
-(slots 4..7), no PCM sample, no DMX decode, and never a `SET_SOUND_PROFILE`.
+Every cue is **pure APU synthesis** on the `Famicom` profile: four SFX voices
+(slots 4..7), no PCM sample, no DMX decode. The profile is selected once at
+boot through the APU command queue (`src/DoomScene.cpp`); see **The profile is
+`Famicom`** below.
 
 **What plays.** Weapons (pistol, shotgun, chaingun through its `chgun` link,
 chainsaw start/idle, punch, rocket/plasma/BFG where a level can hand them
@@ -571,6 +573,18 @@ donor copies inherit their source's result, so the whole run is 49 pass and 59
 recorded, 0 failed. `--perturb` (frequency x1.5) and `--stub` (a fixed 440 Hz
 square) must both fail. The gate proves the cue **is** the sound it claims to
 be; whether it is pleasant takes a listening pass.
+
+**The shipped profile is a separate measurement.** The gate renders on `Legacy`,
+the profile the bank was fitted against; the port ships `Famicom`. Adding
+`--profile famicom` to the same command renders the shipped character: on the
+2026-11-06 build it reports 6 of 108 ids outside the identity windows --
+`bfg` and `rxplod` at envelope r=0.638, `metal`/`tink`/`radio` at r=0.768, and
+`podth2` classified `triangle -> pulse` with a rendered centroid of 174 Hz. The
+identical correlations across ids that share a waveform, and the fact that only
+the NES-character cues move, point at stepped duty, unipolar noise, the NES mix
+weights and the output stage rather than a wrong cue, which is why that run
+informs and does not replace the gate. A non-`Legacy` run never rewrites
+`tools/sfx_fit.txt`: that record is the Legacy fit.
 
 **Music.** `esp32dev_ILI9341` plays E1M1's track on every level.
 `lib/doom/s_sound.c` keeps upstream's
@@ -618,7 +632,10 @@ layers on one tick). The APU has three presets, so the mapping is kick
 body), and hi-hat for open/closed hats, crash, ride and the odd 75/80/81. A
 drum's audible length is the preset's `defaultDuration`; the note's duration
 only advances the sequencer. This is a deliberate fidelity cost of one
-percussion voice.
+percussion voice. Under `Famicom` the kick and snare keep their authored noise
+periods (APU 2.3.0's `noisePeriodMode = Note`) and the hi-hat takes the
+profile's NES LUT index 0, the brightest period, so the kit keeps its body and
+gains the authentic bright NES hi-hat.
 
 **What ships.** The 4 MB build ships one theme: E1M1's. `MusicBank.cpp`
 includes `src/assets/music/MusE1M1.inc` once and answers it for every level id
@@ -718,10 +735,24 @@ SFX voices cost, not what the soak's serial writes cost. The script, its
 counters and its lines live entirely inside `DOOM_AUDIO_SOAK`; the shipped HUD
 build carries none of it.
 
-**The profile is `Legacy`, and nothing switches it.** `Legacy` is the engine's
-default and the only profile this port runs. There is no `setSoundProfile` call
-and no `SET_SOUND_PROFILE` anywhere in `games/doom/`; the counters above are
-read instead of a profile being tried. `Nes` and `Hybrid` are out of scope.
+Those figures were recorded on `Legacy`, the profile the port ran before this
+change. `Famicom` adds the profile's output stage -- two high-pass sections, the
+LPF and the trim -- on top of the integer core for every sample, so `worst_us`
+and the underrun gate have to be re-measured on the board before the block
+budget is trusted under the shipped profile; the host cannot produce that
+number.
+
+**The profile is `Famicom`, selected once at boot.** The engine's default is
+`Legacy`, so `DoomScene::init` queues one `SET_SOUND_PROFILE` command carrying
+`SoundProfile::Famicom` (value 2) before `S_Init` and the first cue, while every
+voice is silent; the profile is audio-thread state and the command queue is the
+documented path, so there is no direct `setSoundProfile` call. The same constant
+feeds the boot line's `mode=` field, so the log names the profile the APU is on.
+`Legacy` stays one constant away (`kSoundProfile`); `Nes` is not used. This is a
+character change, not a level change -- `Famicom` carries a trim matched on
+crest-weighted loudness against `Legacy` -- but its peak on a dense mix was not
+measured, so the master level is the thing to re-check by ear (see **Volume and
+mute**).
 
 **Volume and mute.** The menu's slider and its mute row reach the APU.
 `src/doomc/AudioLevels.h` owns the one conversion in the port -- the menu's 0..15
@@ -773,11 +804,11 @@ Recorded on the board (COM4), NVS erased first:
   the diagnostic's script had reached last), and `frame00` is unchanged.
 
 Erase NVS after such captures: a shipped image left muted is silent, and that
-reads as a broken audio path. Two limits apply: the `Legacy` profile's release is
-capped at 100 ms, so a cue whose original tail is longer decays inside its own
-duration; and sector-originated cues (doors, lifts, floors) are non-local at full
-volume because `p_sector_t` has no `soundorg`, their sector-index token keeping
-one-sound-per-sector and `S_StopSound` working.
+reads as a broken audio path. Two limits apply: the APU clamps every release to
+100 ms under any profile, so a cue whose original tail is longer decays inside
+its own duration; and sector-originated cues (doors, lifts, floors) are
+non-local at full volume because `p_sector_t` has no `soundorg`, their
+sector-index token keeping one-sound-per-sector and `S_StopSound` working.
 
 **Eight channels, four voices.** DOOM keeps its eight logical channels, so
 vanilla's priority and origin rules still apply. The APU has four SFX voices:
@@ -789,7 +820,7 @@ the preset/cue consistency, the shared event translation, the telemetry seam's
 two arms and the music bank's one shipped track) proves the selector never names
 a Reserved cue as a victim, for every class combination.
 
-**Log.** At boot: `SHOW,audio,init,status=ok,bank=108,mode=legacy`, then
+**Log.** At boot: `SHOW,audio,init,status=ok,bank=108,mode=famicom`, then
 `SHOW,music,event=init,track=none,...`; when `S_Start` loads E1M1,
 `SHOW,music,event=start,track=e1m1,notes=657/712/263/513,
 beats=480.00/480.00/480.00/480.00,playing=1,paused=0,underruns=0,worst_us=1013`
