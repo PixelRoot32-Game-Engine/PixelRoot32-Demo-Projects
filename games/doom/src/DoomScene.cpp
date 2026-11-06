@@ -1111,15 +1111,31 @@ void DoomScene::init() {
     // The S_* layer first, so a level load's S_Start() has a seam to talk to.
     // `S_Init` takes upstream's volumes (0..127) and the layer runs at full
     // scale; the menu's 0..15 volume is applied as the engine's master gain.
-    // `mode=legacy` is a literal on purpose: this port never sends
-    // SET_SOUND_PROFILE.
+    //
+    // The port ships the `Famicom` profile. The profile is audio-thread state,
+    // so the game thread asks for it through the command queue -- the
+    // documented path -- and queues that request before `S_Init` and the first
+    // cue, while every voice is silent: the APU ABI documents a profile switch
+    // as a note-boundary change, not a mid-note one. One constant feeds both
+    // the command and the boot line's `mode=`, so the log cannot name a profile
+    // the APU is not on.
     doomc::doomAudioInit(engine.getAudioEngine(), engine.getMusicPlayer());
+
+    constexpr pixelroot32::audio::SoundProfile kSoundProfile =
+        pixelroot32::audio::SoundProfile::Famicom;
+    constexpr const char* kSoundProfileName = "famicom";
+    pixelroot32::audio::AudioCommand profile{};
+    profile.type = pixelroot32::audio::AudioCommandType::SET_SOUND_PROFILE;
+    profile.soundProfile = static_cast<std::uint8_t>(kSoundProfile);
+    engine.getAudioEngine().submitCommand(profile);
+
     S_Init(S_MAX_VOLUME, S_MAX_VOLUME);
     {
         char audioLine[72];
         std::snprintf(audioLine, sizeof audioLine,
-                      "SHOW,audio,init,status=ok,bank=%u,mode=legacy\n",
-                      static_cast<unsigned>(doomc::sfxBankSize()));
+                      "SHOW,audio,init,status=ok,bank=%u,mode=%s\n",
+                      static_cast<unsigned>(doomc::sfxBankSize()),
+                      kSoundProfileName);
         writeConsoleLine(audioLine);
     }
     // One line before any level is loaded: the bank and the transport, so a
