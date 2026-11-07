@@ -26,17 +26,16 @@ current room through `gameplay::roomProjection(ISO_PROJECTION, room)`.
 
 ## Producing the export
 
-`src/assets/tilemap/` is empty in the repository: the export is the step this
-example exists to check. The tilesets are in `editor/assets/tilesets/`
-(32x16 floors, 32x40 walls).
+`src/assets/tilemap/` is the editor's export of `editor/iso_rooms.pr32scene.bin`:
+an isometric 14x7 scene with two 7x7 rooms (Right goes 0 -> 1, Left comes
+back) on one tile layer, using the tilesets in `editor/assets/tilesets/`
+(32x16 floors, 32x40 walls). To re-export it:
 
-1. In the Tool Suite, create a project with an **isometric** scene, cell 32x16.
-2. Import `dungeon_floors.png` (tile 32x16) and `dungeon_walls.png` (tile 32x40).
-3. Use **one** tile layer; floors and walls share it, like `iso_dungeon`.
-4. Paint two rooms side by side and mark them as rooms (for example two 7x7
-   rooms at columns 0 and 7), connected to each other.
-5. Save the project as `editor/iso_rooms.pr32scene.bin`.
-6. Export, 4bpp, with:
+1. Open `editor/iso_rooms.pr32scene.bin` in the Tool Suite.
+2. Edit the rooms or the tiles. Keep **one** tile layer: this example draws the
+   first layer of each room.
+3. Export (the bit depth follows the colours in use; these tilesets give 4bpp)
+   with:
    - namespace `iso_rooms::map` (this names the files `iso_rooms_map.h/.cpp`
      and the room symbols `ISO_ROOMS_MAP_*`);
    - **Install palette**: `Background`;
@@ -52,5 +51,5 @@ The arrow keys move between connected rooms. Each room should look exactly as
 it does in the editor: same colours, walls standing on their cells, nothing
 cut at the top of the tall tiles.
 
-The engine is the sibling checkout `../../../PixelRoot32-Game-Engine` (see
-`platformio.ini`): the projected room API is not in a published release yet.
+The engine is pulled from its `feat/iso-rooms` branch (see `platformio.ini`):
+the projected room API is not in a published release yet.

@@ -10,7 +10,9 @@ namespace pr32 = pixelroot32;
 namespace gfx = pixelroot32::graphics;
 namespace gameplay = pixelroot32::gameplay;
 namespace math = pixelroot32::math;
-namespace map = iso_rooms::map;
+// Not `map`: Arduino declares a global map() function, so that alias
+// would not compile on the hardware target.
+namespace scene_map = iso_rooms::map;
 
 extern pr32::core::Engine engine;
 
@@ -31,7 +33,7 @@ void IsoRoomsScene::init() {
 
     // Tileset descriptors, room maps and (with the "Install palette" export
     // option) the background palette. Must run before anything is drawn.
-    map::init();
+    scene_map::init();
 
     // Each room's rect starts as the screen box of its cell diamonds. Walls
     // rise above their diamonds, so widen every room by what its own map
@@ -39,13 +41,13 @@ void IsoRoomsScene::init() {
     gfx::ScreenBounds art[kMaxRooms];
     for (uint16_t i = 0; i < kMaxRooms; ++i) {
         gfx::expandProjectedMapBounds(
-            art[i], *map::ROOM_LAYERS[i],
-            gameplay::roomProjection(map::ISO_PROJECTION,
-                                     map::ISO_ROOMS_MAP_ROOMS[i]));
+            art[i], *scene_map::ROOM_LAYERS[i],
+            gameplay::roomProjection(scene_map::ISO_PROJECTION,
+                                     scene_map::ISO_ROOMS_MAP_ROOMS[i]));
     }
 
-    if (gameplay::buildRoomGraph(map::ISO_ROOMS_MAP_ROOM_LAYER, rooms_,
-                                 map::ISO_PROJECTION, art) != kMaxRooms) {
+    if (gameplay::buildRoomGraph(scene_map::ISO_ROOMS_MAP_ROOM_LAYER, rooms_,
+                                 scene_map::ISO_PROJECTION, art) != kMaxRooms) {
         return;  // a malformed room table: draw nothing rather than garbage
     }
     setRoomGraph(&rooms_);
@@ -108,10 +110,10 @@ void IsoRoomsScene::draw(gfx::Renderer& renderer) {
 
     // The room's own map: local cells from (0, 0), placed where they sit in
     // the scene by roomProjection.
-    renderer.drawTileMap(*map::ROOM_LAYERS[current], 0, 0,
+    renderer.drawTileMap(*scene_map::ROOM_LAYERS[current], 0, 0,
                          gfx::LayerType::Dynamic,
-                         gameplay::roomProjection(map::ISO_PROJECTION,
-                                                  map::ISO_ROOMS_MAP_ROOMS[current]));
+                         gameplay::roomProjection(scene_map::ISO_PROJECTION,
+                                                  scene_map::ISO_ROOMS_MAP_ROOMS[current]));
 }
 
 }  // namespace iso_rooms_export
