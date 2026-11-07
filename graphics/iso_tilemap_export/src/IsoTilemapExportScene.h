@@ -12,8 +12,9 @@ namespace iso_tilemap_export {
 /**
  * Draws the exported scene, plus one actor walking it.
  *
- * The map is the Tilemap Editor's output, byte for byte -- nothing in
- * src/assets/ is hand-written and nothing here corrects it. What the example
+ * The map is the Tilemap Editor's output, exported from the project in
+ * editor/ -- nothing in src/assets/tilemap/ is hand-written and nothing here
+ * corrects it. What the example
  * adds is the smallest possible CONSUMER of that output: a marker that has to
  * agree with the map about where the cells are. Anything less and the export
  * is only being looked at; this is the first thing that has to navigate it.
@@ -31,10 +32,9 @@ namespace iso_tilemap_export {
  * tileset's worst overhang around an anchor widens that by 16 px left, 16
  * right, 24 up and 8 down, giving the half-open box x [0, 1040) by y [0, 536).
  * The 8 px of downward overhang is what index 1's 32 px art hangs below its
- * foot row; tile index 0, the exporter's empty sentinel, is a full-height
- * tile with foot 0 and would contribute 32 instead -- `expandProjectedMapBounds`
- * skips it precisely so the camera is not allowed to scroll into 24 px of
- * space nothing draws. Re-export a different map and these numbers change
+ * foot row; tile index 0, the exporter's empty sentinel, has zero extent and
+ * foot 0, so it adds nothing, and `expandProjectedMapBounds` skips it anyway.
+ * Re-export a different map and these numbers change
  * underneath this comment without anyone having to notice, which is the reason
  * they are derived at runtime and not written down in code.
  *

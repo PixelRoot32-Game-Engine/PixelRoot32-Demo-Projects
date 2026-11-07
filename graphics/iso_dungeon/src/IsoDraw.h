@@ -7,12 +7,13 @@ namespace iso_dungeon {
 /**
  * @brief Draws a sprite so that its `footY` row lands on a cell's centre.
  *
- * The single anchoring rule for this example. A 16px floor diamond, a 40px
- * wall, a 48px pillar and the 24px hero all go through this one function, so
- * none of them can drift a pixel out of alignment with the others.
+ * The single anchoring rule for this example. The props and the 24px hero go
+ * through this one function, and the tile layer's floors and walls follow the
+ * same rule inside drawTileMap (the export's TILESET_FOOT_Y), so none of them
+ * can drift a pixel out of alignment with the others.
  *
  * Each sprite ships its own `*_FOOT_Y` next to its descriptor (see
- * DungeonTiles.h and HeroSprites.h) because the correct row differs by kind:
+ * DungeonProps.h and HeroSprites.h) because the correct row differs by kind:
  * for a block it is the centre of its base diamond, which covers the whole
  * tile footprint; for an actor it is the bottom of the sprite, because the
  * hero stands ON the cell rather than filling it. Encoding that per sprite is

@@ -133,8 +133,10 @@ off, which is exactly the ASCII picture in the comment beside that row:
 0x3FF0,  // ..XXXXXXXXXX....
 ```
 
-> ⚠️ The Doxygen comment on `struct Sprite` in the engine's `Renderer.h` says
-> *"Bit 0 represents the leftmost pixel"*. That comment is stale.
+> ⚠️ Engine releases up to 1.14.1 document `struct Sprite` in `Renderer.h` as
+> *"Bit 0 represents the leftmost pixel"*. That was a documentation error, and
+> the next engine release (Unreleased) corrects it to bit `(width - 1)` =
+> leftmost, as above. The renderer has always drawn it this way:
 > `Renderer::drawSprite` builds its column mask as `1 << (width - 1)` and shifts
 > it right, and the inline comment in the blit loop says so too. The arm above
 > renders on the **right** of the character on a real screen, which settles it.

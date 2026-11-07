@@ -5,8 +5,9 @@
 > experimental, or deliberately simplified to keep one idea in focus.
 
 > **Requires engine 1.10.0 or newer.** This demo uses the projection API
-> (`gameplay/Projection.h`, `math/Projection.h`, `graphics/SpanTable.h`,
-> `graphics/StaticLayerSnapshot.h`), which first ships in `1.10.0`.
+> (`gameplay/Projection.h`, `math/Projection.h`, the sprite span fields
+> `rowMinX`/`rowMaxX`, `graphics/StaticLayerSnapshot.h`), which first ships in
+> `1.10.0`.
 
 Language: C++17  
 Engine: `gperez88/PixelRoot32-Game-Engine@^1.10.0`  
@@ -37,11 +38,15 @@ projection-blind code an axis-aligned game would use.
 ## The whole isometric view
 
 ```cpp
-inline constexpr gameplay::ProjectionSpec kTileProjection{
+inline constexpr pixelroot32::math::ProjectionSpec ISO_PROJECTION{
     120, 88,      // screen position of tile (0,0)'s diamond centre
      16,  8,      // +1 tileX -> right and down
     -16,  8};     // +1 tileY -> left  and down
 ```
+
+Those six integers are the Tilemap Editor's export of the project in
+[`editor/`](editor/) (`src/assets/tilemap/iso_dungeon_rooms.h`); the game
+names them `kTileProjection` in `IsoDungeonConstants.h`.
 
 That is it. Orthogonal, isometric 2:1, isometric 1:1, oblique and mirrored
 layouts are all *values* of this one type; there is deliberately no isometric
@@ -158,8 +163,10 @@ connection is topological.
 
 `RoomGraph` models exactly that — its `RoomDir` slots are keys, not geometry —
 which is why an example with no spatial room grid can still use it unchanged.
-The camera rects it also stores are degenerate here: one room is one screen, so
-nothing scrolls.
+The graph is built from the editor project's exported room layer (`RoomData`
+plus `RoomLayer`, one room per 7x7 rect). The camera rects it also stores are
+not used here: one room is one screen, so nothing scrolls, and the scene passes
+no camera to `enterRoom()`.
 
 ### Arriving through a door always faces you forward
 
@@ -189,6 +196,7 @@ spawned inside a wall, a player bounced between two rooms forever. Each is a
 | `doorsAreWellFormed` | a door off a doorway char, a target room that does not exist, an arrival inside a wall, or an arrival **on** a door — which would re-trigger the transition and bounce the player straight back |
 | `everyDoorIsTwoWay` | a one-way room, and an arrival that does not land beside the door you came out of |
 | `everyArrivalFacesInward` | an arrival with no door beside it, which would leave the hero facing whatever way it last walked |
+| `exportedRoomsMatchDoors` | an editor project whose room connections no longer match the door table (a reconnected room, a moved door, a room added on one side only) |
 
 Move a pillar in a layout and the build stops at the line that caused it.
 
@@ -228,24 +236,16 @@ The props stay outside the snapshot on purpose. They are captured neither with
 the room nor after it: the hero walks both behind and in front of the altar, so
 they have to keep taking part in the per-frame depth sort.
 
-**The span-limited blit copies descriptors, it never casts.** The tiles are
+**The span-limited blit comes precomputed from the export.** The tiles are
 diamond-shaped: a 32×16 floor bitmap whose top and bottom rows are almost
-entirely transparent padding, yet `drawSpriteInternal` decodes every one of the
-512 nibbles. `init()` builds a per-row opaque span for each tileset entry via
-`computeSpanTable`, which records the first and last opaque column of every row
-so the blit can skip the leading and trailing transparent nibbles.
-
-The exported `TILESET_SPRITES` are `const` and, on ESP32,
-`PIXELROOT32_SCENE_FLASH_ATTR`, so `rowMinX`/`rowMaxX` cannot be written back
-into them — that write is undefined behaviour on every target: a LoadStoreError
-on ESP32, an access violation on Windows (the const objects land in read-only
-`.rdata`). `init()` therefore copies the descriptors into a static RAM array,
-computes the spans there, and repoints each room's `tiles` at the RAM copies.
-The pixel data stays where it is; only the descriptors move. The span buffers
-and the descriptor copies are `static` so the pointers they feed stay valid for
-the program's lifetime, and `computeSpanTable` reads the pixel data through
-`PIXELROOT32_READ_BYTE_P` (`pgm_read_byte` on ESP32), so reading flash-resident
-art is safe on every target.
+entirely transparent padding, yet a plain blit decodes every one of the 512
+nibbles. The exporter writes each tile's per-row opaque span
+(`TILESET_SPAN_MIN_X`/`TILESET_SPAN_MAX_X`, the same values the engine's
+`computeSpanTable` would produce) into flash and points every `const`
+descriptor in `TILESET_SPRITES` at it, so the blit skips the leading and
+trailing transparent nibbles with no work at startup: no RAM copy of the
+descriptors, no `computeSpanTable` pass, no hand-maintained tallest-tile
+constant.
 
 **Standing still costs nothing.** `shouldRedrawFramebuffer()` reports whether
 the hero would draw differently from the frame already on the panel, and the
@@ -255,21 +255,50 @@ optimisation: `present()` pushes 240×240 RGB565 over SPI, about 23 ms at
 so one flag answers for the whole room — a scene with several movers would
 need to OR their answers together.
 
-**`graphics::Color` is a palette INDEX here, and its name lies.** This example
-installs a custom 16-colour palette, so `Color::Black` is index 0, which the
-renderer treats as transparent, and index 1 — spelled `Color::White` — is where
-the palette puts pure black. `kVoidColor` names that index so the trap lives in
-exactly one place. Nothing paints it today: it is already the colour
-`beginFrame()` clears to, so `RoomRenderer` skips the backdrop fill rather than
-writing 57,600 identical bytes over 57,600 identical bytes. Repalette the room
-and that fill comes back.
+**Two palettes, one per bank.** The tilemap's palette is the export's: the
+editor builds it from the colours the tile sheets use, and the export's
+`init()` installs it on the **background** bank, which is what `drawTileMap`
+reads. The hero and the props draw through the **sprite** bank with their own
+16-colour table, `src/assets/DungeonSpritePalette.h`, which the scene installs
+right after (`enableDualPaletteMode(true)` + `setSpriteCustomPalette`). They
+cannot share one table: the editor orders its palette by colour and only knows
+the tile colours, while the sprites need skin, hair, tunic, metal, flame and
+boots too. The stone colours are the same RGB values in both, which is what
+keeps the props matching the walls.
+
+**`graphics::Color` is a palette INDEX here, and its name lies.** Under the
+sprite palette `Color::Black` is index 0, which the renderer treats as
+transparent, and index 1 — spelled `Color::White` — is pure black. `kVoidColor`
+names that index so the trap lives in exactly one place. Nothing paints it
+today: it is already the colour `beginFrame()` clears to, so `RoomRenderer`
+skips the backdrop fill rather than writing 57,600 identical bytes over 57,600
+identical bytes. A fill would have to resolve through the sprite palette: in
+the background bank index 1 is the tilemap's stone outline.
 
 ## Art
 
-Isometric art is geometry, not draftsmanship. Every block in `src/assets/` is
-the same diamond extruded downward by a different amount — a wall by 24 px, an
-altar by 14, and a pillar is a narrower 16×8 diamond extruded 26 — which is why
-they stack without seams.
+Isometric art is geometry, not draftsmanship. Every block is the same diamond
+extruded downward by a different amount — a wall by 24 px, an altar by 14, and
+a pillar is a narrower 16×8 diamond extruded 26 — which is why they stack
+without seams. `tools/generate_assets.py` builds all of it from two primitives,
+`iso_floor` and `iso_cube`, and writes:
+
+| Output | What it is |
+|---|---|
+| `editor/assets/tilesets/dungeon_floors.png` | the three 32×16 floor tiles (plain dark, plain light, ritual accent) |
+| `editor/assets/tilesets/dungeon_walls.png` | the three 32×40 wall tiles (wall, doorway in the left face, doorway in the right face) |
+| `src/assets/DungeonSpritePalette.h` | the sprite bank's 16-colour palette |
+| `src/assets/DungeonProps.h` | the altar and the pillar |
+| `src/assets/HeroSprites.h` | the hero's two poses × two walk frames |
+
+```bash
+python tools/generate_assets.py     # rewrites the five files above in place
+```
+
+It needs nothing beyond Python 3, and re-running it on unchanged art leaves
+git clean. The room tilemap is not among its outputs: the editor exports that
+from the sheets (see [*Re-exporting the rooms*](#re-exporting-the-rooms)), so a
+change to a tile is: run the script, then re-export.
 
 Two rules the art keeps, both learned the hard way:
 
@@ -280,65 +309,129 @@ Two rules the art keeps, both learned the hard way:
    player of an isometric game constantly needs to know.
 
 Every sprite ships a `*_FOOT_Y`: the bitmap row that must land on the target
-cell's diamond centre. One anchoring rule (`IsoDraw.h`) for the 16px floor, the
-40px wall, the 34px pillar and the 24px hero alike — the alternative, an ad-hoc
-Y offset at each call site, is how isometric art quietly goes crooked.
+cell's diamond centre. One anchoring rule (`IsoDraw.h`) for the 34px pillar and
+the 24px hero, and the same rule for the 16px floor and the 40px wall inside
+`drawTileMap` (the export's `TILESET_FOOT_Y`) — the alternative, an ad-hoc Y
+offset at each call site, is how isometric art quietly goes crooked.
 
-## The tilemap export contract
+## The room tilemap
 
-The room's tile layer is not authored in this example. It is **exported data**,
-in the shape the PixelRoot32 Tilemap Editor emits:
+The rooms' tile layer is not authored in C++. It is exported by the
+PixelRoot32 Tilemap Editor from the project in [`editor/`](editor/):
+
+```
+editor/iso_dungeon.pr32scene.bin          project: one isometric scene, "Rooms"
+editor/assets/tilesets/dungeon_floors.png 32x16 floor sheet (tools/generate_assets.py)
+editor/assets/tilesets/dungeon_walls.png  32x40 wall sheet  (tools/generate_assets.py)
+```
+
+The scene is **21×7 cells on a 32×16 cell, isometric**, with one layer,
+`Tiles`. Its room layer holds the three 7×7 rooms **side by side** — room 0 at
+cell (0, 0), room 1 at (7, 0), room 2 at (14, 0) — connected as the doors in
+`RoomCatalog.h` lead (room 0: Up → 1, Left → 2; room 1: Left → 0; room 2:
+Up → 0). The projection origin is **authored at (120, 88)**, and the player
+spawn is cell (2, 5).
+
+The export, `src/assets/tilemap/`, is the editor's output, untouched:
 
 | File | Holds |
 |---|---|
-| `src/assets/IsoDungeonRoomTileMap.h` | dimensions, `ISO_PROJECTION`, the tileset and foot-table declarations, `init()` |
-| `src/assets/IsoDungeonRoomTileMap.cpp` | `TILESET_DATA_POOL`, `TILESET_SPRITES`, `TILESET_FOOT_Y`, `ROOM0/1/2_INDICES`, `init()` |
-| `src/assets/IsoDungeonRoomTileMapPalette.h` | `TILEMAP_PALETTE_DATA`, `TILEMAP_PALETTE_MAPPING` |
+| `iso_dungeon_rooms.h` | `iso_dungeon::rooms`: cell stride, `ISO_PROJECTION` and its `static_assert`s, `TILESET_MAX_TILE_HEIGHT`, the spawn, the room layer (`ISO_DUNGEON_ROOMS_ROOMS`, `ISO_DUNGEON_ROOMS_ROOM_LAYER`), the tileset and map declarations, `ROOM_LAYERS`, `init()` |
+| `iso_dungeon_rooms.cpp` | the palette, `TILESET_DATA_POOL`, the span tables, `TILESET_SPRITES`, `TILESET_FOOT_Y`, one index array per room, `init()` |
+| `iso_dungeon_tilemap_palette.h` | a shared palette header the editor writes for multi-scene projects; nothing includes it, it is kept so the folder stays what the editor writes |
 
-That is the same three-file shape as the real editor output in
-[`examples/metroidvania`](../../gameplay/metroidvania/src/assets/), which is orthogonal.
-Read the two side by side: this example exists to make the difference concrete.
+How the game consumes it:
 
-**The Tool Suite emits this shape.** Its tilemap exporter has an isometric
-projection mode that writes `ISO_PROJECTION` with its validity, determinant and
-paint-order `static_assert`s, a separate `TILE_WIDTH`/`TILE_HEIGHT` cell stride,
-and `TILESET_FOOT_Y` — all as `inline constexpr`. The list below is therefore
-the *contract* an isometric export satisfies, not a wish list.
+- **One map per room.** The editor crops each room's rect out of the layer
+  into its own `TileMap4bpp` (`tiles_room0..2`), local cells from (0, 0), all
+  on one deduplicated tileset; `ROOM_LAYERS[r]` selects room `r`.
+  `RoomRenderer` draws exactly one of them.
+- **One projection for every room.** Because a room map starts at its own
+  cell (0, 0), drawing any of them with `ISO_PROJECTION` puts that cell at the
+  authored origin, (120, 88), which centres the room on the 240×240 display.
+  That is why the origin is authored rather than left at the editor's default
+  (the scene's own inset). The export's comment also suggests
+  `gameplay::roomProjection()`, which draws a room where it sits in the scene;
+  one room per screen does not want that.
+- **The room graph** is `ISO_DUNGEON_ROOMS_ROOM_LAYER`, its tile size the 32×16
+  cell stride. `RoomCatalog.h` keeps the gameplay half — layout chars,
+  walkability, props, doors, arrivals — and `exportedRoomsMatchDoors` fails the
+  build if the editor's connections and the door table disagree.
+- **The spawn and the room size** come from the export too: `kSpawnTileX/Y`
+  are `SPAWN_TILE_X/Y`, `kRoomTiles` is the rooms' 7.
 
-Four things an isometric export needs that the orthogonal one does not:
+Four things an isometric export carries that the orthogonal one does not:
 
-1. **A rectangular cell stride.** `TILE_HEIGHT` here is 16 — the vertical
-   distance between neighbouring cell centres — while a `WALL` bitmap is 40 px
-   tall. Isometric tiles overhang their cells; that overhang *is* the extrusion.
+1. **A rectangular cell stride.** `TILE_HEIGHT` is 16 — the vertical distance
+   between neighbouring cell centres — while a wall bitmap is 40 px tall.
+   Isometric tiles overhang their cells; that overhang *is* the extrusion.
 2. **`TILESET_FOOT_Y`.** An orthogonal tile fills its cell, so its corner is its
    position. An isometric tile is anchored: the renderer places it at
-   `centreY - footY`. Without the table every tile would need the same height.
+   `centreY - footY`. The editor derives the foot per sheet from its tile
+   height (`tileHeight - cellHeight / 2`): 8 for the floors, 32 for the walls.
+   That is why the floors and the walls are two sheets: one sheet, one height.
 3. **`ISO_PROJECTION`, outside the 4bpp guard.** The tileset is 4bpp data and is
-   correctly gated. The projection is not: gameplay places the hero and the
-   props at cells where it draws no tile at all, so gating the geometry on a
-   sprite-format flag breaks a game that turns 4bpp off.
-4. **`inline constexpr`, not `static const`.** The orthogonal export's constants
-   are read only by its own `.cpp`, so internal linkage is harmless there. Here
-   they cross translation units and initialise the game's own constants, which
-   an internal-linkage constant cannot legally do.
+   gated. The projection is not: gameplay places the hero and the props at
+   cells where it draws no tile at all.
+4. **`inline constexpr`, not `static const`.** Here the constants cross
+   translation units and initialise the game's own constants, which an
+   internal-linkage constant cannot legally do.
+
+### Re-exporting the rooms
+
+1. If the art changed, run `python tools/generate_assets.py` first; it rewrites
+   the two sheets in place.
+2. Open the Tool Suite's **Tilemap Editor** and use **File → Open...** on
+   `editor/iso_dungeon.pr32scene.bin`. Edit the scene and save it
+   (**File → Save**, Ctrl+S). Keep the three rooms 7×7 and in catalog order,
+   and keep their connections matching `RoomCatalog.h`'s doors; the build
+   checks both.
+3. **File → Export...** (Ctrl+E) opens *Export Settings*. Use:
+   - **C++ Namespace**: `iso_dungeon`. The scene's namespace (`rooms`) and the
+     file names come from it and the scene name. The project file does not
+     store it, so type it every time.
+   - **Color Depth**: leave the auto-detected value (4bpp for this art).
+   - **Store data in Flash (ESP32)**: on.
+   - **Legacy format (no Flash attribute)**: off.
+   - **Install palette in init()**: **Background**. The game installs only the
+     sprite bank itself. *Dual* would also overwrite the sprite bank with the
+     tilemap's palette until the scene's own call replaces it; *None* would
+     leave the tiles drawn with whatever background palette is installed.
+4. **Export Now**, and pick `src/assets/tilemap/` as the export folder. The
+   editor overwrites `iso_dungeon_rooms.h`, `iso_dungeon_rooms.cpp` and
+   `iso_dungeon_tilemap_palette.h`.
+5. Rebuild (`pio run -e native`).
+
+The export settings are not stored in the project file (the dialog starts from
+its defaults every time), which is why they are listed here. Re-exporting needs
+a Tilemap Editor with isometric room export (one map per room, zero-extent
+slot 0, span tables and the palette install option); older editors produce a
+different file.
+
+The editor reports room-layer warnings for this project, and they are
+expected: the dungeon's doors are not reciprocal in direction (room 0's Up
+door leads to room 1, whose way back is its Left door) and connected rooms do
+not touch in the scene. The editor accepts both and exports non-adjacent
+connections as teleports, which is exactly what this dungeon's doors are.
 
 ### A rule cannot be exported — only its result
 
 Worth stating plainly, because it is the change most likely to be undone by
 someone trying to be helpful. This room's floor used to be a checkerboard
 *computed at runtime*: the same `.` in the layout became `FLOOR_A` or `FLOOR_B`
-depending on `(x + y) & 1`. An editor has no way to emit that. It emits the
-resolved indices, and so does this example — the rule exists nowhere in the
+depending on `(x + y) & 1`. An editor has no way to emit that. The project
+paints the resolved tiles cell by cell, and the rule exists nowhere in the
 shipped code any more.
 
 The layout chars did not go away, because they carry things rendering does not:
 which cells are walkable, where the doors are, where the props stand. So the
-split is **chars for gameplay, exported indices for rendering**, and the
-differential test in
-`test/unit/test_iso_dungeon_projected_conversion/` is what stops them drifting:
-its oracle still walks the chars and draws sprite-by-sprite, and it is compared
-against the exported map with a full-frame `memcmp`. Flip a single exported
-index and it reports 224 differing pixels.
+split is **chars for gameplay, exported indices for rendering**. The engine's
+differential test `test/unit/test_iso_dungeon_projected_conversion/` pins that
+split against its own frozen copy of this room's export: its oracle still walks
+the chars and draws sprite by sprite, and it is compared against the exported
+map with a full-frame `memcmp`. The editor export that replaced the
+hand-written one was checked the same way against it: every room renders the
+same frame through the engine's `Renderer`, pixel for pixel.
 
 ## Controls
 
@@ -366,7 +459,7 @@ that refusal is what makes the movement read as a board rather than a walk.
 ## Build
 
 ```bash
-cd examples/iso_dungeon
+cd graphics/iso_dungeon
 pio run -e native        # SDL2 desktop
 pio run -e esp32dev      # ST7789 240x240
 ```

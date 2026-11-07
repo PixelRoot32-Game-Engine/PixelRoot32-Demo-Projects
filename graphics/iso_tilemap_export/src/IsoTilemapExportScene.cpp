@@ -3,7 +3,6 @@
 #include <math/Projection.h>
 #include <math/Scalar.h>
 #include <math/Vector2.h>
-#include <graphics/SpanTable.h>
 
 #include "assets/tilemap/isometric_scene_main_scene.h"
 #include "assets/sprites/player_palette.h"
@@ -14,50 +13,25 @@ namespace scene_assets = isometric_scene::main_scene;
 
 namespace iso_tilemap_export {
 
-namespace {
-
-/// Where the player starts. Chosen for two reasons, both of which are worth
-/// stating because neither is arbitrary:
-///
-///   - It is LAND. GROUND_INDICES has a tile here; the row is one of the wide
-///     ones, so all four neighbours are walkable and every direction can be
-///     tried from the first frame.
-///   - It projects to (272, 184), well inside the map's drawn extent on every
-///     side, so there is room to scroll in every direction from the start.
-constexpr int kSpawnCellX = 4;
-constexpr int kSpawnCellY = 16;
-
-}  // namespace
-
 void IsoTilemapExportScene::init() {
     pixelroot32::core::Scene::init();
 
     // Everything the tilemap needs -- geometry, tile indices, tileset, tile
-    // count, per-tile foot anchor -- comes from the export. The example adds
-    // no asset data of its own, and no corrections either.
+    // count, per-tile foot anchor, per-row opaque spans, and the background
+    // palette -- comes from the export. The example adds no asset data of its
+    // own, and no corrections either.
+    //
+    // The palette is installed by this call because the project is exported
+    // with "Install palette in init()" set to Background. That keeps the
+    // tilemap's colours travelling with the tilemap: re-export with different
+    // art and the palette follows without this file changing. Dual would also
+    // overwrite sprite slot 0, which the player does not use.
+    //
+    // The span-limited blit needs nothing here either. Each exported
+    // descriptor in TILESET_SPRITES already points at its precomputed
+    // rowMinX/rowMaxX tables, so the descriptors stay const (and in flash on
+    // ESP32) and there is no RAM copy or runtime computeSpanTable.
     scene_assets::init();
-
-    // Span-limited blit wiring (change iso-perf-blit-fastpath). The exported
-    // tileset descriptors are `static const` + PIXELROOT32_SCENE_FLASH_ATTR,
-    // so they live in flash on ESP32 and their rowMinX/rowMaxX cannot be
-    // written in place (writing flash triggers a LoadStoreError). We copy the
-    // two Sprite4bpp DESCRIPTORS into RAM, compute the per-row opaque span
-    // with computeSpanTable (which reads pixel data through
-    // PIXELROOT32_READ_BYTE_P, so flash reads are safe), and repoint
-    // ground.tiles at the RAM copies. The pixel data itself stays in flash;
-    // only the 16-byte descriptors move.
-    {
-        static gfx::Sprite4bpp tilesetRam[scene_assets::TILESET_TILE_COUNT];
-        static uint8_t spanMinX[scene_assets::TILESET_TILE_COUNT][32];
-        static uint8_t spanMaxX[scene_assets::TILESET_TILE_COUNT][32];
-        for (int i = 0; i < scene_assets::TILESET_TILE_COUNT; ++i) {
-            tilesetRam[i] = scene_assets::ground.tiles[i];
-            gfx::computeSpanTable(tilesetRam[i], spanMinX[i], spanMaxX[i]);
-            tilesetRam[i].rowMinX = spanMinX[i];
-            tilesetRam[i].rowMaxX = spanMaxX[i];
-        }
-        scene_assets::ground.tiles = tilesetRam;
-    }
 
     // The player's frames are 4bpp: every pixel in them names a palette INDEX,
     // and the table those indices are resolved against lives in a sprite
@@ -69,7 +43,10 @@ void IsoTilemapExportScene::init() {
 
     // AFTER init(), not before: the spawn is validated against the ground
     // layer's indices, and init() is what points that layer at its data.
-    player_.spawn(kSpawnCellX, kSpawnCellY);
+    // The cell itself is the scene's player spawn, set in the editor
+    // (cell (4, 16): land with four walkable neighbours, projecting well
+    // inside the map so the view can scroll every way from the start).
+    player_.spawn(scene_assets::SPAWN_TILE_X, scene_assets::SPAWN_TILE_Y);
 
     // Same reason -- the call reads the layer's tileset and foot table to
     // work out how far the drawn map really reaches. Once, HERE and never per
@@ -167,10 +144,10 @@ void IsoTilemapExportScene::draw(gfx::Renderer& renderer) {
 }
 
 void IsoTilemapExportScene::registerPalette() {
-    // Tilemaps resolve through the background bank, sprites through the sprite
-    // bank. The player's palette goes into its own slot (kPaletteSlot), not
-    // slot 0, which would overwrite the global sprite palette.
-    gfx::setBackgroundCustomPalette(scene_assets::CUSTOM_PALETTE_DATA);
+    // Sprites resolve through the sprite bank. The background bank is already
+    // filled by scene_assets::init() (export option). The player's palette
+    // goes into its own slot (kPaletteSlot), not slot 0, which would
+    // overwrite the global sprite palette.
     gfx::setSpriteCustomPaletteSlot(player_sprites::kPaletteSlot,
                                     player_sprites::PLAYER_SPRITE_PALETTE_RGB565);
 }

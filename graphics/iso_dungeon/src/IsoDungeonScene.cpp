@@ -3,10 +3,8 @@
 #include "core/Engine.h"
 #include "gameplay/DepthCompare.h"
 #include "graphics/Color.h"
-#include "graphics/SpanTable.h"
-#include "platforms/PlatformMemory.h"
-#include "assets/IsoDungeonRoomTileMap.h"
-#include "assets/IsoDungeonRoomTileMapPalette.h"
+#include "assets/tilemap/iso_dungeon_rooms.h"
+#include "assets/DungeonSpritePalette.h"
 
 namespace pr32 = pixelroot32;
 extern pr32::core::Engine engine;
@@ -20,54 +18,29 @@ void IsoDungeonScene::init() {
     Scene::init();
 
     // Wires the exported TileMap4bpp objects to their flash-resident tileset,
-    // foot table and index arrays. Must run before RoomRenderer::setRoom()
-    // hands one of them to the renderer, which is why it is the first thing
-    // here -- an exported map is inert until its init() has run.
-    iso_dungeon::init();
-
-    // Build per-row opaque span metadata for each tile so drawSpriteInternal
-    // can skip leading/trailing transparent nibbles inside the projected
-    // tilemap loop (change iso-perf-blit-fastpath).
+    // foot table and index arrays, and installs the tilemap's palette on the
+    // BACKGROUND bank (the export's "Install palette in init()" option). Must
+    // run before RoomRenderer::setRoom() hands one of the maps to the
+    // renderer, which is why it is the first thing here -- an exported map is
+    // inert until its init() has run.
     //
-    // The exported tileset descriptors (TILESET_SPRITES) are `const` and, on
-    // ESP32, PIXELROOT32_SCENE_FLASH_ATTR -- so writing rowMinX/rowMaxX back
-    // into them is UB on every target: a LoadStoreError on ESP32, an access
-    // violation on Windows (the const objects land in read-only .rdata).
-    // Copy the descriptors into RAM instead, compute each tile's span there,
-    // and repoint every room's tileset at the RAM copies. The pixel data
-    // itself stays where it is; only the descriptors move.
+    // No span setup follows. The export precomputes each tile's per-row opaque
+    // span into flash and points the const descriptors at it, so the renderer
+    // skips transparent padding without a RAM copy of the tileset or a
+    // computeSpanTable() pass at startup.
+    rooms::init();
+
+    // The hero and the props draw through the SPRITE bank, with their own
+    // palette. It cannot be the tilemap's: the editor builds that one from the
+    // colours the tile sheets use (index order included), and skin, hair,
+    // tunic, metal, flame and boots appear on no tile. drawSprite() resolves
+    // through the sprite bank and drawTileMap() through the background bank,
+    // so tiles and sprites each read the table their pixel values index.
     //
-    // computeSpanTable reads pixel data via PIXELROOT32_READ_BYTE_P which
-    // expands to pgm_read_byte on ESP32, so reading is safe on both targets.
-    {
-        // Tallest exported tile is the 40-px wall/door extrusion; floors are 16.
-        constexpr int kMaxTileHeight = 40;
-
-        static gfx::Sprite4bpp tilesetRam[TILESET_TILE_COUNT];
-        static uint8_t spanMinX[TILESET_TILE_COUNT][kMaxTileHeight];
-        static uint8_t spanMaxX[TILESET_TILE_COUNT][kMaxTileHeight];
-
-        for (int i = 0; i < TILESET_TILE_COUNT; ++i) {
-            tilesetRam[i] = TILESET_SPRITES[i];
-            gfx::computeSpanTable(tilesetRam[i], spanMinX[i], spanMaxX[i]);
-            tilesetRam[i].rowMinX = spanMinX[i];
-            tilesetRam[i].rowMaxX = spanMaxX[i];
-        }
-
-        for (int r = 0; r < NUM_ROOM_LAYERS; ++r) {
-            ROOM_LAYERS[r]->tiles = tilesetRam;
-        }
-    }
-
-    // One palette for tiles and sprites alike: this dungeon has a single colour
-    // scheme, so splitting it across background and sprite tables would buy
-    // nothing and cost a second 16-entry lookup to keep in sync.
-    //
-    // setDualCustomPalette, NOT setBackgroundCustomPalette: the exported
-    // mapping is shared by the hero and the props, and sprites resolve through
-    // a different palette bank than tilemaps do. Loading only the background
-    // bank would leave every sprite reading a stale table.
-    gfx::setDualCustomPalette(TILEMAP_PALETTE_DATA, TILEMAP_PALETTE_DATA);
+    // Dual mode is what makes primitive draws pick a bank by render context;
+    // the export's background-only install does not turn it on.
+    gfx::enableDualPaletteMode(true);
+    gfx::setSpriteCustomPalette(SPRITE_PALETTE_DATA);
 
     depthComparator = &gameplay::compareByDepthKey;
     depthSortEnabled = true;
@@ -91,10 +64,9 @@ void IsoDungeonScene::init() {
     // [[nodiscard]] so that choice is never made by omission.
     (void)room_.reserveSnapshot(engine.getRenderer());
 
-    // Rooms and connections both come from kRoomLayer, which RoomCatalog.h
-    // derives from the door table at compile time. This is the same call a
-    // dungeon authored in the PixelRoot32 Tilemap Editor would make -- the
-    // editor emits `RoomData` and `RoomLayer`, and nothing here would change.
+    // Rooms and connections both come from kRoomLayer: the editor project's
+    // room layer, exported as RoomData/RoomLayer, which RoomCatalog.h checks
+    // against the door table at compile time.
     //
     // A short count has two possible causes, and neither is survivable here.
     // A rejected layer builds nothing at all. A layer larger than the graph's

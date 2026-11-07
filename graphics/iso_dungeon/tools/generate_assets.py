@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the iso_dungeon example's 4bpp sprite assets.
+"""Generate the iso_dungeon example's art.
 
 Isometric art is geometry, not draftsmanship: a floor tile is a diamond, and a
 wall, an altar and a pillar are the same diamond extruded downward by different
@@ -7,15 +7,21 @@ amounts in different colours. Writing that by hand as hex nibbles is both
 tedious and unreviewable, so every tile here is produced by two primitives --
 ``iso_floor`` and ``iso_cube`` -- and only the hero is drawn shape by shape.
 
-This tool lives outside the repository, in docs/audits/_dev_tools/iso_dungeon/,
-which is gitignored -- the same split legend_of_clone and midway_clone use,
-where the generated output is what the repo carries and what reviewers read.
-
     python generate_assets.py                       # locates the demo itself
     python generate_assets.py path/to/iso_dungeon   # or name it explicitly
 
-It rewrites src/assets/DungeonPalette.h, src/assets/DungeonTiles.h and
-src/assets/HeroSprites.h in place.
+It rewrites, in place:
+
+- editor/assets/tilesets/dungeon_floors.png and dungeon_walls.png -- the two
+  tile sheets the Tilemap Editor project in editor/ paints the rooms with. The
+  room tilemap in src/assets/tilemap/ is NOT written here: the editor exports
+  it from the project (see the README's "Re-exporting").
+- src/assets/DungeonSpritePalette.h -- the sprite palette bank the hero and
+  the props draw through.
+- src/assets/DungeonProps.h and src/assets/HeroSprites.h -- the sprites.
+
+The PNGs are written with the standard library alone (zlib + struct), so the
+tool still needs nothing beyond Python 3.
 
 Two rules the generated art must keep, both learned the hard way:
 
@@ -27,13 +33,21 @@ Two rules the generated art must keep, both learned the hard way:
 """
 
 import os
+import struct
+import zlib
 
 # --- Palette -----------------------------------------------------------------
 #
 # Index order is deliberately the engine's Color enum order, so the 4bpp
-# pixel-value -> Color mapping is the identity and PALETTE_RGB565[i] can be read
-# directly as "the colour of pixel value i". Index 0 is transparent and is never
-# emitted into a sprite.
+# pixel-value -> Color mapping is the identity and SPRITE_PALETTE_DATA[i] can be
+# read directly as "the colour of pixel value i". Index 0 is transparent and is
+# never emitted into a sprite.
+#
+# The tile sheets are written as RGBA, not as indices: the Tilemap Editor builds
+# the tile layer's own palette from the colours the painted tiles use, so the
+# index order above does not survive into the exported tilemap. Only the RGB
+# values do, and each one is chosen so the editor's RGB565 conversion lands on
+# the same value rgb565() computes here.
 
 PALETTE = [
     ("Black",      (  0,   0,   0), "transparent - never drawn"),
@@ -334,32 +348,63 @@ def fmt_descriptor(name, grid, foot_y):
         f"    /// Sprite row that lands on the cell's diamond centre.\n"
         f"    static const int {name}_FOOT_Y = {foot_y};\n"
         f"    static const pixelroot32::graphics::Sprite4bpp {name}_SPRITE = {{\n"
-        f"        reinterpret_cast<const uint8_t*>({name}_4BPP), DUNGEON_PALETTE_MAPPING,\n"
+        f"        reinterpret_cast<const uint8_t*>({name}_4BPP), SPRITE_PALETTE_MAPPING,\n"
         f"        {name}_WIDTH, {name}_HEIGHT, 16\n"
         f"    }};"
     )
 
 
-def locate_assets():
-    """Return <demo>/src/assets.
+def png_rgba(path, grid):
+    """Write `grid` (palette indices) as an 8-bit RGBA PNG.
 
-    This tool used to live under the engine's gitignored
-    docs/audits/_dev_tools/, outside the tree it writes to, and walked up
-    looking for examples/iso_dungeon. It now sits inside the demo itself, so
-    the answer is the parent of this tools/ directory.
+    Index 0 becomes fully transparent; every other index its PALETTE colour,
+    opaque. No interlace, filter 0 on every row and a fixed zlib level, so the
+    same art always produces the same bytes and a re-run leaves git clean.
     """
+    h = len(grid)
+    w = len(grid[0])
+    raw = bytearray()
+    for row in grid:
+        raw.append(0)  # filter type 0 (None)
+        for v in row:
+            if v == TRANSPARENT:
+                raw += b"\x00\x00\x00\x00"
+            else:
+                r, g, b = PALETTE[v][1]
+                raw += bytes((r, g, b, 255))
+
+    def chunk(kind, data):
+        body = kind + data
+        return (struct.pack(">I", len(data)) + body +
+                struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+
+    png = (b"\x89PNG\r\n\x1a\n" +
+           chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)) +
+           chunk(b"IDAT", zlib.compress(bytes(raw), 9)) +
+           chunk(b"IEND", b""))
+    with open(path, "wb") as f:
+        f.write(png)
+
+
+def side_by_side(grids):
+    """One sheet row of equally sized tiles, left to right."""
+    h = len(grids[0])
+    return [sum((g[y] for g in grids), []) for y in range(h)]
+
+
+def locate_demo():
+    """Return the demo root: the parent of this tools/ directory."""
     here = os.path.dirname(os.path.abspath(__file__))
     demo = os.path.dirname(here)
-    assets = os.path.join(demo, "src", "assets")
-    if os.path.isdir(assets):
-        return assets
+    if os.path.isdir(os.path.join(demo, "src", "assets")):
+        return demo
     raise SystemExit(
         demo + " does not look like the iso_dungeon demo (no src/assets under "
         "it). This script expects to live in <demo>/tools/. Pass the demo path "
-        "explicitly:" + BS_N + "    python generate_assets.py path/to/iso_dungeon")
+        "explicitly:\n    python generate_assets.py path/to/iso_dungeon")
 
 
-def write_palette():
+def write_sprite_palette(assets):
     rows = []
     for i, (name, rgb, note) in enumerate(PALETTE):
         rows.append(f"        0x{rgb565(rgb):04X}, // {i:2d} {name:<10} - {note}")
@@ -371,20 +416,24 @@ def write_palette():
         for i, (name, _rgb, note) in enumerate(PALETTE)
     )
 
-    text = f'''// GENERATED - do not edit by hand.
-#ifndef ISO_DUNGEON_PALETTE_H
-#define ISO_DUNGEON_PALETTE_H
+    text = f'''// GENERATED by tools/generate_assets.py - do not edit by hand.
+#ifndef ISO_DUNGEON_SPRITE_PALETTE_H
+#define ISO_DUNGEON_SPRITE_PALETTE_H
 
 #include "graphics/Renderer.h"
 #include <stdint.h>
 
 /**
- * @file DungeonPalette.h
- * @brief The example's single 16-colour RGB565 palette.
+ * @file DungeonSpritePalette.h
+ * @brief The 16-colour RGB565 palette the hero and the props draw through.
  *
- * Installed with setDualCustomPalette(PAL, PAL) so tiles and sprites resolve
- * through the same table -- this dungeon has one coherent colour scheme and no
- * reason to split it across palette slots.
+ * Installed on the SPRITE bank (IsoDungeonScene::init). The room tilemap does
+ * not use it: the Tilemap Editor export carries its own palette, built from the
+ * colours the tile sheets paint with, and its init() installs that one on the
+ * BACKGROUND bank. drawSprite() resolves through getSpritePaletteSlot() and
+ * drawTileMap() through getBackgroundPaletteSlot(), which are separate arrays,
+ * so the two palettes never meet -- the stone colours below are the same RGB
+ * values the tile sheets use, which is all the props need to match the walls.
  *
  * CAUTION: under a custom palette a graphics::Color is a palette INDEX and its
  * name says nothing about what it renders as. Color::White is index 1, which
@@ -393,91 +442,105 @@ def write_palette():
  * directly, or you will paint the backdrop teal.
  *
  * The pixel-value -> Color mapping is deliberately the identity, so
- * DUNGEON_PALETTE_RGB565[v] IS the colour of 4bpp pixel value v. Value 0 maps
+ * SPRITE_PALETTE_DATA[v] IS the colour of 4bpp pixel value v. Value 0 maps
  * to Color::Black, which the renderer treats as transparent.
  */
 
 namespace iso_dungeon {{
 
     // --- RGB565 by engine Color slot ---
-    static const uint16_t DUNGEON_PALETTE_RGB565[16] = {{
+    static const uint16_t SPRITE_PALETTE_DATA[16] = {{
 {body}
     }};
 
     // --- 4bpp pixel value to engine Color slot (identity) ---
-    static const pixelroot32::graphics::Color DUNGEON_PALETTE_MAPPING[16] = {{
+    static const pixelroot32::graphics::Color SPRITE_PALETTE_MAPPING[16] = {{
 {mapping}
     }};
 
 }} // namespace iso_dungeon
 
-#endif // ISO_DUNGEON_PALETTE_H
+#endif // ISO_DUNGEON_SPRITE_PALETTE_H
 '''
-    with open(os.path.join(ASSETS, "DungeonPalette.h"), "w", newline="\n") as f:
+    with open(os.path.join(assets, "DungeonSpritePalette.h"), "w", newline="\n") as f:
         f.write(text)
 
 
-def write_tiles():
-    tiles = []
+def write_tilesheets(tilesets):
+    """The two sheets the editor project paints the rooms with.
 
-    floor_a = iso_floor(FLOOR_DARK, MORTAR)
-    floor_b = iso_floor(FLOOR_LIGHT, MORTAR)
-    floor_acc = iso_floor(FLOOR_ACC, MORTAR)
-    tiles += [("FLOOR_A", floor_a, 8), ("FLOOR_B", floor_b, 8),
-              ("FLOOR_ACCENT", floor_acc, 8)]
+    One sheet per tile height, because a sheet has one tile size and the
+    editor derives each sheet's foot row from it (tileHeight - cellHeight / 2):
+    8 for the 32x16 floors, 32 for the 32x40 walls -- the rows the room
+    tilemap's TILESET_FOOT_Y ends up holding. Sheet order and tile order are
+    what the editor's tile indices refer to, so changing either means
+    repainting the scene.
+    """
+    floors = [iso_floor(FLOOR_DARK, MORTAR),     # FLOOR_A
+              iso_floor(FLOOR_LIGHT, MORTAR),    # FLOOR_B
+              iso_floor(FLOOR_ACC, MORTAR)]      # FLOOR_ACCENT
+    walls = [iso_cube(24, STONE_TOP, FACE_DARK, FACE_LIGHT, MORTAR),                 # WALL
+             iso_cube(24, STONE_TOP, FACE_DARK, FACE_LIGHT, MORTAR, arch="left"),    # DOOR_NE
+             iso_cube(24, STONE_TOP, FACE_DARK, FACE_LIGHT, MORTAR, arch="right")]   # DOOR_NW
+    os.makedirs(tilesets, exist_ok=True)
+    png_rgba(os.path.join(tilesets, "dungeon_floors.png"), side_by_side(floors))
+    png_rgba(os.path.join(tilesets, "dungeon_walls.png"), side_by_side(walls))
 
-    wall = iso_cube(24, STONE_TOP, FACE_DARK, FACE_LIGHT, MORTAR)
-    door_l = iso_cube(24, STONE_TOP, FACE_DARK, FACE_LIGHT, MORTAR, arch="left")
-    door_r = iso_cube(24, STONE_TOP, FACE_DARK, FACE_LIGHT, MORTAR, arch="right")
-    tiles += [("WALL", wall, len(wall) - 8), ("DOOR_NE", door_l, len(door_l) - 8),
-              ("DOOR_NW", door_r, len(door_r) - 8)]
 
+def write_props(assets):
     altar = iso_cube(14, METAL, FACE_LIGHT, STONE_TOP, FACE_DARK, brick=5)
-    tiles.append(("ALTAR", altar, len(altar) - 8))
 
     # Narrower base diamond than a wall (16x8, half a tile) so the column reads
     # as standing ON its tile rather than filling it, and short enough that two
     # of them cannot span the room vertically and merge into one apparent shaft.
     pillar = iso_cube(26, STONE_TOP, FACE_DARK, FACE_LIGHT, MORTAR,
                       dia_w=16, dia_h=8, brick=6)
-    tiles.append(("PILLAR", pillar, len(pillar) - 4))
+    props = [("ALTAR", altar, len(altar) - 8), ("PILLAR", pillar, len(pillar) - 4)]
 
-    arrays = "\n\n".join(fmt_array(n, g) for n, g, _ in tiles)
-    descs = "\n\n".join(fmt_descriptor(n, g, f) for n, g, f in tiles)
+    arrays = "\n\n".join(fmt_array(n, g) for n, g, _ in props)
+    descs = "\n\n".join(fmt_descriptor(n, g, f) for n, g, f in props)
 
-    text = f'''// GENERATED - do not edit by hand.
-#ifndef ISO_DUNGEON_TILES_H
-#define ISO_DUNGEON_TILES_H
+    text = f'''// GENERATED by tools/generate_assets.py - do not edit by hand.
+#ifndef ISO_DUNGEON_PROPS_H
+#define ISO_DUNGEON_PROPS_H
 
 #include "platforms/PlatformDefaults.h"
 
 #if PIXELROOT32_ENABLE_4BPP_SPRITES
 
 #include "graphics/Renderer.h"
-#include "assets/DungeonPalette.h"
+#include "assets/DungeonSpritePalette.h"
 #include <stdint.h>
 
 /**
- * @file DungeonTiles.h
- * @brief Floor diamonds and extruded stone blocks for the dungeon room.
+ * @file DungeonProps.h
+ * @brief Free-standing props: the altar and the pillar.
  *
- * Every block here is the SAME 32x16 diamond extruded by a different amount:
- * a wall is 24px tall, an altar 14, and a pillar is a narrower 16x8 diamond
- * extruded 40. The shared geometry is why they stack without seams.
+ * These are NOT tiles, and that distinction is the reason this file exists
+ * apart from the tile sheets. A tile belongs to the tile layer: it occupies a
+ * cell, it is addressed by an index into a tileset, and the Tilemap Editor
+ * emits it. A prop is placed at a cell but drawn as an ordinary depth-sorted
+ * sprite on layer 1 by PropEntity, because the hero passes both behind and in
+ * front of it -- see RoomCatalog.h's kProps* tables for where they stand.
  *
- * Each sprite carries a FOOT_Y: the row of the bitmap that must land on the
- * target cell's diamond CENTRE. Draw with
+ * Keeping them in the tileset made the tileset look eight tiles wide when the
+ * tile layer only ever had six, which is exactly the confusion the exported
+ * tileset must not carry.
+ *
+ * Anchoring is unchanged and identical to the tiles': each sprite carries a
+ * FOOT_Y, the bitmap row that must land on the target cell's diamond CENTRE.
  *
  *     renderer.drawSprite(S, centreX - S.width / 2, centreY - S_FOOT_Y);
  *
- * A single anchoring rule for tiles, props and the hero alike -- the
- * alternative, a per-sprite ad-hoc Y offset at every call site, is exactly how
- * isometric art drifts a pixel out of alignment.
+ * Both props are the same floor diamond extruded upward: the altar 32x16 by
+ * 14 px (ALTAR_HEIGHT 30), the pillar a narrower 16x8 by 26 (PILLAR_HEIGHT
+ * 34). That shared geometry is why they stand against the walls of the tile
+ * sheets (editor/assets/tilesets/) without a seam.
  *
- * WALL is intentionally one bitmap for both back walls. Its left face is
- * shaded and its right face lit, so the wall running along +x shows the room
- * its shaded face and the wall along +y shows its lit face -- correct for a
- * light source at the upper right, with no second bitmap.
+ * The extrusion figures are height minus the diamond's own height, and they
+ * are stated here rather than left implicit because the tileset header this
+ * art came from had the pillar's wrong -- it said 40, which is the WALL's
+ * total height, not the pillar's extrusion.
  */
 
 namespace iso_dungeon {{
@@ -485,18 +548,17 @@ namespace iso_dungeon {{
 {arrays}
 
 {descs}
-
 }} // namespace iso_dungeon
 
 #endif // PIXELROOT32_ENABLE_4BPP_SPRITES
 
-#endif // ISO_DUNGEON_TILES_H
+#endif // ISO_DUNGEON_PROPS_H
 '''
-    with open(os.path.join(ASSETS, "DungeonTiles.h"), "w", newline="\n") as f:
+    with open(os.path.join(assets, "DungeonProps.h"), "w", newline="\n") as f:
         f.write(text)
 
 
-def write_hero():
+def write_hero(assets):
     frames = [
         ("HERO_S_0", hero("S", 0)),
         ("HERO_S_1", hero("S", 1)),
@@ -505,12 +567,12 @@ def write_hero():
     ]
     arrays = "\n\n".join(fmt_array(n, g) for n, g in frames)
     entries = "\n".join(
-        f"        {{ reinterpret_cast<const uint8_t*>({n}_4BPP), DUNGEON_PALETTE_MAPPING,"
+        f"        {{ reinterpret_cast<const uint8_t*>({n}_4BPP), SPRITE_PALETTE_MAPPING,"
         f" HERO_WIDTH, HERO_HEIGHT, 16 }},"
         for n, _ in frames
     )
 
-    text = f'''// GENERATED - do not edit by hand.
+    text = f'''// GENERATED by tools/generate_assets.py - do not edit by hand.
 #ifndef ISO_DUNGEON_HERO_SPRITES_H
 #define ISO_DUNGEON_HERO_SPRITES_H
 
@@ -519,7 +581,7 @@ def write_hero():
 #if PIXELROOT32_ENABLE_4BPP_SPRITES
 
 #include "graphics/Renderer.h"
-#include "assets/DungeonPalette.h"
+#include "assets/DungeonSpritePalette.h"
 #include <stdint.h>
 
 /**
@@ -529,7 +591,7 @@ def write_hero():
  * The four isometric facings are not four drawings. Screen-wise the grid axes
  * point down-right, down-left, up-right and up-left, which is two poses (toward
  * the camera and away from it) plus a horizontal flip. Halving the bitmap count
- * this way is the same trade room_screen makes for its side-on walk frames.
+ * this way is the same trade legend_of_clone makes for its side-on walk frames.
  *
  * HERO_FOOT_Y is the sprite's full height: the hero's feet sit ON the cell
  * centre, unlike a block whose base diamond covers the whole tile footprint.
@@ -561,16 +623,19 @@ namespace iso_dungeon {{
 
 #endif // ISO_DUNGEON_HERO_SPRITES_H
 '''
-    with open(os.path.join(ASSETS, "HeroSprites.h"), "w", newline="\n") as f:
+    with open(os.path.join(assets, "HeroSprites.h"), "w", newline="\n") as f:
         f.write(text)
 
 
 if __name__ == "__main__":
     import sys
 
-    ASSETS = (os.path.join(sys.argv[1], "src", "assets")
-              if len(sys.argv) > 1 else locate_assets())
-    write_palette()
-    write_tiles()
-    write_hero()
-    print("wrote DungeonPalette.h, DungeonTiles.h, HeroSprites.h to " + ASSETS)
+    DEMO = sys.argv[1] if len(sys.argv) > 1 else locate_demo()
+    ASSETS = os.path.join(DEMO, "src", "assets")
+    TILESETS = os.path.join(DEMO, "editor", "assets", "tilesets")
+    write_tilesheets(TILESETS)
+    write_sprite_palette(ASSETS)
+    write_props(ASSETS)
+    write_hero(ASSETS)
+    print("wrote dungeon_floors.png, dungeon_walls.png to " + TILESETS)
+    print("wrote DungeonSpritePalette.h, DungeonProps.h, HeroSprites.h to " + ASSETS)

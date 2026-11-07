@@ -45,9 +45,12 @@
  * rect back. The graph still earns its place: the connections, the
  * current-room index and the onEnter callback are what drive the transition.
  *
- * The rect is nonetheless filled in with something true rather than zeroed --
- * see kCellWorldWidth for which true thing, and why an isometric room cannot
- * have both an exact rect and an exact tile window.
+ * The rects come from the editor project's exported room layer: each room's
+ * cell rect times the 32x16 cell stride, at the room's place in the editor
+ * scene (rooms side by side). That is not where an isometric room lands on
+ * screen -- a projected camera rect needs the engine's projected
+ * buildRoomGraph() overload -- and it does not need to be, because nothing
+ * here reads it. See kRoomLayer below.
  */
 
 namespace iso_dungeon {
@@ -504,47 +507,16 @@ static_assert(!isSolidTile(kRooms[0], kSpawnTileX, kSpawnTileY),
 static_assert(doorAt(kRooms[0], kSpawnTileX, kSpawnTileY) == nullptr,
               "The hero spawns on a door and would leave the room immediately.");
 
-// --- Room graph export -------------------------------------------------------
+// --- Room graph --------------------------------------------------------------
 //
-// Everything below turns the catalog above into `gameplay::RoomLayer`, the
-// shape the PixelRoot32 Tilemap Editor emits and `gameplay::buildRoomGraph()`
-// consumes. The scene then builds its RoomGraph with one call instead of two
-// hand-written loops.
-//
-// The point is not the loops. It is that the topology now has an EXPORTED
-// shape: a dungeon authored in the editor drops in by replacing this block
-// with the generated header, and IsoDungeonScene::init() does not change.
-//
-// It is derived at compile time from kRooms rather than written out a second
-// time, and that is the whole reason it is safe. A hand-written RoomData table
-// would be a fourth copy of the door topology -- one the layouts, the doors
-// and the renderer could all drift away from silently. Deriving it means the
-// only way to change the graph is to change the doors the player walks
-// through.
-
-/**
- * @brief World size of one cell, for the camera rect `buildRoomGraph` derives.
- *
- * `RoomLayer` assumes what every rectangular tilemap assumes: that a room's
- * world rect is its tile rect times a tile size. An isometric room does not
- * satisfy that -- its cells are diamonds sheared by kTileProjection, so there
- * is no single (w, h) that reproduces where the room actually lands on screen.
- *
- * So the rect and the tile window cannot both be exact, and this picks the
- * tile window. `cols`/`rows` are the true 7x7 cell extent, and 32x16 is the
- * full width and height of one floor diamond, which makes the derived rect
- * 224x112 -- the exact size of the room's floor bounding box, though anchored
- * at the origin rather than at the (8, 80) where it is drawn. `originCol` and
- * `originRow` cannot express that offset: 8 is not a multiple of 32.
- *
- * That inexactness is affordable here for one reason, and it is worth stating
- * because it would NOT be affordable in a scrolling game: this scene passes
- * `camera = nullptr` to every `enterRoom()` and never reads the rect back. A
- * scrolling isometric dungeon would have to clamp its camera from the
- * projection instead -- `RoomLayer` cannot describe it.
- */
-inline constexpr uint8_t kCellWorldWidth  = TILE_WIDTH;   // 32
-inline constexpr uint8_t kCellWorldHeight = TILE_HEIGHT;  // 16
+// The topology the scene hands to `gameplay::buildRoomGraph()` is the editor
+// project's room layer, exported as `RoomData`/`RoomLayer` in
+// assets/tilemap/iso_dungeon_rooms.h. The doors the player walks through are
+// the catalog above. Those are two copies of one graph, so the build checks
+// that they agree: every exported connection must be exactly the room the
+// door in that direction leads to, and a direction with no door must be a
+// wall. Move a door here or reconnect a room in the editor without the other,
+// and the build stops.
 
 /// Two doors of one room must leave in two different directions.
 ///
@@ -552,11 +524,10 @@ inline constexpr uint8_t kCellWorldHeight = TILE_HEIGHT;  // 16
 /// doors sharing a direction cannot both be stored -- the second would
 /// overwrite the first and the dungeon would quietly lose an exit.
 ///
-/// This is stricter than the code it replaces, on purpose. `RoomGraph::connect`
-/// keeps the FIRST connection written to a slot and ignores later ones, so the
-/// old hand-written loop had the same collision and resolved it silently the
-/// other way. Neither resolution is right; the data being ambiguous is the
-/// actual problem, and this is where it stops being tolerated.
+/// This is stricter than `RoomGraph::connect`, on purpose: it keeps the FIRST
+/// connection written to a slot and ignores later ones, so the collision would
+/// resolve silently. Neither resolution is right; the data being ambiguous is
+/// the actual problem, and this is where it stops being tolerated.
 constexpr bool doorsLeaveInDistinctDirections(const RoomSpec& room) {
     for (uint8_t i = 0; i < room.doorCount; ++i) {
         const CellStep a = outwardStepFromDoor(room.doors[i]);
@@ -577,43 +548,46 @@ static_assert(doorsLeaveInDistinctDirections(kRooms[1]),
 static_assert(doorsLeaveInDistinctDirections(kRooms[2]),
               "Room 2 has two doors leaving in the same direction; one would be lost.");
 
-/// One room's doors, in the four-slot form RoomLayer stores them in.
-constexpr gameplay::RoomData makeRoomData(const RoomSpec& room) {
-    gameplay::RoomData data{0, 0, kRoomTiles, kRoomTiles,
-                            {gameplay::kNoRoomConnection, gameplay::kNoRoomConnection,
-                             gameplay::kNoRoomConnection, gameplay::kNoRoomConnection}};
+/// The room the door leaving `room` in `dir` leads to, or kNoRoomConnection.
+constexpr uint16_t doorTarget(const RoomSpec& room, gameplay::RoomDir dir) {
     for (uint8_t i = 0; i < room.doorCount; ++i) {
-        const DoorSpec& door = room.doors[i];
-        const CellStep step = outwardStepFromDoor(door);
-        data.connections[static_cast<uint8_t>(dirFromCellStep(step.dx, step.dy))] =
-            door.targetRoom;
+        const CellStep step = outwardStepFromDoor(room.doors[i]);
+        if (dirFromCellStep(step.dx, step.dy) == dir) {
+            return room.doors[i].targetRoom;
+        }
     }
-    return data;
+    return gameplay::kNoRoomConnection;
 }
 
-/// Wraps the array so the whole thing is built by one loop over kRooms.
-///
-/// A plain `RoomData kExport[] = {makeRoomData(kRooms[0]), ...}` would need one
-/// initializer per room, and a fourth room added to kRooms but forgotten here
-/// would NOT fail to compile -- the missing entry would value-initialize, and
-/// `connections` of all zeroes means "connected to room 0 in all four
-/// directions". Silently. Looping is what makes that impossible.
-struct RoomGraphExport {
-    gameplay::RoomData rooms[kRoomCount];
-};
-
-constexpr RoomGraphExport makeRoomGraphExport() {
-    RoomGraphExport out{};
-    for (uint16_t i = 0; i < kRoomCount; ++i) {
-        out.rooms[i] = makeRoomData(kRooms[i]);
+/// The exported room layer and the door table describe the same graph.
+constexpr bool exportedRoomsMatchDoors() {
+    if (rooms::ISO_DUNGEON_ROOMS_ROOM_LAYER.roomCount != kRoomCount) {
+        return false;
     }
-    return out;
+    for (uint16_t r = 0; r < kRoomCount; ++r) {
+        for (uint8_t d = 0; d < 4; ++d) {
+            const auto dir = static_cast<gameplay::RoomDir>(d);
+            if (rooms::ISO_DUNGEON_ROOMS_ROOMS[r].connections[d] != doorTarget(kRooms[r], dir)) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
-inline constexpr RoomGraphExport kRoomGraphExport = makeRoomGraphExport();
+static_assert(exportedRoomsMatchDoors(),
+              "The editor project's room connections and RoomCatalog.h's doors "
+              "disagree. Connect each room in the editor exactly where its doors "
+              "lead (slots Up, Down, Left, Right, keyed like dirFromCellStep) and "
+              "re-export, or fix the door table.");
 
 /// What IsoDungeonScene::init() hands to `gameplay::buildRoomGraph()`.
-inline constexpr gameplay::RoomLayer kRoomLayer{
-    kRoomGraphExport.rooms, kRoomCount, kCellWorldWidth, kCellWorldHeight};
+///
+/// Its tileWidth/tileHeight are the 32x16 cell stride, so the camera rects
+/// buildRoomGraph derives are cell blocks, not the projected rooms. This scene
+/// passes `camera = nullptr` to every `enterRoom()` and never reads them; a
+/// scrolling isometric dungeon would build its graph with the projected
+/// overload instead.
+inline constexpr const gameplay::RoomLayer& kRoomLayer = rooms::ISO_DUNGEON_ROOMS_ROOM_LAYER;
 
 }  // namespace iso_dungeon

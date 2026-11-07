@@ -81,7 +81,7 @@ private:
     /// A pointer into flash-resident export data, not a buffer this renderer
     /// owns and fills. Switching rooms is now one assignment: there is no
     /// per-room index grid to rebuild, because the indices were resolved at
-    /// export time (see assets/IsoDungeonRoomTileMap.h).
+    /// export time (see assets/tilemap/iso_dungeon_rooms.h).
     const pixelroot32::graphics::TileMap4bpp* map_ = nullptr;
 
     pixelroot32::graphics::StaticLayerSnapshot snapshot_;
