@@ -1,7 +1,7 @@
 #include "RoomRenderer.h"
 
 #include "math/Vector2.h"
-#include "assets/IsoDungeonRoomTileMap.h"
+#include "assets/tilemap/iso_dungeon_rooms.h"
 
 namespace pr32 = pixelroot32;
 
@@ -17,8 +17,8 @@ RoomRenderer::RoomRenderer()
     setRenderLayer(0);
 
     // Nothing to wire. Every field the renderer used to fill in here --
-    // geometry, tileset, tile count, foot table -- is set by the export's
-    // init(), which the scene calls before the first draw. setRoom() only has
+    // geometry, tileset, tile count, foot table, span tables -- is set by the
+    // export's init(), which the scene calls before the first draw. setRoom() only has
     // to choose which of the exported maps to point at.
 }
 
@@ -37,12 +37,12 @@ void RoomRenderer::adviseFramebufferBeforeBeginFrame(gfx::Renderer& renderer) co
 void RoomRenderer::setRoom(const RoomSpec& room) {
     room_ = &room;
 
-    // kRooms and ROOM_LAYERS are indexed alike by construction -- the export
-    // emits one map per catalog entry, in catalog order -- so the room's
-    // position in the catalog IS its layer index. Deriving it here rather
+    // kRooms and ROOM_LAYERS are indexed alike by construction -- the editor
+    // project's rooms are in catalog order and the export emits one map per
+    // room -- so the room's position in the catalog IS its layer index. Deriving it here rather
     // than storing it keeps setRoom()'s signature as it was.
     const auto index = static_cast<std::size_t>(&room - &kRooms[0]);
-    map_ = ROOM_LAYERS[index];
+    map_ = rooms::ROOM_LAYERS[index];
 
     // The cached picture is of the room being left. Dropping it is what makes
     // the next draw() take the drawTiles() path and re-capture; without it the
@@ -53,16 +53,17 @@ void RoomRenderer::setRoom(const RoomSpec& room) {
 
 void RoomRenderer::draw(gfx::Renderer& renderer) {
     // No backdrop fill. `Renderer::beginFrame` has already cleared the
-    // framebuffer to black, and under this example's palette kVoidColor
-    // (index 1) IS 0x0000 -- so painting it would write 57,600 identical
+    // framebuffer to black, and under the sprite palette kVoidColor (index
+    // 1) IS 0x0000 -- so painting it would write 57,600 identical
     // bytes over 57,600 identical bytes. On the ESP32 that is a second
     // full-screen pass per frame for no visible pixel.
     //
     // The backdrop is still deliberate, not dropped: the room simply does not
     // cover the whole display, and everything it does not cover reads as the
-    // drop beyond the floor. Change the palette so index 1 stops being black
-    // and this needs a fill again -- kVoidColor stays in
-    // IsoDungeonConstants.h naming that intent.
+    // drop beyond the floor. A backdrop other than black would need a fill
+    // again, resolved through the sprite palette -- kVoidColor stays in
+    // IsoDungeonConstants.h naming that intent, and says why the bank
+    // matters.
 
     // A room never changes while the hero is standing in it, so it is worth
     // drawing exactly once per visit. On every later frame the snapshot puts
@@ -107,10 +108,15 @@ void RoomRenderer::drawTiles(gfx::Renderer& renderer) {
     // too and never sorts, so that guarantee still governs draw order here.
     //
     // map_ is exported data. The checkerboard rule that used to pick FLOOR_A
-    // or FLOOR_B per cell at runtime was resolved at export time and is not
-    // reproduced anywhere in this example any more -- see
-    // assets/IsoDungeonRoomTileMap.cpp's ROOMn_INDICES.
-    renderer.drawTileMap(*map_, 0, 0, gfx::LayerType::Static, ISO_PROJECTION);
+    // or FLOOR_B per cell at runtime is now painted cell by cell in the
+    // editor project and is not reproduced anywhere in this example's code --
+    // see assets/tilemap/iso_dungeon_rooms.cpp's TILES_ROOMn_INDICES.
+    //
+    // Every room is drawn with the scene's projection, not with its own
+    // roomProjection(): a room map's cells are local from (0, 0), and the
+    // authored origin puts that cell where the room is centred on screen.
+    // See kTileProjection in IsoDungeonConstants.h.
+    renderer.drawTileMap(*map_, 0, 0, gfx::LayerType::Static, rooms::ISO_PROJECTION);
 }
 
 }  // namespace iso_dungeon

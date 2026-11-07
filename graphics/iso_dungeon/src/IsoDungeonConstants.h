@@ -5,7 +5,7 @@
 #include "gameplay/Projection.h"
 #include "graphics/Color.h"
 
-#include "assets/IsoDungeonRoomTileMap.h"
+#include "assets/tilemap/iso_dungeon_rooms.h"
 
 /**
  * @file IsoDungeonConstants.h
@@ -17,13 +17,13 @@
  * `ProjectionSpec` says where cell (0, 0) lands and how far one step along each
  * cell axis moves on screen, and that is the entire model.
  *
- * Those six integers, and the room's extent in tiles, are no longer authored
- * here. They come from assets/IsoDungeonRoomTileMap.h, which is the generated
- * export, and this file only gives them the names the gameplay code already
- * uses. That direction is deliberate: an export is the single source of truth
- * for a map's geometry, and duplicating it here would let the two drift with
- * nothing to catch it. Edit the export, and every static_assert below runs
- * against the new value.
+ * Those six integers, the room's extent in tiles and the hero's start cell are
+ * not authored here. They come from assets/tilemap/iso_dungeon_rooms.h, which
+ * the Tilemap Editor exports from the project in editor/, and this file only
+ * gives them the names the gameplay code already uses. That direction is
+ * deliberate: an export is the single source of truth for a map's geometry,
+ * and duplicating it here would let the two drift with nothing to catch it.
+ * Re-export, and every static_assert below runs against the new value.
  */
 
 namespace iso_dungeon {
@@ -41,15 +41,29 @@ inline constexpr std::uint8_t BTN_RIGHT = 3;
 
 // --- Geometry ---------------------------------------------------------------
 
-/// Room extent in tiles, both axes. Owned by the export; named here.
+/// Every exported room (rooms::, the export's namespace: three 7x7 rooms side
+/// by side in one scene) has the same square extent as room 0.
 ///
-/// The room is square, and the layouts in RoomCatalog.h are sized by this one
-/// constant, so the export's two dimensions have to agree before the game can
-/// use a single name for them.
-static_assert(MAP_WIDTH == MAP_HEIGHT,
-              "This game assumes a square room. Export a square map, or give "
-              "RoomCatalog.h separate width and height constants.");
-inline constexpr int kRoomTiles = MAP_WIDTH;
+/// The layouts in RoomCatalog.h are sized by one constant, so the editor's
+/// rooms have to agree before the game can use a single name for them. The
+/// scene itself is wider than a room (MAP_WIDTH is all three side by side);
+/// what the game sizes by is a ROOM, which is what this checks.
+constexpr bool exportedRoomsAreSquareAndAlike() {
+    const auto& first = rooms::ISO_DUNGEON_ROOMS_ROOMS[0];
+    for (const auto& room : rooms::ISO_DUNGEON_ROOMS_ROOMS) {
+        if (room.cols != room.rows || room.cols != first.cols) {
+            return false;
+        }
+    }
+    return true;
+}
+static_assert(exportedRoomsAreSquareAndAlike(),
+              "This game assumes square rooms of one size. Give every room in "
+              "the editor project the same NxN rect, or give RoomCatalog.h "
+              "separate width and height constants.");
+
+/// Room extent in tiles, both axes. Owned by the export; named here.
+inline constexpr int kRoomTiles = rooms::ISO_DUNGEON_ROOMS_ROOMS[0].cols;
 
 /**
  * @brief Tile grid: +1 tileX steps down-right, +1 tileY steps down-left.
@@ -58,6 +72,16 @@ inline constexpr int kRoomTiles = MAP_WIDTH;
  * call site -- hero interpolation, prop placement, screen-to-cell picking --
  * already reads `kTileProjection`, and none of them care that the value now
  * arrives from a generated file.
+ *
+ * One room is one screen, and every room is drawn with this same projection.
+ * The export's room maps (ROOM_LAYERS) are cropped to their room with local
+ * cells from (0, 0), so the projection's origin -- authored in the editor as
+ * (120, 88), where room 0's cell (0, 0) sits -- puts ANY room's local (0, 0)
+ * there and centres it on the 240x240 display. The export's own comment
+ * suggests drawing room r through gameplay::roomProjection(), which places it
+ * where it sits in the scene (rooms 1 and 2 are laid out to the right of room
+ * 0). This game does not want that -- it never shows two rooms at once -- and
+ * that helper is also newer than the engine release this example pins.
  *
  * 32x16 is the classic 2:1 isometric tile, and at 7 tiles per side it is not
  * an arbitrary choice: the room's diamond is (7 + 7) * 16 = 224 px wide, the
@@ -69,7 +93,7 @@ inline constexpr int kRoomTiles = MAP_WIDTH;
  * that same point. One anchor convention, one subtraction, no per-sprite fudge
  * factors.
  */
-inline constexpr gameplay::ProjectionSpec kTileProjection = ISO_PROJECTION;
+inline constexpr gameplay::ProjectionSpec kTileProjection = rooms::ISO_PROJECTION;
 
 // The export asserts its own validity and its paint order at its declaration
 // site. What it cannot know is the room size the game will use it at, which is
@@ -126,9 +150,15 @@ static_assert(gameplay::rowMajorIsPainterOrder(kTileProjection),
 ///
 /// Doorways are walkable: standing on one is what triggers the room change.
 
-/// Where the hero starts, in tiles, in room 0.
-inline constexpr int kSpawnTileX = 2;
-inline constexpr int kSpawnTileY = 5;
+/// Where the hero starts, in tiles, in room 0: the editor project's player
+/// spawn. The export states it in SCENE cells; room 0 sits at the scene's
+/// origin, so they are room-0 cells too, which is what the assert pins.
+static_assert(rooms::ISO_DUNGEON_ROOMS_ROOMS[0].originCol == 0 &&
+                  rooms::ISO_DUNGEON_ROOMS_ROOMS[0].originRow == 0,
+              "The player spawn is exported in scene cells; this game reads it "
+              "as room-0 cells, which only holds while room 0 is at (0, 0).");
+inline constexpr int kSpawnTileX = rooms::SPAWN_TILE_X;
+inline constexpr int kSpawnTileY = rooms::SPAWN_TILE_Y;
 
 // --- Hero -------------------------------------------------------------------
 
@@ -153,8 +183,14 @@ inline constexpr int kStepsPerCell = 16;
 ///
 /// Under this example's custom palette a `graphics::Color` is an INDEX, and its
 /// name is meaningless: `Color::Black` is index 0, which the renderer treats as
-/// transparent. Index 1 -- spelled `Color::White` -- is where the palette puts
-/// pure black. Naming the intent here keeps that trap in one place.
+/// transparent. Index 1 -- spelled `Color::White` -- is where the SPRITE
+/// palette (DungeonSpritePalette.h) puts pure black. Naming the intent here
+/// keeps that trap in one place.
+///
+/// Sprite palette only. The background bank holds the tilemap export's own
+/// palette, whose index 1 is the stone outline, so a fill resolved in the
+/// background context (as anything drawn on render layer 0 is) would not be
+/// black. Nothing paints the backdrop today -- see RoomRenderer::draw().
 inline constexpr pixelroot32::graphics::Color kVoidColor =
     pixelroot32::graphics::Color::White;
 
