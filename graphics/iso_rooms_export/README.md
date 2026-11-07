@@ -51,5 +51,5 @@ The arrow keys move between connected rooms. Each room should look exactly as
 it does in the editor: same colours, walls standing on their cells, nothing
 cut at the top of the tall tiles.
 
-The engine is pulled from its `feat/iso-rooms` branch (see `platformio.ini`):
-the projected room API is not in a published release yet.
+Requires PixelRoot32-Game-Engine **1.15.0** or later, the first release with
+the projected `buildRoomGraph` overload and `roomProjection()`.
