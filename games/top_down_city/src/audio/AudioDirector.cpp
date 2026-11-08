@@ -9,6 +9,13 @@ namespace top_down_city {
 
 namespace {
 using audio_cues::Cue;
+
+#if PIXELROOT32_ENABLE_AUDIO
+// The demo's one APU sound profile, fixed for the whole run: no runtime
+// switch, nothing persisted. `bind` feeds it to the SET_SOUND_PROFILE command.
+constexpr pixelroot32::audio::SoundProfile kSoundProfile =
+    pixelroot32::audio::SoundProfile::Famicom;
+#endif
 }  // namespace
 
 AudioDirector& AudioDirector::instance() {
@@ -22,6 +29,15 @@ void AudioDirector::bind(pixelroot32::audio::AudioEngine* engine,
     engine_ = engine;
     music_ = music;
     if (engine_ != nullptr) {
+        // The profile is audio-thread state, so the game thread asks for it
+        // through the command queue. It is queued here, before any cue or
+        // track can play, while every voice is silent: the APU documents a
+        // profile switch as a note-boundary change, not a mid-note one.
+        pixelroot32::audio::AudioCommand profile{};
+        profile.type = pixelroot32::audio::AudioCommandType::SET_SOUND_PROFILE;
+        profile.soundProfile = static_cast<std::uint8_t>(kSoundProfile);
+        engine_->submitCommand(profile);
+
         // The SFX-against-music mix lives on two knobs that are NOT this one:
         // sfxVolume_ (0.65) attenuates every cue's own AudioEvent volume
         // before it reaches the engine (see playCue's `play` lambda), and
@@ -335,6 +351,16 @@ void AudioDirector::stopMusic() {
     }
 #endif
     plan_ = audio_cues::MusicPlan{};
+}
+
+void AudioDirector::applySettings(const audio_settings::Settings& settings) {
+    enabled_ = settings.audioOn;
+    setSfxVolume(audio_settings::sfxGain(settings));
+#if PIXELROOT32_ENABLE_AUDIO
+    if (engine_ != nullptr) {
+        engine_->setMasterVolume(audio_settings::masterGain(settings));
+    }
+#endif
 }
 
 void AudioDirector::setSfxVolume(float volume) {

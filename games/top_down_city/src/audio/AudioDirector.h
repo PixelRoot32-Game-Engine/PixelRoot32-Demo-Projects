@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "game/rules/AudioCues.h"
+#include "game/rules/AudioSettings.h"
 
 #if PIXELROOT32_ENABLE_AUDIO
 #include <audio/AudioEngine.h>
@@ -99,6 +100,19 @@ public:
     /// Silences the transport unconditionally, for a scene reset. The plan
     /// self-heals on the next frame regardless, so this is belt-and-braces.
     void stopMusic();
+
+    /**
+     * @brief Apply the player's audio preference (stored settings at boot, the
+     *        Start button later).
+     *
+     * Drives three things from `audio_settings::masterGain/sfxGain`: the
+     * engine master volume (music and effects alike -- `setEnabled(false)`
+     * alone would leave the radio playing, since only cues check it), the SFX
+     * multiplier, and the enabled flag. Audio off therefore silences music at
+     * the master. Call after `bind`, which sets the default master this
+     * replaces; before `bind` it only records the cue-side state.
+     */
+    void applySettings(const audio_settings::Settings& settings);
 
     void setEnabled(bool enabled) { enabled_ = enabled; }
     [[nodiscard]] bool isEnabled() const { return enabled_; }

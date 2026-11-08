@@ -8,6 +8,8 @@
 
 #include "game/CityConstants.h"
 #include "game/dialog/CityBanner.h"
+#include "game/rules/AudioSettings.h"
+#include "game/rules/RecordsText.h"
 #include "game/entities/PedestrianActor.h"   // PersonHit
 #include "game/rules/Wanted.h"
 #include "game/scenes/CityWorld.h"
@@ -236,6 +238,29 @@ protected:
     void nextLeg(bool delivered);
 
     /**
+     * @brief Fold the live run into the city's records and, at a safe point,
+     *        save them.
+     *
+     * Folding is three compares and no I/O, so it may run wherever a record
+     * can have moved (a delivery, a chapter, a reset). `flush` is the part
+     * that costs: an NVS write stalls both cores for 4-13 ms, so it is passed
+     * as true only where the player is not mid-drive -- a chapter just
+     * completed, the arrest respawn, the run reset -- and the save itself is
+     * skipped unless the fold improved something since the last save. A
+     * failed save is ignored here; the book stays unsaved and the next safe
+     * point retries. A no-op when `TDC_PERSISTENCE` is off.
+     */
+    void recordProgress(bool flush);
+
+    /// Queue the "new best" line for `improved` (read from `book`, the book
+    /// after the fold). No-op when persistence is off.
+    void announceImprovement(const records::Improved& improved,
+                             const records::Record& book);
+
+    /// Does the live book hold anything? False with persistence off.
+    bool bookIsNotEmpty() const;
+
+    /**
      * @brief Is the main mission the thing the player is being asked to do?
      *
      * "One objective at a time" hangs off this: while it is true the courier
@@ -261,6 +286,22 @@ protected:
     /// The one input to wanted::tick. False at zero stars without asking
     /// anybody, which is most of a session, so the rays usually cost nothing.
     bool policeCanSee();
+
+    /// Start / Select, sampled by index and edge-triggered, once per frame
+    /// before any early return (dialogs and the picker never read 6 or 7, so
+    /// both work in every state). Start cycles the audio setting and applies it
+    /// at once; the save is deferred (settings_save). Select calls showRecords.
+    void stepSystemButtons(unsigned long deltaTime, bool moving);
+
+    /// Put the book up on the strip ("BEST STREAK 7  $1234", or "NO RECORDS
+    /// YET"). Used on the first entry and by Select; deliberate, so it
+    /// replaces whatever the strip says.
+    void showRecords();
+
+    /// Show a waiting "new best" line once the strip is free: nothing up, or
+    /// only the district name. Never replaces a notice with words of its own
+    /// (BOOSTED, CLEAN, WANTED, ...); it waits for it to run out instead.
+    void deliverBestAnnouncement();
 
     /// Put a word across the top strip for a while, instead of the district.
     /// @param label Borrowed, not copied -- see CityBanner.
@@ -337,6 +378,16 @@ protected:
     /// the demo is a string literal or a static table entry, and the banner
     /// only borrows the pointer. Eight bytes holds "99 LEFT".
     char                            frenzyLabel_[8];
+    /// Record texts, borrowed by the banner like frenzyLabel_. `recordsLabel_`
+    /// is the book (boot and Select); `bestShown_` is the "new best" line while
+    /// it is up and `bestNext_` the one waiting for the strip to be free. They
+    /// are separate so a waiting line never rewrites words already on screen.
+    char                            recordsLabel_[records_text::kTextCapacity];
+    char                            bestShown_[records_text::kTextCapacity];
+    char                            bestNext_[records_text::kTextCapacity];
+    /// "VOLUME 2/3" / "AUDIO OFF" after a Start press, borrowed by the banner.
+    char                            audioLabel_[audio_settings::kLabelCapacity];
+    bool                            bestPending_;
     bool                            hintVisible_;
 
 private:

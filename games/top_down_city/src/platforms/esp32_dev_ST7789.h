@@ -10,6 +10,7 @@
 #include "audio/AudioDirector.h"
 #endif  // PLATFORM_ESP32DEV_ST7789
 
+#include "persist/CityPersistenceBoot.h"
 #include "game/scenes/CityScene.h"
 #include "game/scenes/CityWorld.h"
 #include "game/scenes/CornerShopScene.h"
@@ -25,6 +26,10 @@ const int BTN_PIN_LEFT = 33;
 const int BTN_PIN_RIGHT = 14;
 const int BTN_PIN_A = 13;
 const int BTN_PIN_B = 12;
+// Start / Select, same GPIOs as the ILI9341 build and DOOM (input-only pins
+// 34/35: no internal pull-up, so the board needs external pull resistors).
+const int BTN_PIN_START = 34;
+const int BTN_PIN_SELECT = 35;
 
 pr32::graphics::DisplayConfig config(
     pr32::graphics::DisplayType::ST7789,
@@ -37,9 +42,11 @@ pr32::graphics::DisplayConfig config(
     Y_OFF_SET
 );
 
-// 6 buttons: Up, Down, Left, Right, A (run / contextual), B (fire).
+// 8 buttons: Up, Down, Left, Right, A (run / contextual), B (fire), then
+// Start (index 6, audio setting) and Select (index 7, records banner).
 pr32::input::InputConfig inputConfig(BTN_PIN_UP, BTN_PIN_DOWN, BTN_PIN_LEFT,
-                                     BTN_PIN_RIGHT, BTN_PIN_A, BTN_PIN_B);
+                                     BTN_PIN_RIGHT, BTN_PIN_A, BTN_PIN_B,
+                                     BTN_PIN_START, BTN_PIN_SELECT);
 
 #if PIXELROOT32_ENABLE_AUDIO
 // I2S out to a MAX98357A-class DAC. Neither the TFT/SPI pin map above nor
@@ -94,6 +101,12 @@ void setup() {
     // A director bound after that point would miss the very first cue.
     top_down_city::AudioDirector::instance().bind(&engine.getAudioEngine(),
                                                    &engine.getMusicPlayer());
+#endif
+#if TDC_PERSISTENCE
+    // After bind(), which set the default master volume this replaces, and
+    // before the first scene: loads the records and applies the stored audio
+    // settings. Failures leave defaults in place.
+    top_down_city::persist::boot();
 #endif
     // Before the first setScene(), and for the same reason the director is:
     // CityScene::init() asks the world whether this is a first entry, and a

@@ -49,6 +49,11 @@ constexpr std::uint8_t BTN_LEFT  = 2;
 constexpr std::uint8_t BTN_RIGHT = 3;
 constexpr std::uint8_t BTN_RUN   = 4;
 constexpr std::uint8_t BTN_FIRE  = 5;
+/* Start and Select follow DOOM's map (index 6 / 7). Neither is a gameplay
+ * button: the scenes sample them by index alone, edge-triggered. Dialogs and
+ * the shop picker read only up/down/RUN, so 6 and 7 never collide with them. */
+constexpr std::uint8_t BTN_START  = 6;  /* cycles the audio setting */
+constexpr std::uint8_t BTN_SELECT = 7;  /* shows the records (board only) */
 
 /* World geometry. 128x128 tiles of 16px = 2048x2048 px, roughly 72 screenfuls
  * on a 240x240 panel. Three layers of one byte per cell each live in flash. */

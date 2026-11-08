@@ -11,6 +11,7 @@
 #include "audio/AudioDirector.h"
 #endif
 
+#include "persist/CityPersistenceBoot.h"
 #include "game/scenes/CityScene.h"
 #include "game/scenes/CityWorld.h"
 #include "game/scenes/CornerShopScene.h"
@@ -29,10 +30,15 @@ pr32::graphics::DisplayConfig config(
     Y_OFF_SET
 );
 
-// 6 buttons: Up, Down, Left, Right, Space (run / contextual), S (fire).
+// Same layout as DOOM: indices 0-5 are the pad (Up, Down, Left, Right, Space =
+// run / contextual, S = fire) and index 6 is Start = Escape (cycles the audio
+// setting). Select (index 7, the records banner on the board) stays unbound on
+// native: the keyboard has no second system key here, and reading an index past
+// the configured count returns false, so Select is simply never pressed.
 pr32::input::InputConfig inputConfig(SDL_SCANCODE_UP, SDL_SCANCODE_DOWN,
                                      SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT,
-                                     SDL_SCANCODE_SPACE, SDL_SCANCODE_S);
+                                     SDL_SCANCODE_SPACE, SDL_SCANCODE_S,
+                                     SDL_SCANCODE_ESCAPE);
 
 #if PIXELROOT32_ENABLE_AUDIO
 // 22050 Hz / 1024-sample buffer -- the same pair bomberbot uses, so no new
@@ -82,6 +88,12 @@ int main(int argc, char* argv[]) {
     // A director bound after that point would miss the very first cue.
     top_down_city::AudioDirector::instance().bind(&engine.getAudioEngine(),
                                                    &engine.getMusicPlayer());
+#endif
+#if TDC_PERSISTENCE
+    // After bind(), which set the default master volume this replaces, and
+    // before the first scene: loads the records and applies the stored audio
+    // settings. Failures leave defaults in place.
+    top_down_city::persist::boot();
 #endif
     // Before the first setScene(), and for the same reason the director is:
     // CityScene::init() asks the world whether this is a first entry, and a

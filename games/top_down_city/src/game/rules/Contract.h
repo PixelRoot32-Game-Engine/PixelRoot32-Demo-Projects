@@ -128,6 +128,25 @@ std::uint16_t jobSteps(int toCarTiles, int carToDropTiles);
 State clear();
 
 /**
+ * @brief The chapter a run starts on, given the chapters the saved book says
+ *        were cleared (bit `1 << Chapter`, as `records::Record::chapters`).
+ *
+ * The first chapter NOT cleared, in story order; all cleared restarts the
+ * story at `Boost`; bits beyond `Chapter::Count` are ignored. Lives here
+ * rather than in `Records` because the answer is about the story's order, and
+ * `Records` already depends on this header, not the other way round.
+ */
+Chapter startingChapter(std::uint8_t clearedBits);
+
+/**
+ * @brief The contract a run opens with: `clear()` advanced to
+ *        `startingChapter(clearedBits)` through the same `advanceChapter`
+ *        step a completed job ends on, so a resumed chapter is exactly the
+ *        state natural progression would have produced -- phone live, no job.
+ */
+State startingState(std::uint8_t clearedBits);
+
+/**
  * @brief Answer the phone: name the car, the drop, and the clock.
  *
  * A no-op unless the phase is `Idle`: the scene calls this from an input edge,

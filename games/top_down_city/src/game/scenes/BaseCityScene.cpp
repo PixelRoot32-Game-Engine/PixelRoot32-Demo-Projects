@@ -1,10 +1,13 @@
 #include "game/scenes/BaseCityScene.h"
 
+#include <cstring>
+
 #include <core/Engine.h>
 #include <graphics/Color.h>
 
 #include "audio/AudioDirector.h"
 #include "game/systems/CityCollision.h"
+#include "persist/CityPersistence.h"
 #include "generated/tilemaps/city_scene.h"
 
 namespace pr32 = pixelroot32;
@@ -19,6 +22,20 @@ namespace math = pr32::math;
 using math::toScalar;
 
 namespace {
+
+#if TDC_PERSISTENCE
+/// Bit per chapter finished: the ones before the live chapter, or all of them
+/// once the contract is `Complete` (it stays on the last chapter then).
+std::uint8_t completedChapters(const contract::State& state) {
+    const unsigned all =
+        (1u << static_cast<unsigned>(contract::Chapter::Count)) - 1u;
+    if (state.phase == contract::Phase::Complete) {
+        return static_cast<std::uint8_t>(all);
+    }
+    return static_cast<std::uint8_t>(
+        ((1u << static_cast<unsigned>(state.chapter)) - 1u) & all);
+}
+#endif
 
 /// A five-pixel heart, as four rectangles.
 void drawHeart(gfx::Renderer& renderer, int x, int y, gfx::Color colour) {
@@ -54,6 +71,11 @@ BaseCityScene::BaseCityScene()
       accumulatorMs_(0),
       banner_(),
       frenzyLabel_{},
+      recordsLabel_{},
+      bestShown_{},
+      bestNext_{},
+      audioLabel_{},
+      bestPending_(false),
       hintVisible_(false),
       drawnFocusKey_(0),
       drawnCrowdKey_(0),
@@ -96,6 +118,16 @@ void BaseCityScene::init() {
     banner_.show(nullptr, kZoneBannerMs);
 
     onEnterSpace(firstEntry);
+
+    if (firstEntry) {
+        // The run reset inside onEnterSpace folds the starting state into the
+        // book; whatever that "improved" is not news, so drop it, and greet the
+        // player with the records they came to beat instead.
+        bestPending_ = false;
+        if (bookIsNotEmpty()) {
+            showRecords();
+        }
+    }
 
     // After the space exists, because both sinks reach into it. Re-installed
     // on every entry rather than swapped at the doorway.
@@ -247,9 +279,32 @@ void BaseCityScene::nextLeg(bool delivered) {
         // than for none. See game/rules/Economy.h.
         economy::earn(world.purse,
                       economy::deliveryFee(world.mission.streak));
+        recordProgress(false);
     } else {
         mission::failed(world.mission, next, distance);
     }
+}
+
+void BaseCityScene::recordProgress(bool flush) {
+#if TDC_PERSISTENCE
+    CityWorld& world = CityWorld::instance();
+    CityPersistence& persistence = CityPersistence::instance();
+    records::Record seen = records::clear();
+    seen.bestStreak = world.mission.streak > world.mission.best
+                          ? world.mission.streak
+                          : world.mission.best;
+    seen.chapters = completedChapters(world.contract);
+    seen.bestCash = world.purse.cash;
+    const records::Improved improved =
+        records::improved(persistence.records(), seen);
+    persistence.foldRun(seen);
+    announceImprovement(improved, persistence.records());
+    if (flush) {
+        (void)persistence.flushRecords();
+    }
+#else
+    (void)flush;
+#endif
 }
 
 bool BaseCityScene::policeCanSee() {
@@ -325,6 +380,7 @@ void BaseCityScene::countRampageBody() {
     // counter rather than against anything the state holds.
     economy::earn(world.purse, economy::kFrenzyFee);
     showBanner("STORY OVER");
+    recordProgress(true);
     // Chapter 1's delivery cue for the third time: four SFX voices, and a
     // sound the player already knows the meaning of beats a new one.
     AudioDirector::instance().playCue(audio_cues::Cue::MissionDelivered);
@@ -393,6 +449,7 @@ void BaseCityScene::stepWantedClock() {
     // game/rules/Economy.h.
     economy::earn(world.purse, economy::kHitFee);
     showBanner("CLEAN");
+    recordProgress(true);
     // Chapter 1's delivery cue, reused rather than joined: four SFX voices,
     // rationed by audio_cues::admitCue, and a fifth would spend the budget on
     // a sound the player already knows the meaning of.
@@ -527,10 +584,115 @@ void BaseCityScene::respawn() {
     // A no-op unless a job was actually running, which is most arrests.
     contract::failed(world.contract);
 
+    // The arrest is a safe point: the screen has just held a two-second notice,
+    // nothing is being driven, and the write cannot cost a frame anyone sees.
+    recordProgress(true);
+
     // No banner: the held notice has just spent two seconds saying what
     // happened, and the strip has something better to say -- which district
     // they have been turned out into.
     banner_.show(nullptr, kZoneBannerMs);
+}
+
+#if TDC_PERSISTENCE
+void BaseCityScene::announceImprovement(const records::Improved& improved,
+                                        const records::Record& book) {
+    CityWorld& world = CityWorld::instance();
+    records::Improved say = improved;
+    if (world.cashRecordAnnounced) {
+        say.cash = false;
+    }
+    if (!say.any()) {
+        return;
+    }
+    if (records_text::improvedLine(book, say, bestNext_, sizeof bestNext_) == 0) {
+        return;
+    }
+    // Cash is only the line itself when nothing more meaningful rose.
+    if (!say.chapter && !say.streak) {
+        world.cashRecordAnnounced = true;
+    }
+    // A newer announcement replaces an older one still waiting: one slot, so
+    // several improvements before the strip frees up say only the latest.
+    bestPending_ = true;
+}
+#endif
+
+bool BaseCityScene::bookIsNotEmpty() const {
+#if TDC_PERSISTENCE
+    const records::Record& book = CityPersistence::instance().records();
+    return book.bestStreak != 0 || book.chapters != 0 || book.bestCash != 0;
+#else
+    return false;
+#endif
+}
+
+void BaseCityScene::showRecords() {
+#if TDC_PERSISTENCE
+    const records::Record book = CityPersistence::instance().records();
+#else
+    const records::Record book = records::clear();
+#endif
+    if (records_text::bookLine(book, recordsLabel_, sizeof recordsLabel_) == 0) {
+        return;
+    }
+    banner_.show(recordsLabel_, kZoneBannerMs);
+}
+
+void BaseCityScene::deliverBestAnnouncement() {
+    if (!bestPending_) {
+        return;
+    }
+    if (banner_.visible() && banner_.label() != nullptr) {
+        return;  // a notice of its own is up: wait for it to run out
+    }
+    std::memcpy(bestShown_, bestNext_, sizeof bestShown_);
+    bestPending_ = false;
+    banner_.show(bestShown_, kZoneBannerMs);
+}
+
+void BaseCityScene::stepSystemButtons(unsigned long deltaTime, bool moving) {
+    CityWorld& world = CityWorld::instance();
+    auto& input = engine.getInputManager();
+
+    // Reading an index past the configured count is false, so Select is simply
+    // never pressed on the native build (DOOM's layout: Select unbound).
+    const bool startDown = input.isButtonDown(BTN_START);
+    if (startDown && !world.startLatched) {
+        world.audioSettings = audio_settings::cycle(world.audioSettings);
+        AudioDirector::instance().applySettings(world.audioSettings);
+        settings_save::pressed(world.settingsSave);
+        // Deliberate like Select: replaces whatever the strip says, and each
+        // press rewrites audioLabel_ and restarts the banner. A waiting "new
+        // best" line stays queued and is delivered once this runs out.
+        if (audio_settings::label(world.audioSettings, audioLabel_,
+                                  sizeof audioLabel_) != 0) {
+            banner_.show(audioLabel_, kZoneBannerMs);
+        }
+    }
+    world.startLatched = startDown;
+
+    const bool selectDown = input.isButtonDown(BTN_SELECT);
+    if (selectDown && !world.selectLatched) {
+        showRecords();
+    }
+    world.selectLatched = selectDown;
+
+    // Safe point: on foot and standing still. Never while driving, where an
+    // NVS write (4-13 ms) would be felt.
+    const bool safe = !isDriving() && !moving;
+    if (settings_save::due(world.settingsSave,
+                           static_cast<int>(deltaTime), safe)) {
+#if TDC_PERSISTENCE
+        const bool ok = CityPersistence::instance().saveSettings(
+                            world.audioSettings)
+                        == pixelroot32::persistence::StoreResult::Ok;
+        settings_save::saved(world.settingsSave, ok);
+#else
+        // Nothing to write to: cycling still works, it is just not kept.
+        settings_save::saved(world.settingsSave, true);
+#endif
+    }
 }
 
 void BaseCityScene::update(unsigned long deltaTime) {
@@ -556,6 +718,17 @@ void BaseCityScene::update(unsigned long deltaTime) {
         wanted::isWanted(world.wanted),
         world.bustedMs > 0));
     AudioDirector::instance().update(deltaTime);
+
+    // Before the busted early return: Start is a system button and must work
+    // while the notice is held. Direction keys read here only to know whether
+    // the player is standing still for the deferred settings save.
+    {
+        auto& in0 = engine.getInputManager();
+        const bool moving = in0.isButtonDown(BTN_UP) || in0.isButtonDown(BTN_DOWN)
+                            || in0.isButtonDown(BTN_LEFT)
+                            || in0.isButtonDown(BTN_RIGHT);
+        stepSystemButtons(deltaTime, moving);
+    }
 
     // The single place the simulation STOPS. A respawn on the same frame as
     // the hit is a teleport the player never sees the cause of. Real
@@ -689,6 +862,7 @@ void BaseCityScene::update(unsigned long deltaTime) {
         // Real time, like the countdown this was: a no-op once it is down.
         banner_.update(deltaTime);
     }
+    deliverBestAnnouncement();
 }
 
 // Every term here is something draw() puts on screen, and nothing else is.

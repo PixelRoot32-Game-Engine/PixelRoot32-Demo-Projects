@@ -26,7 +26,7 @@ streamed crowd with police mixed into it, two enterable interiors, three story
 chapters, and a day that turns to night for the price of a palette and twenty
 tiles.
 
-It fits in **8.8 % of the ESP32's RAM and 44.5 % of its flash**, which is the
+It fits in **10.1 % of the ESP32's RAM and 47.7 % of its flash**, which is the
 part worth reading this file for: everything below is how an open world that
 size is made to cost that little.
 
@@ -40,8 +40,8 @@ size is made to cost that little.
 the budgets, and the engine decisions worth reading before borrowing any of it.
 
 Language: C++17  
-Engine: `gperez88/PixelRoot32-Game-Engine@^1.12.0`  
-Environments: `native`, `esp32dev`, `host_test`, `dialog_test`  
+Engine: `gperez88/PixelRoot32-Game-Engine@^1.15.0`  
+Environments: `native`, `esp32dev_ST7789`, `esp32dev_ILI9341`, `host_test`, `dialog_test`, `persist_test`  
 Category: Games
 
 ## Screenshots
@@ -80,11 +80,13 @@ makes walking between tree canopies and past lamp posts possible at all.** The
 generator asserts every prop tile has a cut-out, so that cannot silently
 regress.
 
-Cost on `esp32dev`: **8.8 % RAM (28,932 B) and 44.5 % flash (582,721 B)**, of
+Cost on `esp32dev_ST7789`: **10.1 % RAM (33,176 B) and 47.7 % flash
+(625,426 B)** (`esp32dev_ILI9341`: 625,842 B of flash, the same RAM), of
 which 173,696 B is map data — all `static const` in flash — and roughly 39.8 KB
 is audio. RAM holds three 40-byte `TileMap4bpp` descriptors, the dirty grid, 24
 vehicle actors, the 12-slot pedestrian pool, the 6-slot traffic pool and the
-audio director's fixed-size state, and nothing else.
+audio director's fixed-size state and the persistence stores (see
+[Saved data](#saved-data)), and nothing else.
 
 ## Requirements (build flags)
 
@@ -94,6 +96,8 @@ Set in [`lib/platformio.ini`](lib/platformio.ini):
 |------|-------|-----|
 | `PIXELROOT32_ENABLE_4BPP_SPRITES` | on | Every tile, car, pedestrian and the player is a 16-colour 4bpp sprite. Everything on screen goes through this one path. |
 | `PIXELROOT32_ENABLE_AUDIO` | `1` | Gates both `getAudioEngine()` and `getMusicPlayer()` (`Engine.h`), so it covers the twenty-two one-shot cues, the four radio stations and the siren at once. Measured: +244 B RAM and +40,724 B flash against the same build at `0`. |
+| `PIXELROOT32_ENABLE_PERSISTENCE` | `1` | Turns on the engine's persistence module, which saves the audio setting and the record book. Default is `0`. See [Saved data](#saved-data). |
+| `TDC_PERSISTENCE` | `1` | The demo's own switch: it guards every persistence include under `src/persist/`. Set both to `0` and the game builds exactly as it did before persistence existed. |
 | `PIXELROOT32_ENABLE_PHYSICS` | `0` | The collision helpers used here — `TileAttributes`, `TilePixelCollision` — are standalone. The flag gates the collider/solver graph, which a 10,000-obstacle city could never fit (`PHYSICS_MAX_ENTITIES` is 64). This is also why the player, cars and pedestrians derive from `core::Entity` and tag `EntityType::GENERIC`: `core::Actor` is the *CollisionSystem participant*, and `EntityType::ACTOR` is what `Scene::addEntity` downcasts on. Nothing registers with that system, so claiming to be one would be a lie with a `static_cast` behind it. |
 | `PIXELROOT32_ENABLE_GAMEPLAY_GRID_SPACE` | `0` | Movement is free eight-way at sub-pixel resolution, so `GridSpec`/`GridMotion` would only get in the way. |
 | `PIXELROOT32_ENABLE_GAMEPLAY_OBJECT_POOL` | `1` | The crowd is a fixed slab of 12 pedestrian slots streamed around the camera. `ObjectPool` is placement-new over aligned storage, so acquiring one inside the game loop still allocates nothing. |
@@ -119,7 +123,7 @@ renderer already reads and repoints a tileset it already draws from.
 | `esp32dev_ST7789` | 240×240 ST7789 | TFT_eSPI | 6 GPIO buttons | I2S — MAX98357A-class DAC on BCLK 26 / LRCK 25 / DOUT 22 |
 | `esp32dev_ILI9341` | 240×320 ILI9341 (rotation 3, effective 320×240) | TFT_eSPI | 6 GPIO buttons | I2S — MAX98357A-class DAC on BCLK 26 / LRCK 25 / DOUT 22 |
 
-**ST7789 button pins:** Up 32, Down 27, Left 33, Right 14, A 13, B 12.
+**ST7789 button pins:** Up 32, Down 27, Left 33, Right 14, A 13, B 12, Start 34, Select 35.
 
 **ILI9341 button pins (ESP32-2432S028 "Cheap Yellow Display"):** Up 32, Down 33, Left 25, Right 26, A 27, B 13, Start 34, Select 35.
 
@@ -150,6 +154,15 @@ These feed `kHudRightEdge`, `drawZoneBanner()`, `drawBustedNotice()`, `drawHint(
 | Shop picker: move up and down the list | Up / Down | D-pad up / down |
 | Shop picker: buy the highlighted line | S | B |
 | Fire (once armed) | S | B |
+| Audio: cycle off, then three volume levels | Escape (Start) | Start (GPIO 34) |
+| Show the records | unbound | Select (GPIO 35) |
+
+Start and Select follow DOOM's map. GPIO 34 and 35 are input-only pins with
+external pull-ups, so a board needs those two resistors; Select is deliberately
+unbound on native, as in DOOM. Start steps the audio through off, then three
+volume levels (low, medium, high), then off again, and each press shows the
+current setting on the top strip ("VOLUME 2/3", "AUDIO OFF"); both keys work in
+every state of the game.
 
 **Six buttons is the whole pad and every one is spoken for**, which is the
 constraint the interaction model is built around. RUN is contextual — held it
@@ -265,7 +278,7 @@ cannot stand next to a wall its head visually overlaps.
 
 `build_src_filter = +<game/rules/>` is the whole of `[env:host_test]`. Nothing
 in [`src/game/rules/`](src/game/rules/) includes an engine header, so the
-fifteen suites in [`test/`](test/) — **359 cases** — build on a bare host with
+nineteen suites in [`test/`](test/) — **406 cases** — build on a bare host with
 no display, no SDL2 and no board.
 
 Naming the directory rather than the files means a new rule is covered by
@@ -285,6 +298,11 @@ six-pixel target if it steps far enough. Both are tests, not comments.
 Twenty-two one-shot cues and four original radio stations, all `constexpr` data
 in [`src/audio/`](src/audio/) — nothing sampled, nothing transcribed.
 
+Everything plays on the APU's `Famicom` sound profile. It is fixed: set once in
+`AudioDirector::bind`, before the first cue or track, from one constant — there
+is no runtime switch and it is not saved. The cues and stations were authored
+for the `Legacy` profile and have not been re-tuned by ear for Famicom yet.
+
 **The 4+4 voice split cannot be rebalanced**, and it is the most likely place a
 reader tries to "fix" something. The engine partitions its eight voices into
 four music and four SFX slots at compile time (`MAX_MUSIC_TRACKS`, no `#ifndef`
@@ -300,6 +318,47 @@ cue the player caused or that is about to hurt them is `Essential` and never
 refused; everything droppable is `Ambient`, capped at one live voice, and
 silenced for 224 ms after any Essential cue. A street that kept chattering
 under gunfire would be the actual bug.
+
+## Saved data
+
+Records and the audio setting are kept; **a run never is, except for its
+chapter.** A run opens on the first chapter the record book has not cleared
+(all three cleared restarts the story at chapter 1), with the phone ringing;
+cash, vest, ammo and position still start clean, on the spawn point, broke and
+unarmed.
+
+| What | Persisted |
+|------|-----------|
+| Audio setting (on/off and volume level) | yes |
+| Record book: best streak, chapters cleared, best cash | yes |
+| Chapter to resume (derived from the cleared chapters) | yes |
+| Cash, weapons, job in progress, position, wanted level | no |
+
+The record book only ever improves: a new run is folded into it and no value
+is lowered. It is shown in the banner at boot, when a record is beaten and on
+Select.
+
+| | Where |
+|---|-------|
+| ESP32 | NVS namespace `tdc`: the audio setting under key `audio`, the record book in a slot store with prefix `rec` |
+| Native | `save_data/` relative to the working directory (`save_data/tdc/` and `save_data/rec/`), git-ignored |
+
+**When it is written.** Writing to NVS stalls the calling core for several
+milliseconds, so nothing is written while the player is driving. Records are
+saved at chapter complete, at the arrest respawn and when a run is reset, and
+only when a value improved. The audio setting is saved once the player has been
+on foot and standing still for one second after the last Start press, not on
+every press. Any read or write failure (nothing saved yet, corrupt data, no
+store) falls back to defaults and never blocks play.
+
+**To wipe it.** Native: delete the `save_data/` folder. ESP32: erase the NVS
+partition. `pio run -e esp32dev_ST7789 -t erase` does it by erasing the **whole
+flash**, so the firmware has to be uploaded again; to clear only NVS, erase
+that region with `esptool` (the default Arduino partition table puts it at
+`0x9000`, `0x5000` bytes; this demo sets no custom table).
+
+**To build without it.** Set `PIXELROOT32_ENABLE_PERSISTENCE` and
+`TDC_PERSISTENCE` to `0` in [`lib/platformio.ini`](lib/platformio.ini).
 
 ## Day and night
 
@@ -386,12 +445,17 @@ pio device monitor                   # 115200 baud
 ## Tests
 
 ```bash
-pio test -e host_test
+pio test -e host_test      # every rules suite: 19 suites, 406 cases
+pio test -e dialog_test    # the dialog suites: 51 cases
+pio test -e persist_test   # persistence round-trips over in-memory stores: 10 cases
 ```
 
-Fifteen suites, 359 cases, no display and no board. Only `src/game/rules/` is
-built — the scenes, the entities and the audio director link against the engine
-and are checked by compiling them.
+No display and no board. `host_test` builds only `src/game/rules/` and runs
+every suite except `test_dialog_*` and `test_persist_*`; the scenes, the
+entities and the audio director link against the engine and are checked by
+compiling them. `persist_test` compiles `src/persist/CityPersistence.cpp`
+against the engine's persistence headers and runs it over memory stores, so it
+needs no SDL2 either.
 
 ## Regenerating the art and the map
 

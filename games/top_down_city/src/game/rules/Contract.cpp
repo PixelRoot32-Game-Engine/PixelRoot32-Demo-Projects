@@ -62,6 +62,26 @@ State clear() {
     return state;
 }
 
+Chapter startingChapter(std::uint8_t clearedBits) {
+    for (std::uint8_t c = 0; c < static_cast<std::uint8_t>(Chapter::Count); ++c) {
+        if ((clearedBits & (1u << c)) == 0u) {
+            return static_cast<Chapter>(c);
+        }
+    }
+    return Chapter::Boost;
+}
+
+State startingState(std::uint8_t clearedBits) {
+    State state = clear();
+    const std::uint8_t target =
+        static_cast<std::uint8_t>(startingChapter(clearedBits));
+    // `target` < Count, so this never reaches `Phase::Complete`.
+    while (static_cast<std::uint8_t>(state.chapter) < target) {
+        advanceChapter(state);
+    }
+    return state;
+}
+
 void begin(State& state, std::uint8_t vehicle, std::uint8_t drop,
            int toCarTiles, int carToDropTiles) {
     if (state.phase != Phase::Idle) {
