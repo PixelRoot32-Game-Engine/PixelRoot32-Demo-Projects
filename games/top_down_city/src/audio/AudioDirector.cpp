@@ -353,6 +353,16 @@ void AudioDirector::stopMusic() {
     plan_ = audio_cues::MusicPlan{};
 }
 
+void AudioDirector::applySettings(const audio_settings::Settings& settings) {
+    enabled_ = settings.audioOn;
+    setSfxVolume(audio_settings::sfxGain(settings));
+#if PIXELROOT32_ENABLE_AUDIO
+    if (engine_ != nullptr) {
+        engine_->setMasterVolume(audio_settings::masterGain(settings));
+    }
+#endif
+}
+
 void AudioDirector::setSfxVolume(float volume) {
 #if PIXELROOT32_ENABLE_AUDIO
     sfxVolume_ = volume;

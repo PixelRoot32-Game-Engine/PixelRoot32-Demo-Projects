@@ -24,6 +24,7 @@
   { "demo": "games/pool", "env": "host_test" },
   { "demo": "games/top_down_city", "env": "host_test" },
   { "demo": "games/top_down_city", "env": "dialog_test" },
+  { "demo": "games/top_down_city", "env": "persist_test" },
   { "demo": "games/minesweeper", "env": "host_test" },
   { "demo": "games/pacman", "env": "rules_test" },
   { "demo": "games/pong", "env": "rules_test" },

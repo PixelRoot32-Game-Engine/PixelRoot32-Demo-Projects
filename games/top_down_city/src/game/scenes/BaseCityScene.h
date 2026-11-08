@@ -236,6 +236,21 @@ protected:
     void nextLeg(bool delivered);
 
     /**
+     * @brief Fold the live run into the city's records and, at a safe point,
+     *        save them.
+     *
+     * Folding is three compares and no I/O, so it may run wherever a record
+     * can have moved (a delivery, a chapter, a reset). `flush` is the part
+     * that costs: an NVS write stalls both cores for 4-13 ms, so it is passed
+     * as true only where the player is not mid-drive -- a chapter just
+     * completed, the arrest respawn, the run reset -- and the save itself is
+     * skipped unless the fold improved something since the last save. A
+     * failed save is ignored here; the book stays unsaved and the next safe
+     * point retries. A no-op when `TDC_PERSISTENCE` is off.
+     */
+    void recordProgress(bool flush);
+
+    /**
      * @brief Is the main mission the thing the player is being asked to do?
      *
      * "One objective at a time" hangs off this: while it is true the courier

@@ -6,3 +6,4 @@
 
 # Sprite asset headers are tracked in git (see README.md regeneration guide).
 __pycache__/
+save_data/

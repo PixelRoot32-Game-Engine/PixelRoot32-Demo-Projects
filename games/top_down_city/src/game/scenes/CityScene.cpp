@@ -212,6 +212,10 @@ void CityScene::onEnterSpace(bool firstEntry) {
         world.returnFire.reset();
         world.returnFire.equip(weapons::WeaponId::PolicePistol);
 
+        // The run reset: bank whatever the run before it left in the book
+        // before the lines below zero the streak and contract.
+        recordProgress(true);
+
         world.player.heal();
         world.wanted = wanted::clear();
         onWantedChanged(world.wanted.stars);
@@ -1186,6 +1190,7 @@ bool CityScene::stepSpace(const StepInput& in) {
             // counter rather than against a streak. See game/rules/Economy.h.
             economy::earn(world.purse, economy::kBoostFee);
             showBanner("BOOSTED");
+            recordProgress(true);
             // The courier's delivery cue, reused: four SFX voices, and the
             // player already knows what this one means.
             AudioDirector::instance().playCue(

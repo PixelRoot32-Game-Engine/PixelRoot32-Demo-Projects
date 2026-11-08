@@ -10,6 +10,7 @@
 #include "audio/AudioDirector.h"
 #endif
 
+#include "persist/CityPersistenceBoot.h"
 #include "game/scenes/CityScene.h"
 #include "game/scenes/CityWorld.h"
 #include "game/scenes/CornerShopScene.h"
@@ -97,6 +98,12 @@ void setup() {
     // A director bound after that point would miss the very first cue.
     top_down_city::AudioDirector::instance().bind(&engine.getAudioEngine(),
                                                    &engine.getMusicPlayer());
+#endif
+#if TDC_PERSISTENCE
+    // After bind(), which set the default master volume this replaces, and
+    // before the first scene: loads the records and applies the stored audio
+    // settings. Failures leave defaults in place.
+    top_down_city::persist::boot();
 #endif
     // Before the first setScene(), and for the same reason the director is:
     // CityScene::init() asks the world whether this is a first entry, and a

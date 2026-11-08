@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>  // the real Arduino.h brings the fixed-width types EngineConfig.h uses
+
 /**
  * @brief The one Arduino symbol the engine's EngineConfig.h reads, for the
  *        dialog_test environment only.

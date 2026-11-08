@@ -5,6 +5,7 @@
 
 #include "audio/AudioDirector.h"
 #include "game/systems/CityCollision.h"
+#include "persist/CityPersistence.h"
 #include "generated/tilemaps/city_scene.h"
 
 namespace pr32 = pixelroot32;
@@ -19,6 +20,20 @@ namespace math = pr32::math;
 using math::toScalar;
 
 namespace {
+
+#if TDC_PERSISTENCE
+/// Bit per chapter finished: the ones before the live chapter, or all of them
+/// once the contract is `Complete` (it stays on the last chapter then).
+std::uint8_t completedChapters(const contract::State& state) {
+    const unsigned all =
+        (1u << static_cast<unsigned>(contract::Chapter::Count)) - 1u;
+    if (state.phase == contract::Phase::Complete) {
+        return static_cast<std::uint8_t>(all);
+    }
+    return static_cast<std::uint8_t>(
+        ((1u << static_cast<unsigned>(state.chapter)) - 1u) & all);
+}
+#endif
 
 /// A five-pixel heart, as four rectangles.
 void drawHeart(gfx::Renderer& renderer, int x, int y, gfx::Color colour) {
@@ -247,9 +262,29 @@ void BaseCityScene::nextLeg(bool delivered) {
         // than for none. See game/rules/Economy.h.
         economy::earn(world.purse,
                       economy::deliveryFee(world.mission.streak));
+        recordProgress(false);
     } else {
         mission::failed(world.mission, next, distance);
     }
+}
+
+void BaseCityScene::recordProgress(bool flush) {
+#if TDC_PERSISTENCE
+    CityWorld& world = CityWorld::instance();
+    CityPersistence& persistence = CityPersistence::instance();
+    records::Record seen = records::clear();
+    seen.bestStreak = world.mission.streak > world.mission.best
+                          ? world.mission.streak
+                          : world.mission.best;
+    seen.chapters = completedChapters(world.contract);
+    seen.bestCash = world.purse.cash;
+    persistence.foldRun(seen);
+    if (flush) {
+        (void)persistence.flushRecords();
+    }
+#else
+    (void)flush;
+#endif
 }
 
 bool BaseCityScene::policeCanSee() {
@@ -325,6 +360,7 @@ void BaseCityScene::countRampageBody() {
     // counter rather than against anything the state holds.
     economy::earn(world.purse, economy::kFrenzyFee);
     showBanner("STORY OVER");
+    recordProgress(true);
     // Chapter 1's delivery cue for the third time: four SFX voices, and a
     // sound the player already knows the meaning of beats a new one.
     AudioDirector::instance().playCue(audio_cues::Cue::MissionDelivered);
@@ -393,6 +429,7 @@ void BaseCityScene::stepWantedClock() {
     // game/rules/Economy.h.
     economy::earn(world.purse, economy::kHitFee);
     showBanner("CLEAN");
+    recordProgress(true);
     // Chapter 1's delivery cue, reused rather than joined: four SFX voices,
     // rationed by audio_cues::admitCue, and a fifth would spend the budget on
     // a sound the player already knows the meaning of.
@@ -526,6 +563,10 @@ void BaseCityScene::respawn() {
     // so what an arrest costs here is the clock and the walk, not the story.
     // A no-op unless a job was actually running, which is most arrests.
     contract::failed(world.contract);
+
+    // The arrest is a safe point: the screen has just held a two-second notice,
+    // nothing is being driven, and the write cannot cost a frame anyone sees.
+    recordProgress(true);
 
     // No banner: the held notice has just spent two seconds saying what
     // happened, and the strip has something better to say -- which district
