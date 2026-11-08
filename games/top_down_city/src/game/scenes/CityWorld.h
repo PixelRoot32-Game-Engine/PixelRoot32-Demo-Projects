@@ -6,11 +6,13 @@
 
 #include "game/CityConstants.h"
 #include "game/entities/PlayerActor.h"
+#include "game/rules/AudioSettings.h"
 #include "game/rules/Contract.h"
 #include "game/rules/Economy.h"
 #include "game/rules/Facing.h"
 #include "game/rules/Hideout.h"
 #include "game/rules/Mission.h"
+#include "game/rules/SettingsSave.h"
 #include "game/rules/Wanted.h"
 #include "game/systems/CityDayNight.h"
 #include "game/systems/WeaponSystem.h"
@@ -149,6 +151,16 @@ public:
     /// that reset at the doorway would read one press twice.
     bool                      actionLatched;
     bool                      fireLatched;
+
+    /// Edge detection for Start and Select, shared for the same reason.
+    bool                      startLatched;
+    bool                      selectLatched;
+
+    /// The live audio setting. Survives a run reset (a run never touches it);
+    /// persist::boot() overwrites it with the stored value. Start cycles it.
+    audio_settings::Settings  audioSettings;
+    /// Deferred save of `audioSettings` (see game/rules/SettingsSave.h).
+    settings_save::Gate       settingsSave;
 
     /// Is the top star running down? Cached from the logic step for the HUD.
     bool                      cooling;

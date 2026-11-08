@@ -3,6 +3,7 @@
 #if TDC_PERSISTENCE
 
 #include "audio/AudioDirector.h"
+#include "game/scenes/CityWorld.h"
 #include "persist/CityPersistence.h"
 
 #if defined(PLATFORM_NATIVE)
@@ -46,7 +47,9 @@ void boot() {
     persistence.bind(settings, saves);
 
     persistence.adoptStored();
-    AudioDirector::instance().applySettings(persistence.loadSettings());
+    // The live copy Start cycles from; it must match what is audible.
+    CityWorld::instance().audioSettings = persistence.loadSettings();
+    AudioDirector::instance().applySettings(CityWorld::instance().audioSettings);
 }
 
 }  // namespace top_down_city::persist

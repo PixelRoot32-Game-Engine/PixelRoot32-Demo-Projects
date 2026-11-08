@@ -574,6 +574,47 @@ void BaseCityScene::respawn() {
     banner_.show(nullptr, kZoneBannerMs);
 }
 
+void BaseCityScene::showRecords() {
+    // Filled by T8 (S8): show CityPersistence::records() through the banner.
+}
+
+void BaseCityScene::stepSystemButtons(unsigned long deltaTime, bool moving) {
+    CityWorld& world = CityWorld::instance();
+    auto& input = engine.getInputManager();
+
+    // Reading an index past the configured count is false, so Select is simply
+    // never pressed on the native build (DOOM's layout: Select unbound).
+    const bool startDown = input.isButtonDown(BTN_START);
+    if (startDown && !world.startLatched) {
+        world.audioSettings = audio_settings::cycle(world.audioSettings);
+        AudioDirector::instance().applySettings(world.audioSettings);
+        settings_save::pressed(world.settingsSave);
+    }
+    world.startLatched = startDown;
+
+    const bool selectDown = input.isButtonDown(BTN_SELECT);
+    if (selectDown && !world.selectLatched) {
+        showRecords();
+    }
+    world.selectLatched = selectDown;
+
+    // Safe point: on foot and standing still. Never while driving, where an
+    // NVS write (4-13 ms) would be felt.
+    const bool safe = !isDriving() && !moving;
+    if (settings_save::due(world.settingsSave,
+                           static_cast<int>(deltaTime), safe)) {
+#if TDC_PERSISTENCE
+        const bool ok = CityPersistence::instance().saveSettings(
+                            world.audioSettings)
+                        == pixelroot32::persistence::StoreResult::Ok;
+        settings_save::saved(world.settingsSave, ok);
+#else
+        // Nothing to write to: cycling still works, it is just not kept.
+        settings_save::saved(world.settingsSave, true);
+#endif
+    }
+}
+
 void BaseCityScene::update(unsigned long deltaTime) {
     Scene::update(deltaTime);
 
@@ -597,6 +638,17 @@ void BaseCityScene::update(unsigned long deltaTime) {
         wanted::isWanted(world.wanted),
         world.bustedMs > 0));
     AudioDirector::instance().update(deltaTime);
+
+    // Before the busted early return: Start is a system button and must work
+    // while the notice is held. Direction keys read here only to know whether
+    // the player is standing still for the deferred settings save.
+    {
+        auto& in0 = engine.getInputManager();
+        const bool moving = in0.isButtonDown(BTN_UP) || in0.isButtonDown(BTN_DOWN)
+                            || in0.isButtonDown(BTN_LEFT)
+                            || in0.isButtonDown(BTN_RIGHT);
+        stepSystemButtons(deltaTime, moving);
+    }
 
     // The single place the simulation STOPS. A respawn on the same frame as
     // the hit is a teleport the player never sees the cause of. Real

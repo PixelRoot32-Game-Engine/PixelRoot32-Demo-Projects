@@ -26,6 +26,10 @@ const int BTN_PIN_LEFT = 33;
 const int BTN_PIN_RIGHT = 14;
 const int BTN_PIN_A = 13;
 const int BTN_PIN_B = 12;
+// Start / Select, same GPIOs as the ILI9341 build and DOOM (input-only pins
+// 34/35: no internal pull-up, so the board needs external pull resistors).
+const int BTN_PIN_START = 34;
+const int BTN_PIN_SELECT = 35;
 
 pr32::graphics::DisplayConfig config(
     pr32::graphics::DisplayType::ST7789,
@@ -38,9 +42,11 @@ pr32::graphics::DisplayConfig config(
     Y_OFF_SET
 );
 
-// 6 buttons: Up, Down, Left, Right, A (run / contextual), B (fire).
+// 8 buttons: Up, Down, Left, Right, A (run / contextual), B (fire), then
+// Start (index 6, audio setting) and Select (index 7, records banner).
 pr32::input::InputConfig inputConfig(BTN_PIN_UP, BTN_PIN_DOWN, BTN_PIN_LEFT,
-                                     BTN_PIN_RIGHT, BTN_PIN_A, BTN_PIN_B);
+                                     BTN_PIN_RIGHT, BTN_PIN_A, BTN_PIN_B,
+                                     BTN_PIN_START, BTN_PIN_SELECT);
 
 #if PIXELROOT32_ENABLE_AUDIO
 // I2S out to a MAX98357A-class DAC. Neither the TFT/SPI pin map above nor

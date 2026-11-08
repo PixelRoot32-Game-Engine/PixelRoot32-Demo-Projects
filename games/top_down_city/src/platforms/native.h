@@ -30,10 +30,15 @@ pr32::graphics::DisplayConfig config(
     Y_OFF_SET
 );
 
-// 6 buttons: Up, Down, Left, Right, Space (run / contextual), S (fire).
+// Same layout as DOOM: indices 0-5 are the pad (Up, Down, Left, Right, Space =
+// run / contextual, S = fire) and index 6 is Start = Escape (cycles the audio
+// setting). Select (index 7, the records banner on the board) stays unbound on
+// native: the keyboard has no second system key here, and reading an index past
+// the configured count returns false, so Select is simply never pressed.
 pr32::input::InputConfig inputConfig(SDL_SCANCODE_UP, SDL_SCANCODE_DOWN,
                                      SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT,
-                                     SDL_SCANCODE_SPACE, SDL_SCANCODE_S);
+                                     SDL_SCANCODE_SPACE, SDL_SCANCODE_S,
+                                     SDL_SCANCODE_ESCAPE);
 
 #if PIXELROOT32_ENABLE_AUDIO
 // 22050 Hz / 1024-sample buffer -- the same pair bomberbot uses, so no new

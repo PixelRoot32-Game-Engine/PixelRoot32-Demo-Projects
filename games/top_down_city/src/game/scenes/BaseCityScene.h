@@ -277,6 +277,16 @@ protected:
     /// anybody, which is most of a session, so the rays usually cost nothing.
     bool policeCanSee();
 
+    /// Start / Select, sampled by index and edge-triggered, once per frame
+    /// before any early return (dialogs and the picker never read 6 or 7, so
+    /// both work in every state). Start cycles the audio setting and applies it
+    /// at once; the save is deferred (settings_save). Select calls showRecords.
+    void stepSystemButtons(unsigned long deltaTime, bool moving);
+
+    /// Select pressed: show the records banner. A deliberate no-op here;
+    /// T8 (S8) fills it with the CityBanner record lines.
+    void showRecords();
+
     /// Put a word across the top strip for a while, instead of the district.
     /// @param label Borrowed, not copied -- see CityBanner.
     void showBanner(const char* label, int ms = kZoneBannerMs);
