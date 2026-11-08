@@ -51,7 +51,8 @@ One free pistol lies downtown. Everything after that is bought.
 The courier run is a side job — it earns money and nothing else. Three main
 missions turn that money into progress. They are picked so that each one is a
 small rule module and a few banners on top of systems that already exist: no
-new interior, no new sprite palette, no dialogue, no save.
+new interior, no new sprite palette, no dialogue, and no save of the chapter
+itself.
 
 **How you start one.** A cyan payphone ring in the street, one per chapter,
 shown on the radar the way the green drop already is. Stand on it and RUN
@@ -110,8 +111,9 @@ strip is one line and the briefing is two lines plus a choice, and that is
 the whole vocabulary. No new interior — a room
 costs about 1 KB of RAM, 7.5 KB of flash and a scene file, and none of the
 three needs one. No mission built around one named pedestrian, because the
-crowd is a pool with no way to address one of its twelve. And no saving: the
-chapter you are on lives in RAM and resets with the board.
+crowd is a pool with no way to address one of its twelve. And no restoring: the
+chapter you are on lives in RAM and resets with the board. Only the fact that a
+chapter was cleared is kept, in the record book.
 
 **What the three cost.** One engine-free rule module, now 77 host cases —
 the largest suite in the demo, and almost all of it guards; generated payphone
@@ -156,7 +158,11 @@ ends of that relationship.
 
 ## Not planned, and why
 
-- **Menus, title screen, saves** — this is a demo of a city, not a shipped game.
+- **Menus, title screen, restoring a run** — records (best streak, chapters
+  cleared, best cash) and the audio setting are kept across power cycles, but a
+  run is never restored: every run starts clean, and there is still no menu or
+  title screen. Start cycles the audio and Select shows the records. This is a
+  demo of a city, not a shipped game.
 - **Carrying several weapons** — switching needs a button, and the pad's six
   are spent. It is a design decision waiting on an input, not a memory limit.
 - **Health for sale** — the station steps heal for free, and a medkit would make
@@ -166,7 +172,7 @@ ends of that relationship.
 
 ## Measured on hardware
 
-It runs. The build fits in 8.8% RAM and 44.5% flash, and an esp32dev at
+It runs. The build fits in 10.1% RAM and 47.7% flash, and an esp32dev at
 240x240 in 12-bit colour holds **25 fps**, steady across the whole sample — so
 the guess this section used to carry, "25 fps over a 40 MHz bus", turned out to
 be the right number for the wrong reason.
