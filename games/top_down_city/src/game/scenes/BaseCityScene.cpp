@@ -74,6 +74,7 @@ BaseCityScene::BaseCityScene()
       recordsLabel_{},
       bestShown_{},
       bestNext_{},
+      audioLabel_{},
       bestPending_(false),
       hintVisible_(false),
       drawnFocusKey_(0),
@@ -661,6 +662,13 @@ void BaseCityScene::stepSystemButtons(unsigned long deltaTime, bool moving) {
         world.audioSettings = audio_settings::cycle(world.audioSettings);
         AudioDirector::instance().applySettings(world.audioSettings);
         settings_save::pressed(world.settingsSave);
+        // Deliberate like Select: replaces whatever the strip says, and each
+        // press rewrites audioLabel_ and restarts the banner. A waiting "new
+        // best" line stays queued and is delivered once this runs out.
+        if (audio_settings::label(world.audioSettings, audioLabel_,
+                                  sizeof audioLabel_) != 0) {
+            banner_.show(audioLabel_, kZoneBannerMs);
+        }
     }
     world.startLatched = startDown;
 

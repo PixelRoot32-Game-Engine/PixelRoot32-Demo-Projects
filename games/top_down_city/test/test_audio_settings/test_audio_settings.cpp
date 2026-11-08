@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #include "game/rules/AudioSettings.h"
 
@@ -130,6 +131,29 @@ void test_decode_rejects_malformed_without_touching_output() {
     expectRejected(bothBad, sizeof(bothBad));
 }
 
+void test_label_names_every_reachable_state() {
+    // Walk the Start cycle from the defaults: every state must have its text.
+    as::Settings s = as::defaults();
+    const char* expected[] = {"VOLUME 3/3", "AUDIO OFF", "VOLUME 1/3", "VOLUME 2/3"};
+    for (std::size_t i = 0; i < 4; ++i) {
+        char out[as::kLabelCapacity];
+        const std::size_t n = as::label(s, out, sizeof out);
+        TEST_ASSERT_EQUAL_UINT32(std::strlen(expected[i]), n);
+        TEST_ASSERT_EQUAL_STRING(expected[i], out);
+        s = as::cycle(s);
+    }
+    TEST_ASSERT_TRUE(same(as::defaults(), s));
+}
+
+void test_label_refuses_small_buffer_and_null() {
+    char out[as::kLabelCapacity];
+    std::memset(out, 'x', sizeof out);
+    TEST_ASSERT_EQUAL_UINT32(0, as::label(as::defaults(), out, 10));  // no room for the NUL
+    TEST_ASSERT_EQUAL_UINT8('x', static_cast<std::uint8_t>(out[0]));
+    TEST_ASSERT_EQUAL_UINT32(0, as::label(as::defaults(), nullptr, as::kLabelCapacity));
+    TEST_ASSERT_EQUAL_UINT32(10, as::label(as::defaults(), out, 11));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_defaults_reproduce_todays_mix);
@@ -140,5 +164,7 @@ int main(int, char**) {
     RUN_TEST(test_encode_decode_round_trip);
     RUN_TEST(test_encode_refuses_small_buffer_and_null);
     RUN_TEST(test_decode_rejects_malformed_without_touching_output);
+    RUN_TEST(test_label_names_every_reachable_state);
+    RUN_TEST(test_label_refuses_small_buffer_and_null);
     return UNITY_END();
 }

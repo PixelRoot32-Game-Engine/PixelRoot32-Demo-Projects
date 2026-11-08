@@ -160,8 +160,9 @@ These feed `kHudRightEdge`, `drawZoneBanner()`, `drawBustedNotice()`, `drawHint(
 Start and Select follow DOOM's map. GPIO 34 and 35 are input-only pins with
 external pull-ups, so a board needs those two resistors; Select is deliberately
 unbound on native, as in DOOM. Start steps the audio through off, then three
-volume levels (low, medium, high), then off again; both keys work in every
-state of the game.
+volume levels (low, medium, high), then off again, and each press shows the
+current setting on the top strip ("VOLUME 2/3", "AUDIO OFF"); both keys work in
+every state of the game.
 
 **Six buttons is the whole pad and every one is spoken for**, which is the
 constraint the interaction model is built around. RUN is contextual — held it

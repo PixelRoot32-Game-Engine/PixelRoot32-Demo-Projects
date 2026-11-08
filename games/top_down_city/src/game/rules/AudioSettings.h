@@ -53,6 +53,15 @@ float sfxGain(const Settings& settings);
 /// Advance one Start press along the documented order. Pure.
 Settings cycle(const Settings& settings);
 
+/// Room for the longest label ("VOLUME 3/3") plus the terminator, with slack.
+constexpr std::size_t kLabelCapacity = 12;
+
+/// The text the player sees after a Start press: "AUDIO OFF" when off, else
+/// "VOLUME n/N" with n = level + 1 and N = `kLevelCount`.
+/// @return characters written (terminator excluded), or 0 -- writing nothing --
+///         when `out` is null or `capacity` cannot hold the text and its NUL.
+std::size_t label(const Settings& settings, char* out, std::size_t capacity);
+
 /// Write the payload.
 /// @return bytes written (`kPayloadSize`), or 0 when `out` is null or
 ///         `capacity` is too small (nothing is written).

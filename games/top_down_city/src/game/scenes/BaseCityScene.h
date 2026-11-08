@@ -8,6 +8,7 @@
 
 #include "game/CityConstants.h"
 #include "game/dialog/CityBanner.h"
+#include "game/rules/AudioSettings.h"
 #include "game/rules/RecordsText.h"
 #include "game/entities/PedestrianActor.h"   // PersonHit
 #include "game/rules/Wanted.h"
@@ -384,6 +385,8 @@ protected:
     char                            recordsLabel_[records_text::kTextCapacity];
     char                            bestShown_[records_text::kTextCapacity];
     char                            bestNext_[records_text::kTextCapacity];
+    /// "VOLUME 2/3" / "AUDIO OFF" after a Start press, borrowed by the banner.
+    char                            audioLabel_[audio_settings::kLabelCapacity];
     bool                            bestPending_;
     bool                            hintVisible_;
 
