@@ -1080,6 +1080,54 @@ void test_a_fresh_contract_has_no_targets() {
     TEST_ASSERT_EQUAL_UINT8(0, ct::clear().targetsLeft);
 }
 
+// --- resuming from a saved book -------------------------------------------
+
+namespace {
+std::uint8_t chapterIdx(ct::Chapter c) { return static_cast<std::uint8_t>(c); }
+}  // namespace
+
+void test_startingChapter_is_the_first_one_not_cleared() {
+    TEST_ASSERT_EQUAL_UINT8(chapterIdx(ct::Chapter::Boost), chapterIdx(ct::startingChapter(0b000)));
+    TEST_ASSERT_EQUAL_UINT8(chapterIdx(ct::Chapter::Hit), chapterIdx(ct::startingChapter(0b001)));
+    TEST_ASSERT_EQUAL_UINT8(chapterIdx(ct::Chapter::Frenzy), chapterIdx(ct::startingChapter(0b011)));
+}
+
+void test_startingChapter_restarts_when_everything_is_cleared() {
+    TEST_ASSERT_EQUAL_UINT8(chapterIdx(ct::Chapter::Boost), chapterIdx(ct::startingChapter(0b111)));
+}
+
+void test_startingChapter_takes_the_first_gap_and_ignores_unknown_bits() {
+    TEST_ASSERT_EQUAL_UINT8(chapterIdx(ct::Chapter::Boost), chapterIdx(ct::startingChapter(0b010)));
+    TEST_ASSERT_EQUAL_UINT8(chapterIdx(ct::Chapter::Hit), chapterIdx(ct::startingChapter(0b101)));
+    TEST_ASSERT_EQUAL_UINT8(chapterIdx(ct::Chapter::Boost), chapterIdx(ct::startingChapter(0b11111000)));
+    TEST_ASSERT_EQUAL_UINT8(chapterIdx(ct::Chapter::Hit), chapterIdx(ct::startingChapter(0b11111001)));
+}
+
+void test_a_resumed_contract_equals_the_natural_progression() {
+    ct::State natural = ct::clear();
+    ct::begin(natural, 0, 0, 3, 3);
+    ct::boarded(natural);
+    ct::delivered(natural);  // chapter 2, phone live
+    const ct::State resumed = ct::startingState(0b001);
+    TEST_ASSERT_EQUAL_UINT8(chapterIdx(natural.chapter), chapterIdx(resumed.chapter));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<std::uint8_t>(natural.phase),
+                            static_cast<std::uint8_t>(resumed.phase));
+    TEST_ASSERT_EQUAL_UINT16(natural.stepsLeft, resumed.stepsLeft);
+    TEST_ASSERT_EQUAL_UINT8(natural.targetsLeft, resumed.targetsLeft);
+    TEST_ASSERT_TRUE(ct::phoneLive(resumed));
+}
+
+void test_a_fresh_book_resumes_the_same_state_as_clear() {
+    const ct::State a = ct::startingState(0);
+    const ct::State b = ct::clear();
+    TEST_ASSERT_EQUAL_UINT8(chapterIdx(b.chapter), chapterIdx(a.chapter));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<std::uint8_t>(b.phase),
+                            static_cast<std::uint8_t>(a.phase));
+    const ct::State all = ct::startingState(0b111);
+    TEST_ASSERT_TRUE(all.chapter == ct::Chapter::Boost);
+    TEST_ASSERT_TRUE(ct::phoneLive(all));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_a_job_is_one_clock_for_both_legs);
@@ -1159,5 +1207,10 @@ int main(int, char**) {
     RUN_TEST(test_a_failed_rampage_keeps_its_chapter_and_forgets_its_count);
     RUN_TEST(test_a_retried_rampage_gets_its_full_count_back);
     RUN_TEST(test_a_fresh_contract_has_no_targets);
+    RUN_TEST(test_startingChapter_is_the_first_one_not_cleared);
+    RUN_TEST(test_startingChapter_restarts_when_everything_is_cleared);
+    RUN_TEST(test_startingChapter_takes_the_first_gap_and_ignores_unknown_bits);
+    RUN_TEST(test_a_resumed_contract_equals_the_natural_progression);
+    RUN_TEST(test_a_fresh_book_resumes_the_same_state_as_clear);
     return UNITY_END();
 }

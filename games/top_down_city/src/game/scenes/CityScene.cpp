@@ -7,6 +7,7 @@
 #include "game/rules/MinimapRuns.h"
 #include "game/systems/CityCollision.h"
 #include "game/systems/StationStaff.h"
+#include "persist/CityPersistence.h"
 #include "generated/tilemaps/city_scene.h"
 
 namespace pr32 = pixelroot32;
@@ -225,11 +226,20 @@ void CityScene::onEnterSpace(bool firstEntry) {
         nextLeg(false);
         world.mission.streak = 0;
         world.mission.best = 0;
-        // Chapter 1, phone ringing. Stated rather than assumed: CityWorld is a
+        // Phone ringing at the starting chapter. Stated rather than assumed: CityWorld is a
         // process-lifetime singleton, so a second run inherits this object --
         // and one that inherited a Complete contract would open with a story it
         // could not start and no sign of why.
+#if TDC_PERSISTENCE
+        // Resume the story at the first chapter the saved book has not
+        // cleared (`recordProgress(true)` above already folded into it).
+        // Cash, vest, ammo and position still start clean; only the chapter
+        // is carried over. An arrest respawn never reaches here.
+        world.contract = contract::startingState(
+            CityPersistence::instance().records().chapters);
+#else
         world.contract = contract::clear();
+#endif
         pickups_.reset();
         world.player.setArmed(false);
         world.zone = scene::zoneAt(focusTileX(), focusTileY());

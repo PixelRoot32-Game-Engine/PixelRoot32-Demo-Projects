@@ -320,14 +320,18 @@ under gunfire would be the actual bug.
 
 ## Saved data
 
-Records and the audio setting are kept; **a run never is.** Every run still
-starts clean, on the spawn point, broke and unarmed.
+Records and the audio setting are kept; **a run never is, except for its
+chapter.** A run opens on the first chapter the record book has not cleared
+(all three cleared restarts the story at chapter 1), with the phone ringing;
+cash, vest, ammo and position still start clean, on the spawn point, broke and
+unarmed.
 
 | What | Persisted |
 |------|-----------|
 | Audio setting (on/off and volume level) | yes |
 | Record book: best streak, chapters cleared, best cash | yes |
-| Cash, weapons, chapter in progress, position, wanted level | no |
+| Chapter to resume (derived from the cleared chapters) | yes |
+| Cash, weapons, job in progress, position, wanted level | no |
 
 The record book only ever improves: a new run is folded into it and no value
 is lowered. It is shown in the banner at boot, when a record is beaten and on

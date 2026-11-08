@@ -111,9 +111,10 @@ strip is one line and the briefing is two lines plus a choice, and that is
 the whole vocabulary. No new interior — a room
 costs about 1 KB of RAM, 7.5 KB of flash and a scene file, and none of the
 three needs one. No mission built around one named pedestrian, because the
-crowd is a pool with no way to address one of its twelve. And no restoring: the
-chapter you are on lives in RAM and resets with the board. Only the fact that a
-chapter was cleared is kept, in the record book.
+crowd is a pool with no way to address one of its twelve. And no restoring of a run: the
+job in progress lives in RAM and resets with the board. Only the fact that a
+chapter was cleared is kept, in the record book, and the next run resumes at the
+first chapter not cleared (cash, vest, ammo and position still start clean).
 
 **What the three cost.** One engine-free rule module, now 77 host cases —
 the largest suite in the demo, and almost all of it guards; generated payphone
@@ -160,7 +161,8 @@ ends of that relationship.
 
 - **Menus, title screen, restoring a run** — records (best streak, chapters
   cleared, best cash) and the audio setting are kept across power cycles, but a
-  run is never restored: every run starts clean, and there is still no menu or
+  run is never restored: the chapter resumes at the first uncleared one, while
+  cash, vest, ammo and position start clean, and there is still no menu or
   title screen. Start cycles the audio and Select shows the records. This is a
   demo of a city, not a shipped game.
 - **Carrying several weapons** — switching needs a button, and the pad's six
