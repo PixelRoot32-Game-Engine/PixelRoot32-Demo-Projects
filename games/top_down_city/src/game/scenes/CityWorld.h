@@ -156,6 +156,11 @@ public:
     bool                      startLatched;
     bool                      selectLatched;
 
+    /// "NEW BEST $..." was already announced this session. Cash rises on nearly
+    /// every payout once the book is beaten, so it is said once; a streak or a
+    /// chapter is rarer and is announced every time.
+    bool                      cashRecordAnnounced;
+
     /// The live audio setting. Survives a run reset (a run never touches it);
     /// persist::boot() overwrites it with the stored value. Start cycles it.
     audio_settings::Settings  audioSettings;

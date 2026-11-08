@@ -8,6 +8,7 @@
 
 #include "game/CityConstants.h"
 #include "game/dialog/CityBanner.h"
+#include "game/rules/RecordsText.h"
 #include "game/entities/PedestrianActor.h"   // PersonHit
 #include "game/rules/Wanted.h"
 #include "game/scenes/CityWorld.h"
@@ -250,6 +251,14 @@ protected:
      */
     void recordProgress(bool flush);
 
+    /// Queue the "new best" line for `improved` (read from `book`, the book
+    /// after the fold). No-op when persistence is off.
+    void announceImprovement(const records::Improved& improved,
+                             const records::Record& book);
+
+    /// Does the live book hold anything? False with persistence off.
+    bool bookIsNotEmpty() const;
+
     /**
      * @brief Is the main mission the thing the player is being asked to do?
      *
@@ -283,9 +292,15 @@ protected:
     /// at once; the save is deferred (settings_save). Select calls showRecords.
     void stepSystemButtons(unsigned long deltaTime, bool moving);
 
-    /// Select pressed: show the records banner. A deliberate no-op here;
-    /// T8 (S8) fills it with the CityBanner record lines.
+    /// Put the book up on the strip ("BEST STREAK 7  $1234", or "NO RECORDS
+    /// YET"). Used on the first entry and by Select; deliberate, so it
+    /// replaces whatever the strip says.
     void showRecords();
+
+    /// Show a waiting "new best" line once the strip is free: nothing up, or
+    /// only the district name. Never replaces a notice with words of its own
+    /// (BOOSTED, CLEAN, WANTED, ...); it waits for it to run out instead.
+    void deliverBestAnnouncement();
 
     /// Put a word across the top strip for a while, instead of the district.
     /// @param label Borrowed, not copied -- see CityBanner.
@@ -362,6 +377,14 @@ protected:
     /// the demo is a string literal or a static table entry, and the banner
     /// only borrows the pointer. Eight bytes holds "99 LEFT".
     char                            frenzyLabel_[8];
+    /// Record texts, borrowed by the banner like frenzyLabel_. `recordsLabel_`
+    /// is the book (boot and Select); `bestShown_` is the "new best" line while
+    /// it is up and `bestNext_` the one waiting for the strip to be free. They
+    /// are separate so a waiting line never rewrites words already on screen.
+    char                            recordsLabel_[records_text::kTextCapacity];
+    char                            bestShown_[records_text::kTextCapacity];
+    char                            bestNext_[records_text::kTextCapacity];
+    bool                            bestPending_;
     bool                            hintVisible_;
 
 private:

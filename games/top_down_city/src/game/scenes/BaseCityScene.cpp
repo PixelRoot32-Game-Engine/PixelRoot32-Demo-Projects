@@ -1,5 +1,7 @@
 #include "game/scenes/BaseCityScene.h"
 
+#include <cstring>
+
 #include <core/Engine.h>
 #include <graphics/Color.h>
 
@@ -69,6 +71,10 @@ BaseCityScene::BaseCityScene()
       accumulatorMs_(0),
       banner_(),
       frenzyLabel_{},
+      recordsLabel_{},
+      bestShown_{},
+      bestNext_{},
+      bestPending_(false),
       hintVisible_(false),
       drawnFocusKey_(0),
       drawnCrowdKey_(0),
@@ -111,6 +117,16 @@ void BaseCityScene::init() {
     banner_.show(nullptr, kZoneBannerMs);
 
     onEnterSpace(firstEntry);
+
+    if (firstEntry) {
+        // The run reset inside onEnterSpace folds the starting state into the
+        // book; whatever that "improved" is not news, so drop it, and greet the
+        // player with the records they came to beat instead.
+        bestPending_ = false;
+        if (bookIsNotEmpty()) {
+            showRecords();
+        }
+    }
 
     // After the space exists, because both sinks reach into it. Re-installed
     // on every entry rather than swapped at the doorway.
@@ -278,7 +294,10 @@ void BaseCityScene::recordProgress(bool flush) {
                           : world.mission.best;
     seen.chapters = completedChapters(world.contract);
     seen.bestCash = world.purse.cash;
+    const records::Improved improved =
+        records::improved(persistence.records(), seen);
     persistence.foldRun(seen);
+    announceImprovement(improved, persistence.records());
     if (flush) {
         (void)persistence.flushRecords();
     }
@@ -574,8 +593,61 @@ void BaseCityScene::respawn() {
     banner_.show(nullptr, kZoneBannerMs);
 }
 
+#if TDC_PERSISTENCE
+void BaseCityScene::announceImprovement(const records::Improved& improved,
+                                        const records::Record& book) {
+    CityWorld& world = CityWorld::instance();
+    records::Improved say = improved;
+    if (world.cashRecordAnnounced) {
+        say.cash = false;
+    }
+    if (!say.any()) {
+        return;
+    }
+    if (records_text::improvedLine(book, say, bestNext_, sizeof bestNext_) == 0) {
+        return;
+    }
+    // Cash is only the line itself when nothing more meaningful rose.
+    if (!say.chapter && !say.streak) {
+        world.cashRecordAnnounced = true;
+    }
+    // A newer announcement replaces an older one still waiting: one slot, so
+    // several improvements before the strip frees up say only the latest.
+    bestPending_ = true;
+}
+#endif
+
+bool BaseCityScene::bookIsNotEmpty() const {
+#if TDC_PERSISTENCE
+    const records::Record& book = CityPersistence::instance().records();
+    return book.bestStreak != 0 || book.chapters != 0 || book.bestCash != 0;
+#else
+    return false;
+#endif
+}
+
 void BaseCityScene::showRecords() {
-    // Filled by T8 (S8): show CityPersistence::records() through the banner.
+#if TDC_PERSISTENCE
+    const records::Record book = CityPersistence::instance().records();
+#else
+    const records::Record book = records::clear();
+#endif
+    if (records_text::bookLine(book, recordsLabel_, sizeof recordsLabel_) == 0) {
+        return;
+    }
+    banner_.show(recordsLabel_, kZoneBannerMs);
+}
+
+void BaseCityScene::deliverBestAnnouncement() {
+    if (!bestPending_) {
+        return;
+    }
+    if (banner_.visible() && banner_.label() != nullptr) {
+        return;  // a notice of its own is up: wait for it to run out
+    }
+    std::memcpy(bestShown_, bestNext_, sizeof bestShown_);
+    bestPending_ = false;
+    banner_.show(bestShown_, kZoneBannerMs);
 }
 
 void BaseCityScene::stepSystemButtons(unsigned long deltaTime, bool moving) {
@@ -782,6 +854,7 @@ void BaseCityScene::update(unsigned long deltaTime) {
         // Real time, like the countdown this was: a no-op once it is down.
         banner_.update(deltaTime);
     }
+    deliverBestAnnouncement();
 }
 
 // Every term here is something draw() puts on screen, and nothing else is.

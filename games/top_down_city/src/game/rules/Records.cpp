@@ -36,6 +36,14 @@ bool merge(Record& into, const Record& seen) {
     return improved;
 }
 
+Improved improved(const Record& base, const Record& seen) {
+    Improved result;
+    result.streak = seen.bestStreak > base.bestStreak;
+    result.cash = seen.bestCash > base.bestCash;
+    result.chapter = (seen.chapters & ~base.chapters) != 0;
+    return result;
+}
+
 std::size_t encode(const Record& record, std::uint8_t* out, std::size_t capacity) {
     if (out == nullptr || capacity < kPayloadSize) return 0;
     out[0] = record.bestStreak;

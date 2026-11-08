@@ -46,6 +46,19 @@ Record clear();
 /// any value. @return true when at least one value rose or a chapter was added.
 bool merge(Record& into, const Record& seen);
 
+/// Which values of a run would beat the book. Same comparisons as `merge`, but
+/// reports each field, so the banner can say WHAT was beaten.
+struct Improved {
+    bool streak  = false;
+    bool cash    = false;
+    bool chapter = false;
+    bool any() const { return streak || cash || chapter; }
+};
+
+/// What `merge(base, seen)` would raise, without changing anything.
+/// `improved(b, s).any()` equals the bool `merge` returns.
+Improved improved(const Record& base, const Record& seen);
+
 /// Write the payload.
 /// @return bytes written (`kPayloadSize`), or 0 when `capacity` is too small
 ///         (nothing is written).

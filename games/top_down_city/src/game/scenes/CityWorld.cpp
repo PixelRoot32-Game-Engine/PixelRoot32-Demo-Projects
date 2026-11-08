@@ -39,6 +39,7 @@ CityWorld::CityWorld()
       fireLatched(false),
       startLatched(false),
       selectLatched(false),
+      cashRecordAnnounced(false),
       audioSettings(audio_settings::defaults()),
       settingsSave(settings_save::idle()),
       cooling(false),
