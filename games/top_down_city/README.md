@@ -40,7 +40,7 @@ size is made to cost that little.
 the budgets, and the engine decisions worth reading before borrowing any of it.
 
 Language: C++17  
-Engine: `gperez88/PixelRoot32-Game-Engine@^1.12.0`  
+Engine: `gperez88/PixelRoot32-Game-Engine@^1.15.0`  
 Environments: `native`, `esp32dev`, `host_test`, `dialog_test`  
 Category: Games
 
